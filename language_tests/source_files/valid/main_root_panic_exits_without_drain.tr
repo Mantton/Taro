@@ -1,0 +1,19 @@
+// G44: a panicking root reports its own failure and exits at once. A detached
+// task sleeping past the failure is abandoned rather than cancelled, so its
+// defer never runs and the process does not wait for it.
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: original root failure
+// EXPECT_STDERR_NOT_CONTAINS: child continued
+// EXPECT_STDERR_NOT_CONTAINS: finish_rootless
+// EXPECT_STDERR_NOT_CONTAINS: unobserved cleanup panic
+func main() async {
+    var (ready, started) = std::sync::bounded[int32](1).unwrap()
+    std::task::detached(() => {
+        defer { print("child cleaned") }
+        (await ready.send(1)).unwrap()
+        await std::task::sleep(std::time::Duration::fromSeconds(60_u64))
+        panic("child continued after root failure")
+    })
+    assert((await started.recv()).unwrap() == 1, "child active before root failure")
+    panic("original root failure")
+}

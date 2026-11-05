@@ -1,0 +1,14 @@
+interface Read { type Output; func read() -> &Self::Output; }
+class Base[A, B] { value: A }
+extend[A, B] Base[A, B] { init(_ value: A) { self.value = value }; }
+conform[Y, X] Base[X, Y] to Read { type Output = X; func read() -> &X { &self.value }; }
+class Child[U, V]: Base[V, U] {}
+func read[U, V](_ value: Child[U, V]) -> &V { value.read() }
+func main() {
+    value := Child[int32, int64](42_i64)
+    var output: &int64 = read(value)
+    *output = 77_i64
+    assert(*value.read() == 77, "the inherited projection uses the actual generic base coordinates")
+    var erased: any Read[Output = int64] = value
+    assert(*erased.read() == 77, "the erased binding retains the inherited concrete storage type")
+}

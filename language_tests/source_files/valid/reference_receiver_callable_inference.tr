@@ -1,0 +1,30 @@
+struct Receiver { value: int32 }
+extend &Receiver {
+    func apply[R, F: Fn(&int32) -> R](_ body: F) -> R { body(&self.value) }
+    func applyAsync[R, F: Fn(&int32) -> R](_ body: F) async -> R { body(&self.value) }
+    func applyAsyncCallback[R, F: AsyncFn(&int32) -> R](_ body: F) async -> R { await body(&self.value) }
+}
+func increment(_ value: &int32) -> int32 { *value + 1 }
+func incrementAsync(_ value: &int32) async -> int32 { *value + 1 }
+func identity[T](_ value: &T) -> T { *value }
+func throughReference(_ value: &Receiver) -> int32 { value.apply((v: &int32) => *v + 1) }
+func useLocks(_ mutex: &std::sync::Mutex[int32], _ rw: &std::sync::RwLock[int32]) async {
+    assert((await mutex.withLock((v: &int32) => *v + 1)).unwrap() == 8, "reference receiver callback result")
+    assert((await rw.withRead((v: &int32) => *v + 1)).unwrap() == 12, "reference receiver callback result")
+    assert((await rw.withWrite((v: &int32) => *v + 1)).unwrap() == 12, "reference receiver callback result")
+}
+func main() async {
+    var value = Receiver { value: 4 }
+    alias := &value
+    assert(alias.apply(increment) == 5, "named function callback on a reference receiver")
+    assert(alias.apply(identity) == 4, "generic named callback infers its input and output")
+    assert((await alias.applyAsyncCallback(incrementAsync)) == 5, "named async callback infers its output")
+    assert(value.apply((v: &int32) => *v + 1) == 5, "reference receiver callback result")
+    assert(alias.apply((v: &int32) => *v + 1) == 5, "reference receiver callback result")
+    assert((&value).apply[int32]((v: &int32) => *v + 1) == 5, "reference receiver callback result")
+    assert(throughReference(alias) == 5, "reference receiver callback result")
+    assert((await alias.applyAsync((v: &int32) => *v + 1)) == 5, "reference receiver callback result")
+    var mutex = std::sync::Mutex[int32]::new(7).unwrap()
+    var rw = std::sync::RwLock[int32]::new(11).unwrap()
+    await useLocks(&mutex, &rw)
+}

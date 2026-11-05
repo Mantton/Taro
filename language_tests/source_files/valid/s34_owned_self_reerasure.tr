@@ -1,0 +1,13 @@
+interface Duplicable { func duplicate() -> Self; func read() -> int32; }
+struct Counter { value: int32 }
+conform Counter to Duplicable {
+    func duplicate() -> Self { Counter { value: self.value + 1 } }
+    func read() -> int32 { self.value }
+}
+func duplicateErased[T: Duplicable](_ value: &T) -> any Duplicable { value.duplicate() }
+func main() {
+    var original: any Duplicable = Counter { value: 7 } // any Duplicable; owns a noncopyable Counter.
+    var direct: any Duplicable = original.duplicate() // any Duplicable; owned Self re-erases into fresh storage.
+    var opened: any Duplicable = duplicateErased(&original) // any Duplicable; true generic T body re-erases a fresh Counter.
+    assert(original.read() == 7 && direct.read() == 8 && opened.read() == 8, "direct and opened owned Self results preserve independent value ownership")
+}

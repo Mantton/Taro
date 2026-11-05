@@ -1,0 +1,8 @@
+error: field 'storage' of Dictionary[int32, int32] is not visible here
+ -> language_tests/source_files/invalid/collection_storage_access.tr:3:13
+	    slots := dictionary.storage
+	             ^^^^^^^^^^^^^^^^^^
+error: field 'storage' of Set[int32] is not visible here
+ -> language_tests/source_files/invalid/collection_storage_access.tr:5:15
+	    storage := values.storage
+	               ^^^^^^^^^^^^^^

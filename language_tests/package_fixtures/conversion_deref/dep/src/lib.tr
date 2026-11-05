@@ -1,0 +1,17 @@
+public struct Point { public value: int32 }
+extend Point { public func read() -> int32 { self.value }; }
+conform Point to From[int32] {
+    public static func from(_ value: int32) -> Point { Point { value } }
+}
+public enum ConversionFailure { case negative }
+conform Point to TryFrom[int64] {
+    type Error = ConversionFailure
+    public static func tryFrom(_ value: int64) -> Result[Point, ConversionFailure] {
+        if value < 0 { .err(.negative) } else { .ok(Point { value: value as int32 }) }
+    }
+}
+public struct View[T] { public target: &T }
+conform[T] View[T] to Deref {
+    type Target = T
+    public func deref() -> &T { self.target }
+}

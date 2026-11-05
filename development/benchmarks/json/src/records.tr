@@ -1,0 +1,174 @@
+import std::encoding::{Codable, Decodable, Encodable}
+
+// All three codecs have the same wire shape. Keep the handwritten codec on the
+// public format-neutral API so this compares synthesis, not a JSON fast path.
+struct DerivedPerson: Codable {
+    name: string
+    age: uint8
+}
+
+final class DerivedPersonObject: Codable {
+    name: string
+    age: uint8
+}
+
+struct HandwrittenPerson {
+    name: string
+    age: uint8
+}
+
+conform HandwrittenPerson to std::encoding::Encodable {
+    public func encode[E: std::encoding::Encoder](into encoder: E) -> std::result::Result[(), E::Error] {
+        var length: usize? = .some(2)
+        encoder.beginObject(length)!
+        encoder.beginField("name")!
+        self.name.encode(into: encoder)!
+        encoder.beginField("age")!
+        self.age.encode(into: encoder)!
+        return encoder.endObject()
+    }
+}
+
+conform HandwrittenPerson to std::encoding::Decodable {
+    public static func decode[D: std::encoding::Decoder](from decoder: D) -> std::result::Result[Self, D::Error] {
+        var _ = decoder.beginObject()!
+        var nameValue: string? = .none
+        var ageValue: uint8? = .none
+        loop {
+            match decoder.nextField()! {
+                case .none => break
+                case .some(name) => {
+                    if name == "name" {
+                        nameValue = .some(std::encoding::decode[string, D](from: decoder)!)
+                    } else if name == "age" {
+                        ageValue = .some(std::encoding::decode[uint8, D](from: decoder)!)
+                    } else {
+                        // Unknown fields are ignored deliberately so adding a
+                        // producer field remains backwards compatible.
+                        decoder.skipValue()!
+                    }
+                }
+            }
+        }
+        name := match nameValue {
+            case .some(value) => value
+            case .none => return .err(decoder.missingField("name", "name is required"))
+        }
+        age := match ageValue {
+            case .some(value) => value
+            case .none => return .err(decoder.missingField("age", "age is required"))
+        }
+        decoder.endObject()!
+        return .ok(HandwrittenPerson { name, age })
+    }
+}
+
+
+func personDocument(_ count: usize) -> string {
+    var builder = std::string::Builder::new()
+    builder.writeByte('[' as uint8)
+    var index: usize = 0
+    while index < count {
+        if index > 0 { builder.writeByte(',' as uint8) }
+        builder.writeString("{\"name\":\"Ada\",\"age\":37}")
+        index += 1
+    }
+    builder.writeByte(']' as uint8)
+    return builder.toString()
+}
+
+func measureRecordDecode[T: Codable](
+    _ benchmark: &std::bench::Benchmark,
+    _ input: string,
+) {
+    value := std::json::decode[T](input).unwrap()
+    assert(std::json::encode(&value).unwrap() == input, "record round trip mismatch")
+    benchmark.setBytes(input.byteLen())
+    while benchmark.next() {
+        std::hint::blackBox(std::json::decode[T](input).unwrap())
+    }
+}
+
+func measureRecordEncode[T: Codable](
+    _ benchmark: &std::bench::Benchmark,
+    _ input: string,
+) {
+    value := std::json::decode[T](input).unwrap()
+    assert(std::json::encode(&value).unwrap() == input, "record encoding mismatch")
+    benchmark.setBytes(input.byteLen())
+    while benchmark.next() {
+        std::hint::blackBox(std::json::encode(&value).unwrap())
+    }
+}
+
+@bench
+@tag("json", "codable", "decode")
+func decodeHandwrittenPerson(benchmark: &std::bench::Benchmark) {
+    measureRecordDecode[HandwrittenPerson](benchmark, "{\"name\":\"Ada\",\"age\":37}")
+}
+
+@bench
+@tag("json", "codable", "decode")
+func decodeHandwrittenPeople128(benchmark: &std::bench::Benchmark) {
+    measureRecordDecode[List[HandwrittenPerson]](benchmark, personDocument(128))
+}
+
+@bench
+@tag("json", "codable", "decode")
+func decodeDerivedStructPerson(benchmark: &std::bench::Benchmark) {
+    measureRecordDecode[DerivedPerson](benchmark, "{\"name\":\"Ada\",\"age\":37}")
+}
+
+@bench
+@tag("json", "codable", "decode")
+func decodeDerivedStructPeople128(benchmark: &std::bench::Benchmark) {
+    measureRecordDecode[List[DerivedPerson]](benchmark, personDocument(128))
+}
+
+@bench
+@tag("json", "codable", "decode")
+func decodeDerivedClassPerson(benchmark: &std::bench::Benchmark) {
+    measureRecordDecode[DerivedPersonObject](benchmark, "{\"name\":\"Ada\",\"age\":37}")
+}
+
+@bench
+@tag("json", "codable", "decode")
+func decodeDerivedClassPeople128(benchmark: &std::bench::Benchmark) {
+    measureRecordDecode[List[DerivedPersonObject]](benchmark, personDocument(128))
+}
+
+@bench
+@tag("json", "codable", "encode")
+func encodeHandwrittenPerson(benchmark: &std::bench::Benchmark) {
+    measureRecordEncode[HandwrittenPerson](benchmark, "{\"name\":\"Ada\",\"age\":37}")
+}
+
+@bench
+@tag("json", "codable", "encode")
+func encodeHandwrittenPeople128(benchmark: &std::bench::Benchmark) {
+    measureRecordEncode[List[HandwrittenPerson]](benchmark, personDocument(128))
+}
+
+@bench
+@tag("json", "codable", "encode")
+func encodeDerivedStructPerson(benchmark: &std::bench::Benchmark) {
+    measureRecordEncode[DerivedPerson](benchmark, "{\"name\":\"Ada\",\"age\":37}")
+}
+
+@bench
+@tag("json", "codable", "encode")
+func encodeDerivedStructPeople128(benchmark: &std::bench::Benchmark) {
+    measureRecordEncode[List[DerivedPerson]](benchmark, personDocument(128))
+}
+
+@bench
+@tag("json", "codable", "encode")
+func encodeDerivedClassPerson(benchmark: &std::bench::Benchmark) {
+    measureRecordEncode[DerivedPersonObject](benchmark, "{\"name\":\"Ada\",\"age\":37}")
+}
+
+@bench
+@tag("json", "codable", "encode")
+func encodeDerivedClassPeople128(benchmark: &std::bench::Benchmark) {
+    measureRecordEncode[List[DerivedPersonObject]](benchmark, personDocument(128))
+}

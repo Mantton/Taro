@@ -1,0 +1,146 @@
+// Fixed-count diagnostics: compare multiple iteration counts to cancel setup.
+// Run with TARO_RUNTIME_STATS=1 for allocation counts, and inspect the reported
+// gcStats deltas for bytes/collections inside the operation loop alone.
+import std::io::Writer
+
+struct AuditPerson: std::encoding::Codable {
+    name: string
+    age: uint8
+}
+
+final class WriteCounts {
+    bytes: uint64
+    calls: uint64
+}
+
+extend WriteCounts {
+    init() { self.bytes = 0; self.calls = 0 }
+}
+struct CountingWriter {
+    counts: WriteCounts
+}
+
+conform CountingWriter to Writer {
+    public func write(_ bytes: std::mem::Span[uint8]) -> Result[usize, std::io::Error] {
+        self.counts.bytes += bytes.len() as uint64
+        self.counts.calls += 1
+        return .ok(bytes.len())
+    }
+
+    public func flush() -> Result[(), std::io::Error] { .ok(()) }
+}
+
+func peopleDocument() -> string {
+    var builder = std::string::Builder::new()
+    builder.writeString("[")
+    var index: usize = 0
+    while index < 128 {
+        if index > 0 { builder.writeString(",") }
+        builder.writeString("{\"name\":\"Ada\",\"age\":37}")
+        index += 1
+    }
+    builder.writeString("]")
+    return builder.toString()
+}
+
+func main() {
+    args := std::env::args()
+    if args.len() != 3 { panic("usage: allocation_audit <case> <iterations>") }
+    name := args.at(1)
+    count := uint64::parse(args.at(2)).unwrap()
+    text := "{\"name\":\"Ada\",\"age\":37}"
+    arrayText := peopleDocument()
+    person := std::json::decode[AuditPerson](text).unwrap()
+    people := std::json::decode[List[AuditPerson]](arrayText).unwrap()
+    assert(std::json::encode(&person).unwrap() == text, "person fixture")
+    assert(std::json::encode(&people).unwrap() == arrayText, "array fixture")
+    sink := CountingWriter { counts: WriteCounts() }
+    buffer := std::bytes::Buffer::new()
+    // Allocate the reusable destination before taking the baseline snapshot.
+    buffer.writeString(text).unwrap()
+    buffer.reset()
+    var checksum: uint64 = 0
+    var index: uint64 = 0
+    before := std::runtime::gcStats()
+    while index < count {
+        if name == "baseline" {
+            var _ = std::hint::blackBox(index)
+        } else if name == "span-copy" {
+            bytes := std::mem::Span[uint8]::fromString(&text)
+            std::hint::blackBox(bytes)
+            checksum += bytes.len() as uint64
+        } else if name == "io-write" {
+            std::io::writeString(sink, text).unwrap()
+            checksum += text.byteLen() as uint64
+        } else if name == "buffer-write" {
+            buffer.reset()
+            buffer.writeString(text).unwrap()
+            checksum += buffer.len() as uint64
+        } else if name == "printf-integer" {
+            value := std::sprintf("%d", 37_u64)
+            assert(value == "37", "integer output")
+            std::hint::blackBox(value)
+            checksum += value.byteLen() as uint64
+        } else if name == "new-builder" {
+            var _ = std::hint::blackBox(std::string::Builder::new())
+        } else if name == "new-buffer" {
+            var _ = std::hint::blackBox(std::bytes::Buffer::new())
+        } else if name == "builder-snapshot" {
+            builder := std::string::Builder::new()
+            builder.writeString(text)
+            value := builder.toString()
+            assert(value == text, "builder snapshot")
+            std::hint::blackBox(value)
+            checksum += value.byteLen() as uint64
+        } else if name == "encode-person" {
+            value := std::json::encode(&person).unwrap()
+            assert(value == text, "encoded person")
+            std::hint::blackBox(value)
+            checksum += value.byteLen() as uint64
+        } else if name == "encode-people" {
+            value := std::json::encode(&people).unwrap()
+            assert(value == arrayText, "encoded array")
+            std::hint::blackBox(value)
+            checksum += value.byteLen() as uint64
+        } else if name == "stream-person" {
+            var encoder = std::json::Encoder::new(sink)
+            encoder.encode(&person).unwrap()
+            checksum += text.byteLen() as uint64
+        } else if name == "stream-people" {
+            var encoder = std::json::Encoder::new(sink)
+            encoder.encode(&people).unwrap()
+            checksum += arrayText.byteLen() as uint64
+        } else if name == "encode-bool" {
+            value := true
+            encoded := std::json::encode(&value).unwrap()
+            assert(encoded == "true", "encoded boolean")
+            std::hint::blackBox(encoded)
+            checksum += encoded.byteLen() as uint64
+        } else if name == "encode-integer" {
+            value := 37_u64
+            encoded := std::json::encode(&value).unwrap()
+            assert(encoded == "37", "encoded integer")
+            std::hint::blackBox(encoded)
+            checksum += encoded.byteLen() as uint64
+        } else if name == "encode-string" {
+            value := "Ada"
+            encoded := std::json::encode(&value).unwrap()
+            assert(encoded == "\"Ada\"", "encoded string")
+            std::hint::blackBox(encoded)
+            checksum += encoded.byteLen() as uint64
+        } else {
+            panic("unknown audit case")
+        }
+        index += 1
+    }
+    after := std::runtime::gcStats()
+    if name == "io-write" || name == "stream-person" || name == "stream-people" {
+        assert(sink.counts.bytes == checksum, "writer byte count")
+    }
+    std::printf(
+        "audit case=%s iterations=%016d checksum=%016d bytes=%016d collections=%016d pause_ns=%016d writes=%016d\n",
+        name, count, checksum, after.allocatedBytes - before.allocatedBytes,
+        after.collections - before.collections, after.totalPauseNanos - before.totalPauseNanos,
+        sink.counts.calls,
+    )
+}

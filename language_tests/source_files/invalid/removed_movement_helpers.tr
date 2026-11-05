@@ -1,0 +1,5 @@
+func main() {
+    var value: int32 = 1
+    var _ = std::mem::replace(&value, 2)
+    var _ = std::mem::take(&value)
+}

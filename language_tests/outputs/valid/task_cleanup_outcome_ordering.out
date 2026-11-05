@@ -1,0 +1,4 @@
+normal return: panicked(normal cleanup) inner;outer;
+cancellation: panicked(cancel cleanup) inner;outer;
+repeated cancel: cancelled cleanup;
+cancel after completion: ok

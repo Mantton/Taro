@@ -1,0 +1,4 @@
+func main() {
+    var values: [int32: int32] = [:]
+    entry := values.entry(1)
+}

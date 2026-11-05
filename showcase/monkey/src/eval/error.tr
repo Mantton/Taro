@@ -1,5 +1,5 @@
-import monkey.ast.{PrefixOperator, InfixOperator}
-import monkey.object.{Object, ObjectKind, BuiltinError}
+import monkey::ast::{PrefixOperator, InfixOperator}
+import monkey::object::{Object, ObjectKind, BuiltinError}
 
 /// Why evaluation failed.
 ///
@@ -24,11 +24,11 @@ public enum EvalError {
     case callDepthExceeded(usize)
 }
 
-impl EvalError {
-    public func describe(&self) -> string {
+extend EvalError {
+    public func describe() -> string {
         match self {
             case .identifierNotFound(name) => {
-                return sprintf("identifier not found: %s", *name)
+                return sprintf("identifier not found: %s", name)
             }
             case .unknownPrefixOperator(op, operand) => {
                 return sprintf("unknown operator: %s%s", op.symbol(), operand.describe())
@@ -65,15 +65,15 @@ impl EvalError {
             case .wrongArgumentCount(function, expected, found) => {
                 return sprintf(
                     "wrong number of arguments to `%s`: want %v, got %v",
-                    *function,
-                    *expected,
-                    *found,
+                    function,
+                    expected,
+                    found,
                 )
             }
             case .builtin(error) => return error.describe()
             case .divisionByZero => return "division by zero"
             case .callDepthExceeded(limit) => {
-                return sprintf("call depth exceeded %v nested calls", *limit)
+                return sprintf("call depth exceeded %v nested calls", limit)
             }
         }
     }

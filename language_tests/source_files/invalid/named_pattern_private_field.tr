@@ -1,0 +1,5 @@
+struct Secret { private value: int32 }
+func inspect(_ secret: Secret) {
+    match secret { case Secret { value } => {}; }
+}
+func main() {}

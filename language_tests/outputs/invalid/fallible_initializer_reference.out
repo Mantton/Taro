@@ -1,0 +1,4 @@
+error: cannot take references to self or its fields during initialization
+ -> language_tests/source_files/invalid/fallible_initializer_reference.tr:7:16
+	        inspect(&self.value)
+	                ^^^^^^^^^^^

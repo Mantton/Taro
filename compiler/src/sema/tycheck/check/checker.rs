@@ -17,31 +17,52 @@ use std::rc::Rc;
 #[derive(Clone, Copy)]
 pub(super) struct PendingAsyncCallSurfaceCheck {
     pub node_id: NodeID,
+    pub callee_node_id: Option<NodeID>,
     pub span: Span,
-    pub directly_awaited: bool,
+    pub covered_by_await: bool,
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct PendingAsyncPropertySurfaceCheck {
-    pub node_id: NodeID,
+/// Calls belong to the nearest lexical await expression, excluding closures.
+/// Diagnose redundant markers only after overload resolution has completed.
+pub(super) struct AwaitScope {
     pub span: Span,
-    pub directly_awaited: bool,
+    pub calls: Vec<NodeID>,
+    pub complete: bool,
 }
 
 pub struct Checker<'arena> {
     pub context: Gcx<'arena>,
     pub locals: RefCell<FxHashMap<NodeID, LocalBinding<'arena>>>,
+    /// Delayed receiver adjustments must retain the lexical unsafe permission
+    /// of the source expression, not the context active when goals commit.
+    pub(super) expression_contexts: RefCell<FxHashMap<NodeID, (Span, bool)>>,
+    pub(super) reported_raw_dereferences: RefCell<FxHashSet<NodeID>>,
+    /// Only intrinsic assignment writes back a value to the caller's slot;
+    /// overload selection must finish before validating that destination.
+    pub(super) pending_compound_assignments: RefCell<Vec<(NodeID, hir::Expression)>>,
+    pub(super) pending_indices: RefCell<FxHashMap<NodeID, (hir::IndexCallNodes, Span)>>,
+    pub(super) index_setter_uses: RefCell<FxHashSet<NodeID>>,
+    pub(super) index_compound_uses: RefCell<FxHashSet<NodeID>>,
+    pub(super) index_place_requests: RefCell<FxHashSet<NodeID>>,
+    /// Receiver projections can cross into an independently shared object.
+    /// Keep only index roots and projection type IDs, not cloned syntax trees.
+    pub(super) receiver_index_roots: RefCell<FxHashMap<NodeID, Vec<(NodeID, Vec<NodeID>)>>>,
     pub return_ty: Cell<Option<Ty<'arena>>>,
+    pub(super) constructor_self: Cell<Option<NodeID>>,
+    pub(super) constructor_payload: Cell<Option<Ty<'arena>>>,
+    pub(super) constructor_convenience: Cell<bool>,
     pub(super) opaque_return_candidates: RefCell<Vec<OpaqueReturnCandidate<'arena>>>,
     pub(super) loop_depth: Cell<usize>,
     pub(super) unsafe_depth: Cell<usize>,
     pub(super) defer_depth: Cell<usize>,
     pub(super) async_depth: Cell<usize>,
-    pub(super) direct_await_operand: Cell<Option<NodeID>>,
+    pub(super) await_scope: Cell<Option<NodeID>>,
+    pub(super) resolved_call_effects: RefCell<FxHashMap<NodeID, bool>>,
+    pub(super) await_scopes: RefCell<FxHashMap<NodeID, AwaitScope>>,
+    pub(super) direct_method_selection: Cell<Option<NodeID>>,
+    pub(super) prechecked_bracket_receivers: RefCell<FxHashMap<NodeID, Ty<'arena>>>,
     pub(super) forced_async_closure_expr: Cell<Option<NodeID>>,
     pub(super) pending_async_surface_checks: RefCell<Vec<PendingAsyncCallSurfaceCheck>>,
-    pub(super) pending_async_property_surface_checks:
-        RefCell<Vec<PendingAsyncPropertySurfaceCheck>>,
     pub current_def: DefinitionID,
     pub results: Rc<RefCell<TypeCheckResults<'arena>>>,
     infer_cx: RefCell<Option<Rc<InferCtx<'arena>>>>,
@@ -70,16 +91,30 @@ impl<'arena> Checker<'arena> {
         Checker {
             context,
             return_ty: Cell::new(None),
+            constructor_self: Cell::new(None),
+            constructor_payload: Cell::new(None),
+            constructor_convenience: Cell::new(false),
             opaque_return_candidates: RefCell::new(Vec::new()),
             locals: Default::default(),
+            expression_contexts: Default::default(),
+            reported_raw_dereferences: Default::default(),
+            pending_compound_assignments: Default::default(),
+            pending_indices: Default::default(),
+            index_setter_uses: Default::default(),
+            index_compound_uses: Default::default(),
+            index_place_requests: Default::default(),
+            receiver_index_roots: Default::default(),
             loop_depth: Cell::new(0),
             unsafe_depth: Cell::new(0),
             defer_depth: Cell::new(0),
             async_depth: Cell::new(0),
-            direct_await_operand: Cell::new(None),
+            await_scope: Cell::new(None),
+            await_scopes: Default::default(),
+            resolved_call_effects: Default::default(),
+            direct_method_selection: Cell::new(None),
+            prechecked_bracket_receivers: Default::default(),
             forced_async_closure_expr: Cell::new(None),
             pending_async_surface_checks: RefCell::new(Vec::new()),
-            pending_async_property_surface_checks: RefCell::new(Vec::new()),
             current_def,
             results,
             infer_cx: RefCell::new(None),
@@ -167,21 +202,59 @@ impl<'arena> Checker<'arena> {
         self.infer_cx.borrow().clone()
     }
 
-    pub(super) fn with_direct_await_operand<T>(&self, node_id: NodeID, f: impl FnOnce() -> T) -> T {
-        let prev = self.direct_await_operand.replace(Some(node_id));
+    pub(super) fn with_await_scope<T>(
+        &self,
+        node_id: NodeID,
+        span: Span,
+        f: impl FnOnce() -> T,
+    ) -> T {
+        self.await_scopes.borrow_mut().insert(
+            node_id,
+            AwaitScope {
+                span,
+                calls: Vec::new(),
+                complete: false,
+            },
+        );
+        let prev = self.await_scope.replace(Some(node_id));
         let result = f();
-        self.direct_await_operand.set(prev);
+        self.await_scope.set(prev);
+        self.await_scopes
+            .borrow_mut()
+            .get_mut(&node_id)
+            .unwrap()
+            .complete = true;
         result
     }
 
-    pub(super) fn with_forced_async_closure_expr<T>(
+    pub(super) fn call_is_awaited(&self) -> bool {
+        self.await_scope.get().is_some() && self.defer_depth.get() == 0
+    }
+
+    pub(super) fn record_await_scope_call(&self, node_id: NodeID) {
+        if let Some(scope) = self.await_scope.get() {
+            self.await_scopes
+                .borrow_mut()
+                .get_mut(&scope)
+                .unwrap()
+                .calls
+                .push(node_id);
+        }
+    }
+
+    /// Context selects async-ness only while creating this fresh literal.
+    pub(super) fn with_closure_argument_context<T>(
         &self,
         node_id: NodeID,
+        force_async: bool,
         f: impl FnOnce() -> T,
     ) -> T {
-        let prev = self.forced_async_closure_expr.replace(Some(node_id));
+        let previous_async = self.forced_async_closure_expr.get();
+        if force_async {
+            self.forced_async_closure_expr.set(Some(node_id));
+        }
         let result = f();
-        self.forced_async_closure_expr.set(prev);
+        self.forced_async_closure_expr.set(previous_async);
         result
     }
 
@@ -194,25 +267,26 @@ impl<'arena> Checker<'arena> {
             .borrow_mut()
             .push(PendingAsyncCallSurfaceCheck {
                 node_id,
+                callee_node_id: None,
                 span,
-                directly_awaited: self.direct_await_operand.get() == Some(node_id),
+                covered_by_await: self.call_is_awaited(),
             });
     }
 
-    pub(super) fn defer_async_property_surface_check(&self, node_id: NodeID, span: Span) {
-        self.pending_async_property_surface_checks
+    pub(super) fn defer_callable_async_surface_check(
+        &self,
+        node_id: NodeID,
+        callee: NodeID,
+        span: Span,
+    ) {
+        self.pending_async_surface_checks
             .borrow_mut()
-            .push(PendingAsyncPropertySurfaceCheck {
+            .push(PendingAsyncCallSurfaceCheck {
                 node_id,
+                callee_node_id: Some(callee),
                 span,
-                directly_awaited: self.direct_await_operand.get() == Some(node_id),
+                covered_by_await: self.call_is_awaited(),
             });
-    }
-
-    pub(super) fn cancel_async_property_surface_check(&self, node_id: NodeID) {
-        self.pending_async_property_surface_checks
-            .borrow_mut()
-            .retain(|pending| pending.node_id != node_id);
     }
 
     pub fn get_local(&self, id: NodeID) -> LocalBinding<'arena> {

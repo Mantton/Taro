@@ -1,0 +1,4 @@
+error: self is implicit; declare storage receivers with `extend &T` or `conform &T to I`
+ -> language_tests/source_files/invalid/explicit_method_receiver.tr:3:14
+	    func read(&self) -> int32 { self.value }
+	              ^

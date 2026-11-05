@@ -1,0 +1,86 @@
+import std::collections::List
+import std::http::{Error, Request, Response, Server}
+import std::net::{SocketAddress, TcpListener, TcpStream}
+import std::result::Result
+import std::mem::Span
+
+struct FileLimit { soft: uint64; hard: uint64 }
+
+extern "C" {
+    unsafe func getrlimit(_ resource: int32, _ limit: *mut FileLimit) -> int32
+    unsafe func setrlimit(_ resource: int32, _ limit: *const FileLimit) -> int32
+}
+
+@cfg(os("macos"))
+const RLIMIT_NOFILE: int32 = 8
+@cfg(os("linux"))
+const RLIMIT_NOFILE: int32 = 7
+
+// Takes every free descriptor but one, which the caller's client then takes,
+// so the server has none left for accept() to return.
+func exhaustDescriptors() -> List[TcpListener] {
+    var held = List[TcpListener]::new()
+    loop {
+        match TcpListener::bind(SocketAddress::localhost(0_u16)) {
+            case .ok(listener) => held.append(listener)
+            case .err(_) => break
+        }
+    }
+    std::assert(held.len() > 0, "the limit left descriptors to take")
+    held.pop().unwrap().close().unwrap()
+    return held
+}
+
+func release(_ held: List[TcpListener]) {
+    for listener in held { listener.close().unwrap() }
+}
+
+func respond(_ request: &Request) async -> Result[Response, Error] {
+    return .ok(Response::text(200_u16, "served"))
+}
+
+func exchange(_ stream: TcpStream) async -> bool {
+    request := "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+    if (await stream.writeAll(Span[uint8]::fromString(&request))).isErr() { return false }
+    var bytes: [uint8; 128] = [0_u8; 128]
+    span := unsafe { Span[uint8]::from((&bytes as *mut [uint8; 128]) as *mut uint8, 128) }
+    return match await stream.read(span) {
+        case .ok(count) => count > 0
+        case .err(_) => false
+    }
+}
+
+func letAcceptFail() async {
+    await std::task::sleep(std::time::Duration::fromMillis(50_u64))
+}
+
+func main() async {
+    var limit = FileLimit { soft: 0_u64, hard: 0_u64 }
+    std::assert(unsafe { getrlimit(RLIMIT_NOFILE, &limit as *mut FileLimit) } == 0, "read the descriptor limit")
+    limit.soft = 64_u64
+    std::assert(unsafe { setrlimit(RLIMIT_NOFILE, (&limit as *mut FileLimit) as *const FileLimit) } == 0, "lowered the descriptor limit")
+
+    server := Server::bind(SocketAddress::localhost(0_u16)).unwrap()
+    address := server.localAddress().unwrap()
+    serving := std::task::spawn(() async => { return await server.serve(respond) })
+    std::assert(await exchange((await TcpStream::connect(address)).unwrap()), "a connection is served normally")
+
+    // The client that arrives with no descriptors free may be lost, since macOS
+    // drops it inside accept(). Later clients must still be served.
+    var held = exhaustDescriptors()
+    unlucky := (await TcpStream::connect(address)).unwrap()
+    await letAcceptFail()
+    release(held)
+    unlucky.close().unwrap()
+    std::assert(await exchange((await TcpStream::connect(address)).unwrap()), "the server still answers after accept failed")
+
+    // Closing the server also works while accept is failing.
+    held = exhaustDescriptors()
+    unaccepted := (await TcpStream::connect(address)).unwrap()
+    await letAcceptFail()
+    server.close().unwrap()
+    (await serving.result()).unwrap().unwrap()
+    release(held)
+    unaccepted.close().unwrap()
+    std::println("ok")
+}

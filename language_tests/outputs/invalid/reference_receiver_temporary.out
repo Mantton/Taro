@@ -1,0 +1,4 @@
+error: no member named 'increment' found on type Counter
+ -> language_tests/source_files/invalid/reference_receiver_temporary.tr:6:21
+	func main() { make().increment() }
+	                     ^^^^^^^^^

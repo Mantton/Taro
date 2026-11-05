@@ -4,13 +4,13 @@ interface Carrier {
 
 struct IntCarrier {}
 
-impl Carrier for IntCarrier {
+conform IntCarrier to Carrier {
     type Item = int32
 }
 
 func needBool[T: Carrier[Item = bool]](_ value: T) {}
 
 func main() {
-    let c = IntCarrier {}
+    c := IntCarrier {}
     needBool(c)
 }

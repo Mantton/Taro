@@ -1,0 +1,4 @@
+error: field 'handle' of Task[string] is not visible here
+ -> language_tests/source_files/invalid/task_handle_fabrication.tr:2:50
+	func fabricate() -> Task[string] { Task[string] { handle: unsafe { 0 as *mut uint8 } } }
+	                                                  ^^^^^^^

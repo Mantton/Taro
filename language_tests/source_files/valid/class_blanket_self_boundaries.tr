@@ -1,0 +1,23 @@
+interface Factory { func choose( _ other: Self) -> Self; }
+conform[T] T to Factory { func choose( _ other: T) -> T { other }; }
+interface Select[Rhs] { func select( _ other: Rhs) -> Rhs; }
+conform[T] T to Select[T] { func select( _ other: T) -> T { other }; }
+struct Counter { value: int32 }
+final class FinalCounter { value: int32 }
+extend FinalCounter { init(_ value: int32) { self.value = value } }
+class Base { value: int32 }
+extend Base { init(_ value: int32) { self.value = value } }
+func selectRhs[T: Select[T]](_ first: T, _ second: T) -> T { first.select(second) }
+func main() {
+    var counter: Counter = Counter { value: 1 } // Counter; Copy value.
+    var selected: Counter = counter.choose(Counter { value: 2 }) // Counter; ordinary value Self.
+    assert(selected.value == 2, "conditional class promise does not constrain value types")
+    var finalCounter: FinalCounter = FinalCounter(3) // FinalCounter; exact class.
+    var finalSelected: FinalCounter = finalCounter.choose(FinalCounter(4)) // FinalCounter; subclass preservation is automatic for a final class.
+    assert(finalSelected.value == 4, "final classes may choose another exact-class instance")
+    var base: Base = Base(5) // Base; non-final class handle.
+    var rhs: Base = selectRhs(base, Base(6)) // Base; explicit Rhs result, not dynamic Self.
+    assert(rhs.value == 6, "substituting Rhs with Base does not turn Rhs into Self")
+    var direct: Base = base.select(Base(7)) // Base; the concrete call substitutes every interface argument too.
+    assert(direct.value == 7, "concrete blanket lookup resolves Rhs in the extension environment")
+}

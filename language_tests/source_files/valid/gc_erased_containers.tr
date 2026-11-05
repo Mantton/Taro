@@ -1,0 +1,126 @@
+// TEST
+extern "C" {
+    unsafe func __gc__test_probe_create(_ target: *const uint8) -> *mut uint8
+    unsafe func __gc__test_collect_probe_is_live(_ probe: *mut uint8) -> bool
+}
+func collectErased() {
+    probe := unsafe { __gc__test_probe_create(0 as *const uint8) }
+    var _ = unsafe { __gc__test_collect_probe_is_live(probe) }
+}
+interface ErasedCounter {
+    func read() -> int32
+    func label() -> string
+    func add( _ amount: int32)
+    func snapshot() -> Self
+}
+struct CounterValue { number: int32; text: string }
+conform CounterValue to ErasedCounter {
+    func read() -> int32 { self.number }
+    func label() -> string { self.text }
+    func add( _ amount: int32) { self.number += amount }
+    func snapshot() -> Self { self }
+}
+@noinline
+func makeErasedCounter(_ number: int32) -> any ErasedCounter {
+    CounterValue { number, text: "managed " + "counter" }
+}
+@noinline
+func probeErasedCounter(_ value: &any ErasedCounter) -> *mut uint8 {
+    unsafe { __gc__test_probe_create(std::string::stringData(value.label())) }
+}
+func readOpened[T: ErasedCounter](_ value: &T) -> int32 { value.read() }
+func addErased(_ value: &any ErasedCounter, _ amount: int32) { value.asRef[CounterValue]().unwrap().number += amount }
+
+@test
+func nestedErasedValuesCopyAndOpenAcrossCollection() {
+    var original = makeErasedCounter(7)
+    probe := probeErasedCounter(&original)
+    var copied = original
+    collectErased()
+    addErased(&copied, 1)
+    assert(original.read() == 7 && copied.read() == 8, "erased copies have independent inline fields")
+    var optional: (any ErasedCounter)? = .some(copied)
+    collectErased()
+    var opened = optional.unwrap()
+    addErased(&opened, 2)
+    assert(optional.unwrap().read() == 8 && opened.read() == 10, "Optional copies its erased payload")
+    var pair: (any ErasedCounter, string) = (opened, "tag")
+    collectErased()
+    var pairCopy = pair
+    addErased(&pairCopy.0, 3)
+    assert(pair.0.read() == 10 && pairCopy.0.read() == 13, "tuple copies its erased payload")
+    var values: [any ErasedCounter] = [original, copied, pair.0]
+    collectErased()
+    var extracted = *values.at(1)
+    addErased(&extracted, 10)
+    assert(values.at(1).read() == 8 && extracted.read() == 18, "list element reads copy erased values")
+    independent := values.copy()
+    addErased(independent.at(0), 20)
+    collectErased()
+    assert(values.at(0).read() == 7 && independent.at(0).read() == 27, "list copy duplicates erased payloads")
+    assert(readOpened(values.at(2)) == 10, "nested erased values support generic opening")
+    snapshot := pair.0.snapshot()
+    collectErased()
+    assert(snapshot.read() == 10 && snapshot.label() == "managed counter", "Self results preserve metadata and managed fields")
+    assert((snapshot as? CounterValue).unwrap().number == 10, "exact downcast copies the concrete payload")
+    assert(unsafe { __gc__test_collect_probe_is_live(probe) }, "nested erased values keep their managed fields alive")
+    assert(original.label() == "managed counter", "the original remains usable")
+    assert(!unsafe { __gc__test_collect_probe_is_live(probe) }, "dead erased graphs release managed fields")
+}
+
+struct CallableCounter { number: int32; nested: any ErasedCounter }
+conform CallableCounter to Fn[(int32,), int32] {
+    func call( args: (int32,)) -> int32 {
+        self.number += args.0
+        collectErased()
+        self.number + self.nested.read()
+    }
+}
+@noinline
+func makeErasedCallable() -> any Fn(int32) -> int32 {
+    CallableCounter { number: 1, nested: makeErasedCounter(7) }
+}
+func callValueTwice[F: Fn(int32) -> int32](_ callback: F) {
+    assert(callback(1) == 9 && callback(1) == 9, "generic callable receivers copy their inline state")
+}
+@test
+func callableBoxesCopyNestedErasedPayloads() {
+    var callable = makeErasedCallable()
+    var copy = callable
+    collectErased()
+    assert(callable(1) == 9, "callable dispatch retains nested managed fields")
+    assert(copy(10) == 18, "copied callable has independent value state")
+    assert(callable(1) == 9, "callable value receivers do not change stored payloads")
+    callValueTwice(callable)
+    callValueTwice(CallableCounter { number: 1, nested: makeErasedCounter(7) })
+    concrete := (copy as? CallableCounter).unwrap()
+    assert(concrete.number == 1 && concrete.nested.label() == "managed counter", "callable downcast preserves its concrete nested payload")
+}
+
+@noinline
+func makeCapturedErasedCallable() -> (any Fn(int32) -> int32, *mut uint8) {
+    captured := makeErasedCounter(30)
+    probe := probeErasedCounter(&captured)
+    var callback: any Fn(int32) -> int32 = (amount: int32) => {
+        collectErased()
+        captured.read() + amount
+    }
+    return (callback, probe)
+}
+func invokeOpenedCallable[F: Fn(int32) -> int32](_ callback: &F, _ amount: int32) -> int32 {
+    callback(amount)
+}
+@test
+func closureBoxesTraceCapturedErasedValuesInContainers() {
+    pair := makeCapturedErasedCallable()
+    probe := pair.1
+    var optional: (any Fn(int32) -> int32)? = .some(pair.0)
+    var callbacks: [any Fn(int32) -> int32] = [pair.0, optional.unwrap()]
+    assert(unsafe { __gc__test_collect_probe_is_live(probe) }, "callable containers trace captured erased values")
+    first := *callbacks.at(0)
+    second := *callbacks.at(1)
+    assert(first(1) == 31 && second(2) == 32, "returned captured callables dispatch after collection")
+    collectErased()
+    assert(invokeOpenedCallable(&first, 3) == 33, "captured erased callable supports generic opening")
+    assert(!unsafe { __gc__test_collect_probe_is_live(probe) }, "dead callable containers release captured managed fields")
+}

@@ -2,6 +2,10 @@ public type size_t = usize
 public type ssize_t = isize
 public type clockid_t = int32
 public type socklen_t = uint32
+@cfg(os("macos"))
+public type mode_t = uint16
+@cfg(os("linux"))
+public type mode_t = uint32
 
 @repr("C")
 public struct Timespec {
@@ -65,41 +69,50 @@ public const STDERR_FILENO: int32 = 2
 
 extern "C" {
     public func exit(_ code: int32) -> !
-    public func clock_gettime(_ clock_id: clockid_t, _ tp: *mut Timespec) -> int32
+    public unsafe func clock_gettime(_ clock_id: clockid_t, _ tp: *mut Timespec) -> int32
     public func socket(_ domain: int32, _ type_: int32, _ protocol: int32) -> int32
-    public func bind(_ fd: int32, _ addr: *const uint8, _ len: socklen_t) -> int32
+    public unsafe func bind(_ fd: int32, _ addr: *const uint8, _ len: socklen_t) -> int32
     public func listen(_ fd: int32, _ backlog: int32) -> int32
-    public func getsockname(_ fd: int32, _ addr: *mut uint8, _ len: *mut socklen_t) -> int32
-    public func getpeername(_ fd: int32, _ addr: *mut uint8, _ len: *mut socklen_t) -> int32
-    public func getsockopt(
+    public unsafe func getsockname(_ fd: int32, _ addr: *mut uint8, _ len: *mut socklen_t) -> int32
+    public unsafe func getpeername(_ fd: int32, _ addr: *mut uint8, _ len: *mut socklen_t) -> int32
+    public unsafe func getsockopt(
         _ fd: int32,
         _ level: int32,
         _ optname: int32,
         _ optval: *mut uint8,
         _ optlen: *mut socklen_t,
     ) -> int32
-    public func setsockopt(
+    public unsafe func setsockopt(
         _ fd: int32,
         _ level: int32,
         _ optname: int32,
         _ optval: *const uint8,
         _ optlen: socklen_t,
     ) -> int32
-    public func fcntl(_ fd: int32, _ cmd: int32, _ arg: int32) -> int32
 }
 
-/// Calls in this block may park in the kernel. The blocking ABI keeps their
-/// caller's published stack-map roots visible without making stop-the-world GC
-/// wait for the syscall to return.
+extern "taro_rt" {
+    func __rt__fcntl_int(_ fd: int32, _ cmd: int32, _ arg: int32) -> int32
+}
+
+/// Integer-only F_GETFD/F_SETFD/F_GETFL/F_SETFL operations. Other commands
+/// return an error; pointer-taking fcntl operations need separate typed APIs.
+public func fcntl(_ fd: int32, _ cmd: int32, _ arg: int32) -> int32 {
+    __rt__fcntl_int(fd, cmd, arg)
+}
+
+/// Calls in this block may park in the kernel. The blocking ABI preserves the
+/// native unwind boundary and logical stack diagnostics; callers remain
+/// responsible for the validity of raw pointer arguments throughout the call.
 extern "blocking" {
-    public func pipe(_ fds: *mut int32) -> int32
-    public func read(_ fd: int32, _ buf: *mut uint8, _ count: size_t) -> ssize_t
-    public func write(_ fd: int32, _ buf: *const uint8, _ count: size_t) -> ssize_t
+    public unsafe func pipe(_ fds: *mut int32) -> int32
+    public unsafe func read(_ fd: int32, _ buf: *mut uint8, _ count: size_t) -> ssize_t
+    public unsafe func write(_ fd: int32, _ buf: *const uint8, _ count: size_t) -> ssize_t
     public func close(_ fd: int32) -> int32
     public func lseek(_ fd: int32, _ offset: isize, _ whence: int32) -> isize
-    public func connect(_ fd: int32, _ addr: *const uint8, _ len: socklen_t) -> int32
-    public func accept(_ fd: int32, _ addr: *mut uint8, _ len: *mut socklen_t) -> int32
-    public func recvfrom(
+    public unsafe func connect(_ fd: int32, _ addr: *const uint8, _ len: socklen_t) -> int32
+    public unsafe func accept(_ fd: int32, _ addr: *mut uint8, _ len: *mut socklen_t) -> int32
+    public unsafe func recvfrom(
         _ fd: int32,
         _ buf: *mut uint8,
         _ len: size_t,
@@ -107,7 +120,7 @@ extern "blocking" {
         _ src_addr: *mut uint8,
         _ addrlen: *mut socklen_t,
     ) -> ssize_t
-    public func sendto(
+    public unsafe func sendto(
         _ fd: int32,
         _ buf: *const uint8,
         _ len: size_t,
@@ -117,21 +130,21 @@ extern "blocking" {
     ) -> ssize_t
 
     // File system utilities
-    public func mkdir(_ path: *const uint8, _ mode: int32) -> int32
-    public func rmdir(_ path: *const uint8) -> int32
-    public func unlink(_ path: *const uint8) -> int32
-    public func rename(_ old_path: *const uint8, _ new_path: *const uint8) -> int32
-    public func symlink(_ target: *const uint8, _ linkpath: *const uint8) -> int32
+    public unsafe func mkdir(_ path: *const uint8, _ mode: mode_t) -> int32
+    public unsafe func rmdir(_ path: *const uint8) -> int32
+    public unsafe func unlink(_ path: *const uint8) -> int32
+    public unsafe func rename(_ old_path: *const uint8, _ new_path: *const uint8) -> int32
+    public unsafe func symlink(_ target: *const uint8, _ linkpath: *const uint8) -> int32
 }
 
 @cfg(os("linux"))
 extern "C" {
-    public func __errno_location() -> *mut int32
+    public unsafe func __errno_location() -> *mut int32
 }
 
 @cfg(os("macos"))
 extern "C" {
-    public func __error() -> *mut int32
+    public unsafe func __error() -> *mut int32
 }
 
 public const O_RDONLY: int32 = 0

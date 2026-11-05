@@ -1,0 +1,4 @@
+error: array repetition requires a concrete count; const-generic repeat counts are not supported yet
+ -> language_tests/source_files/invalid/array_repeat_generic_count.tr:2:12
+	    [value; N]
+	            ^

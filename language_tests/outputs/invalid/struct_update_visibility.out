@@ -1,0 +1,4 @@
+error: field 'y' of Point is not visible here
+ -> language_tests/source_files/invalid/struct_update_visibility.tr:3:26
+	func main() { var point = Point { x: 3, ..Point::make() } }
+	                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

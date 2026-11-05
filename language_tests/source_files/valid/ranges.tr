@@ -32,8 +32,8 @@ func testRangeExpressionEndpoints() {
     }
     assert(sum == 9, "(1+1)..(6-1) should yield 2,3,4")
 
-    let a: int32 = 4
-    let b: int32 = 8
+    var a: int32 = 4
+    var b: int32 = 8
     var count = 0
     for _ in (a - 2)..=(b - 6) {
         count = count + 1
@@ -80,7 +80,7 @@ func testRangeIterationBasic() {
 }
 
 func testRangeIteratorNextMatch() {
-    let closed = 3..=5
+    closed := 3..=5
     var iter = closed.iter()
 
     expectSome(iter.next(), 3, "first value should be 3")
@@ -94,7 +94,7 @@ func testRangeIteratorNextMatch() {
         }
     }
 
-    let empty = 7..7
+    empty := 7..7
     var empty_iter = empty.iter()
     match empty_iter.next() {
         case .none => {}
@@ -105,11 +105,11 @@ func testRangeIteratorNextMatch() {
 }
 
 func testRangeValueFlow() {
-    let start: int32 = 2
-    let end: int32 = 6
+    var start: int32 = 2
+    var end: int32 = 6
 
-    let ex = Range[int32].new(start, end)
-    let inc = ClosedRange[int32].new(start, end)
+    ex := Range[int32]::new(start, end)
+    inc := ClosedRange[int32]::new(start, end)
 
     assert(sumExclusive(ex) == 14, "2..6 should sum to 14")
     assert(sumInclusive(inc) == 20, "2..=6 should sum to 20")

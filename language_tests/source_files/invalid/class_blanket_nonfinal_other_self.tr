@@ -1,0 +1,9 @@
+interface Factory { func choose( _ other: Self) -> Self; }
+conform[T] T to Factory { func choose( _ other: T) -> T { other }; }
+class Base {}
+extend Base { init() {} }
+func main() {
+    var first: Base = Base() // Base; may actually hold a subclass.
+    var second: Base = Base() // Base; unrelated identity.
+    var wrong: Base = first.choose(second) // Reject: blanket body has no dynamic-Self proof.
+}

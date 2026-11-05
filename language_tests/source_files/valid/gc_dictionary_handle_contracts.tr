@@ -1,0 +1,93 @@
+// TEST
+import std::iter::{Iterable, Iterator}
+
+@test
+func sharedHandlesAndOuterCopies() {
+    var values: [int64: [int64]] = [:]
+    alias := values
+    var row: [int64] = []
+    row.append(10)
+    alias.set(key: 1, value: row)
+    var copied = values.copy()
+    copied.set(key: 2, value: row)
+    assert(values.len() == 1 && copied.len() == 2, "copy has independent table storage")
+    copied.get(&1).unwrap().append(20)
+    assert(values.get(&1).unwrap().len() == 2, "copied elements retain handle sharing")
+    values = [:]
+    assert(alias.len() == 1 && values.isEmpty(), "rebinding leaves the selected handle unchanged")
+    kept := alias.get(&1).unwrap()
+    alias.clear()
+    assert(alias.isEmpty() && kept.len() == 2, "copied handles retain their own targets after clear")
+}
+
+@test
+func replacementDoesNotInvalidateCursorAtGrowthThreshold() {
+    var values: [int64: int64] = [:]
+    var key: int64 = 0
+    while key < 6 {
+        values.set(key: key, value: key)
+        key += 1
+    }
+    var cursor = values.entries()
+    old := values.insert(key: 3, value: 30)
+    assert(old.unwrap() == 3, "replacement returns the previous value")
+    var count: usize = 0
+    var sum: int64 = 0
+    loop {
+        match cursor.next() {
+            case .some(pair) => { count += 1; sum += pair.1 }
+            case .none => break
+        }
+    }
+    assert(count == 6 && sum == 42, "replacement preserves the cursor and updates the value")
+}
+
+@test
+func cursorsShareProgressAndStayExhausted() {
+    var values: [int64: int64] = [1: 10, 2: 20]
+    var cursor = values.keys()
+    var alias = cursor
+    first := cursor.next().unwrap()
+    second := alias.next().unwrap()
+    assert(first != second && cursor.next().isNone(), "copies share one cursor")
+    values.set(key: 3, value: 30)
+    assert(alias.next().isNone(), "exhaustion is permanent after structural changes")
+    var count: usize = 0
+    for pair in values { count += 1 }
+    assert(count == 3, "iter creates a fresh traversal")
+}
+
+@test
+func dictionaryValuesAndCopyYieldingSetsAndCounters() {
+    var values: [int64: int64] = [:]
+    values[1] = 10
+    values[1] += 2
+    assert(values.get(&1).unwrap() == 12, "native dictionary assignment updates values")
+    assert(values.insert(key: 1, value: 20).unwrap() == 12, "replacement returns the old value")
+    assert(values.remove(&1).unwrap() == 20, "removal returns a value copy")
+    var keys = Set[int64]::new()
+    alias := keys
+    alias.insert(1)
+    alias.insert(2)
+    var copied = keys.copy()
+    copied.insert(3)
+    assert(keys.len() == 2 && copied.len() == 3, "sets share handles and copy outer storage")
+    assert(keys.union(copied).len() == 3 && keys.intersection(copied).len() == 2, "set algebra")
+    assert(copied.difference(keys).contains(&3) && keys.isSubset(of: copied), "set difference and subset")
+    for key in keys {
+        var copiedKey = key
+        copiedKey = 99
+        assert(copiedKey == 99, "yielded keys can be copied into independent storage")
+    }
+    assert(keys.contains(&1) && keys.contains(&2) && !keys.contains(&99), "iteration yields key copies")
+    var counts = std::collections::Counter[int64]::new()
+    shared := counts
+    shared.increment(1, by: 2)
+    assert(counts.get(&1) == 2, "counters share state")
+    copiedCounts := counts.copy()
+    copiedCounts.increment(1)
+    assert(counts.get(&1) == 2 && copiedCounts.get(&1) == 3, "counter copies have independent counts")
+    var total: int32 = 0
+    for pair in counts { total += pair.1 }
+    assert(total == 2 && counts.remove(&1) == 2 && shared.isEmpty(), "counter iteration and removal")
+}

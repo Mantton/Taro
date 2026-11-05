@@ -3,8 +3,8 @@ struct NotAsyncIterable {
 }
 
 func main() async {
-    let source = NotAsyncIterable { x: 1 }
+    source := NotAsyncIterable { x: 1 }
     for await value in source {
-        let _ = value
+        var _ = value
     }
 }

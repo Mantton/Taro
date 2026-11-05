@@ -1,0 +1,6 @@
+[package]
+name = "github.com/taro-story/g32-client"
+kind = "executable"
+
+[require]
+"github.com/taro-story/g32-classes" = { path = "../dep", alias = "classes" }

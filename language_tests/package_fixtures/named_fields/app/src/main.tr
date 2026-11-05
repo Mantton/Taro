@@ -1,0 +1,17 @@
+import dep::{Packet, Pair, packet}
+func main() {
+    var value = packet()
+    match &value {
+        case .value { serial, item } => assert(serial == 42 && item == "from dependency", "loaded named fields")
+        case _ => panic("expected value")
+    }
+    value = Packet::value { serial: 7, item: "consumer" }
+    match value { case .value { item, .. } => assert(item == "consumer", "external constructor"); case _ => {}; }
+    value = .empty {}
+    match value { case .empty {} => {}; case _ => panic("empty shape survives metadata"); }
+    value = .tuple(item: "labeled tuple")
+    match value { case .tuple(item) => assert(item == "labeled tuple", "labels do not turn tuple variants into structs"); case _ => {}; }
+    pair := Pair { left: 1_i32, right: 2_i32 }
+    var Pair { right, .. } = pair
+    assert(right == 2, "external struct field names")
+}

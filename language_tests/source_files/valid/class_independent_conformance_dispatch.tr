@@ -1,0 +1,33 @@
+interface Left { func read() -> int32; func unchanged() -> int32 { 7 }; }
+interface Right { func read() -> int32 { 2 }; }
+interface Forward { func read() -> int32; }
+class Base: Right {}
+extend Base {
+    init() {}
+    func read() -> int32 { 3 }
+}
+conform Base to Left { func read() -> int32 { 1 }; }
+conform Base to Forward { func read() -> int32 { self.read() }; }
+class Child: Base {}
+extend Child {
+    override func read() -> int32 { 4 }
+}
+conform Child to Left { override func read() -> int32 { 10 }; }
+func left[T: Left](_ value: T) -> int32 { value.read() + value.unchanged() }
+func right[T: Right](_ value: T) -> int32 { value.read() }
+func forward[T: Forward](_ value: T) -> int32 { value.read() }
+func main() {
+    child := Child()
+    var base: Base = child
+    assert(base.read() == 4 && child.read() == 4, "inherent override has its own family")
+    assert(Left::read(base) == 10 && Left::read(child) == 10, "qualified calls select the explicit conformance override")
+    assert(Right::read(base) == 2 && Right::read(child) == 2, "the other identical interface signature stays independent")
+    assert(left(base) == 17 && left(child) == 17 && right(base) == 2 && right(child) == 2, "generic calls preserve partial overrides and independent families")
+    var erasedBase: any Left = base
+    var erasedChild: any Left = child
+    var erasedRight: any Right = child
+    assert(erasedBase.read() == 10 && erasedChild.read() == 10 && erasedBase.unchanged() == 7 && erasedRight.read() == 2, "erased witnesses preserve independent virtual dispatch")
+    bound := erasedBase.read
+    assert(bound() == 10, "bound erased method uses the same family")
+    assert(forward(base) == 4 && forward(child) == 4, "explicit forwarding keeps virtual dispatch of the inherent destination")
+}

@@ -1,0 +1,7 @@
+import dep::{create, read, update}
+func main() {
+    var cell = create()
+    assert(read(&cell) == 37, "sibling module can construct/read internal fields and call internal helpers")
+    update(&cell)
+    assert(read(&cell) == 38, "public methods can mutate the package-owned representation")
+}

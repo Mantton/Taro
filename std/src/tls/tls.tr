@@ -1,0 +1,173 @@
+import std::io::{AsyncReader, AsyncWriter, Error}
+import std::mem::Span
+import std::net::TcpStream
+import std::result::Result
+
+@cfg(family("unix"))
+extern "taro_rt" {
+    unsafe func __rt__tls_config(_ server: bool, _ certificates: string, _ key: string) -> usize
+    unsafe func __rt__tls_session(_ config: usize, _ host: string) -> usize
+    unsafe func __rt__tls_close(_ handle: usize)
+    unsafe func __rt__tls_step(_ handle: usize, _ operation: uint8, _ data: *mut uint8, _ length: usize) -> isize
+}
+final class ConfigState {
+    handle: usize
+    closed: std::sync::atomic::Bool
+}
+extend ConfigState {
+    init(_ handle: usize) { self.handle = handle; self.closed = std::sync::atomic::Bool::new(false) }
+    func close() { if !self.closed.swap(true) { unsafe { __rt__tls_close(self.handle) } } }
+}
+/// Copies share explicit close state. Sessions already created retain their
+/// configuration. Certificate chains and private keys are PEM encoded.
+public struct ServerConfig { state: ConfigState }
+extend ServerConfig {
+    public static func fromPEM(_ certificates: string, _ privateKey: string) -> Result[Self, Error] {
+        handle := unsafe { __rt__tls_config(true, certificates, privateKey) }
+        if handle == 0 { return .err(Error::new(.invalidInput).withOperation("TLS certificate chain/private key")) }
+        return .ok(ServerConfig { state: ConfigState(handle) })
+    }
+    public func close() { self.state.close() }
+    /// Adopts the socket, closing it if handshake fails or is cancelled.
+    public func accept(_ socket: TcpStream) async -> Result[Stream, Error] {
+        return await wrap(self.state, socket, "")
+    }
+}
+/// The default verifies server names with platform trust. withRootPEM creates
+/// an isolated trust store for private services; it never disables verification.
+public struct ClientConfig { state: ConfigState }
+extend ClientConfig {
+    public static func new() -> Result[Self, Error] { ClientConfig::withRootPEM("") }
+    public static func withRootPEM(_ certificates: string) -> Result[Self, Error] {
+        handle := unsafe { __rt__tls_config(false, certificates, "") }
+        if handle == 0 { return .err(Error::new(.invalidInput).withOperation("TLS trust configuration")) }
+        return .ok(ClientConfig { state: ConfigState(handle) })
+    }
+    public func close() { self.state.close() }
+    public func wrap(_ socket: TcpStream, serverName: string) async -> Result[Stream, Error] {
+        return await wrap(self.state, socket, serverName)
+    }
+}
+final class StreamState {
+    socket: TcpStream
+    handle: usize
+    busy: std::sync::atomic::Bool
+    closed: std::sync::atomic::Bool
+}
+extend StreamState {
+    init(_ socket: TcpStream, _ handle: usize) {
+        self.socket = socket; self.handle = handle
+        self.busy = std::sync::atomic::Bool::new(false)
+        self.closed = std::sync::atomic::Bool::new(false)
+    }
+    func step(_ operation: uint8, _ bytes: Span[uint8]) -> isize {
+        unsafe { __rt__tls_step(self.handle, operation, bytes.asMutPtr(), bytes.len()) }
+    }
+    func flag(_ operation: uint8) -> isize {
+        unsafe { __rt__tls_step(self.handle, operation, (0 as usize) as *mut uint8, 0) }
+    }
+    func close() -> Result[(), Error] {
+        if self.closed.swap(true) { return .ok(()) }
+        unsafe { __rt__tls_close(self.handle) }
+        return self.socket.close()
+    }
+    func flush() async -> Result[(), Error] {
+        var bytes: [uint8; 16384] = [0_u8; 16384]
+        span := unsafe { Span[uint8]::from((&bytes as *mut [uint8; 16384]) as *mut uint8, 16384) }
+        loop {
+            count := self.step(2_u8, span)
+            if count < 0 { return .err(tlsFailure()) }
+            if count == 0 { return .ok(()) }
+            (await self.socket.writeAll(span.slice(0, count as usize)))!
+        }
+    }
+    func receive() async -> Result[(), Error] {
+        var bytes: [uint8; 16384] = [0_u8; 16384]
+        span := unsafe { Span[uint8]::from((&bytes as *mut [uint8; 16384]) as *mut uint8, 16384) }
+        count := (await self.socket.read(span))!
+        if count == 0 {
+            if self.flag(0_u8) != 0 { return .err(Error::new(.unexpectedEof).withOperation("TLS handshake")) }
+            if self.flag(5_u8) < 0 { return .err(tlsFailure()) }
+            return .ok(())
+        }
+        var offset: usize = 0
+        while offset < count {
+            used := self.step(1_u8, span.slice(offset, count - offset))
+            if used <= 0 { return .err(tlsFailure()) }
+            offset += used as usize
+        }
+        return .ok(())
+    }
+}
+func tlsFailure() -> Error { Error::new(.invalidData).withOperation("TLS protocol or certificate verification") }
+func wrap(_ config: ConfigState, _ socket: TcpStream, _ host: string) async -> Result[Stream, Error] {
+    var ready = false
+    defer { if !ready { var _ = socket.close() } }
+    if config.closed.load() { return .err(Error::new(.closed).withOperation("TLS configuration")) }
+    handle := unsafe { __rt__tls_session(config.handle, host) }
+    if handle == 0 { return .err(tlsFailure()) }
+    state := StreamState(socket, handle)
+    defer { if !ready { var _ = state.close() } }
+    loop {
+        (await state.flush())!
+        flag := state.flag(0_u8)
+        if flag < 0 { return .err(tlsFailure()) }
+        if flag == 0 { ready = true; return .ok(Stream { state }) }
+        (await state.receive())!
+    }
+}
+/// Reactor-driven TLS 1.2/1.3 stream backed by rustls. Copies share the socket.
+/// Operations are exclusive: concurrent reads/writes return invalidInput.
+/// Close aborts pending I/O; cancellation/errors close the stream. Callers apply
+/// task.withTimeout around handshakes/operations according to their policy.
+public struct Stream { state: StreamState }
+extend Stream {
+    public func close() -> Result[(), Error] { self.state.close() }
+    public func writeAll(_ bytes: Span[uint8]) async -> Result[(), Error] {
+        var offset: usize = 0
+        while offset < bytes.len() {
+            count := (await self.write(bytes.slice(offset, bytes.len() - offset)))!
+            if count == 0 { return .err(Error::new(.writeZero)) }
+            offset += count
+        }
+        return .ok(())
+    }
+}
+conform Stream to AsyncReader {
+    public func read(_ into: Span[uint8]) async -> Result[usize, Error] {
+        if !self.state.busy.compareExchange(false, true) { return .err(Error::new(.invalidInput).withOperation("concurrent TLS operation")) }
+        var complete = false
+        defer { if !complete { var _ = self.close() }; self.state.busy.store(false) }
+        if self.state.closed.load() { return .err(Error::new(.closed)) }
+        if into.len() == 0 { complete = true; return .ok(0) }
+        loop {
+            (await self.state.flush())!
+            count := self.state.step(3_u8, into)
+            if count >= 0 { complete = true; return .ok(count as usize) }
+            if count != -2 { return .err(tlsFailure()) }
+            (await self.state.receive())!
+        }
+    }
+}
+conform Stream to AsyncWriter {
+    public func flush() async -> Result[(), Error] {
+        if !self.state.busy.compareExchange(false, true) { return .err(Error::new(.invalidInput).withOperation("concurrent TLS operation")) }
+        var complete = false
+        defer { if !complete { var _ = self.close() }; self.state.busy.store(false) }
+        if self.state.closed.load() { return .err(Error::new(.closed)) }
+        (await self.state.flush())!
+        complete = true
+        return .ok(())
+    }
+    public func write(_ bytes: Span[uint8]) async -> Result[usize, Error] {
+        if !self.state.busy.compareExchange(false, true) { return .err(Error::new(.invalidInput).withOperation("concurrent TLS operation")) }
+        var complete = false
+        defer { if !complete { var _ = self.close() }; self.state.busy.store(false) }
+        if self.state.closed.load() { return .err(Error::new(.closed)) }
+        count := self.state.step(4_u8, bytes)
+        if count < 0 { return .err(tlsFailure()) }
+        (await self.state.flush())!
+        complete = true
+        return .ok(count as usize)
+    }
+}

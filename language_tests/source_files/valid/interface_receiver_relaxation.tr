@@ -1,0 +1,31 @@
+interface Inspect { func inspect() -> int32; }
+interface Project { func project() -> &int32; }
+interface Choose { func choose[T]( _ value: T) -> T; }
+struct Counter { value: int32 }
+conform Counter to Inspect {
+    func inspect() -> int32 { self.value }
+}
+conform Counter to Project {
+    func project() -> &int32 { &self.value }
+}
+conform Counter to Choose {
+    func choose[T]( _ value: T) -> T { value }
+}
+func inspect[T: Inspect](_ value: &T) -> int32 { value.inspect() }
+func project[T: Project](_ value: &T) -> &int32 { value.project() }
+func choose[T: Choose, V](_ value: &T, _ choice: V) -> V { value.choose(choice) }
+func main() {
+    var direct: Counter = Counter { value: 7 }
+    assert(direct.inspect() == 7, "concrete call uses implementation's shared access")
+    var value: Counter = Counter { value: 11 }
+    assert(inspect(&value) == 11, "generic call uses requirement's exclusive access")
+    var saved: &int32 = project(&value)
+    assert(*saved == 11, "borrowed result preserves receiver dependency")
+    var selected: int32 = choose(&value, 17_i32)
+    assert(selected == 17, "method generics retain exact logical signature")
+    var erased: any Inspect = value
+    assert(erased.inspect() == 11, "erased call uses shared implementation")
+    var erasedProject: any Project = Counter { value: 19 }
+    var erasedSaved: &int32 = erasedProject.project()
+    assert(*erasedSaved == 19, "erased returned borrow")
+}

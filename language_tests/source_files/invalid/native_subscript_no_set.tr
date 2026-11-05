@@ -1,0 +1,9 @@
+class Item {}
+struct Buffer { item: Item }
+extend Buffer {
+    subscript(index: usize) -> Item { get { self.item } }
+}
+func replace(_ buffer: Buffer, _ replacement: Item) {
+    buffer[0 as usize] = replacement
+}
+func main() {}

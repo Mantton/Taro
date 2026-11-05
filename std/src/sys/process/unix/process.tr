@@ -1,67 +1,67 @@
-import std.collections.List
-import std.io.Error
-import std.result.Result
+import std::collections::List
+import std::io::Error
+import std::result::Result
 
 extern "taro_rt" {
-    func __rt__process_command_open(_ program: string, _ errorOut: *mut int32) -> usize
-    func __rt__process_command_arg(_ handle: usize, _ argument: string) -> int32
-    func __rt__process_command_env(_ handle: usize, _ name: string, _ value: string) -> int32
-    func __rt__process_command_current_dir(_ handle: usize, _ path: string) -> int32
-    func __rt__process_command_stdio(
+    unsafe func __rt__process_command_open(_ program: string, _ errorOut: *mut int32) -> usize
+    unsafe func __rt__process_command_arg(_ handle: usize, _ argument: string) -> int32
+    unsafe func __rt__process_command_env(_ handle: usize, _ name: string, _ value: string) -> int32
+    unsafe func __rt__process_command_current_dir(_ handle: usize, _ path: string) -> int32
+    unsafe func __rt__process_command_stdio(
         _ handle: usize,
         _ stdinMode: uint8,
         _ stdoutMode: uint8,
         _ stderrMode: uint8,
     ) -> int32
-    func __rt__process_command_close(_ handle: usize)
-    func __rt__process_child_pid(_ handle: usize, _ pidOut: *mut uint32) -> int32
-    func __rt__process_child_try_wait(
+    unsafe func __rt__process_command_close(_ handle: usize)
+    unsafe func __rt__process_child_pid(_ handle: usize, _ pidOut: *mut uint32) -> int32
+    unsafe func __rt__process_child_try_wait(
         _ handle: usize,
         _ readyOut: *mut bool,
         _ codeOut: *mut int32,
         _ signalOut: *mut int32,
     ) -> int32
-    func __rt__process_child_kill(_ handle: usize) -> int32
-    func __rt__process_child_abandon(_ handle: usize)
-    func __rt__process_output_status(
+    unsafe func __rt__process_child_kill(_ handle: usize) -> int32
+    unsafe func __rt__process_child_abandon(_ handle: usize)
+    unsafe func __rt__process_output_status(
         _ handle: usize,
         _ codeOut: *mut int32,
         _ signalOut: *mut int32,
     ) -> int32
-    func __rt__process_output_stdout(
+    unsafe func __rt__process_output_stdout(
         _ handle: usize,
         _ dataOut: *mut *const uint8,
         _ lenOut: *mut usize,
     ) -> int32
-    func __rt__process_output_stderr(
+    unsafe func __rt__process_output_stderr(
         _ handle: usize,
         _ dataOut: *mut *const uint8,
         _ lenOut: *mut usize,
     ) -> int32
-    func __rt__process_output_close(_ handle: usize)
+    unsafe func __rt__process_output_close(_ handle: usize)
 }
 
 /// These calls can wait for exec, process exit, or pipe EOF. The blocking ABI
 /// preserves managed roots while a synchronous caller is parked in the OS.
 extern "blocking" {
-    func __rt__process_command_spawn(
+    unsafe func __rt__process_command_spawn(
         _ handle: usize,
         _ childOut: *mut usize,
         _ stdinFdOut: *mut int32,
         _ stdoutFdOut: *mut int32,
         _ stderrFdOut: *mut int32,
     ) -> int32
-    func __rt__process_command_status(
+    unsafe func __rt__process_command_status(
         _ handle: usize,
         _ codeOut: *mut int32,
         _ signalOut: *mut int32,
     ) -> int32
-    func __rt__process_child_wait(
+    unsafe func __rt__process_child_wait(
         _ handle: usize,
         _ codeOut: *mut int32,
         _ signalOut: *mut int32,
     ) -> int32
-    func __rt__process_command_output(
+    unsafe func __rt__process_command_output(
         _ handle: usize,
         _ limited: bool,
         _ limit: usize,
@@ -75,15 +75,16 @@ public const STDIO_INHERIT: uint8 = 1_u8
 public const STDIO_PIPED: uint8 = 2_u8
 
 public struct RawCommand {
-    handle: usize
+    internal handle: usize
 }
 
 public struct RawChild {
-    handle: usize
+    internal handle: usize
 }
 
+/// Copies share the descriptor through one lease; see `std::sys::io::unix`.
 public struct RawPipe {
-    fd: int32
+    internal lease: uint64
 }
 
 public struct RawExitStatus {
@@ -104,25 +105,25 @@ public struct RawOutput {
     stderrValue: List[uint8]
 }
 
-impl RawExitStatus {
-    public func code(&self) -> int32 { self.codeValue }
-    public func signal(&self) -> int32 { self.signalValue }
+extend RawExitStatus {
+    public func code() -> int32 { self.codeValue }
+    public func signal() -> int32 { self.signalValue }
 }
 
-impl RawSpawn {
-    public func intoParts(self) -> (RawChild, RawPipe?, RawPipe?, RawPipe?) {
+extend RawSpawn {
+    public func parts() -> (RawChild, RawPipe?, RawPipe?, RawPipe?) {
         return (self.childValue, self.stdinValue, self.stdoutValue, self.stderrValue)
     }
 }
 
-impl RawOutput {
-    public func intoParts(self) -> (RawExitStatus, List[uint8], List[uint8]) {
+extend RawOutput {
+    public func parts() -> (RawExitStatus, List[uint8], List[uint8]) {
         return (self.statusValue, self.stdoutValue, self.stderrValue)
     }
 }
 
 func processError(_ code: int32, _ operation: string) -> Error {
-    std.sys.io.unix.mapErrno(code).withOperation(operation)
+    std::sys::io::unix::mapErrno(code).withOperation(operation)
 }
 
 func statusFromValues(_ code: int32, _ signal: int32) -> RawExitStatus {
@@ -136,35 +137,35 @@ func pipeFromFd(_ fd: int32) -> RawPipe? {
     if fd < 0 {
         return .none
     }
-    return .some(RawPipe { fd })
+    return .some(RawPipe { lease: std::sys::io::unix::leaseOpen(fd) })
 }
 
 public func commandOpen(_ program: string) -> Result[RawCommand, Error] {
     var errorCode: int32 = 0
-    let handle = __rt__process_command_open(
+    handle := unsafe { __rt__process_command_open(
         program,
-        unsafe { &mut errorCode as *mut int32 },
-    )
+        unsafe { &errorCode as *mut int32 },
+    ) }
     if handle == 0 {
         if errorCode == 0 {
-            return .err(Error(.resourceExhausted).withOperation("prepare command"))
+            return .err(Error::new(.resourceExhausted).withOperation("prepare command"))
         }
         return .err(processError(errorCode, "prepare command"))
     }
     return .ok(RawCommand { handle })
 }
 
-public func commandClose(_ command: &mut RawCommand) {
+public func commandClose(_ command: &RawCommand) {
     if command.handle == 0 {
         return
     }
-    let handle = command.handle
+    handle := command.handle
     command.handle = 0
-    __rt__process_command_close(handle)
+    unsafe { __rt__process_command_close(handle) }
 }
 
 public func commandArg(_ command: &RawCommand, _ argument: string) -> Result[(), Error] {
-    let code = __rt__process_command_arg(command.handle, argument)
+    code := unsafe { __rt__process_command_arg(command.handle, argument) }
     if code != 0 {
         return .err(processError(code, "set command argument"))
     }
@@ -176,7 +177,7 @@ public func commandEnv(
     _ name: string,
     _ value: string,
 ) -> Result[(), Error] {
-    let code = __rt__process_command_env(command.handle, name, value)
+    code := unsafe { __rt__process_command_env(command.handle, name, value) }
     if code != 0 {
         return .err(processError(code, "set command environment"))
     }
@@ -184,7 +185,7 @@ public func commandEnv(
 }
 
 public func commandCurrentDir(_ command: &RawCommand, _ path: string) -> Result[(), Error] {
-    let code = __rt__process_command_current_dir(command.handle, path)
+    code := unsafe { __rt__process_command_current_dir(command.handle, path) }
     if code != 0 {
         return .err(processError(code, "set command current directory").withPath(path))
     }
@@ -197,7 +198,7 @@ public func commandStdio(
     _ stdoutMode: uint8,
     _ stderrMode: uint8,
 ) -> Result[(), Error] {
-    let code = __rt__process_command_stdio(command.handle, stdinMode, stdoutMode, stderrMode)
+    code := unsafe { __rt__process_command_stdio(command.handle, stdinMode, stdoutMode, stderrMode) }
     if code != 0 {
         return .err(processError(code, "set command stdio"))
     }
@@ -209,13 +210,13 @@ public func commandSpawn(_ command: &RawCommand) -> Result[RawSpawn, Error] {
     var stdinFd: int32 = -1
     var stdoutFd: int32 = -1
     var stderrFd: int32 = -1
-    let code = __rt__process_command_spawn(
+    code := unsafe { __rt__process_command_spawn(
         command.handle,
-        unsafe { &mut childHandle as *mut usize },
-        unsafe { &mut stdinFd as *mut int32 },
-        unsafe { &mut stdoutFd as *mut int32 },
-        unsafe { &mut stderrFd as *mut int32 },
-    )
+        unsafe { &childHandle as *mut usize },
+        unsafe { &stdinFd as *mut int32 },
+        unsafe { &stdoutFd as *mut int32 },
+        unsafe { &stderrFd as *mut int32 },
+    ) }
     if code != 0 {
         return .err(processError(code, "spawn process"))
     }
@@ -230,11 +231,11 @@ public func commandSpawn(_ command: &RawCommand) -> Result[RawSpawn, Error] {
 public func commandStatus(_ command: &RawCommand) -> Result[RawExitStatus, Error] {
     var codeValue: int32 = -1
     var signalValue: int32 = -1
-    let code = __rt__process_command_status(
+    code := unsafe { __rt__process_command_status(
         command.handle,
-        unsafe { &mut codeValue as *mut int32 },
-        unsafe { &mut signalValue as *mut int32 },
-    )
+        unsafe { &codeValue as *mut int32 },
+        unsafe { &signalValue as *mut int32 },
+    ) }
     if code != 0 {
         return .err(processError(code, "wait for process"))
     }
@@ -243,15 +244,12 @@ public func commandStatus(_ command: &RawCommand) -> Result[RawExitStatus, Error
 
 func copyOutputBytes(_ data: *const uint8, _ len: usize) -> List[uint8] {
     if len == 0 {
-        return List[uint8]()
+        return List[uint8]::new()
     }
 
-    // The runtime snapshot remains borrowed across this copy. One managed
-    // allocation avoids per-byte List growth while keeping ownership wholly
-    // on the Taro GC side of the ABI.
-    let managed = std.mem.allocBytes(len)
-    data.readBytes(managed, len)
-    return std.collections.__list_from_raw_parts[uint8](managed, len, len)
+    // Copy the borrowed snapshot into its unique native allocation. Never
+    // adopt a collector or platform allocation as a native sequence owner.
+    return unsafe { std::collections::__list_copy_bytes(data, len) }
 }
 
 public func commandOutput(
@@ -261,53 +259,53 @@ public func commandOutput(
 ) -> Result[RawOutput, Error] {
     var errorCode: int32 = 0
     var limitExceeded = false
-    let handle = __rt__process_command_output(
+    handle := unsafe { __rt__process_command_output(
         command.handle,
         limited,
         limit,
-        unsafe { &mut errorCode as *mut int32 },
-        unsafe { &mut limitExceeded as *mut bool },
-    )
+        unsafe { &errorCode as *mut int32 },
+        unsafe { &limitExceeded as *mut bool },
+    ) }
     if handle == 0 {
         if limitExceeded {
-            return .err(Error(.resourceExhausted).withOperation("capture process output"))
+            return .err(Error::new(.resourceExhausted).withOperation("capture process output"))
         }
         if errorCode == 0 {
-            return .err(Error(.unexpected).withOperation("capture process output"))
+            return .err(Error::new(.unexpected).withOperation("capture process output"))
         }
         return .err(processError(errorCode, "capture process output"))
     }
-    defer { __rt__process_output_close(handle) }
+    defer { unsafe { __rt__process_output_close(handle) } }
 
     var codeValue: int32 = -1
     var signalValue: int32 = -1
-    var code = __rt__process_output_status(
+    var code = unsafe { __rt__process_output_status(
         handle,
-        unsafe { &mut codeValue as *mut int32 },
-        unsafe { &mut signalValue as *mut int32 },
-    )
+        unsafe { &codeValue as *mut int32 },
+        unsafe { &signalValue as *mut int32 },
+    ) }
     if code != 0 {
         return .err(processError(code, "read process status"))
     }
 
     var stdoutData: *const uint8 = unsafe { 0 as *const uint8 }
     var stdoutLen: usize = 0
-    code = __rt__process_output_stdout(
+    code = unsafe { __rt__process_output_stdout(
         handle,
-        unsafe { &mut stdoutData as *mut *const uint8 },
-        unsafe { &mut stdoutLen as *mut usize },
-    )
+        unsafe { &stdoutData as *mut *const uint8 },
+        unsafe { &stdoutLen as *mut usize },
+    ) }
     if code != 0 {
         return .err(processError(code, "read process stdout"))
     }
 
     var stderrData: *const uint8 = unsafe { 0 as *const uint8 }
     var stderrLen: usize = 0
-    code = __rt__process_output_stderr(
+    code = unsafe { __rt__process_output_stderr(
         handle,
-        unsafe { &mut stderrData as *mut *const uint8 },
-        unsafe { &mut stderrLen as *mut usize },
-    )
+        unsafe { &stderrData as *mut *const uint8 },
+        unsafe { &stderrLen as *mut usize },
+    ) }
     if code != 0 {
         return .err(processError(code, "read process stderr"))
     }
@@ -323,7 +321,7 @@ public func commandOutput(
 
 public func childPid(_ child: &RawChild) -> Result[uint32, Error] {
     var pid: uint32 = 0_u32
-    let code = __rt__process_child_pid(child.handle, unsafe { &mut pid as *mut uint32 })
+    code := unsafe { __rt__process_child_pid(child.handle, unsafe { &pid as *mut uint32 }) }
     if code != 0 {
         return .err(processError(code, "get process id"))
     }
@@ -333,11 +331,11 @@ public func childPid(_ child: &RawChild) -> Result[uint32, Error] {
 public func childWait(_ child: &RawChild) -> Result[RawExitStatus, Error] {
     var codeValue: int32 = -1
     var signalValue: int32 = -1
-    let code = __rt__process_child_wait(
+    code := unsafe { __rt__process_child_wait(
         child.handle,
-        unsafe { &mut codeValue as *mut int32 },
-        unsafe { &mut signalValue as *mut int32 },
-    )
+        unsafe { &codeValue as *mut int32 },
+        unsafe { &signalValue as *mut int32 },
+    ) }
     if code != 0 {
         return .err(processError(code, "wait for process"))
     }
@@ -348,12 +346,12 @@ public func childTryWait(_ child: &RawChild) -> Result[RawExitStatus?, Error] {
     var ready = false
     var codeValue: int32 = -1
     var signalValue: int32 = -1
-    let code = __rt__process_child_try_wait(
+    code := unsafe { __rt__process_child_try_wait(
         child.handle,
-        unsafe { &mut ready as *mut bool },
-        unsafe { &mut codeValue as *mut int32 },
-        unsafe { &mut signalValue as *mut int32 },
-    )
+        unsafe { &ready as *mut bool },
+        unsafe { &codeValue as *mut int32 },
+        unsafe { &signalValue as *mut int32 },
+    ) }
     if code != 0 {
         return .err(processError(code, "try wait for process"))
     }
@@ -364,19 +362,26 @@ public func childTryWait(_ child: &RawChild) -> Result[RawExitStatus?, Error] {
 }
 
 public func childKill(_ child: &RawChild) -> Result[(), Error] {
-    let code = __rt__process_child_kill(child.handle)
+    code := unsafe { __rt__process_child_kill(child.handle) }
     if code != 0 {
         return .err(processError(code, "kill process"))
     }
     return .ok(())
 }
 
+/// Transfer the native child registry handle, leaving an inert source value.
+internal func childTake(_ child: &RawChild) -> RawChild {
+    handle := child.handle
+    child.handle = 0
+    return RawChild { handle }
+}
+
 public func childAbandon(_ child: RawChild) {
-    __rt__process_child_abandon(child.handle)
+    unsafe { __rt__process_child_abandon(child.handle) }
 }
 
 public func pipeIsValid(_ pipe: &RawPipe) -> bool {
-    pipe.fd >= 0
+    pipe.lease != 0
 }
 
 public func pipeRead(
@@ -384,11 +389,19 @@ public func pipeRead(
     _ data: *mut uint8,
     _ len: usize,
 ) -> Result[usize, Error] {
-    let count = std.libc.read(pipe.fd, data, len)
-    if count < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("read process pipe"))
+    lease := pipe.lease
+    fd := match std::sys::io::unix::leaseAcquire(lease, "read process pipe") {
+        case .ok(value) => value
+        case .err(err) => return .err(err)
     }
-    return .ok(count as usize)
+    count := unsafe { std::libc::read(fd, data, len) }
+    var result: Result[usize, Error] = if count < 0 {
+        .err(std::sys::io::unix::lastError().withOperation("read process pipe"))
+    } else {
+        .ok(count as usize)
+    }
+    std::sys::io::unix::leaseRelease(lease)
+    return result
 }
 
 public func pipeWrite(
@@ -396,43 +409,51 @@ public func pipeWrite(
     _ data: *const uint8,
     _ len: usize,
 ) -> Result[usize, Error] {
-    let count = std.libc.write(pipe.fd, data, len)
-    if count < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("write process pipe"))
+    lease := pipe.lease
+    fd := match std::sys::io::unix::leaseAcquire(lease, "write process pipe") {
+        case .ok(value) => value
+        case .err(err) => return .err(err)
     }
-    return .ok(count as usize)
+    count := unsafe { std::libc::write(fd, data, len) }
+    var result: Result[usize, Error] = if count < 0 {
+        .err(std::sys::io::unix::lastError().withOperation("write process pipe"))
+    } else {
+        .ok(count as usize)
+    }
+    std::sys::io::unix::leaseRelease(lease)
+    return result
 }
 
-public func pipeClose(_ pipe: &mut RawPipe) -> Result[(), Error] {
-    if pipe.fd < 0 {
+/// Close once no read or write is using the pipe. A blocked read keeps the
+/// descriptor open until it returns; later operations report `closed`.
+public func pipeClose(_ pipe: &RawPipe) -> Result[(), Error] {
+    if pipe.lease == 0 {
         return .ok(())
     }
 
-    // Invalidate before close. POSIX leaves descriptor state unspecified on a
-    // close error, and retrying could close an unrelated descriptor after reuse.
-    let fd = pipe.fd
-    pipe.fd = -1
-    if std.libc.close(fd) < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("close process pipe"))
-    }
-    return .ok(())
+    lease := pipe.lease
+    pipe.lease = 0
+    std::sys::io::unix::leaseClose(lease, "close process pipe")
 }
 
-public func pipeTake(_ pipe: &mut RawPipe) -> RawPipe {
-    let fd = pipe.fd
-    pipe.fd = -1
-    return RawPipe { fd }
+public func pipeTake(_ pipe: &RawPipe) -> RawPipe {
+    lease := pipe.lease
+    pipe.lease = 0
+    return RawPipe { lease }
 }
 
-public func pipeIntoAsyncStream(_ pipe: &mut RawPipe) -> Result[std.sys.io.RawAsyncStream, Error] {
-    if pipe.fd < 0 {
-        return .err(Error(.closed).withOperation("convert process pipe to async stream"))
+public func pipeIntoAsyncStream(_ pipe: &RawPipe) -> Result[std::sys::io::RawAsyncStream, Error] {
+    if pipe.lease == 0 {
+        return .err(Error::new(.closed).withOperation("convert process pipe to async stream"))
     }
-    let fd = pipe.fd
-    pipe.fd = -1
-    return std.sys.io.adoptFd(fd)
+    fd := match std::sys::io::unix::leaseTake(pipe.lease, "convert process pipe to async stream") {
+        case .ok(value) => value
+        case .err(err) => return .err(err)
+    }
+    pipe.lease = 0
+    return std::sys::io::adoptFd(fd)
 }
 
 public func exit(_ code: int32) -> ! {
-    std.libc.exit(code)
+    std::libc::exit(code)
 }

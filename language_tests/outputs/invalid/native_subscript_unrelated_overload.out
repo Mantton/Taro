@@ -1,0 +1,4 @@
+error: type 'Buffer' does not satisfy requirements for interface 'Readable'
+ -> language_tests/source_files/invalid/native_subscript_unrelated_overload.tr:3:18
+	conform Buffer to Readable {
+	                  ^^^^^^^^

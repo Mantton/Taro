@@ -57,6 +57,49 @@ impl DiagCtx {
             Ok(())
         }
     }
+
+    /// Resolve a syntactically ambiguous branch without publishing its errors.
+    /// The selected branch explicitly replays its diagnostics through emit;
+    /// discarded branches never affect counts, deduplication or stderr. Nested
+    /// captures and unwinding restore the surrounding diagnostic context.
+    pub(crate) fn with_deferred_diagnostics<T>(
+        &self,
+        action: impl FnOnce() -> T,
+    ) -> (T, Vec<Diagnostic>) {
+        let depth = self.inner.borrow().deferred.len();
+        self.inner.borrow_mut().deferred.push(vec![]);
+        let mut guard = DeferredDiagnostics {
+            context: self,
+            depth,
+            active: true,
+        };
+        let value = action();
+        let diagnostics = self
+            .inner
+            .borrow_mut()
+            .deferred
+            .pop()
+            .expect("diagnostic capture");
+        guard.active = false;
+        (value, diagnostics)
+    }
+}
+
+struct DeferredDiagnostics<'a> {
+    context: &'a DiagCtx,
+    depth: usize,
+    active: bool,
+}
+impl Drop for DeferredDiagnostics<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            self.context
+                .inner
+                .borrow_mut()
+                .deferred
+                .truncate(self.depth);
+        }
+    }
 }
 
 impl DiagCtx {
@@ -101,8 +144,12 @@ impl DiagCtx {
     }
 
     pub fn emit(&self, diagnostic: Diagnostic) {
-        let key = Self::dedup_key(&diagnostic);
         let mut inner = self.inner.borrow_mut();
+        if let Some(buffer) = inner.deferred.last_mut() {
+            buffer.push(diagnostic);
+            return;
+        }
+        let key = Self::dedup_key(&diagnostic);
 
         // Avoid emitting the exact same diagnostic multiple times. Include the
         // severity in the key so a warning upgraded to an error is retained.
@@ -207,14 +254,24 @@ struct DiagCtxInner {
     emitted_diagnostic_keys: FxHashSet<String>,
     recording: bool,
     recorded: Vec<DiagnosticRecord>,
+    deferred: Vec<Vec<Diagnostic>>,
 }
 
+#[derive(Debug, Clone)]
 pub struct Diagnostic {
     pub message: String,
     pub code: Option<usize>,
     pub level: DiagnosticLevel,
     pub span: Option<Span>,
     pub children: Vec<Diagnostic>,
+}
+
+/// Both syntactic readings of a member bracket suffix are resolved, but only
+/// semantic member selection may publish the chosen branch's diagnostics.
+#[derive(Debug, Clone, Default)]
+pub struct BracketDiagnostics {
+    pub types: Vec<Diagnostic>,
+    pub index: Vec<Diagnostic>,
 }
 
 impl Diagnostic {
@@ -390,6 +447,52 @@ fn display_width_between(line: &str, start: usize, end: usize) -> usize {
 mod tests {
     use super::{DiagnosticLevel, caret_prefix, display_width_between, print_span_error};
     use crate::span::{FileID, Position, Span};
+
+    #[test]
+    fn deferred_diagnostics_commit_only_the_selected_branch_and_restore_after_panic() {
+        let context = super::DiagCtx::new(std::path::PathBuf::from("."));
+        context.enable_recording();
+        let (_, discarded) =
+            context.with_deferred_diagnostics(|| context.emit_error("discarded".into(), None));
+        assert_eq!(discarded.len(), 1);
+        assert_eq!(context.error_count(), 0);
+        assert!(!context.has_error());
+        assert!(context.take_recorded_diagnostics().is_empty());
+        let (_, selected) = context.with_deferred_diagnostics(|| {
+            context.emit_error("selected".into(), None);
+            let (_, nested) =
+                context.with_deferred_diagnostics(|| context.emit_warning("nested".into(), None));
+            for diagnostic in nested {
+                context.emit(diagnostic);
+            }
+        });
+        assert_eq!(selected.len(), 2);
+        assert_eq!(context.error_count(), 0);
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            context.with_deferred_diagnostics(|| {
+                context.emit_error("unwound".into(), None);
+                panic!("discard speculative branch");
+            });
+        }));
+        assert!(panic.is_err());
+        for diagnostic in selected {
+            context.emit(diagnostic);
+        }
+        context.emit_error("selected".into(), None);
+        assert_eq!(
+            context.error_count(),
+            1,
+            "only committed errors count and deduplicate"
+        );
+        let records = context.take_recorded_diagnostics();
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.message.as_str())
+                .collect::<Vec<_>>(),
+            ["selected", "nested"]
+        );
+    }
 
     fn span(start: (usize, usize), end: (usize, usize)) -> Span {
         Span {

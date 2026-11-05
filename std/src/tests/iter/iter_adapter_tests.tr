@@ -1,108 +1,108 @@
-import std.collections.List
-import std.iter.{map, filter, take, skip, zip}
+import std::collections::List
+import std::iter::{map, filter, take, skip, zip}
 
 @test
 func testMapDoublesRange() {
-    var doubled = map(1_i32..4_i32, |x: int32| { x * 2 })
-    var results = List[int32].new()
+    var doubled = map(1_i32..4_i32, (x: int32) => { x * 2 })
+    var results = List[int32]::new()
     for v in doubled {
         results.append(v)
     }
 
-    std.testing.assertEqual(results.len(), 3 as usize, "map: should yield 3 elements")
-    std.testing.assertEqual(*results.at(0), 2, "map: first element")
-    std.testing.assertEqual(*results.at(1), 4, "map: second element")
-    std.testing.assertEqual(*results.at(2), 6, "map: third element")
+    std::testing::assertEqual(results.len(), 3 as usize, "map: should yield 3 elements")
+    std::testing::assertEqual(*results.at(0), 2, "map: first element")
+    std::testing::assertEqual(*results.at(1), 4, "map: second element")
+    std::testing::assertEqual(*results.at(2), 6, "map: third element")
 }
 
 @test
 func testFilterEvens() {
-    var evens = filter(1_i32..7_i32, |x: &int32| { *x % 2 == 0 })
-    var results = List[int32].new()
+    var evens = filter(1_i32..7_i32, (x: int32) => { x % 2 == 0 })
+    var results = List[int32]::new()
     for v in evens {
         results.append(v)
     }
 
-    std.testing.assertEqual(results.len(), 3 as usize, "filter: should yield 3 elements")
-    std.testing.assertEqual(*results.at(0), 2, "filter: first even")
-    std.testing.assertEqual(*results.at(1), 4, "filter: second even")
-    std.testing.assertEqual(*results.at(2), 6, "filter: third even")
+    std::testing::assertEqual(results.len(), 3 as usize, "filter: should yield 3 elements")
+    std::testing::assertEqual(*results.at(0), 2, "filter: first even")
+    std::testing::assertEqual(*results.at(1), 4, "filter: second even")
+    std::testing::assertEqual(*results.at(2), 6, "filter: third even")
 }
 
 @test
 func testTakeThree() {
     var taken = take(1_i32..10_i32, 3 as usize)
-    var results = List[int32].new()
+    var results = List[int32]::new()
     for v in taken {
         results.append(v)
     }
 
-    std.testing.assertEqual(results.len(), 3 as usize, "take: should yield 3 elements")
-    std.testing.assertEqual(*results.at(0), 1, "take: first")
-    std.testing.assertEqual(*results.at(1), 2, "take: second")
-    std.testing.assertEqual(*results.at(2), 3, "take: third")
+    std::testing::assertEqual(results.len(), 3 as usize, "take: should yield 3 elements")
+    std::testing::assertEqual(*results.at(0), 1, "take: first")
+    std::testing::assertEqual(*results.at(1), 2, "take: second")
+    std::testing::assertEqual(*results.at(2), 3, "take: third")
 }
 
 @test
 func testSkipTwo() {
     var skipped = skip(1_i32..6_i32, 2 as usize)
-    var results = List[int32].new()
+    var results = List[int32]::new()
     for v in skipped {
         results.append(v)
     }
 
-    std.testing.assertEqual(results.len(), 3 as usize, "skip: should yield 3 elements")
-    std.testing.assertEqual(*results.at(0), 3, "skip: first after skip")
-    std.testing.assertEqual(*results.at(1), 4, "skip: second after skip")
-    std.testing.assertEqual(*results.at(2), 5, "skip: third after skip")
+    std::testing::assertEqual(results.len(), 3 as usize, "skip: should yield 3 elements")
+    std::testing::assertEqual(*results.at(0), 3, "skip: first after skip")
+    std::testing::assertEqual(*results.at(1), 4, "skip: second after skip")
+    std::testing::assertEqual(*results.at(2), 5, "skip: third after skip")
 }
 
 @test
 func testZipPairsTwo() {
     var zipped = zip(1_i32..4_i32, 10_i32..13_i32)
-    var resultsA = List[int32].new()
-    var resultsB = List[int32].new()
+    var resultsA = List[int32]::new()
+    var resultsB = List[int32]::new()
 
     for pair in zipped {
-        let (a, b) = pair
+        var (a, b) = pair
         resultsA.append(a)
         resultsB.append(b)
     }
 
-    std.testing.assertEqual(resultsA.len(), 3 as usize, "zip: should yield 3 pairs")
-    std.testing.assertEqual(*resultsA.at(0), 1, "zip: first a")
-    std.testing.assertEqual(*resultsB.at(0), 10, "zip: first b")
+    std::testing::assertEqual(resultsA.len(), 3 as usize, "zip: should yield 3 pairs")
+    std::testing::assertEqual(*resultsA.at(0), 1, "zip: first a")
+    std::testing::assertEqual(*resultsB.at(0), 10, "zip: first b")
 
-    std.testing.assertEqual(*resultsA.at(1), 2, "zip: second a")
-    std.testing.assertEqual(*resultsB.at(1), 11, "zip: second b")
+    std::testing::assertEqual(*resultsA.at(1), 2, "zip: second a")
+    std::testing::assertEqual(*resultsB.at(1), 11, "zip: second b")
 
-    std.testing.assertEqual(*resultsA.at(2), 3, "zip: third a")
-    std.testing.assertEqual(*resultsB.at(2), 12, "zip: third b")
+    std::testing::assertEqual(*resultsA.at(2), 3, "zip: third a")
+    std::testing::assertEqual(*resultsB.at(2), 12, "zip: third b")
 }
 
 @test
 func testTakeDefaultMethod() {
     var taken = (1_i32..10_i32).iter().take(2 as usize)
-    var results = List[int32].new()
+    var results = List[int32]::new()
     for v in taken {
         results.append(v)
     }
 
-    std.testing.assertEqual(results.len(), 2 as usize, "take method: should yield 2 elements")
-    std.testing.assertEqual(*results.at(0), 1, "take method: first")
-    std.testing.assertEqual(*results.at(1), 2, "take method: second")
+    std::testing::assertEqual(results.len(), 2 as usize, "take method: should yield 2 elements")
+    std::testing::assertEqual(*results.at(0), 1, "take method: first")
+    std::testing::assertEqual(*results.at(1), 2, "take method: second")
 }
 
 @test
 func testSkipDefaultMethod() {
     var skipped = (1_i32..5_i32).iter().skip(3 as usize)
-    var results = List[int32].new()
+    var results = List[int32]::new()
     for v in skipped {
         results.append(v)
     }
 
-    std.testing.assertEqual(results.len(), 1 as usize, "skip method: should yield 1 element")
-    std.testing.assertEqual(*results.at(0), 4, "skip method: first after skip")
+    std::testing::assertEqual(results.len(), 1 as usize, "skip method: should yield 1 element")
+    std::testing::assertEqual(*results.at(0), 4, "skip method: first after skip")
 }
 
 @test
@@ -110,38 +110,38 @@ func testTakeSkipComposition() {
     // skip 2, then take 2 from range 1..8
     var composed = skip(1_i32..8_i32, 2 as usize)
     var taken = take(composed, 2 as usize)
-    var results = List[int32].new()
+    var results = List[int32]::new()
     for v in taken {
         results.append(v)
     }
 
-    std.testing.assertEqual(results.len(), 2 as usize, "composition: should yield exactly 2 elements")
-    std.testing.assertEqual(*results.at(0), 3, "composition: first")
-    std.testing.assertEqual(*results.at(1), 4, "composition: second")
+    std::testing::assertEqual(results.len(), 2 as usize, "composition: should yield exactly 2 elements")
+    std::testing::assertEqual(*results.at(0), 3, "composition: first")
+    std::testing::assertEqual(*results.at(1), 4, "composition: second")
 }
 
 @test
 func testCollectMapIntoList() {
-    var mapped = map(1_i32..4_i32, |x: int32| { x * 10 })
-    let list: List[int32] = mapped.collect()
+    var mapped = map(1_i32..4_i32, (x: int32) => { x * 10 })
+    var list: List[int32] = mapped.collect()
 
-    std.testing.assertEqual(list.len(), 3 as usize, "collect map: length")
-    std.testing.assertEqual(*list.at(0), 10, "collect map: element 0")
-    std.testing.assertEqual(*list.at(1), 20, "collect map: element 1")
-    std.testing.assertEqual(*list.at(2), 30, "collect map: element 2")
+    std::testing::assertEqual(list.len(), 3 as usize, "collect map: length")
+    std::testing::assertEqual(*list.at(0), 10, "collect map: element 0")
+    std::testing::assertEqual(*list.at(1), 20, "collect map: element 1")
+    std::testing::assertEqual(*list.at(2), 30, "collect map: element 2")
 }
 
 @test
 func testChain() {
     var chained = (1_i32..3_i32).iter().chain((10_i32..12_i32).iter())
-    var results = List[int32].new()
+    var results = List[int32]::new()
     for v in chained { results.append(v) }
-    
-    std.testing.assertEqual(results.len(), 4 as usize, "chain length")
-    std.testing.assertEqual(*results.at(0), 1, "chain 0")
-    std.testing.assertEqual(*results.at(1), 2, "chain 1")
-    std.testing.assertEqual(*results.at(2), 10, "chain 2")
-    std.testing.assertEqual(*results.at(3), 11, "chain 3")
+
+    std::testing::assertEqual(results.len(), 4 as usize, "chain length")
+    std::testing::assertEqual(*results.at(0), 1, "chain 0")
+    std::testing::assertEqual(*results.at(1), 2, "chain 1")
+    std::testing::assertEqual(*results.at(2), 10, "chain 2")
+    std::testing::assertEqual(*results.at(3), 11, "chain 3")
 }
 
 @test
@@ -149,71 +149,72 @@ func testFlatten() {
     var a = 1_i32..3_i32
     var b = 5_i32..7_i32
     // Create a list of iterables
-    var iterables = List[std.range.Range[int32]].new()
+    var iterables = List[std::range::Range[int32]]::new()
     iterables.append(a)
     iterables.append(b)
 
     var flattened = iterables.iter().flatten()
-    var results = List[int32].new()
+    var results = List[int32]::new()
     for v in flattened { results.append(v) }
-    
-    std.testing.assertEqual(results.len(), 4 as usize, "flatten length")
-    std.testing.assertEqual(*results.at(0), 1, "flatten 0")
-    std.testing.assertEqual(*results.at(1), 2, "flatten 1")
-    std.testing.assertEqual(*results.at(2), 5, "flatten 2")
-    std.testing.assertEqual(*results.at(3), 6, "flatten 3")
+
+    std::testing::assertEqual(results.len(), 4 as usize, "flatten length")
+    std::testing::assertEqual(*results.at(0), 1, "flatten 0")
+    std::testing::assertEqual(*results.at(1), 2, "flatten 1")
+    std::testing::assertEqual(*results.at(2), 5, "flatten 2")
+    std::testing::assertEqual(*results.at(3), 6, "flatten 3")
 }
 
 @test
 func testStepBy() {
     var stepped = (0_i32..10_i32).iter().stepBy(3 as usize)
-    var results = List[int32].new()
+    var results = List[int32]::new()
     for v in stepped { results.append(v) }
-    
-    std.testing.assertEqual(results.len(), 4 as usize, "stepBy length")
-    std.testing.assertEqual(*results.at(0), 0, "stepBy 0")
-    std.testing.assertEqual(*results.at(1), 3, "stepBy 1")
-    std.testing.assertEqual(*results.at(2), 6, "stepBy 2")
-    std.testing.assertEqual(*results.at(3), 9, "stepBy 3")
+
+    std::testing::assertEqual(results.len(), 4 as usize, "stepBy length")
+    std::testing::assertEqual(*results.at(0), 0, "stepBy 0")
+    std::testing::assertEqual(*results.at(1), 3, "stepBy 1")
+    std::testing::assertEqual(*results.at(2), 6, "stepBy 2")
+    std::testing::assertEqual(*results.at(3), 9, "stepBy 3")
 }
 
 @test
 func testTakeWhile() {
-    var taken = (1_i32..10_i32).iter().takeWhile(|x: &int32| { *x < 5 })
-    var results = List[int32].new()
+    var taken = (1_i32..10_i32).iter().takeWhile((x: &int32) => { *x < 5 })
+    var results = List[int32]::new()
     for v in taken { results.append(v) }
-    
-    std.testing.assertEqual(results.len(), 4 as usize, "takeWhile length")
-    std.testing.assertEqual(*results.at(3), 4, "takeWhile last")
+
+    std::testing::assertEqual(results.len(), 4 as usize, "takeWhile length")
+    std::testing::assertEqual(*results.at(3), 4, "takeWhile last")
 }
 
 @test
 func testSkipWhile() {
-    var skipped = (1_i32..10_i32).iter().skipWhile(|x: &int32| { *x < 7 })
-    var results = List[int32].new()
+    var skipped = (1_i32..10_i32).iter().skipWhile((x: &int32) => { *x < 7 })
+    var results = List[int32]::new()
     for v in skipped { results.append(v) }
-    
-    std.testing.assertEqual(results.len(), 3 as usize, "skipWhile length")
-    std.testing.assertEqual(*results.at(0), 7, "skipWhile first")
-    std.testing.assertEqual(*results.at(2), 9, "skipWhile last")
+
+    std::testing::assertEqual(results.len(), 3 as usize, "skipWhile length")
+    std::testing::assertEqual(*results.at(0), 7, "skipWhile first")
+    std::testing::assertEqual(*results.at(2), 9, "skipWhile last")
 }
 
 @test
 func testPeekable() {
     var iter = (1_i32..5_i32).iter().peekable()
-    
+
     var peek1 = iter.peek().unwrap()
-    std.testing.assertEqual(*peek1, 1, "peek 1") // Hasn't consumed yet
-    
-    std.testing.assertEqual(iter.next().unwrap(), 1, "next 1")
-    
+    std::testing::assertEqual(peek1, 1, "peek 1") // Hasn't consumed yet
+    peek1 = 99 // Editing the snapshot does not change the cached element.
+
+    std::testing::assertEqual(iter.next().unwrap(), 1, "next 1")
+
     var peek2 = iter.peek().unwrap()
-    std.testing.assertEqual(*peek2, 2, "peek 2") // Advanced peek
-    
-    std.testing.assertEqual(iter.next().unwrap(), 2, "next 2")
-    std.testing.assertEqual(iter.next().unwrap(), 3, "next 3")
-    std.testing.assertEqual(iter.next().unwrap(), 4, "next 4")
-    
-    std.testing.assertTrue(iter.peek().isNone(), "peek EOF")
-    std.testing.assertTrue(iter.next().isNone(), "next EOF")
+    std::testing::assertEqual(peek2, 2, "peek 2") // Advanced peek
+
+    std::testing::assertEqual(iter.next().unwrap(), 2, "next 2")
+    std::testing::assertEqual(iter.next().unwrap(), 3, "next 3")
+    std::testing::assertEqual(iter.next().unwrap(), 4, "next 4")
+
+    std::testing::assertTrue(iter.peek().isNone(), "peek EOF")
+    std::testing::assertTrue(iter.next().isNone(), "next EOF")
 }

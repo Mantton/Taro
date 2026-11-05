@@ -1,0 +1,11 @@
+interface Readable { var value: int32 { get } }
+struct Record { storage: int32 }
+conform Record to Readable {
+    var value: int32 { get { self.storage } }
+}
+func read[T: Readable](_ value: T) -> int32 { value.value }
+func main() {
+    record := Record { storage: 7 }
+    var erased: any Readable = record
+    assert(read(record) == 7 && erased.value == 7 && record.storage == 7, "generic and erased getters receive ordinary value copies")
+}

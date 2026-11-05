@@ -1,0 +1,21 @@
+enum Choice {
+    case value(int32)
+    case empty
+}
+
+type AliasChoice = Choice
+
+func read(_ choice: &AliasChoice) -> int32 {
+    match *choice {
+        case .value(value) => value
+        case .empty => 0
+    }
+}
+
+func main() {
+    var choice: AliasChoice = .value(7) // AliasChoice
+    assert(read(&choice) == 7, "retained alias uses its enum discriminant and payload layout")
+    var empty: AliasChoice = .empty // AliasChoice
+    assert(read(&empty) == 0, "retained alias uses its unit case layout")
+    print("alias enum projection ok\n")
+}

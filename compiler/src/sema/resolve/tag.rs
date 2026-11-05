@@ -43,6 +43,7 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
 
         let kind = match &node.kind {
             ast::DeclarationKind::Interface(..) => DefinitionKind::Interface,
+            ast::DeclarationKind::Class(..) => DefinitionKind::Struct,
             ast::DeclarationKind::Struct(..) => DefinitionKind::Struct,
             ast::DeclarationKind::Enum(..) => DefinitionKind::Enum,
             ast::DeclarationKind::Function(..) => DefinitionKind::Function,
@@ -87,7 +88,9 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
         let kind = match &node.kind {
             ast::AssociatedDeclarationKind::Constant(..) => DefinitionKind::AssociatedConstant,
             ast::AssociatedDeclarationKind::Function(..) => DefinitionKind::AssociatedFunction,
+            ast::AssociatedDeclarationKind::Initializer(..) => DefinitionKind::AssociatedFunction,
             ast::AssociatedDeclarationKind::Property(..) => DefinitionKind::AssociatedProperty,
+            ast::AssociatedDeclarationKind::Subscript(..) => DefinitionKind::AssociatedSubscript,
             ast::AssociatedDeclarationKind::AssociatedType(..) => DefinitionKind::AssociatedType,
         };
         let parent = self.tag(&node.identifier, node.id, kind);
@@ -99,6 +102,7 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
 
     fn visit_namespace_declaration(&mut self, node: &ast::NamespaceDeclaration) -> Self::Result {
         let kind = match &node.kind {
+            ast::NamespaceDeclarationKind::Class(..) => DefinitionKind::Struct,
             ast::NamespaceDeclarationKind::Struct(..) => DefinitionKind::Struct,
             ast::NamespaceDeclarationKind::Enum(..) => DefinitionKind::Enum,
             ast::NamespaceDeclarationKind::Function(..) => DefinitionKind::Function,
@@ -141,6 +145,7 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
         let kind = DefinitionKind::Field;
         let id = self.tag(&node.identifier, node.id, kind);
         self.record_visibility(id, node.visibility);
+        self.with_parent(id, |this| ast::walk_field_definition(this, node));
     }
 
     fn visit_enum_variant(&mut self, node: &ast::Variant) -> Self::Result {
@@ -223,15 +228,16 @@ impl<'r, 'a> Actor<'r, 'a> {
     }
 
     fn lower_visibility(&self, vis: ast::Visibility) -> Visibility {
-        let file = vis.span.file;
         match vis.level {
             ast::VisibilityLevel::Public | ast::VisibilityLevel::Inherent => Visibility::Public,
-            ast::VisibilityLevel::FilePrivate => Visibility::FilePrivate(file),
+            ast::VisibilityLevel::Internal => Visibility::Internal(
+                self.parent
+                    .expect("an internal declaration belongs to a package module"),
+            ),
             ast::VisibilityLevel::Private => self
                 .parent
                 .map(Visibility::Private)
                 .unwrap_or(Visibility::Public),
-            ast::VisibilityLevel::Protected => Visibility::Public,
         }
     }
 }

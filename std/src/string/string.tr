@@ -1,28 +1,52 @@
-import std.hash.{Hashable, Hasher}
-import std.ops.{PartialEq, Add}
-import std.mem.Span
-import std.panic.panic
-import std.iter.{Iterator, Iterable}
-import std.optional.Optional
-import std.collections.List
-import std.rune.replacementCharacter
-import std.intrinsic.{
+import std::hash::{Hashable, Hasher}
+import std::ops::{PartialEq, Add}
+import std::mem::Span
+import std::panic::panic
+import std::iter::{Iterator, Iterable}
+import std::optional::Optional
+import std::collections::List
+import std::rune::replacementCharacter
+import std::intrinsic::{
     __intrinsic_memcpy,
     __intrinsic_string_from_parts,
     __intrinsic_string_data,
     __intrinsic_string_len,
+    __intrinsic_string_slice,
 }
 
-public func stringFromParts(_ data: *mut uint8, _ len: usize) -> string {
-    __intrinsic_string_from_parts(data, len)
+// Allocation is explicit; the string-from-parts intrinsic retains main's
+// direct two-word wrapping semantics and does not hide a collecting call.
+extern "taro_rt" {
+    unsafe func __gc__string_copy(_ data: *const uint8, _ len: usize) -> *const uint8
 }
 
+/// Copies a borrowed byte view into immutable string storage. Invalid UTF-8
+/// units are preserved and decoded as replacement runes by the string API.
+/// Later changes to the original buffer cannot change the returned string.
+public func stringFromBytes(_ bytes: Span[uint8]) -> string {
+    if bytes.len() == 0 {
+        return ""
+    }
+    data := unsafe { __gc__string_copy(bytes.asPtr(), bytes.len()) }
+    return unsafe { __intrinsic_string_from_parts(data, bytes.len()) }
+}
+
+/// Wraps immutable GC-managed or static bytes without copying, as on main.
+/// The caller must keep this range valid and immutable for every use of the
+/// returned string. Native/mutable buffers should use stringFromBytes instead.
+/// Null is valid only for an empty range.
+public unsafe func stringFromParts(_ data: *const uint8, _ len: usize) -> string {
+    return unsafe { __intrinsic_string_from_parts(data, len) }
+}
+
+@inline
 public func stringData(_ s: string) -> *const uint8 {
-    __intrinsic_string_data(s)
+    __intrinsic_string_data(&s)
 }
 
+@inline
 public func stringLen(_ s: string) -> usize {
-    __intrinsic_string_len(s)
+    __intrinsic_string_len(&s)
 }
 
 func stringCapacityOverflow() {
@@ -50,17 +74,17 @@ func checkedStringMul(_ lhs: usize, _ rhs: usize) -> usize {
 }
 
 func bytesMatchAt(_ haystack: string, _ needle: string, _ start: usize) -> bool {
-    let needleLen = stringLen(needle)
-    let haystackLen = stringLen(haystack)
+    needleLen := stringLen(needle)
+    haystackLen := stringLen(haystack)
     if start > haystackLen || needleLen > (haystackLen - start) {
         return false
     }
 
-    let haystackData = stringData(haystack)
-    let needleData = stringData(needle)
+    haystackData := stringData(haystack)
+    needleData := stringData(needle)
     var index: usize = 0
     while index < needleLen {
-        if haystackData.add(start + index).read() != needleData.add(index).read() {
+        if unsafe { haystackData.add(start + index).read() } != unsafe { needleData.add(index).read() } {
             return false
         }
         index += 1
@@ -69,8 +93,8 @@ func bytesMatchAt(_ haystack: string, _ needle: string, _ start: usize) -> bool 
 }
 
 func findFrom(_ haystack: string, _ needle: string, _ start: usize) -> usize? {
-    let haystackLen = stringLen(haystack)
-    let needleLen = stringLen(needle)
+    haystackLen := stringLen(haystack)
+    needleLen := stringLen(needle)
     if start > haystackLen {
         return .none
     }
@@ -81,7 +105,7 @@ func findFrom(_ haystack: string, _ needle: string, _ start: usize) -> usize? {
         return .none
     }
 
-    let limit = haystackLen - needleLen
+    limit := haystackLen - needleLen
     var index = start
     while index <= limit {
         if bytesMatchAt(haystack, needle, index) {
@@ -93,14 +117,14 @@ func findFrom(_ haystack: string, _ needle: string, _ start: usize) -> usize? {
 }
 
 func runeByteOffset(_ value: string, _ runeIndex: usize) -> usize? {
-    let len = stringLen(value)
+    len := stringLen(value)
     var byteIndex: usize = 0
     var currentRune: usize = 0
     while currentRune < runeIndex {
         if byteIndex >= len {
             return .none
         }
-        let (_, width) = decodeRune(value, byteIndex)
+        var (_, width) = decodeRune(value, byteIndex)
         byteIndex += width
         currentRune += 1
     }
@@ -108,7 +132,7 @@ func runeByteOffset(_ value: string, _ runeIndex: usize) -> usize? {
 }
 
 func isUnicodeWhitespace(_ value: rune) -> bool {
-    let scalar = value as uint32
+    scalar := value as uint32
     return (scalar >= 0x0009_u32 && scalar <= 0x000D_u32)
         || scalar == 0x0020_u32
         || scalar == 0x0085_u32
@@ -123,10 +147,10 @@ func isUnicodeWhitespace(_ value: rune) -> bool {
 }
 
 func trimStartByteIndex(_ value: string) -> usize {
-    let len = stringLen(value)
+    len := stringLen(value)
     var index: usize = 0
     while index < len {
-        let (decoded, width) = decodeRune(value, index)
+        var (decoded, width) = decodeRune(value, index)
         if !isUnicodeWhitespace(decoded) {
             return index
         }
@@ -136,11 +160,11 @@ func trimStartByteIndex(_ value: string) -> usize {
 }
 
 func trimEndByteIndex(_ value: string, _ start: usize) -> usize {
-    let len = stringLen(value)
+    len := stringLen(value)
     var index = start
     var end = start
     while index < len {
-        let (decoded, width) = decodeRune(value, index)
+        var (decoded, width) = decodeRune(value, index)
         index += width
         if !isUnicodeWhitespace(decoded) {
             end = index
@@ -149,16 +173,20 @@ func trimEndByteIndex(_ value: string, _ start: usize) -> usize {
     return end
 }
 
-// Copying supports unaligned string data; native byte order suffices for equality.
+// Inline before GC lowering so callers can fold constant lengths and avoid
+// separate managed call frames. Word copies support unaligned string data;
+// native byte order suffices for equality.
+@inline
 func equalityWord(_ data: *const uint8) -> uint64 {
     var word: uint64 = 0
-    unsafe { __intrinsic_memcpy((&mut word as *mut uint64) as *mut uint8, data, 8 as usize) }
+    unsafe { __intrinsic_memcpy((&word as *mut uint64) as *mut uint8, data, 8 as usize) }
     return word
 }
 
+@inline
 func stringEq(_ lhs: string, _ rhs: string) -> bool {
-    let lhs_len = stringLen(lhs)
-    let rhs_len = stringLen(rhs)
+    lhs_len := stringLen(lhs)
+    rhs_len := stringLen(rhs)
     if lhs_len != rhs_len {
         return false
     }
@@ -166,8 +194,8 @@ func stringEq(_ lhs: string, _ rhs: string) -> bool {
         return true
     }
 
-    let lhs_ptr = stringData(lhs)
-    let rhs_ptr = stringData(rhs)
+    lhs_ptr := stringData(lhs)
+    rhs_ptr := stringData(rhs)
     var idx: usize = 0
 
     // Read full words only within both strings, then compare the remaining bytes.
@@ -181,7 +209,7 @@ func stringEq(_ lhs: string, _ rhs: string) -> bool {
     }
 
     while idx < lhs_len {
-        if lhs_ptr.add(idx).read() != rhs_ptr.add(idx).read() {
+        if unsafe { lhs_ptr.add(idx).read() } != unsafe { rhs_ptr.add(idx).read() } {
             return false
         }
         idx += 1
@@ -190,45 +218,44 @@ func stringEq(_ lhs: string, _ rhs: string) -> bool {
     return true
 }
 
-impl Hashable for string {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {
-        let len = stringLen(*self)
-        let data = stringData(*self)
-        let bytes = Span[uint8].from(data, len)
-        hasher.write(bytes)
+conform string to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
+        hasher.writeString(&self)
 
         // Rust-style str hashing: append 0xff delimiter so sequential string
         // hashing remains prefix-safe ("ab","c" != "a","bc").
-        let delimiter: [uint8; 1] = [0xff]
+        var delimiter: [uint8; 1] = [0xff]
         hasher.write(delimiter.asSpan())
     }
 }
 
-impl PartialEq for string {
-    public func eq(&self, _ other: &string) -> bool { stringEq(*self, *other) }
+conform string to PartialEq {
+    @inline
+    public func eq(_ other: string) -> bool { stringEq(self, other) }
 }
 
-impl string {
+extend string {
     /// Returns true if the string has zero length.
-    public func isEmpty(&self) -> bool {
-        stringLen(*self) == 0
+    public func isEmpty() -> bool {
+        stringLen(self) == 0
     }
 
     /// Returns the number of bytes in the string.
-    public func byteLen(&self) -> usize {
-        stringLen(*self)
+    @inline
+    public func byteLen() -> usize {
+        stringLen(self)
     }
 
     /// Returns the number of decoded UTF-8 runes in the string.
     ///
     /// Each invalid UTF-8 byte counts as one replacement rune, matching
     /// `decodeRune` and `characters`.
-    public func runeCount(&self) -> usize {
-        let len = stringLen(*self)
+    public func runeCount() -> usize {
+        len := stringLen(self)
         var byteIndex: usize = 0
         var count: usize = 0
         while byteIndex < len {
-            let (_, width) = decodeRune(*self, byteIndex)
+            var (_, width) = decodeRune(self, byteIndex)
             byteIndex += width
             count += 1
         }
@@ -236,33 +263,33 @@ impl string {
     }
 
     /// Returns a new string that is the concatenation of self and other.
-    public func concat(&self, _ other: string) -> string {
-        let self_len = stringLen(*self)
-        let other_len = stringLen(other)
-        let total = checkedStringAdd(self_len, other_len)
-        var builder = Builder()
+    public func concat(_ other: string) -> string {
+        self_len := stringLen(self)
+        other_len := stringLen(other)
+        total := checkedStringAdd(self_len, other_len)
+        var builder = Builder::new()
         builder.reserve(total)
-        builder.writeString(*self)
+        builder.writeString(self)
         builder.writeString(other)
-        return builder.intoString()
+        return builder.toString()
     }
 
     /// Returns true if the string contains the given needle as a contiguous byte substring.
-    public func contains(&self, _ needle: string) -> bool {
-        return findFrom(*self, needle, 0).isSome()
+    public func contains(_ needle: string) -> bool {
+        return findFrom(self, needle, 0).isSome()
     }
 
     /// Returns the byte index of the first occurrence of `needle`.
     /// An empty needle is found at byte index zero.
-    public func find(&self, _ needle: string) -> usize? {
-        return findFrom(*self, needle, 0)
+    public func find(_ needle: string) -> usize? {
+        return findFrom(self, needle, 0)
     }
 
     /// Returns the byte index of the last occurrence of `needle`.
     /// An empty needle is found at the end of the string.
-    public func rfind(&self, _ needle: string) -> usize? {
-        let selfLen = stringLen(*self)
-        let needleLen = stringLen(needle)
+    public func rfind(_ needle: string) -> usize? {
+        selfLen := stringLen(self)
+        needleLen := stringLen(needle)
         if needleLen == 0 {
             return .some(selfLen)
         }
@@ -272,7 +299,7 @@ impl string {
 
         var index = selfLen - needleLen
         loop {
-            if bytesMatchAt(*self, needle, index) {
+            if bytesMatchAt(self, needle, index) {
                 return .some(index)
             }
             if index == 0 {
@@ -284,9 +311,9 @@ impl string {
     }
 
     /// Returns true if the string starts with the given prefix.
-    public func startsWith(&self, _ prefix: string) -> bool {
-        let self_len = stringLen(*self)
-        let prefix_len = stringLen(prefix)
+    public func startsWith(_ prefix: string) -> bool {
+        self_len := stringLen(self)
+        prefix_len := stringLen(prefix)
         if prefix_len > self_len {
             return false
         }
@@ -294,11 +321,11 @@ impl string {
             return true
         }
 
-        let self_data = stringData(*self)
-        let prefix_data = stringData(prefix)
+        self_data := stringData(self)
+        prefix_data := stringData(prefix)
         var i: usize = 0
         while i < prefix_len {
-            if self_data.add(i).read() != prefix_data.add(i).read() {
+            if unsafe { self_data.add(i).read() } != unsafe { prefix_data.add(i).read() } {
                 return false
             }
             i += 1
@@ -307,9 +334,9 @@ impl string {
     }
 
     /// Returns true if the string ends with the given suffix.
-    public func endsWith(&self, _ suffix: string) -> bool {
-        let self_len = stringLen(*self)
-        let suffix_len = stringLen(suffix)
+    public func endsWith(_ suffix: string) -> bool {
+        self_len := stringLen(self)
+        suffix_len := stringLen(suffix)
         if suffix_len > self_len {
             return false
         }
@@ -317,12 +344,12 @@ impl string {
             return true
         }
 
-        let self_data = stringData(*self)
-        let suffix_data = stringData(suffix)
-        let offset = self_len - suffix_len
+        self_data := stringData(self)
+        suffix_data := stringData(suffix)
+        offset := self_len - suffix_len
         var i: usize = 0
         while i < suffix_len {
-            if self_data.add(offset + i).read() != suffix_data.add(i).read() {
+            if unsafe { self_data.add(offset + i).read() } != unsafe { suffix_data.add(i).read() } {
                 return false
             }
             i += 1
@@ -335,15 +362,15 @@ impl string {
     /// An empty separator splits at decoded rune boundaries. Invalid UTF-8
     /// bytes remain intact as one-byte elements. Splitting an empty string on
     /// an empty separator returns an empty list.
-    public func split(&self, _ separator: string) -> List[string] {
-        var parts = List[string]()
-        let selfLen = stringLen(*self)
-        let separatorLen = stringLen(separator)
+    public func split(_ separator: string) -> List[string] {
+        var parts = List[string]::new()
+        selfLen := stringLen(self)
+        separatorLen := stringLen(separator)
 
         if separatorLen == 0 {
             var byteIndex: usize = 0
             while byteIndex < selfLen {
-                let (_, width) = decodeRune(*self, byteIndex)
+                var (_, width) = decodeRune(self, byteIndex)
                 parts.append(self.substring(byteIndex, width))
                 byteIndex += width
             }
@@ -352,7 +379,7 @@ impl string {
 
         var start: usize = 0
         loop {
-            match findFrom(*self, separator, start) {
+            match findFrom(self, separator, start) {
                 case .some(index) => {
                     parts.append(self.substring(start, index - start))
                     start = index + separatorLen
@@ -366,13 +393,13 @@ impl string {
 
     /// Splits around the first occurrence of `separator`.
     /// Returns `(before, after)`, or none when the separator is absent.
-    public func splitOnce(&self, _ separator: string) -> Optional[(string, string)] {
-        match findFrom(*self, separator, 0) {
+    public func splitOnce(_ separator: string) -> Optional[(string, string)] {
+        match findFrom(self, separator, 0) {
             case .some(index) => {
-                let separatorLen = stringLen(separator)
-                let afterStart = index + separatorLen
-                let before = self.substring(0, index)
-                let after = self.substring(afterStart, stringLen(*self) - afterStart)
+                separatorLen := stringLen(separator)
+                afterStart := index + separatorLen
+                before := self.substring(0, index)
+                after := self.substring(afterStart, stringLen(self) - afterStart)
                 return .some((before, after))
             }
             case .none => return .none
@@ -383,9 +410,9 @@ impl string {
     ///
     /// A carriage return immediately before a newline is also removed. A
     /// trailing newline does not synthesize an additional empty line.
-    public func lines(&self) -> List[string] {
-        var result = List[string]()
-        let len = stringLen(*self)
+    public func lines() -> List[string] {
+        var result = List[string]::new()
+        len := stringLen(self)
         if len == 0 {
             return result
         }
@@ -411,79 +438,79 @@ impl string {
     }
 
     /// Removes Unicode whitespace from both ends of the string.
-    public func trim(&self) -> string {
-        let start = trimStartByteIndex(*self)
-        let end = trimEndByteIndex(*self, start)
+    public func trim() -> string {
+        start := trimStartByteIndex(self)
+        end := trimEndByteIndex(self, start)
         return self.substring(start, end - start)
     }
 
     /// Removes Unicode whitespace from the start of the string.
-    public func trimStart(&self) -> string {
-        let start = trimStartByteIndex(*self)
-        return self.substring(start, stringLen(*self) - start)
+    public func trimStart() -> string {
+        start := trimStartByteIndex(self)
+        return self.substring(start, stringLen(self) - start)
     }
 
     /// Removes Unicode whitespace from the end of the string.
-    public func trimEnd(&self) -> string {
-        let end = trimEndByteIndex(*self, 0)
+    public func trimEnd() -> string {
+        end := trimEndByteIndex(self, 0)
         return self.substring(0, end)
     }
 
     /// Replaces the first occurrence of `old` with `replacement`.
-    public func replace(&self, _ old: string, _ replacement: string) -> string {
-        let index = match findFrom(*self, old, 0) {
+    public func replace(_ old: string, _ replacement: string) -> string {
+        index := match findFrom(self, old, 0) {
             case .some(value) => value
-            case .none => return *self
+            case .none => return self
         }
 
-        let selfLen = stringLen(*self)
-        let oldLen = stringLen(old)
-        let replacementLen = stringLen(replacement)
-        let resultLen = checkedStringAdd(selfLen - oldLen, replacementLen)
-        let afterStart = index + oldLen
+        selfLen := stringLen(self)
+        oldLen := stringLen(old)
+        replacementLen := stringLen(replacement)
+        resultLen := checkedStringAdd(selfLen - oldLen, replacementLen)
+        afterStart := index + oldLen
 
-        var builder = Builder()
+        var builder = Builder::new()
         builder.reserve(resultLen)
-        builder.writeStringRange(*self, 0, index)
+        builder.writeStringRange(self, 0, index)
         builder.writeString(replacement)
-        builder.writeStringRange(*self, afterStart, selfLen - afterStart)
-        return builder.intoString()
+        builder.writeStringRange(self, afterStart, selfLen - afterStart)
+        return builder.toString()
     }
 
     /// Replaces every non-overlapping occurrence of `old`.
     ///
     /// An empty `old` matches before the first rune and after every decoded
     /// rune, including one-byte invalid UTF-8 units.
-    public func replaceAll(&self, _ old: string, _ replacement: string) -> string {
-        let selfLen = stringLen(*self)
-        let oldLen = stringLen(old)
+    public func replaceAll(_ old: string, _ replacement: string) -> string {
+        selfLen := stringLen(self)
+        oldLen := stringLen(old)
 
         if oldLen == 0 {
             if stringLen(replacement) == 0 {
-                return *self
+                return self
             }
 
-            var builder = Builder()
+            var builder = Builder::new()
             builder.reserve(selfLen)
             builder.writeString(replacement)
             var byteIndex: usize = 0
             while byteIndex < selfLen {
-                let (_, width) = decodeRune(*self, byteIndex)
-                builder.writeStringRange(*self, byteIndex, width)
+                var (_, width) = decodeRune(self, byteIndex)
+                builder.writeStringRange(self, byteIndex, width)
                 builder.writeString(replacement)
                 byteIndex += width
             }
-            return builder.intoString()
+            return builder.toString()
         }
 
-        var builder = Builder()
+        var builder = Builder::new()
         builder.reserve(selfLen)
         var start: usize = 0
         var replaced = false
         loop {
-            match findFrom(*self, old, start) {
+            match findFrom(self, old, start) {
                 case .some(index) => {
-                    builder.writeStringRange(*self, start, index - start)
+                    builder.writeStringRange(self, start, index - start)
                     builder.writeString(replacement)
                     start = index + oldLen
                     replaced = true
@@ -493,52 +520,48 @@ impl string {
         }
 
         if !replaced {
-            return *self
+            return self
         }
-        builder.writeStringRange(*self, start, selfLen - start)
-        return builder.intoString()
+        builder.writeStringRange(self, start, selfLen - start)
+        return builder.toString()
     }
 
     /// Returns `count` consecutive copies of this string.
-    public func repeat(&self, _ count: usize) -> string {
+    public func repeat(_ count: usize) -> string {
         if count == 0 || self.isEmpty() {
             return ""
         }
         if count == 1 {
-            return *self
+            return self
         }
 
-        let totalLen = checkedStringMul(stringLen(*self), count)
-        var builder = Builder()
+        totalLen := checkedStringMul(stringLen(self), count)
+        var builder = Builder::new()
         builder.reserve(totalLen)
         var index: usize = 0
         while index < count {
-            builder.writeString(*self)
+            builder.writeString(self)
             index += 1
         }
-        return builder.intoString()
+        return builder.toString()
     }
 
     /// Returns a new string consisting of `count` bytes starting at byte index `start`.
     /// Panics if the range is out of bounds.
-    public func substring(&self, _ start: usize, _ count: usize) -> string {
-        let self_len = stringLen(*self)
+    @inline
+    public func substring(_ start: usize, _ count: usize) -> string {
+        self_len := stringLen(self)
         if start > self_len || count > (self_len - start) {
             panic("string.substring: range out of bounds")
         }
-        if count == 0 {
-            return ""
-        }
-        let buf = std.mem.allocBytes(count)
-        stringData(*self).add(start).readBytes(buf, count)
-        stringFromParts(buf, count)
+        unsafe { __intrinsic_string_slice(&self, start, count) }
     }
 
     /// Returns `count` bytes starting at byte index `start`.
     ///
     /// This operation may split a UTF-8 encoding. Use `sliceRunes` when the
     /// result must start and end at decoded rune boundaries.
-    public func sliceBytes(&self, _ start: usize, _ count: usize) -> string {
+    public func sliceBytes(_ start: usize, _ count: usize) -> string {
         return self.substring(start, count)
     }
 
@@ -546,16 +569,16 @@ impl string {
     ///
     /// Invalid UTF-8 bytes each count as one rune and are preserved verbatim.
     /// Panics if the rune range is out of bounds.
-    public func sliceRunes(&self, _ start: usize, _ count: usize) -> string {
-        let endRune = match start.checkedAdd(count) {
+    public func sliceRunes(_ start: usize, _ count: usize) -> string {
+        endRune := match start.checkedAdd(count) {
             case .some(value) => value
             case .none => panic("string.sliceRunes: range out of bounds")
         }
-        let startByte = match runeByteOffset(*self, start) {
+        startByte := match runeByteOffset(self, start) {
             case .some(value) => value
             case .none => panic("string.sliceRunes: range out of bounds")
         }
-        let endByte = match runeByteOffset(*self, endRune) {
+        endByte := match runeByteOffset(self, endRune) {
             case .some(value) => value
             case .none => panic("string.sliceRunes: range out of bounds")
         }
@@ -564,37 +587,38 @@ impl string {
 
     /// Returns the byte at the given index.
     /// Panics if the index is out of bounds.
-    public func byteAt(&self, _ index: usize) -> uint8 {
-        let self_len = stringLen(*self)
+    @inline
+    public func byteAt(_ index: usize) -> uint8 {
+        self_len := stringLen(self)
         if index >= self_len {
             panic("string.byteAt: index out of bounds")
         }
-        stringData(*self).add(index).read()
+        unsafe { stringData(self).add(index).read() }
     }
 
     /// Returns a `ByteIterator` for the bytes of this string.
-    public func bytes(&self) -> ByteIterator {
-        ByteIterator {
-            s: *self,
+    public func bytes() -> ByteIterator {
+        ByteIterator (
+            s: self,
             pos: 0,
-        }
+        )
     }
 
     /// Returns a `CharacterIterator` for the UTF-8 scalar values (runes) of this string.
-    public func characters(&self) -> CharacterIterator {
-        CharacterIterator {
-            s: *self,
+    public func characters() -> CharacterIterator {
+        CharacterIterator (
+            s: self,
             pos: 0,
-        }
+        )
     }
 
-    public func decodeRune(self, _ index: usize) -> (rune, usize) {
+    public func decodeRune(_ index: usize) -> (rune, usize) {
         decodeRune(self, index)
     }
 }
 
-impl Add for string {
-    public func add(self, rhs: string) -> string {
+conform string to Add {
+    public func add(_ rhs: string) -> string {
         self.concat(rhs)
     }
 }
@@ -604,38 +628,38 @@ impl Add for string {
 /// If the encoding is invalid, returns the replacement character (U+FFFD) and a width of 1 byte.
 /// If the index is out of bounds, returns the replacement character and a width of 0.
 public func decodeRune(_ s: string, _ startIndex: usize) -> (rune, usize) {
-    let len = stringLen(s)
+    len := stringLen(s)
     if startIndex >= len {
         return (replacementCharacter(), 0)
     }
 
-    let ptr = stringData(s).add(startIndex)
-    let b0 = ptr.read() as uint32
-    let rem = len - startIndex
+    ptr := stringData(s).add(startIndex)
+    b0 := unsafe { ptr.read() } as uint32
+    rem := len - startIndex
 
     if b0 < 0x80 {
-        return (std.intrinsic.__intrinsic_rune_from_u32_unchecked(b0), 1)
+        return (std::intrinsic::__intrinsic_rune_from_u32_unchecked(b0), 1)
     }
 
     if b0 < 0xC2 || b0 > 0xF4 || rem < 2 {
         return (replacementCharacter(), 1)
     }
 
-    let b1 = ptr.add(1).read() as uint32
+    b1 := unsafe { ptr.add(1).read() } as uint32
     if b1 < 0x80 || b1 > 0xBF {
         return (replacementCharacter(), 1)
     }
 
     if b0 < 0xE0 {
-        let r = ((b0 & 0x1F) << 6) | (b1 & 0x3F)
-        return (std.intrinsic.__intrinsic_rune_from_u32_unchecked(r), 2)
+        r := ((b0 & 0x1F) << 6) | (b1 & 0x3F)
+        return (std::intrinsic::__intrinsic_rune_from_u32_unchecked(r), 2)
     }
 
     if rem < 3 {
         return (replacementCharacter(), 1)
     }
 
-    let b2 = ptr.add(2).read() as uint32
+    b2 := unsafe { ptr.add(2).read() } as uint32
     if b2 < 0x80 || b2 > 0xBF {
         return (replacementCharacter(), 1)
     }
@@ -647,15 +671,15 @@ public func decodeRune(_ s: string, _ startIndex: usize) -> (rune, usize) {
         if b0 == 0xED && b1 > 0x9F {
             return (replacementCharacter(), 1) // Surrogate half
         }
-        let r = ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F)
-        return (std.intrinsic.__intrinsic_rune_from_u32_unchecked(r), 3)
+        r := ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F)
+        return (std::intrinsic::__intrinsic_rune_from_u32_unchecked(r), 3)
     }
 
     if rem < 4 {
         return (replacementCharacter(), 1)
     }
 
-    let b3 = ptr.add(3).read() as uint32
+    b3 := unsafe { ptr.add(3).read() } as uint32
     if b3 < 0x80 || b3 > 0xBF {
         return (replacementCharacter(), 1)
     }
@@ -667,22 +691,29 @@ public func decodeRune(_ s: string, _ startIndex: usize) -> (rune, usize) {
         return (replacementCharacter(), 1) // Too large
     }
 
-    let r = ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F)
-    return (std.intrinsic.__intrinsic_rune_from_u32_unchecked(r), 4)
+    r := ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F)
+    return (std::intrinsic::__intrinsic_rune_from_u32_unchecked(r), 4)
 }
 
 /// An iterator over the individual bytes of a string.
-public struct ByteIterator {
+public final class ByteIterator {
     s: string
     pos: usize
 }
 
-impl Iterator for ByteIterator {
+extend ByteIterator {
+    init(s: string, pos: usize) {
+        self.s = s
+        self.pos = pos
+    }
+}
+
+conform ByteIterator to Iterator {
     type Element = uint8
 
-    public func next(&mut self) -> Optional[uint8] {
+    public func next() -> Optional[uint8] {
         if self.pos < stringLen(self.s) {
-            let b = self.s.byteAt(self.pos)
+            b := self.s.byteAt(self.pos)
             self.pos += 1
             return .some(b)
         }
@@ -690,24 +721,31 @@ impl Iterator for ByteIterator {
     }
 }
 
-impl Iterable for ByteIterator {
+conform ByteIterator to Iterable {
     type Element = uint8
     type Iterator = ByteIterator
-    public func iter(self) -> ByteIterator { self }
+    public func iter() -> ByteIterator { self }
 }
 
 /// An iterator over the individual UTF-8 characters (runes) of a string.
-public struct CharacterIterator {
+public final class CharacterIterator {
     s: string
     pos: usize
 }
 
-impl Iterator for CharacterIterator {
+extend CharacterIterator {
+    init(s: string, pos: usize) {
+        self.s = s
+        self.pos = pos
+    }
+}
+
+conform CharacterIterator to Iterator {
     type Element = rune
 
-    public func next(&mut self) -> Optional[rune] {
+    public func next() -> Optional[rune] {
         if self.pos < stringLen(self.s) {
-            let (r, width) = decodeRune(self.s, self.pos)
+            var (r, width) = decodeRune(self.s, self.pos)
             self.pos += width
             return .some(r)
         }
@@ -715,8 +753,8 @@ impl Iterator for CharacterIterator {
     }
 }
 
-impl Iterable for CharacterIterator {
+conform CharacterIterator to Iterable {
     type Element = rune
     type Iterator = CharacterIterator
-    public func iter(self) -> CharacterIterator { self }
+    public func iter() -> CharacterIterator { self }
 }

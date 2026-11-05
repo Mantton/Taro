@@ -1,0 +1,5 @@
+struct Record { value: int32 }
+extend Record {
+    var item: int32 { get(&self) { self.value } }
+}
+func main() {}

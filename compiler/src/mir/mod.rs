@@ -8,14 +8,24 @@ use index_vec::IndexVec;
 use rustc_hash::FxHashMap;
 
 pub mod analysis;
+
 pub mod builder;
+
+pub(crate) mod class_defaults;
+pub mod copy_clone;
+pub(crate) mod function_pointer_call;
+
+pub(crate) mod gc_lowering;
+
 pub mod optimize;
 pub mod package;
 pub mod pretty;
+pub(crate) mod primitive_operators;
 #[cfg(test)]
 pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
+pub(crate) mod vet;
 
 index_vec::define_index_type! {
     pub struct LocalId = u32;
@@ -45,18 +55,14 @@ pub enum MirPhase {
     Lowered,
 }
 
-/// Escape behavior for one parameter of a concrete monomorphized instance.
+/// Conservative call effects measured in dereferences from one argument.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ParamEscapeSummary {
-    /// The parameter's value (or something reached through it) can be retained
-    /// beyond the call.
-    pub heap_capture: bool,
-    /// Minimum dereference count by which the parameter can reach the logical
-    /// return value. `None` means it does not flow to the return.
+    /// `Some(0)` retains the argument; `Some(n)` retains its nth pointee.
+    pub heap_deref: Option<u8>,
     pub return_deref: Option<u8>,
 }
 
-/// Escape summary for one concrete function instance.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InstanceEscapeSummary {
     pub params: Vec<ParamEscapeSummary>,
@@ -64,6 +70,9 @@ pub struct InstanceEscapeSummary {
 
 #[derive(Debug, Clone)]
 pub struct Body<'ctx> {
+    /// Concrete-instance escape placement; recomputed rather than serialized.
+    pub escape_locals: Vec<bool>,
+
     pub owner: DefinitionID,
     /// Logical source functions represented in this physical MIR body.
     /// Scope zero is always the physical function itself.
@@ -72,7 +81,6 @@ pub struct Body<'ctx> {
     pub basic_blocks: IndexVec<BasicBlockId, BasicBlockData<'ctx>>,
     pub start_block: BasicBlockId,
     pub return_local: LocalId,
-    pub escape_locals: Vec<bool>,
     pub phase: MirPhase,
     pub is_async: bool,
 }
@@ -86,8 +94,23 @@ impl<'ctx> Body<'ctx> {
         gcx: crate::compile::context::Gcx<'ctx>,
         place: &Place<'ctx>,
     ) -> Ty<'ctx> {
+        self.place_ty_with(gcx, place, |ty| {
+            crate::sema::tycheck::utils::normalize_aliases(gcx, ty)
+        })
+    }
+
+    /// Resolve each base before applying its projection. Concrete instances
+    /// must substitute a generic enum before selecting the variant payload;
+    /// substituting an Error produced by an earlier symbolic downcast is too late.
+    pub(crate) fn place_ty_with(
+        &self,
+        gcx: crate::compile::context::Gcx<'ctx>,
+        place: &Place<'ctx>,
+        mut normalize: impl FnMut(Ty<'ctx>) -> Ty<'ctx>,
+    ) -> Ty<'ctx> {
         let mut ty = self.locals[place.local].ty;
         for projection in &place.projection {
+            ty = normalize(ty);
             ty = match projection {
                 PlaceElem::Deref => ty.dereference().unwrap_or_else(|| Ty::error(gcx)),
                 PlaceElem::Field(_, field_ty) => *field_ty,
@@ -102,7 +125,7 @@ impl<'ctx> Body<'ctx> {
                 }
             };
         }
-        ty
+        normalize(ty)
     }
 
     pub fn operand_ty(
@@ -112,9 +135,7 @@ impl<'ctx> Body<'ctx> {
     ) -> Ty<'ctx> {
         match operand {
             Operand::Constant(constant) => constant.ty,
-            Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
-                self.place_ty(gcx, place)
-            }
+            Operand::Copy(place) | Operand::CopyWith(place, _) => self.place_ty(gcx, place),
         }
     }
 
@@ -158,7 +179,7 @@ pub(crate) fn enum_variant_tuple_ty<'ctx>(
     let variant = &gcx.get_enum_definition(def_id).variants[variant_index.index()];
     match variant.kind {
         EnumVariantKind::Unit => gcx.types.void,
-        EnumVariantKind::Tuple(fields) => Ty::new(
+        EnumVariantKind::Tuple(fields) | EnumVariantKind::Struct(fields) => Ty::new(
             TyKind::Tuple(
                 gcx.store.interners.intern_ty_list(
                     fields
@@ -195,6 +216,9 @@ pub struct LocalDecl<'ctx> {
 pub enum LocalKind {
     Param,
     User,
+    /// Private value-initializer storage. Its fields start uninitialized;
+    /// readonly stores require a separate once-only control-flow proof.
+    ConstructorSelf,
     Temp,
     Return,
 }
@@ -212,12 +236,10 @@ pub struct Statement<'ctx> {
     pub span: Span,
 }
 
-/// Why a compiler-inserted GC poll exists at this MIR location.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Compiler-inserted cooperation point; never a source-language operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum GcSafepointKind {
-    /// Establishes a managed frame and bounds straight-line call chains.
     Entry,
-    /// Guarantees that every cyclic CFG path eventually cooperates with GC.
     Loop,
 }
 
@@ -232,29 +254,65 @@ pub enum StatementKind<'ctx> {
     /// a declaration (for example, on each loop iteration). Passes that move a
     /// local to stable storage use it to distinguish rebinding from mutation.
     StorageLive(LocalId),
-    /// Publishes that a compiler-lowered, safepoint-free aggregate store
+    /// Ends the source storage lifetime after lexical cleanup. This is not a
+    /// destructor call and does not end borrows of other storage carried by it.
+    StorageDead(LocalId),
+    /// Publishes that a compiler-lowered aggregate store
     /// sequence has fully initialized `local`.
     ///
     /// This is an initialization-analysis fact only and emits no machine code.
-    /// It lets GC scan the whole local after aggregate lowering without
-    /// treating earlier partial field stores as a complete value.
+    /// Earlier partial field stores are not a complete value.
     SetInitialized(LocalId),
     Assign(Place<'ctx>, Rvalue<'ctx>),
+
     /// A compiler-only use that extends an operand's lifetime without
     /// generating machine code.
     KeepAlive(Operand<'ctx>),
-    GcSafepoint(GcSafepointKind),
     Nop,
     SetDiscriminant {
         place: Place<'ctx>,
         variant_index: VariantIndex,
     },
+    GcSafepoint(GcSafepointKind),
 }
 
 #[derive(Debug, Clone)]
 pub struct Terminator<'ctx> {
     pub kind: TerminatorKind<'ctx>,
     pub span: Span,
+}
+
+impl StatementKind<'_> {
+    /// Only these markers may separate scanner lifetime start from a full
+    /// overwrite. New statements must explicitly choose the conservative side.
+    pub(crate) fn scanner_copy_marker(&self, destination: LocalId) -> bool {
+        match self {
+            Self::SourceScope(_) | Self::Nop => true,
+            Self::StorageLive(local) => *local != destination,
+            Self::StorageDead(_)
+            | Self::SetInitialized(_)
+            | Self::Assign(..)
+            | Self::KeepAlive(_)
+            | Self::SetDiscriminant { .. }
+            | Self::GcSafepoint(_) => false,
+        }
+    }
+}
+
+impl<'ctx> TerminatorKind<'ctx> {
+    /// Address-taking analysis must classify new native control-flow effects.
+    pub(crate) fn call_arguments(&self) -> Option<&[Operand<'ctx>]> {
+        match self {
+            Self::Call { args, .. } => Some(args),
+            Self::Goto { .. }
+            | Self::UnresolvedGoto
+            | Self::SwitchInt { .. }
+            | Self::Return
+            | Self::ResumeUnwind
+            | Self::Unreachable
+            | Self::Yield { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,18 +323,11 @@ pub enum CallUnwindAction {
 
 /// Whether and how a call participates in GC coordination.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CallGcEffect {
-    NoGc,
-    ManagedSafepoint,
-    RuntimeSafepoint,
-    BlockingSafepoint,
-}
-
-#[derive(Debug, Clone)]
-pub struct DevirtHint<'ctx> {
-    pub impl_def_id: DefinitionID,
-    pub impl_args: GenericArguments<'ctx>,
-    pub concrete_self_ty: Ty<'ctx>,
+pub enum CallEffect {
+    Direct,
+    Taro,
+    Callback,
+    Blocking,
 }
 
 #[derive(Debug, Clone)]
@@ -297,11 +348,11 @@ pub enum TerminatorKind<'ctx> {
     Call {
         func: Operand<'ctx>,
         args: Vec<Operand<'ctx>>,
-        devirt_hint: Option<DevirtHint<'ctx>>,
         destination: Place<'ctx>,
         target: BasicBlockId,
         unwind: CallUnwindAction,
     },
+
     /// Suspend point for async/await. Marks where an async function
     /// yields control back to the executor while awaiting a future.
     /// The state machine transform (Phase 5) will expand this into
@@ -313,6 +364,9 @@ pub enum TerminatorKind<'ctx> {
         resume: BasicBlockId,
         /// Place to write the awaited value into on resume
         resume_arg: Place<'ctx>,
+        /// Checked Task.result may complete without initializing a T. This
+        /// executable edge carries no destination initialization/drop flag.
+        no_result: Option<BasicBlockId>,
         /// Normal control-flow path that runs the active cleanup chain when a
         /// suspended task is cancelled. The async transform replaces the
         /// terminal marker at the end of this path with a cancelled poll
@@ -352,6 +406,7 @@ impl<'a> TerminatorKind<'a> {
             Self::Yield {
                 resume,
                 cancel,
+                no_result,
                 unwind,
                 ..
             } => {
@@ -359,6 +414,7 @@ impl<'a> TerminatorKind<'a> {
                 if let CallUnwindAction::Cleanup(cleanup) = unwind {
                     edges.push(*cleanup);
                 }
+                edges.extend(no_result.iter().copied());
                 edges
             }
             Self::Return | Self::ResumeUnwind | Self::Unreachable | Self::UnresolvedGoto => {
@@ -390,9 +446,11 @@ impl<'a> TerminatorKind<'a> {
                 resume,
                 cancel,
                 cancel_complete,
+                no_result,
                 unwind,
                 ..
             } => {
+                *no_result = no_result.map(&mut map);
                 *resume = map(*resume);
                 *cancel = map(*cancel);
                 *cancel_complete = map(*cancel_complete);
@@ -401,6 +459,60 @@ impl<'a> TerminatorKind<'a> {
                 }
             }
             Self::Return | Self::ResumeUnwind | Self::Unreachable | Self::UnresolvedGoto => {}
+        }
+    }
+
+    /// Redirect one executable edge in `successors()` order. In particular,
+    /// async `cancel_complete` is metadata, not a third executable yield edge.
+    /// Distinct edges may share a destination and still need different cleanup.
+    pub fn replace_successor(&mut self, edge: usize, replacement: BasicBlockId) -> bool {
+        let slot = match self {
+            Self::Goto { target } if edge == 0 => Some(target),
+            Self::SwitchInt {
+                targets, otherwise, ..
+            } => {
+                if edge < targets.len() {
+                    Some(&mut targets[edge].1)
+                } else if edge == targets.len() {
+                    Some(otherwise)
+                } else {
+                    None
+                }
+            }
+            Self::Call { target, unwind, .. } => {
+                if edge == 0 {
+                    Some(target)
+                } else if edge == 1 {
+                    match unwind {
+                        CallUnwindAction::Cleanup(block) => Some(block),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            }
+            Self::Yield {
+                resume,
+                cancel,
+                no_result,
+                unwind,
+                ..
+            } => match (edge, unwind) {
+                (0, _) => Some(resume),
+                (1, _) => Some(cancel),
+                (2, CallUnwindAction::Cleanup(block)) => Some(block),
+                (2, CallUnwindAction::Terminate) | (3, CallUnwindAction::Cleanup(_)) => {
+                    no_result.as_mut()
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(slot) = slot {
+            *slot = replacement;
+            true
+        } else {
+            false
         }
     }
 
@@ -431,14 +543,12 @@ pub enum PlaceElem<'ctx> {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CopyModifiers {
-    pub take: bool,
     pub init: bool,
 }
 
 #[derive(Debug, Clone)]
 pub enum Operand<'ctx> {
     Copy(Place<'ctx>),
-    Move(Place<'ctx>),
     CopyWith(Place<'ctx>, CopyModifiers),
     Constant(Constant<'ctx>),
 }
@@ -450,13 +560,8 @@ impl<'ctx> Operand<'ctx> {
     }
 
     #[inline]
-    pub fn move_(place: Place<'ctx>) -> Self {
-        Self::Move(place)
-    }
-
-    #[inline]
     pub fn copy_with(place: Place<'ctx>, modifiers: CopyModifiers) -> Self {
-        if modifiers.take || modifiers.init {
+        if modifiers.init {
             Self::CopyWith(place, modifiers)
         } else {
             Self::Copy(place)
@@ -464,18 +569,9 @@ impl<'ctx> Operand<'ctx> {
     }
 
     #[inline]
-    pub fn as_copy(&self) -> Option<(&Place<'ctx>, CopyModifiers)> {
-        match self {
-            Self::Copy(place) => Some((place, CopyModifiers::default())),
-            Self::CopyWith(place, modifiers) => Some((place, *modifiers)),
-            Self::Move(_) | Self::Constant(_) => None,
-        }
-    }
-
-    #[inline]
     pub fn place(&self) -> Option<&Place<'ctx>> {
         match self {
-            Self::Copy(place) | Self::Move(place) | Self::CopyWith(place, _) => Some(place),
+            Self::Copy(place) | Self::CopyWith(place, _) => Some(place),
             Self::Constant(_) => None,
         }
     }
@@ -483,7 +579,7 @@ impl<'ctx> Operand<'ctx> {
     #[inline]
     pub fn place_mut(&mut self) -> Option<&mut Place<'ctx>> {
         match self {
-            Self::Copy(place) | Self::Move(place) | Self::CopyWith(place, _) => Some(place),
+            Self::Copy(place) | Self::CopyWith(place, _) => Some(place),
             Self::Constant(_) => None,
         }
     }
@@ -513,6 +609,11 @@ pub enum ConstantKind<'ctx> {
 #[derive(Debug, Clone)]
 pub enum Rvalue<'ctx> {
     Use(Operand<'ctx>),
+    /// Copy an initialized value, including independent erased payload storage.
+    /// It follows ordinary value/handle semantics and never calls user Clone.
+    CopyValue {
+        source: Place<'ctx>,
+    },
     UnaryOp {
         op: UnaryOperator,
         operand: Operand<'ctx>,
@@ -528,19 +629,20 @@ pub enum Rvalue<'ctx> {
         kind: CastKind<'ctx>,
     },
     Ref {
-        mutable: bool,
+        place: Place<'ctx>,
+    },
+    /// Compiler-only address for traversing cleanup metadata. This does not
+    /// read the value or revive the data dependencies of expired borrows.
+    /// Produces a raw mutable pointer to the place's storage, never a borrow.
+    CleanupAddress {
         place: Place<'ctx>,
     },
     Discriminant {
         place: Place<'ctx>,
     },
-    Alloc {
-        ty: Ty<'ctx>,
-    },
     /// The all-zero bit pattern for `ty`.
     ///
-    /// Instance placement uses this before publishing stack storage that
-    /// replaces a zero-initialized managed allocation.
+    /// Used for explicit zeroed storage and compiler initialization state.
     Zeroed {
         ty: Ty<'ctx>,
     },
@@ -554,9 +656,31 @@ pub enum Rvalue<'ctx> {
         count: usize,
         element: Ty<'ctx>,
     },
+    /// Managed storage, materialized after concrete escape placement.
+    Alloc {
+        ty: Ty<'ctx>,
+    },
 }
 
 impl<'ctx> Rvalue<'ctx> {
+    /// Every address-forming operation must be classified here. GC placement
+    /// and scanner-initialization proofs must not silently miss a new variant.
+    pub(crate) fn addressed_place(&self) -> Option<&Place<'ctx>> {
+        match self {
+            Self::Ref { place } | Self::CleanupAddress { place } => Some(place),
+            Self::Use(_)
+            | Self::CopyValue { .. }
+            | Self::UnaryOp { .. }
+            | Self::BinaryOp { .. }
+            | Self::Cast { .. }
+            | Self::Discriminant { .. }
+            | Self::Zeroed { .. }
+            | Self::Aggregate { .. }
+            | Self::Repeat { .. }
+            | Self::Alloc { .. } => None,
+        }
+    }
+
     pub fn for_each_operand(&self, mut visit: impl FnMut(&Operand<'ctx>)) {
         match self {
             Self::Use(operand)
@@ -569,6 +693,8 @@ impl<'ctx> Rvalue<'ctx> {
             }
             Self::Aggregate { fields, .. } => fields.iter().for_each(visit),
             Self::Ref { .. }
+            | Self::CopyValue { .. }
+            | Self::CleanupAddress { .. }
             | Self::Discriminant { .. }
             | Self::Alloc { .. }
             | Self::Zeroed { .. } => {}
@@ -587,6 +713,8 @@ impl<'ctx> Rvalue<'ctx> {
             }
             Self::Aggregate { fields, .. } => fields.iter_mut().for_each(visit),
             Self::Ref { .. }
+            | Self::CopyValue { .. }
+            | Self::CleanupAddress { .. }
             | Self::Discriminant { .. }
             | Self::Alloc { .. }
             | Self::Zeroed { .. } => {}
@@ -596,7 +724,10 @@ impl<'ctx> Rvalue<'ctx> {
     /// Includes address-taking and discriminant places, which are not operands.
     pub fn for_each_place(&self, mut visit: impl FnMut(&Place<'ctx>)) {
         match self {
-            Self::Ref { place, .. } | Self::Discriminant { place } => visit(place),
+            Self::Ref { place, .. }
+            | Self::CleanupAddress { place }
+            | Self::Discriminant { place } => visit(place),
+            Self::CopyValue { source } => visit(source),
             _ => self.for_each_operand(|operand| {
                 if let Some(place) = operand.place() {
                     visit(place);
@@ -607,7 +738,10 @@ impl<'ctx> Rvalue<'ctx> {
 
     pub fn for_each_place_mut(&mut self, mut visit: impl FnMut(&mut Place<'ctx>)) {
         match self {
-            Self::Ref { place, .. } | Self::Discriminant { place } => visit(place),
+            Self::Ref { place, .. }
+            | Self::CleanupAddress { place }
+            | Self::Discriminant { place } => visit(place),
+            Self::CopyValue { source } => visit(source),
             _ => self.for_each_operand_mut(|operand| {
                 if let Some(place) = operand.place_mut() {
                     visit(place);
@@ -627,11 +761,13 @@ pub fn for_each_function_constant_in_body<'ctx>(
                 StatementKind::Assign(_, rvalue) => {
                     for_each_function_constant_in_rvalue(rvalue, &mut visit);
                 }
+
                 StatementKind::KeepAlive(operand) => {
                     for_each_function_constant_in_operand(operand, &mut visit);
                 }
                 StatementKind::SourceScope(_)
                 | StatementKind::StorageLive(_)
+                | StatementKind::StorageDead(_)
                 | StatementKind::SetInitialized(_)
                 | StatementKind::GcSafepoint(_)
                 | StatementKind::Nop
@@ -688,12 +824,23 @@ fn for_each_function_constant_in_operand<'ctx>(
 pub enum CastKind<'ctx> {
     Numeric,
     BoxExistential,
-    /// Packs an already-allocated concrete payload pointer into an
-    /// existential. Introduced by MIR lowering so allocation is explicit.
-    ExistentialPack {
-        concrete: Ty<'ctx>,
-    },
     ExistentialUpcast,
+    /// Extract a native string/erased owner or a reference's permission control
+    /// for compiler-generated cleanup. Reading a reference's control does not
+    /// read its referent or extend the referent's data-access lifetime.
+    /// This does not transfer an owner separately from its cleanup obligation.
+    /// Unsafe object identity extraction also unwraps class-only existential
+    /// payload storage. This is distinct from extracting its box for cleanup.
+    ClassObjectOwner,
+    /// Publish a freshly allocated object's class header and wrap it as a
+    /// typed class handle.
+    NativeClassHandle,
+    /// Wrap the address of an already initialized object as a typed class
+    /// handle, without touching its header.
+    ClassFromOwner,
+    ClassUpcast,
+    /// Compiler-proven direct dynamic-Self class result adaptation.
+    ClassSelfResult,
     /// Runtime type test: `value is Target`.
     ExistentialTypeIs {
         target: Ty<'ctx>,
@@ -726,11 +873,93 @@ pub enum AggregateKind<'ctx> {
     },
 }
 
+impl<'ctx> AggregateKind<'ctx> {
+    /// These constructors only copy scalar values or shared handles. Keeping
+    /// them whole lets codegen define inactive payload bytes at construction,
+    /// without an earlier scanner clear. Inline aggregates, erased payloads
+    /// and unresolved generics retain the ordinary copy/field-store path.
+    pub(crate) fn noncollecting_enum_ctor(
+        &self,
+        gcx: crate::compile::context::Gcx<'ctx>,
+    ) -> Option<DefinitionID> {
+        use crate::sema::models::{EnumVariantKind, TyKind};
+        use crate::sema::tycheck::utils::{
+            instantiate::instantiate_ty_with_args, normalize_aliases,
+        };
+        let Self::Adt {
+            def_id,
+            variant_index: Some(index),
+            generic_args,
+        } = self
+        else {
+            return None;
+        };
+        if gcx.definition_kind(*def_id) != crate::hir::DefinitionKind::Enum {
+            return None;
+        }
+        let variant = gcx.enum_variant_by_index(*def_id, *index);
+        let fields = match variant.kind {
+            EnumVariantKind::Unit => return Some(variant.ctor_def_id),
+            EnumVariantKind::Tuple(fields) | EnumVariantKind::Struct(fields) => fields,
+        };
+        fields
+            .iter()
+            .all(|field| {
+                let ty =
+                    normalize_aliases(gcx, instantiate_ty_with_args(gcx, field.ty, *generic_args));
+                matches!(
+                    ty.kind(),
+                    TyKind::Bool
+                        | TyKind::Rune
+                        | TyKind::Int(_)
+                        | TyKind::UInt(_)
+                        | TyKind::Float(_)
+                        | TyKind::String
+                        | TyKind::Pointer(..)
+                        | TyKind::Reference(_)
+                        | TyKind::FnPointer { .. }
+                )
+            })
+            .then_some(variant.ctor_def_id)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum UnaryOperator {
     LogicalNot,
     Negate,
     BitwiseNot,
+}
+
+/// Operators a primitive compound assignment may apply inside one class-field
+/// access. The spelling travels as a constant intrinsic argument.
+const COMPOUND_OPERATORS: [(BinaryOperator, &str); 10] = [
+    (BinaryOperator::Add, "add"),
+    (BinaryOperator::Sub, "sub"),
+    (BinaryOperator::Mul, "mul"),
+    (BinaryOperator::Div, "div"),
+    (BinaryOperator::Rem, "rem"),
+    (BinaryOperator::BitAnd, "and"),
+    (BinaryOperator::BitOr, "or"),
+    (BinaryOperator::BitXor, "xor"),
+    (BinaryOperator::BitShl, "shl"),
+    (BinaryOperator::BitShr, "shr"),
+];
+
+impl BinaryOperator {
+    pub fn compound_name(self) -> Option<&'static str> {
+        COMPOUND_OPERATORS
+            .iter()
+            .find(|(op, _)| std::mem::discriminant(op) == std::mem::discriminant(&self))
+            .map(|(_, name)| *name)
+    }
+
+    pub fn from_compound_name(name: &str) -> Option<Self> {
+        COMPOUND_OPERATORS
+            .iter()
+            .find(|(_, candidate)| *candidate == name)
+            .map(|(op, _)| *op)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -889,16 +1118,18 @@ impl Category {
             thir::ExprKind::Assign { .. }
             | thir::ExprKind::AssignOp { .. }
             | thir::ExprKind::Binary { .. }
+            | thir::ExprKind::ClassIdentity { .. }
             | thir::ExprKind::Logical { .. }
             | thir::ExprKind::Unary { .. }
             | thir::ExprKind::Cast { .. }
+            | thir::ExprKind::ClassUpcast { .. }
+            | thir::ExprKind::ClassSelfResult { .. }
             | thir::ExprKind::ExistentialTryCast { .. }
             | thir::ExprKind::ExistentialTypeIs { .. }
             | thir::ExprKind::ClosureToFnPointer { .. }
             | thir::ExprKind::Tuple { .. }
             | thir::ExprKind::Array { .. }
-            | thir::ExprKind::Repeat { .. }
-            | thir::ExprKind::Make { .. } => Category::Rvalue(RvalueFunc::AsRvalue),
+            | thir::ExprKind::Repeat { .. } => Category::Rvalue(RvalueFunc::AsRvalue),
 
             thir::ExprKind::Literal(..) | thir::ExprKind::Zst { .. } => Category::Constant,
         }

@@ -38,24 +38,24 @@ func windowsX64Only() -> int32 {
 
 func assertCond(_ cond: bool) {
     if !cond {
-        let _ = 0
+        var _ = 0
     }
 }
 
 func main() {
-    let hostMac = #cfg(os("macos"))
-    let hostLinux = #cfg(os("linux"))
-    let hostWindows = #cfg(os("windows"))
-    let hostNotWindows = #cfg(!os("windows"))
-    let hostUnixLike = #cfg(!os("windows") && (os("macos") || os("linux")))
-    let hostAppleSilicon = #cfg(os("macos") && arch("aarch64"))
+    hostMac := #cfg(os("macos"))
+    hostLinux := #cfg(os("linux"))
+    hostWindows := #cfg(os("windows"))
+    hostNotWindows := #cfg(!os("windows"))
+    hostUnixLike := #cfg(!os("windows") && (os("macos") || os("linux")))
+    hostAppleSilicon := #cfg(os("macos") && arch("aarch64"))
 
     // Keep these used so CHECK_ONLY validates expression typing and predicate parsing.
-    let _ = hostMac
-    let _ = hostLinux
-    let _ = hostWindows
-    let _ = hostNotWindows
-    let _ = hostUnixLike
-    let _ = hostAppleSilicon
+    var _ = hostMac
+    var _ = hostLinux
+    var _ = hostWindows
+    var _ = hostNotWindows
+    var _ = hostUnixLike
+    var _ = hostAppleSilicon
     assertCond(true)
 }

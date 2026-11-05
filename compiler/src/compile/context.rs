@@ -10,7 +10,7 @@ use crate::{
     sema::std_items::{StdItemEntry, StdItemRegistry},
     sema::{
         models::{
-            AliasKind, CanonicalGoalKey, ClosureCaptures, ConformanceRecord, ConformanceRecordId,
+            CanonicalGoalKey, ClosureCaptures, ConformanceRecord, ConformanceRecordId,
             ConformanceWitness, Const, Constraint, EnumDefinition, EnumVariant, FloatTy,
             GenericArgument, GenericArguments, GenericParameter, Generics, GoalResult, IntTy,
             InterfaceDefinition, InterfaceGoal, InterfaceReference, InterfaceRequirements,
@@ -183,13 +183,6 @@ impl<'arena> GlobalContext<'arena> {
         let package_index = id.package();
         let database = cache.entry(package_index).or_insert_with(Default::default);
         database.def_to_static_mutability.insert(id, mutability);
-    }
-
-    pub fn cache_static_initializer(self, id: DefinitionID, value: Const<'arena>) {
-        let mut cache = self.context.store.type_databases.borrow_mut();
-        let package_index = id.package();
-        let database = cache.entry(package_index).or_insert_with(Default::default);
-        database.def_to_static_init.insert(id, value);
     }
 
     /// Updates the constraints for a definition, overwriting any existing entry.
@@ -509,7 +502,9 @@ impl<'arena> GlobalContext<'arena> {
         let id = store.next_synthetic_id.get();
         store.next_synthetic_id.set(id + 1);
         // Offset to avoid collision with low IDs
-        let index = 0xF000_0000 + id;
+        let index = 0xF000_0000u32
+            .checked_add(id)
+            .expect("exhausted compiler-generated definition IDs");
         DefinitionID::new(
             package,
             crate::sema::resolve::models::DefinitionIndex::from_raw(index),
@@ -521,11 +516,67 @@ impl<'arena> GlobalContext<'arena> {
         id: DefinitionID,
         def: crate::sema::models::SyntheticDefinition<'arena>,
     ) {
+        // Metadata imports reserve the same namespace as fresh synthesis.
+        // Parameter identities can immediately follow the function's ID and
+        // are not separate entries in synthetic_definitions.
+        let mut next = self.store.next_synthetic_id.get();
+        for reserved in
+            std::iter::once(id).chain(def.generics.parameters.iter().map(|parameter| parameter.id))
+        {
+            let index = reserved.index().raw();
+            if index >= 0xF000_0000 {
+                next = next.max(index - 0xF000_0000 + 1);
+            }
+        }
+        self.store.next_synthetic_id.set(next);
         self.context
             .store
             .synthetic_definitions
             .borrow_mut()
             .insert(id, def);
+    }
+
+    /// Full concrete layout is required before emitting these helper bodies.
+    pub fn is_instance_generated(self, id: DefinitionID) -> bool {
+        self.store
+            .synthetic_definitions
+            .borrow()
+            .get(&id)
+            .is_some_and(|definition| definition.kind.is_instance_generated())
+    }
+
+    pub fn definition_is_clone_method(self, method: DefinitionID) -> bool {
+        let gcx = self;
+        let Some(clone) = gcx.std_item_def(crate::hir::StdItem::Clone) else {
+            return false;
+        };
+        if gcx.is_builtin_clone(method) {
+            return true;
+        }
+        let Some(parent) = gcx.definition_parent(method) else {
+            return false;
+        };
+        parent == clone
+            || gcx
+                .conformance_records_for_extension(parent.package(), parent)
+                .iter()
+                .any(|record| record.interface.id == clone)
+    }
+
+    pub fn is_builtin_clone(self, id: DefinitionID) -> bool {
+        self.store
+            .synthetic_definitions
+            .borrow()
+            .get(&id)
+            .is_some_and(|definition| definition.kind.is_builtin_clone())
+    }
+
+    pub fn is_primitive_operator(self, id: DefinitionID) -> bool {
+        self.store
+            .synthetic_definitions
+            .borrow()
+            .get(&id)
+            .is_some_and(|definition| definition.kind.is_primitive_operator())
     }
 
     pub fn register_default_value_expr(self, id: DefinitionID, expr: &'arena hir::Expression) {
@@ -624,6 +675,51 @@ impl<'arena> GlobalContext<'arena> {
         }
         results
     }
+
+    /// Search every input owner, even when its type is known only through
+    /// dependency metadata. Foreign receiver conformances may live alongside
+    /// an interface argument rather than the receiver or interface itself.
+    pub(crate) fn conformance_ownership_packages(
+        self,
+        interface: DefinitionID,
+        receiver: Ty<'arena>,
+        arguments: GenericArguments<'arena>,
+    ) -> Vec<PackageIndex> {
+        use crate::sema::tycheck::visit::{TypeSuperVisitable, TypeVisitable, TypeVisitor};
+        struct Owners<'ctx> {
+            gcx: Gcx<'ctx>,
+            packages: Vec<PackageIndex>,
+        }
+        impl<'ctx> TypeVisitor<'ctx> for Owners<'ctx> {
+            fn visit_ty(&mut self, ty: Ty<'ctx>) -> bool {
+                let ty = crate::sema::tycheck::utils::normalize_aliases(self.gcx, ty);
+                match ty.kind() {
+                    crate::sema::models::TyKind::Adt(def, _) => {
+                        self.packages.push(def.id.package())
+                    }
+                    crate::sema::models::TyKind::Closure { closure_def_id, .. } => {
+                        self.packages.push(closure_def_id.package())
+                    }
+                    _ => {}
+                }
+                ty.super_visit_with(self)
+            }
+        }
+        let mut owners = Owners {
+            gcx: self,
+            packages: self.visible_packages(),
+        };
+        receiver.visit_with(&mut owners);
+        arguments.visit_with(&mut owners);
+        for ancestor in self.class_ancestry(receiver) {
+            ancestor.visit_with(&mut owners);
+        }
+        let mut packages = owners.packages;
+        packages.extend([self.package_index(), interface.package()]);
+        packages.sort_unstable();
+        packages.dedup();
+        packages
+    }
 }
 
 impl<'arena> GlobalContext<'arena> {
@@ -646,10 +742,6 @@ impl<'arena> GlobalContext<'arena> {
         self.with_type_database(id.package(), |db| {
             db.def_to_static_mutability.get(&id).copied()
         })
-    }
-
-    pub fn try_get_static_initializer(self, id: DefinitionID) -> Option<Const<'arena>> {
-        self.with_type_database(id.package(), |db| db.def_to_static_init.get(&id).cloned())
     }
 
     pub fn try_get_alias_type(self, id: DefinitionID) -> Option<Ty<'arena>> {
@@ -712,6 +804,12 @@ impl<'arena> GlobalContext<'arena> {
     }
 
     pub fn definition_is_async(self, id: DefinitionID) -> bool {
+        if let Some(def) = self.store.synthetic_definitions.borrow().get(&id)
+            && let crate::sema::models::SyntheticDefinitionKind::FunctionPointerCall { is_async } =
+                def.kind
+        {
+            return is_async;
+        }
         self.with_type_database(id.package(), |db| {
             db.def_to_async_body_output.contains_key(&id)
         })
@@ -848,7 +946,7 @@ impl<'arena> GlobalContext<'arena> {
                 })
             }),
             TypeHead::Tuple(_)
-            | TypeHead::Reference(_)
+            | TypeHead::Reference
             | TypeHead::Pointer(_)
             | TypeHead::Array
             | TypeHead::Closure(_) => self.get_impl_target_ty(impl_id),
@@ -869,6 +967,15 @@ impl<'arena> GlobalContext<'arena> {
         }
     }
 
+    pub fn class_default_contract(
+        self,
+        id: DefinitionID,
+    ) -> Option<crate::sema::models::ClassDefaultContract> {
+        self.with_type_database(id.package(), |database| {
+            database.def_to_class_default_contract.get(&id).copied()
+        })
+    }
+
     pub fn get_mir_body(self, id: DefinitionID) -> &'arena mir::Body<'arena> {
         let packages = self.context.store.mir_packages.borrow();
         let package = packages.get(&id.package()).expect("mir package");
@@ -884,6 +991,7 @@ impl<'arena> GlobalContext<'arena> {
         self,
         instance: Instance<'arena>,
     ) -> CompileResult<&'arena mir::Body<'arena>> {
+        mir::analysis::class_self::validate_instance(self, instance.def_id(), instance.args)?;
         if let Some(body) = self
             .context
             .store
@@ -895,8 +1003,33 @@ impl<'arena> GlobalContext<'arena> {
             return Ok(body);
         }
 
-        let mut body = self.get_mir_body(instance.def_id()).clone();
-        mir::optimize::run_instance_passes(self, instance, &mut body)?;
+        let mut body = if self.is_builtin_clone(instance.def_id()) {
+            mir::copy_clone::build_body(self, instance)?
+        } else if self
+            .store
+            .synthetic_definitions
+            .borrow()
+            .get(&instance.def_id())
+            .is_some_and(|d| {
+                matches!(
+                    d.kind,
+                    crate::sema::models::SyntheticDefinitionKind::FunctionPointerCall { .. }
+                )
+            })
+        {
+            mir::function_pointer_call::build_body(self, instance)?
+        } else if self.is_primitive_operator(instance.def_id()) {
+            mir::primitive_operators::build_body(self, instance)?
+        } else {
+            self.get_mir_body(instance.def_id()).clone()
+        };
+        // Synthetic value operations follow the same GC lowering as source
+        // bodies; source/native cleanup elaboration no longer exists here.
+        mir::gc_lowering::lower_for_gc(&mut body);
+        if self.is_instance_generated(instance.def_id()) {
+            mir::optimize::validate::validate_generated_instance_body(self, instance, &body)?;
+        }
+        mir::optimize::run_instance_passes(self, &mut body, instance.args())?;
         let body = self.context.store.arenas.mir_bodies.alloc(body);
         self.context
             .store
@@ -911,6 +1044,55 @@ impl<'arena> GlobalContext<'arena> {
         }
 
         Ok(body)
+    }
+
+    /// Apply placement and safepoints to an isolated instance. The shared MIR
+    /// used for inlining and concrete escape summaries remains unchanged.
+    pub(crate) fn get_gc_instance_mir_body(
+        self,
+        instance: Instance<'arena>,
+    ) -> CompileResult<&'arena mir::Body<'arena>> {
+        if let Some(body) = self
+            .store
+            .gc_instance_mir_bodies
+            .borrow()
+            .get(&instance)
+            .copied()
+        {
+            return Ok(body);
+        }
+        let mut body = self.get_instance_mir_body(instance)?.clone();
+        mir::optimize::escape_graph::apply_instance_placement(self, instance, &mut body)?;
+        mir::optimize::gc_storage::insert_temporary_storage_lifetimes(
+            self,
+            &mut body,
+            instance.args(),
+        );
+        mir::optimize::run_passes(
+            self,
+            &mut body,
+            &mut [Box::new(mir::optimize::gc_safepoints::InsertSafepoints)],
+        )?;
+        mir::optimize::gc_safepoints::merge_consecutive_safepoints(&mut body);
+        mir::optimize::validate::validate_body_structure(self, &body, "candidate GC placement")?;
+        let body = self.store.arenas.mir_bodies.alloc(body);
+        self.store
+            .gc_instance_mir_bodies
+            .borrow_mut()
+            .insert(instance, body);
+        Ok(body)
+    }
+
+    pub(crate) fn is_finalized_gc_instance_mir(
+        self,
+        instance: Instance<'arena>,
+        body: &mir::Body<'arena>,
+    ) -> bool {
+        self.store
+            .gc_instance_mir_bodies
+            .borrow()
+            .get(&instance)
+            .is_some_and(|cached| std::ptr::eq(*cached, body))
     }
 
     /// Whether `body` is the finalized MIR cached for exactly `instance`.
@@ -982,34 +1164,25 @@ impl<'arena> GlobalContext<'arena> {
     }
 
     pub fn definition_kind(self, id: DefinitionID) -> DefinitionKind {
-        if self
-            .context
-            .store
-            .synthetic_definitions
-            .borrow()
-            .contains_key(&id)
-        {
-            // Synthetic definitions are currently only used for methods (Clone etc)
-            return DefinitionKind::AssociatedFunction;
-        }
-
-        let output = self.resolution_output(id.package());
-        *output.definition_to_kind.get(&id).expect("definition kind")
+        self.try_definition_kind(id).expect("definition kind")
     }
 
     pub fn try_definition_kind(self, id: DefinitionID) -> Option<DefinitionKind> {
-        if self
-            .context
-            .store
-            .synthetic_definitions
-            .borrow()
-            .contains_key(&id)
-        {
-            return Some(DefinitionKind::AssociatedFunction);
+        if let Some(definition) = self.context.store.synthetic_definitions.borrow().get(&id) {
+            return Some(match definition.kind {
+                crate::sema::models::SyntheticDefinitionKind::ClassPayload { .. } => {
+                    DefinitionKind::Struct
+                }
+                crate::sema::models::SyntheticDefinitionKind::InitializerEnvironment { .. } => {
+                    DefinitionKind::Impl
+                }
+                _ => DefinitionKind::AssociatedFunction,
+            });
         }
-
-        let output = self.try_resolution_output(id.package())?;
-        output.definition_to_kind.get(&id).copied()
+        self.try_resolution_output(id.package())?
+            .definition_to_kind
+            .get(&id)
+            .copied()
     }
 
     fn is_current_package_std(self) -> bool {
@@ -1190,145 +1363,18 @@ impl<'arena> GlobalContext<'arena> {
         rc_visible
     }
 
-    /// Checks whether a type is intrinsically copyable without consulting interface selection.
-    ///
-    /// This is used for the builtin `Copy` candidate and must not call back into trait
-    /// resolution, otherwise `Copy` selection immediately recurses on itself.
-    pub fn is_type_builtin_copyable(self, ty: Ty<'arena>) -> bool {
-        match ty.kind() {
-            TyKind::Int(_)
-            | TyKind::UInt(_)
-            | TyKind::Float(_)
-            | TyKind::Bool
-            | TyKind::Rune
-            | TyKind::String
-            | TyKind::Reference(..)
-            | TyKind::Pointer(..)
-            | TyKind::FnPointer { .. }
-            | TyKind::Never => true,
-            TyKind::Tuple(elements) => elements.iter().all(|elem| self.is_type_copyable(*elem)),
-            TyKind::Array { element, .. } => self.is_type_copyable(element),
-            TyKind::Adt(def, _) => self.std_item_def(StdItem::Span) == Some(def.id),
-            TyKind::BoxedExistential { .. } => false,
-            TyKind::Parameter(_) => false,
-            TyKind::Alias { kind, .. } if matches!(kind, AliasKind::Weak | AliasKind::Inherent) => {
-                let normalized = crate::sema::tycheck::utils::normalize_aliases(self, ty);
-                if normalized == ty {
-                    false
-                } else {
-                    self.is_type_builtin_copyable(normalized)
-                }
-            }
-            TyKind::Alias { .. } => false,
-            TyKind::Closure { .. } => false,
-            TyKind::Opaque(_) | TyKind::Error | TyKind::Infer(_) => false,
-        }
-    }
-
-    /// Checks if a type implements the `Copy` interface.
-    /// Primitives, references, pointers, function pointers, spans, and never are
-    /// implicitly copyable. Structs/enums must explicitly implement `Copy`.
-    /// Type parameters are conservatively non-Copy; use `is_type_copyable_in_def`
-    /// when a definition context is available to check constraints.
-    pub fn is_type_copyable(self, ty: Ty<'arena>) -> bool {
-        if self.is_type_builtin_copyable(ty) {
-            return true;
-        }
-
-        match ty.kind() {
-            TyKind::Adt(def, _) => {
-                let Some(copy_def) = self.std_item_def(StdItem::Copy) else {
-                    return false;
-                };
-                if self.std_item_def(StdItem::Span) == Some(def.id) {
-                    return true;
-                }
-                let goal = InterfaceGoal {
-                    interface_id: copy_def,
-                    self_ty: ty,
-                    interface_args: GenericArguments::empty(),
-                    bindings: &[],
-                    param_env: &[],
-                };
-                matches!(
-                    self.prove_interface_goal(goal, SelectionMode::Typecheck),
-                    GoalResult::Proven
-                )
-            }
-            TyKind::Alias { kind, .. } if matches!(kind, AliasKind::Weak | AliasKind::Inherent) => {
-                let normalized = crate::sema::tycheck::utils::normalize_aliases(self, ty);
-                if normalized == ty {
-                    false
-                } else {
-                    self.is_type_copyable(normalized)
-                }
-            }
-            TyKind::Alias {
-                kind: AliasKind::Opaque,
-                ..
-            } => self
-                .std_item_def(StdItem::Copy)
-                .is_some_and(|copy| self.opaque_alias_declares_interface(ty, copy)),
-            TyKind::Tuple(elements) => elements.iter().all(|elem| self.is_type_copyable(*elem)),
-            TyKind::Array { element, .. } => self.is_type_copyable(element),
-            TyKind::Int(_)
-            | TyKind::UInt(_)
-            | TyKind::Float(_)
-            | TyKind::Bool
-            | TyKind::Rune
-            | TyKind::String
-            | TyKind::Reference(..)
-            | TyKind::Pointer(..)
-            | TyKind::FnPointer { .. }
-            | TyKind::Never => true,
-            TyKind::BoxedExistential { .. } => false,
-            TyKind::Parameter(_) => false,
-            TyKind::Alias { .. } => false,
-            TyKind::Closure { .. } => false,
-            TyKind::Opaque(_) | TyKind::Error | TyKind::Infer(_) => false,
-        }
-    }
-
-    /// Checks if a type implements `Copy` in the context of a specific definition,
-    /// consulting the definition's constraints, including for aggregate elements
-    /// and conditional conformances.
-    pub fn is_type_copyable_in_def(self, ty: Ty<'arena>, owner: hir::DefinitionID) -> bool {
-        if self.is_type_copyable(ty) {
-            return true;
-        }
-        // An owning existential does not become Copy because its payload has a
-        // Copy bound. Only these types can gain copyability from the environment.
-        if !matches!(
-            ty.kind(),
-            TyKind::Parameter(_)
-                | TyKind::Adt(..)
-                | TyKind::Tuple(_)
-                | TyKind::Array { .. }
-                | TyKind::Alias { .. }
-        ) {
-            return false;
-        }
-
-        let Some(copy_def) = self.std_item_def(StdItem::Copy) else {
+    /// Static bounds of the erased container determine its capabilities. The
+    /// hidden payload's dynamic type never upgrades a general existential.
+    pub(crate) fn existential_requires_interface(self, ty: Ty<'arena>, item: StdItem) -> bool {
+        let TyKind::BoxedExistential { interfaces } = ty.kind() else {
             return false;
         };
-
-        let constraints: Vec<_> = self
-            .canonical_constraints_of(owner)
+        let Some(required) = self.std_item_def(item) else {
+            return false;
+        };
+        interfaces
             .iter()
-            .map(|constraint| constraint.value)
-            .collect();
-        let goal = InterfaceGoal {
-            interface_id: copy_def,
-            self_ty: ty,
-            interface_args: GenericArguments::empty(),
-            bindings: &[],
-            param_env: self.store.arenas.global.alloc_slice_clone(&constraints),
-        };
-        matches!(
-            self.prove_interface_goal(goal, SelectionMode::Typecheck),
-            GoalResult::Proven
-        )
+            .any(|interface| self.interface_transitively_requires(interface.id, required))
     }
 
     /// Returns true if `interface_id` is `target_id` or transitively extends it.
@@ -1339,36 +1385,6 @@ impl<'arena> GlobalContext<'arena> {
     ) -> bool {
         let mut visited = FxHashSet::default();
         self.interface_transitively_requires_inner(interface_id, target_id, &mut visited)
-    }
-
-    fn opaque_alias_declares_interface(self, ty: Ty<'arena>, target_id: hir::DefinitionID) -> bool {
-        let TyKind::Alias {
-            kind: AliasKind::Opaque,
-            def_id,
-            args,
-        } = ty.kind()
-        else {
-            return false;
-        };
-        self.canonical_constraints_of(def_id)
-            .into_iter()
-            .map(|constraint| {
-                crate::sema::tycheck::utils::instantiate::instantiate_constraint_with_args(
-                    self,
-                    constraint.value,
-                    args,
-                )
-            })
-            .any(|constraint| match constraint {
-                Constraint::Bound {
-                    ty: bounded_ty,
-                    interface,
-                } => {
-                    bounded_ty == ty
-                        && self.interface_transitively_requires(interface.id, target_id)
-                }
-                Constraint::TypeEquality(_, _) => false,
-            })
     }
 
     fn interface_transitively_requires_inner(
@@ -1391,134 +1407,22 @@ impl<'arena> GlobalContext<'arena> {
         })
     }
 
-    /// Checks if a type is safe to move across executor workers.
-    /// This powers the builtin `Sendable` marker and async task scheduling.
-    pub fn is_type_sendable(self, ty: Ty<'arena>) -> bool {
-        let mut visited = FxHashSet::default();
-        self.is_type_sendable_inner(ty, &mut visited)
-    }
-
-    fn is_type_sendable_inner(self, ty: Ty<'arena>, visited: &mut FxHashSet<Ty<'arena>>) -> bool {
-        let ty = crate::sema::tycheck::utils::normalize_aliases(self, ty);
-        if ty == self.async_handle_ty() {
-            return false;
-        }
-        if !visited.insert(ty) {
-            return true;
-        }
-
-        if matches!(ty.kind(), TyKind::Adt(..))
-            && let Some(sendable_id) = self.std_item_def(StdItem::Sendable)
-        {
-            let declared_goal = InterfaceGoal {
-                interface_id: sendable_id,
-                self_ty: ty,
-                interface_args: GenericArguments::empty(),
-                bindings: &[],
-                param_env: &[],
-            };
-            if matches!(
-                crate::sema::impl_engine::prove_declared_interface_goal(
-                    self,
-                    declared_goal,
-                    SelectionMode::Typecheck,
-                ),
-                GoalResult::Proven
-            ) {
-                // Explicit Sendable is a deliberate trust boundary for owners
-                // whose representation contains raw pointers but whose public
-                // ownership contract is safe to transfer. Structural descent
-                // must honor it before inspecting those private fields.
-                visited.remove(&ty);
-                return true;
-            }
-        }
-
-        let sendable = match ty.kind() {
-            TyKind::Bool
-            | TyKind::Rune
-            | TyKind::String
-            | TyKind::Int(_)
-            | TyKind::UInt(_)
-            | TyKind::Float(_)
-            | TyKind::Never
-            | TyKind::FnPointer { .. } => true,
-            TyKind::Pointer(..)
-            | TyKind::Reference(..)
-            | TyKind::BoxedExistential { .. }
-            | TyKind::Parameter(_)
-            | TyKind::Opaque(_)
-            | TyKind::Infer(_)
-            | TyKind::Error => false,
-            TyKind::Alias {
-                kind: AliasKind::Opaque,
-                ..
-            } => self
-                .std_item_def(StdItem::Sendable)
-                .is_some_and(|sendable| self.opaque_alias_declares_interface(ty, sendable)),
-            TyKind::Alias { .. } => false,
-            TyKind::Array { element, .. } => self.is_type_sendable_inner(element, visited),
-            TyKind::Tuple(items) => items
-                .iter()
-                .copied()
-                .all(|item| self.is_type_sendable_inner(item, visited)),
-            TyKind::Closure { closure_def_id, .. } => self
-                .get_closure_captures(closure_def_id)
-                .map(|captures| {
-                    captures.captures.iter().all(|capture| {
-                        !matches!(
-                            capture.capture_kind,
-                            crate::sema::models::CaptureKind::ByRef { .. }
-                        ) && self.is_type_sendable_inner(capture.ty, visited)
-                    })
-                })
-                .unwrap_or(true),
-            TyKind::Adt(def, args) => {
-                if self.std_item_def(StdItem::Task) == Some(def.id) {
-                    true
-                } else {
-                    match def.kind {
-                        crate::sema::models::AdtKind::Struct => self
-                            .get_struct_definition(def.id)
-                            .fields
-                            .iter()
-                            .all(|field| {
-                                let field_ty =
-                                    crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args(
-                                        self,
-                                        field.ty,
-                                        args,
-                                    );
-                                self.is_type_sendable_inner(field_ty, visited)
-                            }),
-                        crate::sema::models::AdtKind::Enum => self
-                            .get_enum_definition(def.id)
-                            .variants
-                            .iter()
-                            .all(|variant| match variant.kind {
-                                crate::sema::models::EnumVariantKind::Unit => true,
-                                crate::sema::models::EnumVariantKind::Tuple(fields) => fields
-                                    .iter()
-                                    .all(|field| {
-                                        let field_ty =
-                                            crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args(
-                                                self,
-                                                field.ty,
-                                                args,
-                                            );
-                                        self.is_type_sendable_inner(field_ty, visited)
-                                    }),
-                            }),
-                    }
-                }
-            }
-        };
-
-        visited.remove(&ty);
-        sendable
-    }
-
     pub fn definition_visibility(self, id: DefinitionID) -> Visibility {
+        let inherited = self
+            .store
+            .synthetic_definitions
+            .borrow()
+            .get(&id)
+            .and_then(|value| match value.kind {
+                crate::sema::models::SyntheticDefinitionKind::InheritedClassInitializer {
+                    initializer,
+                    ..
+                } => Some(initializer),
+                _ => None,
+            });
+        if let Some(initializer) = inherited {
+            return self.definition_visibility(initializer);
+        }
         let output = self.resolution_output(id.package());
         output
             .definition_to_visibility
@@ -1528,6 +1432,80 @@ impl<'arena> GlobalContext<'arena> {
     }
 
     pub fn definition_parent(self, id: DefinitionID) -> Option<DefinitionID> {
+        let synthetic = self
+            .context
+            .store
+            .synthetic_definitions
+            .borrow()
+            .get(&id)
+            .map(|definition| definition.kind);
+        match synthetic {
+            Some(crate::sema::models::SyntheticDefinitionKind::ErasedAsyncSelf {
+                context, ..
+            }) => return Some(context),
+            Some(crate::sema::models::SyntheticDefinitionKind::ErasedAsyncSelfDefault {
+                adapter,
+                ..
+            }) => return self.definition_parent(adapter),
+            Some(
+                crate::sema::models::SyntheticDefinitionKind::ErasedTakeAs { context }
+                | crate::sema::models::SyntheticDefinitionKind::ErasedAsRef { context, .. }
+                | crate::sema::models::SyntheticDefinitionKind::ErasedPayloadReference {
+                    context,
+                    ..
+                },
+            ) => return Some(context),
+            Some(crate::sema::models::SyntheticDefinitionKind::ErasedDefault { .. }) => {
+                return self.generics_of(id).parent;
+            }
+            Some(crate::sema::models::SyntheticDefinitionKind::AdoptedClassDefault { .. }) => {
+                return self.generics_of(id).parent;
+            }
+            Some(crate::sema::models::SyntheticDefinitionKind::AdoptedClassDefaultArgument {
+                method,
+                ..
+            }) => return self.definition_parent(method),
+            Some(crate::sema::models::SyntheticDefinitionKind::ClassDefaultBody { source }) => {
+                return Some(source);
+            }
+            Some(
+                crate::sema::models::SyntheticDefinitionKind::ClassEncoder { class }
+                | crate::sema::models::SyntheticDefinitionKind::ClassDecoder { class, .. }
+                | crate::sema::models::SyntheticDefinitionKind::ClassDecodingInitializer { class },
+            ) => {
+                return Some(class);
+            }
+            Some(crate::sema::models::SyntheticDefinitionKind::ClassPayload { class }) => {
+                return Some(class);
+            }
+            Some(crate::sema::models::SyntheticDefinitionKind::InitializerEnvironment {
+                class,
+                ..
+            }) => return Some(class),
+            Some(crate::sema::models::SyntheticDefinitionKind::InheritedClassInitializer {
+                class,
+                ..
+            }) => return Some(class),
+            Some(crate::sema::models::SyntheticDefinitionKind::InheritedInitializerDefault {
+                initializer,
+                ..
+            }) => return Some(initializer),
+            Some(crate::sema::models::SyntheticDefinitionKind::ClassPayloadInitializer {
+                initializer,
+                ..
+            }) => return self.definition_parent(initializer),
+            Some(crate::sema::models::SyntheticDefinitionKind::ClassInitializerDispatch {
+                initializer,
+            }) => return self.definition_parent(initializer),
+            Some(crate::sema::models::SyntheticDefinitionKind::ClassConvenienceInitializer {
+                initializer,
+            }) => return self.definition_parent(initializer),
+            Some(
+                crate::sema::models::SyntheticDefinitionKind::ClassConstructionDescriptor { class }
+                | crate::sema::models::SyntheticDefinitionKind::ClassObjectDescriptor { class },
+            ) => return Some(class),
+            _ => {}
+        }
         let output = self.resolution_output(id.package());
         output.definition_to_parent.get(&id).cloned()
     }
@@ -1535,8 +1513,11 @@ impl<'arena> GlobalContext<'arena> {
     pub fn is_visibility_allowed(self, visibility: Visibility, from: DefinitionID) -> bool {
         match visibility {
             Visibility::Public => true,
-            Visibility::FilePrivate(file) => self.definition_ident(from).span.file == file,
-            Visibility::Private(owner) => self.is_within_definition(from, owner),
+            Visibility::Internal(owner) => from.package() == owner.package(),
+            Visibility::Private(owner) => {
+                self.is_within_definition(from, owner)
+                    || self.is_within_owned_type_extension(from, owner)
+            }
         }
     }
 
@@ -1554,6 +1535,40 @@ impl<'arena> GlobalContext<'arena> {
                 return true;
             }
             current = parent;
+        }
+        false
+    }
+
+    /// A type's separately declared methods need the same private-field access
+    /// as methods nested in its declaration. Interface ownership alone grants
+    /// no access to another package's representation. Unrelated types and
+    /// non-type private scopes keep their existing visibility boundary.
+    fn is_within_owned_type_extension(self, from: DefinitionID, owner: DefinitionID) -> bool {
+        if from.package() != owner.package()
+            || !matches!(
+                self.try_definition_kind(owner),
+                Some(DefinitionKind::Struct | DefinitionKind::Enum)
+            )
+        {
+            return false;
+        }
+        let mut current = Some(from);
+        while let Some(definition) = current {
+            if self.get_impl_type_head(definition) == Some(TypeHead::Nominal(owner)) {
+                return true;
+            }
+            if self.get_impl_type_head(definition) == Some(TypeHead::Reference)
+                && let Some(mut target) = self.get_impl_target_ty(definition)
+            {
+                while let TyKind::Reference(inner) = target.kind() {
+                    target = inner;
+                }
+                target = crate::sema::tycheck::utils::normalize_aliases(self, target);
+                if matches!(target.kind(), TyKind::Adt(definition, _) if definition.id == owner) {
+                    return true;
+                }
+            }
+            current = self.definition_parent(definition);
         }
         false
     }
@@ -1762,13 +1777,20 @@ pub struct CompilerStore<'arena> {
     /// safepoint insertion. Specialization traverses this representation;
     /// codegen consumes `instance_mir_bodies` instead.
     pub mir_packages: RefCell<FxHashMap<PackageIndex, &'arena mir::MirPackage<'arena>>>,
+
     /// Target/profile-local MIR after concrete-instance placement and
     /// safepoint insertion. These bodies are deliberately never serialized.
     pub instance_mir_bodies: RefCell<FxHashMap<Instance<'arena>, &'arena Body<'arena>>>,
+    /// Candidate GC placement remains isolated until the G26 cutover.
+    pub gc_instance_mir_bodies: RefCell<FxHashMap<Instance<'arena>, &'arena Body<'arena>>>,
     /// Session-local escape summaries for concrete monomorphized instances.
     /// They are recomputed from shared MIR rather than serialized.
-    pub instance_escape_summaries: RefCell<FxHashMap<Instance<'arena>, mir::InstanceEscapeSummary>>,
+    pub instance_escape_summaries:
+        RefCell<FxHashMap<Instance<'arena>, crate::mir::InstanceEscapeSummary>>,
     pub queued_mir_bodies: RefCell<FxHashMap<DefinitionID, Body<'arena>>>,
+    /// Source headers needed while aliases are lowered, before full canonical
+    /// constraints exist. Imported packages already carry collected constraints.
+    pub source_generic_bounds: RefCell<FxHashMap<(DefinitionID, DefinitionID), hir::GenericBounds>>,
     pub llvm_modules: RefCell<FxHashMap<PackageIndex, String>>,
     pub module_artifacts: RefCell<FxHashMap<PackageIndex, ModuleArtifact>>,
     pub link_inputs: RefCell<Vec<PathBuf>>,
@@ -1780,6 +1802,15 @@ pub struct CompilerStore<'arena> {
     pub specialization_instances: RefCell<FxHashMap<PackageIndex, FxHashSet<Instance<'arena>>>>,
     /// Per-package set of instances emitted into that package module artifact.
     pub emitted_instances: RefCell<FxHashMap<PackageIndex, FxHashSet<Instance<'arena>>>>,
+    /// Concrete class publications and virtual specializations observed in each
+    /// package. Imported facts let the final module close generic dispatch.
+    pub class_dispatch_types: RefCell<FxHashMap<PackageIndex, FxHashSet<Ty<'arena>>>>,
+    pub class_super_calls: RefCell<FxHashMap<PackageIndex, FxHashSet<crate::span::Span>>>,
+    pub class_dispatch_calls: RefCell<FxHashMap<PackageIndex, FxHashSet<Instance<'arena>>>>,
+    /// Stored concrete types and generic openings observed in package code.
+    /// Imported facts close concrete dispatch in the eventual executable.
+    pub erased_opening_types: RefCell<FxHashMap<PackageIndex, FxHashSet<Ty<'arena>>>>,
+    pub erased_opening_calls: RefCell<FxHashMap<PackageIndex, FxHashSet<Instance<'arena>>>>,
     /// Global set of instances that have been compiled (to avoid duplicate work)
     pub compiled_instances: RefCell<FxHashSet<Instance<'arena>>>,
     /// Target-specific layout information (shared between MIR and codegen).
@@ -1822,8 +1853,11 @@ impl<'arena> CompilerStore<'arena> {
             inline_mir_packages: Default::default(),
             mir_packages: Default::default(),
             instance_mir_bodies: Default::default(),
+            gc_instance_mir_bodies: Default::default(),
             instance_escape_summaries: Default::default(),
+
             queued_mir_bodies: Default::default(),
+            source_generic_bounds: Default::default(),
             llvm_modules: Default::default(),
             module_artifacts: Default::default(),
             link_inputs: Default::default(),
@@ -1832,6 +1866,11 @@ impl<'arena> CompilerStore<'arena> {
             output_root,
             specialization_instances: Default::default(),
             emitted_instances: Default::default(),
+            class_dispatch_types: Default::default(),
+            class_dispatch_calls: Default::default(),
+            erased_opening_types: Default::default(),
+            erased_opening_calls: Default::default(),
+            class_super_calls: Default::default(),
             compiled_instances: Default::default(),
             target_layout,
             std_provider_index: std::cell::Cell::new(None),
@@ -2005,6 +2044,7 @@ pub struct CommonTypes<'arena> {
     pub float64: Ty<'arena>,
 
     pub self_type_parameter: Ty<'arena>,
+    pub existential_self: Ty<'arena>,
 
     pub error: Ty<'arena>,
 }
@@ -2047,19 +2087,25 @@ impl<'a> CommonTypes<'a> {
                 mk(kind)
             },
 
+            existential_self: mk(TyKind::ExistentialSelf(0)),
             error: mk(TyKind::Error),
         }
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct TypeDatabase<'arena> {
     pub def_to_ty: FxHashMap<DefinitionID, Ty<'arena>>,
     pub def_to_const: FxHashMap<DefinitionID, Const<'arena>>,
     pub def_to_static_mutability: FxHashMap<DefinitionID, hir::Mutability>,
-    pub def_to_static_init: FxHashMap<DefinitionID, Const<'arena>>,
     pub def_to_fn_sig: FxHashMap<DefinitionID, &'arena LabeledFunctionSignature<'arena>>,
     pub def_to_async_body_output: FxHashMap<DefinitionID, Ty<'arena>>,
+    /// Conditional receiver/result proof for adopting generic interface defaults.
+    pub def_to_class_default_contract:
+        FxHashMap<DefinitionID, crate::sema::models::ClassDefaultContract>,
+    pub erased_async_self_arguments: FxHashMap<DefinitionID, GenericArguments<'arena>>,
+    pub class_adoptions: Vec<crate::sema::models::ClassAdoption<'arena>>,
+
     pub def_to_struct_def: FxHashMap<DefinitionID, &'arena StructDefinition<'arena>>,
     pub def_to_enum_def: FxHashMap<DefinitionID, &'arena EnumDefinition<'arena>>,
     pub def_to_constraints: FxHashMap<DefinitionID, Vec<crate::span::Spanned<Constraint<'arena>>>>,
@@ -2069,6 +2115,10 @@ pub struct TypeDatabase<'arena> {
     pub impl_to_target_ty: FxHashMap<DefinitionID, Ty<'arena>>,
     pub type_head_to_impls: FxHashMap<TypeHead, Vec<DefinitionID>>,
     pub type_head_to_members: FxHashMap<TypeHead, TypeMemberIndex>,
+    /// Native declaration capabilities, independent of ordinary method names.
+    pub native_subscripts: FxHashMap<DefinitionID, NativeSubscriptEntry>,
+    /// Static class view of each logical subscript, including inherited capabilities.
+    pub class_subscripts: FxHashMap<DefinitionID, Vec<(DefinitionID, NativeSubscriptEntry)>>,
     pub type_head_to_properties:
         FxHashMap<TypeHead, FxHashMap<Symbol, ComputedPropertyEntry<'arena>>>,
     pub type_head_to_interface_properties:
@@ -2113,12 +2163,161 @@ pub struct TypeDatabase<'arena> {
     pub visible_traits: FxHashMap<DefinitionID, Rc<FxHashSet<DefinitionID>>>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct NativeSubscriptEntry {
+    pub getter_is_default: bool,
+    pub setter_is_default: bool,
+    pub is_override: bool,
+    pub is_final: bool,
+    pub getter: Option<DefinitionID>,
+    pub setter: Option<DefinitionID>,
+    pub address: Option<DefinitionID>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NativeSubscriptAccess {
+    Get,
+    Set,
+    Address,
+}
+
+impl NativeSubscriptAccess {
+    pub fn method_name(self) -> &'static str {
+        match self {
+            Self::Get => "__subscript_get",
+            Self::Set => "__subscript_set",
+            Self::Address => "__subscript_address",
+        }
+    }
+    pub fn method(self, entry: NativeSubscriptEntry) -> Option<DefinitionID> {
+        match self {
+            Self::Get => entry.getter,
+            Self::Set => entry.setter,
+            Self::Address => entry.address,
+        }
+    }
+}
+
+impl<'ctx> GlobalContext<'ctx> {
+    pub fn class_subscripts(self, class: Ty<'ctx>) -> Vec<(DefinitionID, NativeSubscriptEntry)> {
+        let TyKind::Adt(definition, _) = class.kind() else {
+            return vec![];
+        };
+        let mut entries = self.with_type_database(definition.id.package(), |db| {
+            db.class_subscripts
+                .get(&definition.id)
+                .cloned()
+                .unwrap_or_default()
+        });
+        // Extensions and conformance-owned defaults may be declared downstream
+        // of the nominal class. Keep their families in the declaring package.
+        let additions = self.collect_from_databases(|db| db.native_subscripts.iter().map(|(&id, &entry)| (id, entry)).collect()).into_iter().filter(|(id, _)| {
+            self.definition_parent(*id).and_then(|parent| self.get_impl_target_ty(parent)).is_some_and(|target| matches!(target.kind(), TyKind::Adt(owner, _) if owner.id == definition.id))
+        });
+        let adoptions = self.collect_from_databases(|db| db.class_adoptions.iter().filter_map(|adoption| {
+            let record = db.conformance_records.get(&adoption.conformance)?;
+            matches!(record.interface.self_ty()?.kind(), TyKind::Adt(owner, _) if owner.id == definition.id).then_some(*adoption)
+        }).collect());
+        let defaults = adoptions.into_iter().flat_map(|adoption| {
+            adoption
+                .methods
+                .iter()
+                .filter_map(|method| self.native_subscript_for_accessor(method.slot.implementation))
+        });
+        for (id, entry) in additions.into_iter().chain(defaults) {
+            if !entries.iter().any(|(_, existing)| {
+                [entry.getter, entry.setter, entry.address]
+                    .into_iter()
+                    .flatten()
+                    .any(|source| {
+                        [existing.getter, existing.setter, existing.address].contains(&Some(source))
+                    })
+            }) {
+                entries.push((id, entry));
+            }
+        }
+        entries
+    }
+
+    /// Capability lookup follows the static class view. An inherited getter
+    /// can coexist with a setter/address implemented in a different ancestor.
+    pub fn native_subscript_for_receiver(
+        self,
+        accessor: DefinitionID,
+        receiver: Ty<'ctx>,
+    ) -> Option<(DefinitionID, NativeSubscriptEntry)> {
+        let raw = self.native_subscript_for_accessor(accessor)?;
+        if self.is_class_type(receiver)
+            && self
+                .definition_parent(accessor)
+                .and_then(|parent| self.get_impl_target_ty(parent))
+                .is_some_and(|target| self.is_class_type(target))
+        {
+            return self
+                .class_subscripts(receiver)
+                .into_iter()
+                .find(|(_, entry)| {
+                    [entry.getter, entry.setter, entry.address].contains(&Some(accessor))
+                });
+        }
+        Some(raw)
+    }
+
+    pub fn native_subscript_for_accessor(
+        self,
+        accessor: DefinitionID,
+    ) -> Option<(DefinitionID, NativeSubscriptEntry)> {
+        let direct = self.with_type_database(accessor.package(), |db| {
+            db.native_subscripts.iter().find_map(|(&id, &entry)| {
+                [entry.getter, entry.setter, entry.address]
+                    .contains(&Some(accessor))
+                    .then_some((id, entry))
+            })
+        });
+        if direct.is_some() {
+            return direct;
+        }
+        let kind = self
+            .store
+            .synthetic_definitions
+            .borrow()
+            .get(&accessor)
+            .map(|definition| definition.kind)?;
+        let crate::sema::models::SyntheticDefinitionKind::AdoptedClassDefault {
+            conformance,
+            source,
+        } = kind
+        else {
+            return None;
+        };
+        let (id, mut entry) = self.native_subscript_for_accessor(source)?;
+        let adoption = self.with_type_database(accessor.package(), |db| {
+            db.class_adoptions
+                .iter()
+                .find(|adoption| adoption.conformance == conformance)
+                .copied()
+        })?;
+        let remap = |requirement: Option<DefinitionID>| {
+            requirement.and_then(|requirement| {
+                adoption
+                    .methods
+                    .iter()
+                    .find(|method| method.requirement == requirement)
+                    .map(|method| method.slot.implementation)
+            })
+        };
+        entry.getter = remap(entry.getter);
+        entry.setter = remap(entry.setter);
+        entry.address = remap(entry.address);
+        Some((id, entry))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ComputedPropertyEntry<'arena> {
     pub property_id: DefinitionID,
     pub ty: Ty<'arena>,
     pub getter_id: DefinitionID,
-    pub setter_id: Option<DefinitionID>,
     pub visibility: crate::sema::resolve::models::Visibility,
 }
 
@@ -2130,17 +2329,15 @@ pub struct MemberSet {
 
 #[derive(Default, Debug, Clone)]
 pub struct TypeMemberIndex {
-    // Inherent methods from `impl Type {}`
+    // Inherent methods from `extend Type`.
     pub inherent_static: FxHashMap<Symbol, MemberSet>,
     pub inherent_instance: FxHashMap<Symbol, MemberSet>,
 
-    // Trait methods from `impl Trait for Type {}`
+    // Interface methods from `conform Type to Interface`.
     // Key: (trait_id, method_name) to group overloads per trait
     pub trait_methods: FxHashMap<(DefinitionID, Symbol), MemberSet>,
     // Fast lookup for all trait methods by symbol, regardless of trait.
     pub trait_methods_by_name: FxHashMap<Symbol, Vec<DefinitionID>>,
-
-    pub operators: FxHashMap<hir::OperatorKind, MemberSet>,
 }
 
 impl<'arena> GlobalContext<'arena> {
@@ -2196,7 +2393,12 @@ impl<'arena> GlobalContext<'arena> {
 
             // Also register as a member so lookup finds it
             let members = db.type_head_to_members.entry(type_head).or_default();
-            let member_set = members.inherent_instance.entry(name).or_default();
+            let member_set =
+                if info.kind == crate::sema::models::SyntheticMethodKind::MemberwiseDecode {
+                    members.inherent_static.entry(name).or_default()
+                } else {
+                    members.inherent_instance.entry(name).or_default()
+                };
             if !member_set.members.contains(&method_id) {
                 member_set.members.push(method_id);
             }
@@ -2223,3 +2425,6 @@ impl<'arena> GlobalContext<'arena> {
         self.find_in_databases(|db| db.synthetic_methods.get(&(type_head, method_id)).cloned())
     }
 }
+
+#[cfg(test)]
+mod tests;

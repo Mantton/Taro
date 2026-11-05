@@ -1,0 +1,54 @@
+// Run beside http_server: taro run examples/http_scraper.tr
+// Or supply a page URL and a JSON-array URL, including verified HTTPS URLs.
+import std::collections::List
+import std::encoding::Codable
+import std::http::Client
+
+struct Post: Codable {
+    id: int32
+    title: string
+}
+
+const MAX_BYTES: usize = 1024 * 1024
+
+// Extract the demo page's literal <title>...</title> pair.
+func extractTitle(_ html: string) -> string? {
+    match html.splitOnce("<title>") {
+        case .some(parts) => match parts.1.splitOnce("</title>") {
+            case .some(found) => return .some(found.0.trim())
+            case .none => return .none
+        }
+        case .none => return .none
+    }
+}
+
+func scrapeTitle(_ client: &Client, _ url: string) async -> string? {
+    response := await client.get(url).unwrap()
+    defer { var _ = response.close() }
+    std::assert(response.status >= 200 && response.status < 300, "page request failed")
+    html := await response.body.readToString(maxBytes: MAX_BYTES).unwrap()
+    return extractTitle(html)
+}
+
+func main() async {
+    args := std::env::args()
+    std::assert(args.len() == 1 || args.len() == 3, "usage: http_scraper [page-url json-url]")
+    pageURL := if args.len() == 3 { args.at(1) } else { "http://127.0.0.1:8080/" }
+    jsonURL := if args.len() == 3 { args.at(2) } else { "http://127.0.0.1:8080/posts" }
+    client := Client::new().unwrap()
+    defer { client.close() }
+
+    match await scrapeTitle(&client, pageURL) {
+        case .some(title) => std::println(std::sprintf("Page title: %s", title))
+        case .none => std::println("Page has no title")
+    }
+
+    response := await client.get(jsonURL).unwrap()
+    defer { var _ = response.close() }
+    std::assert(response.status >= 200 && response.status < 300, "JSON request failed")
+    options := std::json::Options::new().withMaxInputBytes(MAX_BYTES)
+    items := await response.json[List[Post]](options: options).unwrap()
+    for item in items {
+        std::println(std::sprintf("%d: %s", item.id, item.title))
+    }
+}

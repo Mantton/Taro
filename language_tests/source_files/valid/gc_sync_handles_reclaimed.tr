@@ -1,0 +1,38 @@
+// ENV: TARO_WORKERS=1
+// Unreachable mutex, rwlock and channel handles release their native
+// bookkeeping after collection; reachable ones stay usable (G50).
+extern "C" {
+    unsafe func __gc__test_probe_create(_ target: *const uint8) -> *mut uint8
+    unsafe func __gc__test_collect_probe_is_live(_ probe: *mut uint8) -> bool
+    unsafe func __gc__test_live_sync_handles() -> usize
+}
+func collect() {
+    probe := unsafe { __gc__test_probe_create(0 as *const uint8) }
+    var _ = unsafe { __gc__test_collect_probe_is_live(probe) }
+}
+
+func abandonHandles() {
+    var round = 0
+    while round < 50 {
+        var _ = std::sync::Mutex[int64]::new(round as int64).unwrap()
+        var _ = std::sync::RwLock[int64]::new(round as int64).unwrap()
+        var _ = std::sync::bounded[string](2).unwrap()
+        round += 1
+    }
+}
+
+func main() async {
+    collect()
+    baseline := unsafe { __gc__test_live_sync_handles() }
+    var (sender, receiver) = std::sync::bounded[string](1).unwrap()
+    abandonHandles()
+    collect()
+    live := unsafe { __gc__test_live_sync_handles() }
+    std::testing::assertEqual(live, baseline + 1, "only the reachable channel keeps its handle")
+    var _ = sender.trySend("still " + "open")
+    match receiver.tryRecv() {
+        case .ok(.some(text)) => std::testing::assertEqual(text, "still open", "a reachable channel keeps working")
+        case _ => assert(false, "message expected")
+    }
+    print("PASS: unreachable sync handles are reclaimed\n")
+}

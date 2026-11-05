@@ -1,0 +1,5 @@
+func main() {
+    var byte: uint8 = 97_u8
+    var data: *const uint8 = unsafe { &byte as *const uint8 }
+    var text: string = std::intrinsic::__intrinsic_string_from_parts(data, 1)
+}

@@ -1,0 +1,22 @@
+// ENV: TARO_WORKERS=1
+// A suspended caller's GC frame is a root: a child forces collection while the
+// caller awaits, and the caller's buffer must survive (G20 frame tracing).
+extern "C" {
+    unsafe func __gc__test_probe_create(_ target: *const uint8) -> *mut uint8
+    unsafe func __gc__test_collect_probe_is_live(_ probe: *mut uint8) -> bool
+}
+@noinline
+func bufferProbe(_ buffer: std::bytes::Buffer) -> *mut uint8 {
+    unsafe { __gc__test_probe_create(buffer.bytes().asPtr()) }
+}
+func collectInChild(_ probe: *mut uint8) async -> bool {
+    await std::testing::yieldNow()
+    unsafe { __gc__test_collect_probe_is_live(probe) }
+}
+func main() async {
+    buffer := std::bytes::Buffer::new("suspended frame")
+    probe := bufferProbe(buffer)
+    assert(await collectInChild(probe), "suspended caller must retain its buffer")
+    assert(buffer.toString() == "suspended frame", "caller still uses its buffer after await")
+    print("PASS: suspended frames keep their values\n")
+}

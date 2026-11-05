@@ -1,0 +1,13 @@
+// G22: a second panic while a spawned task unwinds its first panic ends the
+// process, and the report names both failures.
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: panic while unwinding: second in task (while unwinding from: first in task)
+func main() async {
+    task := std::task::spawn(() async => {
+        defer { panic("second in task") }
+        await std::testing::yieldNow()
+        panic("first in task")
+    })
+    var _ = await task.result()
+    print("unreachable\n")
+}

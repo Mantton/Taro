@@ -1,5 +1,5 @@
-impl[Value] Value {
-    func identity(self) -> Value {
+extend[Value] Value {
+    func identity() -> Value {
         self
     }
 }

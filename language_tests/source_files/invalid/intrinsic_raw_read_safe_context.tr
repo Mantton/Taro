@@ -1,0 +1,7 @@
+import std::mem::MaybeUninit
+import std::intrinsic::__intrinsic_ptr_read
+func readUninitialized() -> int32 {
+    var storage: MaybeUninit[int32] = MaybeUninit[int32]::uninit()
+    return __intrinsic_ptr_read[int32](storage.asPtr())
+}
+func main() {}

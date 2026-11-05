@@ -1,0 +1,22 @@
+func main() {
+    var array: [int32; 3] = [1, 2, 3]
+    var fromArray: std::collections::List[int32] = array[(0 as usize)..(2 as usize)]
+    fromArray[0 as usize] = 9
+    assert(array[0 as usize] == 1, "array range copies")
+    var list: std::collections::List[int32] = [1, 2, 3]
+    var fromList: std::collections::List[int32] = list[(0 as usize)..(2 as usize)]
+    fromList[0 as usize] = 9
+    assert(list[0 as usize] == 1, "list range copies")
+    var closed: List[int32] = list[1..=2]
+    assert(closed.len() == 2 && closed[0] == 2 && closed[1] == 3, "closed range copies and infers usize")
+    assert(array[3..3].isEmpty() && list[3..3].isEmpty(), "empty range at the logical end")
+    span := array.asSpan()
+    var view: [int32; ..] = span[(0 as usize)..(2 as usize)]
+    view[0 as usize] = 7
+    assert(array[0 as usize] == 7, "span range shares")
+    span[1..=2][0] = 11
+    assert(array[1] == 11, "closed span ranges share writable storage")
+    assert(span[3..3].isEmpty(), "empty span range at the end")
+    var empty = List[int32]::new()
+    assert(empty[0..0].isEmpty() && empty.asSpan()[0..0].isEmpty(), "empty collection ranges")
+}

@@ -1,0 +1,4 @@
+error: no member named 'entry' found on type Dictionary[int32, int32]
+ -> language_tests/source_files/invalid/dictionary_entry_removed.tr:3:20
+	    entry := values.entry(1)
+	                    ^^^^^

@@ -1,0 +1,31 @@
+// A thread blocked in an `extern "blocking"` call parks at a GC safepoint for
+// the call's duration. Here a blocking-pool read waits for bytes main writes
+// only after collecting (forced by stress mode), so a blocked thread that did
+// not park would stall that collection forever.
+// ENV: TARO_GC_STRESS=1
+// ENV: TARO_WORKERS=2
+
+func main() async {
+    var command = std::process::Command::new("/bin/cat")
+    command.stdin(.piped).stdout(.piped)
+    var child = command.spawn().unwrap()
+    input := child.takeStdin().unwrap()
+    output := child.takeStdout().unwrap()
+    reader := std::task::spawn(() async => {
+        return await output.readToStringAsync()
+    })
+
+    // Give the reader time to block in read(2), then allocate (and collect)
+    // before releasing it.
+    await std::task::sleep(std::time::Duration::fromMillis(100_u64))
+    var words: List[string] = []
+    var index = 0
+    while index < 64 {
+        words.append(std::sprintf("word-%d", index))
+        index += 1
+    }
+    input.writeString(words[63]).unwrap()
+    input.close().unwrap()
+    std::printf("reader saw: %s\n", (await reader.result()).unwrap().unwrap())
+    var _ = child.wait()
+}

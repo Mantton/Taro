@@ -51,9 +51,13 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
             StatementKind::StorageLive(local) => {
                 write!(f, "storage_live(%{:?})", local)
             }
+            StatementKind::StorageDead(local) => {
+                write!(f, "storage_dead(%{:?})", local)
+            }
             StatementKind::SetInitialized(local) => {
                 write!(f, "set_initialized(%{:?})", local)
             }
+
             StatementKind::Assign(place, rvalue) => {
                 self.write_place(place, f)?;
                 write!(f, " = ")?;
@@ -104,7 +108,6 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
             TerminatorKind::Call {
                 func,
                 args,
-                devirt_hint,
                 destination,
                 target,
                 unwind,
@@ -120,19 +123,12 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                     self.write_operand(arg, f)?;
                 }
                 write!(f, ") -> bb{:?}", target)?;
-                if let Some(hint) = devirt_hint {
-                    write!(
-                        f,
-                        " [devirt -> {}::<...> self={}]",
-                        self.gcx.definition_symbol_or_fallback(hint.impl_def_id),
-                        hint.concrete_self_ty.format(self.gcx)
-                    )?;
-                }
                 match unwind {
                     CallUnwindAction::Cleanup(bb) => write!(f, " unwind bb{:?}", bb),
                     CallUnwindAction::Terminate => write!(f, " unwind terminate"),
                 }
             }
+
             TerminatorKind::Yield {
                 value,
                 resume,
@@ -175,14 +171,8 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
     fn write_operand(&self, op: &Operand<'ctx>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match op {
             Operand::Copy(place) => self.write_place(place, f),
-            Operand::Move(place) => {
-                write!(f, "move ")?;
-                self.write_place(place, f)
-            }
+
             Operand::CopyWith(place, modifiers) => {
-                if modifiers.take {
-                    write!(f, "[take] ")?;
-                }
                 if modifiers.init {
                     write!(f, "[init] ")?;
                 }
@@ -216,7 +206,13 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
 
     fn write_rvalue(&self, rvalue: &Rvalue<'ctx>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match rvalue {
+            Rvalue::Alloc { ty } => write!(f, "gc_alloc {}", ty.format(self.gcx)),
             Rvalue::Use(op) => self.write_operand(op, f),
+            Rvalue::CopyValue { source } => {
+                write!(f, "copy_owned(")?;
+                self.write_place(source, f)?;
+                write!(f, ")")
+            }
             Rvalue::UnaryOp { op, operand } => {
                 write!(f, "{:?}", op)?; // Simple debug print for op enum
                 self.write_operand(operand, f)
@@ -226,9 +222,8 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                 write!(f, " {:?} ", op)?; // Simple debug print for op enum
                 self.write_operand(rhs, f)
             }
-            Rvalue::Ref { mutable, place } => {
-                let kw = if *mutable { "&mut " } else { "&" };
-                write!(f, "{}", kw)?;
+            Rvalue::Ref { place } => {
+                write!(f, "&")?;
                 self.write_place(place, f)
             }
             Rvalue::Discriminant { place } => {
@@ -236,7 +231,11 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                 self.write_place(place, f)?;
                 write!(f, ")")
             }
-            Rvalue::Alloc { ty } => write!(f, "alloc {}", ty.format(self.gcx)),
+            Rvalue::CleanupAddress { place } => {
+                write!(f, "cleanup_address(")?;
+                self.write_place(place, f)?;
+                write!(f, ")")
+            }
             Rvalue::Zeroed { ty } => write!(f, "zeroed {}", ty.format(self.gcx)),
             Rvalue::Cast { operand, ty, kind } => {
                 self.write_operand(operand, f)?;

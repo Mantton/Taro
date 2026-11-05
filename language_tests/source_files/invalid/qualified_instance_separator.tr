@@ -1,0 +1,8 @@
+struct Counter {
+    value: int32
+}
+
+func main() {
+    counter := Counter { value: 1 }
+    print(counter::value)
+}

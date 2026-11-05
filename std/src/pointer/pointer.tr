@@ -1,4 +1,8 @@
-import std.intrinsic.{
+// Raw pointers carry no validity, initialization, lifetime or exclusivity
+// guarantee. Memory access is unsafe. A pointer stored in traced memory or a
+// live local retains GC storage, including interior addresses; native memory
+// remains the caller's responsibility. Prefer checked slices in safe APIs.
+import std::intrinsic::{
     __intrinsic_ptr_add,
     __intrinsic_ptr_sub,
     __intrinsic_ptr_offset,
@@ -10,110 +14,119 @@ import std.intrinsic.{
     __intrinsic_memmove,
     __intrinsic_memset,
 }
-import std.mem.sizeOf
+import std::mem::sizeOf
 
-impl[T] *T {
+extend[T] *T {
     @inline
-    public func add(self, _ n: usize) -> *T {
+    public func add(_ n: usize) -> *T {
         unsafe { __intrinsic_ptr_add(self, n) }
     }
 
     @inline
-    public func sub(self, _ n: usize) -> *T {
+    public func sub(_ n: usize) -> *T {
         unsafe { __intrinsic_ptr_sub(self, n) }
     }
 
     @inline
-    public func offset(self, _ n: isize) -> *T {
+    public func offset(_ n: isize) -> *T {
         unsafe { __intrinsic_ptr_offset(self, n) }
     }
 
     @inline
-    public func byteAdd(self, _ n: usize) -> *T {
+    public func byteAdd(_ n: usize) -> *T {
         unsafe { __intrinsic_ptr_byte_add(self, n) }
     }
 
     @inline
-    public func byteSub(self, _ n: usize) -> *T {
+    public func byteSub(_ n: usize) -> *T {
         unsafe { __intrinsic_ptr_byte_sub(self, n) }
     }
 
     @inline
-    public func read(self) -> T {
+    /// Safety: The pointer must address an initialized T. Reading copies the value; managed pointers in the copy retain their targets.
+    public unsafe func read() -> T {
         unsafe { __intrinsic_ptr_read(self) }
     }
 
-    public func copyTo(self, _ dst: *mut T, _ count: usize) {
+    /// Safety: Both ranges must be valid for count elements. This copies element bytes; both ranges must remain properly initialized. Ranges may overlap.
+    public unsafe func copyTo(_ dst: *mut T, _ count: usize) {
         unsafe { __intrinsic_memmove(dst, self, count * sizeOf[T]()) }
     }
 
-    public func copyToNonoverlapping(self, _ dst: *mut T, _ count: usize) {
+    /// Safety: Both ranges must be valid and disjoint for count elements. This copies element bytes; both ranges must remain properly initialized.
+    public unsafe func copyToNonoverlapping(_ dst: *mut T, _ count: usize) {
         unsafe { __intrinsic_memcpy(dst, self, count * sizeOf[T]()) }
     }
 
-    public func readBytes(self, _ dst: *mut uint8, _ count: usize) {
+    /// Safety: The source and destination must be valid for count bytes and must not overlap. Pointers into GC storage retain that allocation.
+    public unsafe func readBytes(_ dst: *mut uint8, _ count: usize) {
         unsafe { __intrinsic_memcpy(dst, self as *uint8, count) }
     }
 
-    public func null() -> *T {
+    public static func null() -> *T {
         unsafe { 0 as *T }
     }
 }
 
-
-impl[T] *mut T {
+extend[T] *mut T {
     @inline
-    public func add(self, _ n: usize) -> *mut T {
+    public func add(_ n: usize) -> *mut T {
         unsafe { __intrinsic_ptr_add(self as *T, n) as *mut T }
     }
 
     @inline
-    public func sub(self, _ n: usize) -> *mut T {
+    public func sub(_ n: usize) -> *mut T {
         unsafe { __intrinsic_ptr_sub(self as *T, n) as *mut T }
     }
 
     @inline
-    public func offset(self, _ n: isize) -> *mut T {
+    public func offset(_ n: isize) -> *mut T {
         unsafe { __intrinsic_ptr_offset(self as *T, n) as *mut T }
     }
 
     @inline
-    public func byteAdd(self, _ n: usize) -> *mut T {
+    public func byteAdd(_ n: usize) -> *mut T {
         unsafe { __intrinsic_ptr_byte_add(self as *T, n) as *mut T }
     }
 
     @inline
-    public func byteSub(self, _ n: usize) -> *mut T {
+    public func byteSub(_ n: usize) -> *mut T {
         unsafe { __intrinsic_ptr_byte_sub(self as *T, n) as *mut T }
     }
 
     @inline
-    public func read(self) -> T {
+    /// Safety: The pointer must address an initialized T. Reading copies the value; managed pointers in the copy retain their targets.
+    public unsafe func read() -> T {
         unsafe { __intrinsic_ptr_read(self) }
     }
 
     @inline
-    public func write(self, _ val: T) {
+    /// Safety: The destination must be valid and writable for T. This initializes or overwrites storage without reading the previous bytes.
+    public unsafe func write(_ val: T) {
         unsafe { __intrinsic_ptr_write(self, val) }
     }
 
-    public func copyTo(self, _ dst: *mut T, _ count: usize) {
+    /// Safety: Both ranges must be valid for count elements. This copies element bytes; both ranges must remain properly initialized. Ranges may overlap.
+    public unsafe func copyTo(_ dst: *mut T, _ count: usize) {
         unsafe { __intrinsic_memmove(dst, self, count * sizeOf[T]()) }
     }
 
-    public func copyToNonoverlapping(self, _ dst: *mut T, _ count: usize) {
+    /// Safety: Both ranges must be valid and disjoint for count elements. This copies element bytes; both ranges must remain properly initialized.
+    public unsafe func copyToNonoverlapping(_ dst: *mut T, _ count: usize) {
         unsafe { __intrinsic_memcpy(dst, self, count * sizeOf[T]()) }
     }
 
-    public func writeBytes(self, _ val: uint8, _ count: usize) {
+    /// Safety: The destination must be writable for count bytes. Filled bytes must not be interpreted as T unless they form a valid initialized value.
+    public unsafe func writeBytes(_ val: uint8, _ count: usize) {
         unsafe { __intrinsic_memset(self, val, count) }
     }
 
-    public func readBytes(self, _ dst: *mut uint8, _ count: usize) {
+    /// Safety: The source and destination must be valid for count bytes and must not overlap. Pointers into GC storage retain that allocation.
+    public unsafe func readBytes(_ dst: *mut uint8, _ count: usize) {
         unsafe { __intrinsic_memcpy(dst, self as *uint8, count) }
     }
 
-    public func null() -> *mut T {
+    public static func null() -> *mut T {
         unsafe { 0 as *mut T }
     }
 }

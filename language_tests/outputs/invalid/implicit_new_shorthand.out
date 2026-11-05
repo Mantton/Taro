@@ -1,0 +1,16 @@
+error: unknown associated symbol named 'init' on type 'Counter'
+ -> language_tests/source_files/invalid/implicit_new_shorthand.tr:5:34
+	    static func wrong() -> Self { Self(7) }
+	                                  ^^^^
+error: unknown associated symbol named 'init' on type 'Counter'
+ -> language_tests/source_files/invalid/implicit_new_shorthand.tr:11:13
+	    value := Counter(7)
+	             ^^^^^^^
+error: a type name cannot select `new` implicitly; use an explicit `::new` factory
+ -> language_tests/source_files/invalid/implicit_new_shorthand.tr:12:15
+	    factory := Counter
+	               ^^^^^^^
+error: a type name cannot select `new` implicitly; use an explicit `::new` factory
+ -> language_tests/source_files/invalid/implicit_new_shorthand.tr:13:13
+	    alias := Alias(9)
+	             ^^^^^

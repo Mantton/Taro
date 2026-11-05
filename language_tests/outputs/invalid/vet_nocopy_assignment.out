@@ -1,0 +1,5 @@
+Checking – vet_nocopy_assignment
+warning: copy of @NoCopy value 'mutex'; use a reference
+ -> language_tests/source_files/invalid/vet_nocopy_assignment.tr:4:14
+	    copied := mutex
+	              ^^^^^

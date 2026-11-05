@@ -1,0 +1,3 @@
+class Document { revision: int32; title: string }
+extend Document { init() { self.revision = 1 } }
+func main() { var document: Document = Document() }

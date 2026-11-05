@@ -1,0 +1,7 @@
+func asyncValue() async -> int32 { 1 }
+func badAwait() async { defer await asyncValue() }
+func main() {
+    defer break
+    defer continue
+    defer return
+}

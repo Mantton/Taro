@@ -1,4 +1,4 @@
-func fallibleValue(_ succeeds: bool) -> std.result.Result[int32, string] {
+func fallibleValue(_ succeeds: bool) -> std::result::Result[int32, string] {
     if succeeds {
         return .ok(41_i32)
     }

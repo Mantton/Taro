@@ -1,53 +1,61 @@
-// EXPECT_STDERR_NOT_CONTAINS: handled-observation-panic
-// EXPECT_STDERR_COUNT: 1 unobserved task panic: abandoned-observation-panic
-// EXPECT_STDERR_COUNT: 1 unobserved task panic: detached-observation-panic
+// A spawned task's panic is reported once, when it escapes the task body,
+// whether or not a handle later observes it.
+// One worker orders each panicking task's report before main resumes: main
+// exits without draining background tasks, so on several workers it could
+// otherwise finish before a detached report is written.
+// ENV: TARO_WORKERS=1
+// EXPECT_STDERR_NOT_CONTAINS: unobserved task panic
+// EXPECT_STDERR_COUNT: 1 task panic: handled-observation-panic
+// EXPECT_STDERR_COUNT: 1 task panic: abandoned-observation-panic
+// EXPECT_STDERR_COUNT: 1 task panic: detached-observation-panic
 // EXPECT_STDERR_CONTAINS: async task trace:
 // EXPECT_STDERR_CONTAINS: task_panic_observation.tr
 
 func main() async {
-    let handled = std.task.spawn(|| async {
-        await std.testing.yieldNow()
-        std.panic.panic("handled-observation-panic")
+    handled := std::task::spawn(() async => {
+        await std::testing::yieldNow()
+        std::panic::panic("handled-observation-panic")
     })
-    let result = await handled.result()
-    let message = match result {
-        case .ok(_) => std.panic.panic("handled task panic should not succeed")
+    result := await handled.result()
+    message := match result {
+        case .ok(_) => std::panic::panic("handled task panic should not succeed")
         case .err(error) => match error {
-            case .cancelled => std.panic.panic("handled task panic should not be cancelled")
+            case .cancelled => std::panic::panic("handled task panic should not be cancelled")
             case .panicked(payload) => payload.message()
         }
     }
 
-    // The returned message points into the GC-backed payload. It must remain
-    // valid after the original PanicPayload leaves scope and collection runs.
-    std.runtime.collect()
-    std.testing.assertEqual(
+    // The returned message owns independent immutable storage. It stays valid
+    // after the original PanicPayload leaves scope and its report is released.
+    std::testing::assertEqual(
         message,
         "handled-observation-panic",
         "handled panic payload should survive collection",
     )
-    std.print("handled task panic observed\n")
+    std::print("handled task panic observed\n")
 
-    let (readySender, readyReceiver) = match std.sync.bounded[int32](1) {
+    var (readySender, readyReceiver) = match std::sync::bounded[int32](1) {
         case .ok(value) => value
-        case .err(_) => std.panic.panic("observation channel should be created")
+        case .err(_) => std::panic::panic("observation channel should be created")
     }
     {
-        let childReady = readySender
-        let abandoned = std.task.spawn(|| async {
-            match await childReady.send(1_i32) {
-                case .ok(_) => {}
-                case .err(_) => std.panic.panic("observation signal should be sent")
-            }
-            std.panic.panic("abandoned-observation-panic")
+        childReady := readySender
+        abandoned := std::task::spawn(() async => {
+            // Notify only after the panic has started.
+            defer { childReady.trySend(1_i32).unwrap() }
+            std::panic::panic("abandoned-observation-panic")
         })
         match await readyReceiver.recv() {
             case .some(_) => {}
-            case .none => std.panic.panic("observation signal should be received")
+            case .none => std::panic::panic("observation signal should be received")
         }
     }
-    std.task.detached(|| async {
-        await std.testing.yieldNow()
-        std.panic.panic("detached-observation-panic")
+    detachedReady := readySender
+    std::task::detached(() async => {
+        defer { detachedReady.trySend(1_i32).unwrap() }
+        await std::testing::yieldNow()
+        std::panic::panic("detached-observation-panic")
     })
+    // Background work does not keep the process alive; observe its cleanup.
+    assert((await readyReceiver.recv()).unwrap() == 1_i32, "detached panic started")
 }

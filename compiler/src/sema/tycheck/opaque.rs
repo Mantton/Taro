@@ -128,17 +128,17 @@ mod tests {
 
     const PRELUDE: &str = r#"
 interface Named {
-    func name(&self) -> int32
+    func name() -> int32
 }
 
 struct First {}
-impl Named for First {
-    func name(&self) -> int32 { 1 }
+conform First to Named {
+    func name() -> int32 { 1 }
 }
 
 struct Second {}
-impl Named for Second {
-    func name(&self) -> int32 { 2 }
+conform Second to Named {
+    func name() -> int32 { 2 }
 }
 "#;
 
@@ -282,7 +282,7 @@ func main() {}
 func makeFirst() -> some Named { First {} }
 
 func main() {
-    let _: First = makeFirst()
+    var _: First = makeFirst()
 }
 "#,
         );
@@ -299,10 +299,10 @@ func main() {
         for source in [
             "func consume(_ value: some Named) {}\nfunc main() {}",
             "type Hidden = some Named\nfunc main() {}",
-            "interface Factory {\nfunc make() -> some Named\n}\nfunc main() {}",
+            "interface Factory {\nstatic func make() -> some Named\n}\nfunc main() {}",
             "struct Holder { value: some Named }\nfunc main() {}",
-            "func main() { let value: some Named = First {} }",
-            "func main() { let factory = || -> some Named { First {} } }",
+            "func main() { var value: some Named = First {} }",
+            "func main() { factory := () -> some Named => { First {} } }",
             "func nested() -> (some Named, int32) { (First {}, 1) }\nfunc main() {}",
         ] {
             let diagnostics = diagnostics_for(source);

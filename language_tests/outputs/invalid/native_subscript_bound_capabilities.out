@@ -1,0 +1,12 @@
+error: subscript has no set accessor
+ -> language_tests/source_files/invalid/native_subscript_bound_capabilities.tr:3:4
+	    value[0 as usize] = 7
+	    ^^^^^^^^^^^^^^^^^
+error: this access requires a subscript address accessor; get/set does not provide element storage
+ -> language_tests/source_files/invalid/native_subscript_bound_capabilities.tr:4:18
+	    reference := &value[0 as usize]
+	                  ^^^^^^^^^^^^^^^^^
+error: numeric compound assignment requires a subscript address or set accessor
+ -> language_tests/source_files/invalid/native_subscript_bound_capabilities.tr:6:37
+	func erased(_ value: any Readable) { value[0 as usize] += 1 }
+	                                     ^^^^^^^^^^^^^^^^^

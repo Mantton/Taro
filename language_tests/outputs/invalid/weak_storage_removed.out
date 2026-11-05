@@ -1,0 +1,8 @@
+error: `weak` storage was removed; store a `std::weak::Weak[T]` and read it with `value()`
+ -> language_tests/source_files/invalid/weak_storage_removed.tr:4:4
+	    weak parent: Node?
+	    ^^^^
+error: `weak` storage was removed; store a `std::weak::Weak[T]` and read it with `value()`
+ -> language_tests/source_files/invalid/weak_storage_removed.tr:7:4
+	    weak var target: Node? = .none
+	    ^^^^

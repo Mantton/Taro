@@ -1,0 +1,39 @@
+import std::http::Body
+import std::convert::Parse
+
+// Isolate body collection from sockets, TLS and the default native client.
+// Payload construction, warmup and correctness comparison are outside timing.
+func payload(_ size: usize) -> string {
+    builder := std::string::Builder::new()
+    var written: usize = 0
+    while written < size { builder.writeString("0123456789abcdef"); written += 16 }
+    return builder.toString()
+}
+
+func main() async {
+    args := std::env::args()
+    assert(args.len() == 3, "usage: body_collect <bytes: multiple of 16> <iterations>")
+    size := usize::parse(args.at(1)).unwrap()
+    iterations := uint64::parse(args.at(2)).unwrap()
+    assert(size > 0 && size <= 16 * 1024 * 1024 && size % 16 == 0 && iterations > 0, "bounded positive inputs")
+    input := payload(size)
+    warmup := Body::fromString(input)
+    assert((await warmup.readToString(maxBytes: size)).unwrap() == input, "complete payload checksum")
+    std::runtime::collect()
+    before := std::runtime::gcStats()
+    start := std::time::Instant::now()
+    var checksum: uint64 = 0_u64
+    var index: uint64 = 0_u64
+    while index < iterations {
+        body := Body::fromString(input)
+        text := (await body.readToString(maxBytes: size)).unwrap()
+        checksum += text.byteLen() as uint64
+        std::hint::blackBox(text)
+        index += 1_u64
+    }
+    elapsed := start.elapsed()
+    after := std::runtime::gcStats()
+    nanos := elapsed.seconds() * 1000000000_u64 + elapsed.subsecNanos() as uint64
+    assert(checksum == size as uint64 * iterations, "every collection completed")
+    std::println(std::sprintf("bytes=%d ops=%d ns=%d checksum=%d allocated_bytes=%d collections=%d", size, iterations, nanos, checksum, after.allocatedBytes - before.allocatedBytes, after.collections - before.collections))
+}

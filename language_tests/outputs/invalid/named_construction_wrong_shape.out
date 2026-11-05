@@ -1,0 +1,8 @@
+error: enum variant 'tuple' does not have named fields
+ -> language_tests/source_files/invalid/named_construction_wrong_shape.tr:3:19
+	    var a = Shape::tuple { value: 1 }
+	                   ^^^^^
+error: enum variant 'unit' does not have named fields
+ -> language_tests/source_files/invalid/named_construction_wrong_shape.tr:4:19
+	    var b = Shape::unit {}
+	                   ^^^^

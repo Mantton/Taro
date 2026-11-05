@@ -79,9 +79,9 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 let internal = self.lower_type(node);
                 Ty::new(TyKind::Pointer(internal, *mutability), gcx)
             }
-            hir::TypeKind::Reference(node, mutability) => {
+            hir::TypeKind::Reference(node) => {
                 let internal = self.lower_type(node);
-                Ty::new(TyKind::Reference(internal, *mutability), gcx)
+                Ty::new(TyKind::Reference(internal), gcx)
             }
             hir::TypeKind::Tuple(elements) => {
                 let mut lowered = Vec::with_capacity(elements.len());
@@ -107,6 +107,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 let output = self.lower_type(output);
                 Ty::new(
                     TyKind::FnPointer {
+                        effects: Default::default(),
                         inputs: lowered_inputs,
                         output,
                     },
@@ -114,7 +115,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 )
             }
             hir::TypeKind::BoxedExistential { interfaces } => {
-                let self_ty = gcx.types.self_type_parameter;
+                let self_ty = gcx.types.existential_self;
                 let mut lowered = Vec::with_capacity(interfaces.len());
                 for interface in interfaces {
                     lowered.extend(self.lower_interface_references(self_ty, interface));
@@ -222,9 +223,22 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                             );
                             return gcx.types.error;
                         }
-                        // Resolve alias in place with cycle detection
+                        // Resolve now for cycle diagnostics, but preserve the
+                        // use-site arguments until well-formedness checks have
+                        // enforced this alias's declaration requirements.
                         let ty = self.resolve_alias(id);
-                        instantiate_ty_with_args(gcx, ty, args)
+                        if ty.is_error() {
+                            return ty;
+                        }
+                        let args = self.alias_arguments(id, args, None);
+                        Ty::new(
+                            TyKind::Alias {
+                                kind: AliasKind::Weak,
+                                def_id: id,
+                                args,
+                            },
+                            gcx,
+                        )
                     }
                     crate::sema::resolve::models::DefinitionKind::OpaqueType => {
                         // Opaque types have no generic parameters
@@ -415,16 +429,14 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 (None, Some(&param)) => {
                     match &param.kind {
                         // ---- type param with default ----
-                        GenericParameterDefinitionKind::Type { default: Some(d) } => {
-                            if self.can_infer() {
+                        GenericParameterDefinitionKind::Type {
+                            default: Some(d), ..
+                        } => {
+                            if self.can_infer() && self_ty != Some(gcx.types.existential_self) {
                                 let infer_ty = self.ty_infer(Some(param), span);
                                 let mut default_ty = gcx
                                     .try_generic_type_default(param.id)
                                     .unwrap_or_else(|| self.lower_type(d));
-                                if let Some(self_ty) = self_ty {
-                                    default_ty =
-                                        self.substitute_interface_self_default(default_ty, self_ty);
-                                }
 
                                 let current_args =
                                     gcx.store.interners.intern_generic_args(output.clone());
@@ -442,15 +454,18 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                                 let mut ty = gcx
                                     .try_generic_type_default(param.id)
                                     .unwrap_or_else(|| self.lower_type(d));
-                                if let Some(self_ty) = self_ty {
-                                    ty = self.substitute_interface_self_default(ty, self_ty);
-                                }
+                                // An erased type annotation's omitted defaults
+                                // are fixed; they must not reveal the concrete
+                                // payload merely because boxing can infer it.
+                                let current_args =
+                                    gcx.store.interners.intern_generic_args(output.clone());
+                                ty = instantiate_ty_with_args(gcx, ty, current_args);
                                 output.push(GenericArgument::Type(ty));
                             }
                         }
 
                         // ---- type param without default ----
-                        GenericParameterDefinitionKind::Type { default: None } => {
+                        GenericParameterDefinitionKind::Type { default: None, .. } => {
                             let ty = self.ty_infer(Some(param), span);
                             output.push(GenericArgument::Type(ty));
                         }
@@ -463,7 +478,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                                         .unwrap_or_else(|| self.lower_type(ty))
                                 });
                             if let Some(default) = default {
-                                if self.can_infer() {
+                                if self.can_infer() && self_ty != Some(gcx.types.existential_self) {
                                     let infer_const =
                                         self.const_infer(expected_ty, Some(param), span);
                                     let mut default_const =
@@ -488,6 +503,10 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                                         gcx.try_generic_const_default(param.id).unwrap_or_else(
                                             || self.lower_const_argument(expected_ty, default),
                                         );
+                                    let current_args =
+                                        gcx.store.interners.intern_generic_args(output.clone());
+                                    let konst =
+                                        instantiate_const_with_args(gcx, konst, current_args);
                                     output.push(GenericArgument::Const(konst));
                                 }
                             } else {
@@ -507,40 +526,6 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             gcx.store.interners.intern_generic_args(output),
             gcx.store.arenas.global.alloc_slice_clone(&bindings),
         )
-    }
-
-    /// Substitute abstract interface `Self` defaults with the concrete `self_ty`.
-    ///
-    /// This is needed for defaults like `Rhs = Self` when lowering references such as
-    /// `impl PartialEq for T`, where omitted generic arguments should concretize to `T`.
-    fn substitute_interface_self_default(
-        &self,
-        ty: Ty<'ctx>,
-        concrete_self_ty: Ty<'ctx>,
-    ) -> Ty<'ctx> {
-        struct InterfaceSelfSubstitutor<'ctx> {
-            gcx: GlobalContext<'ctx>,
-            concrete_self_ty: Ty<'ctx>,
-        }
-
-        impl<'ctx> TypeFolder<'ctx> for InterfaceSelfSubstitutor<'ctx> {
-            fn gcx(&self) -> GlobalContext<'ctx> {
-                self.gcx
-            }
-
-            fn fold_ty(&mut self, ty: Ty<'ctx>) -> Ty<'ctx> {
-                if ty == self.gcx.types.self_type_parameter {
-                    return self.concrete_self_ty;
-                }
-                ty.super_fold_with(self)
-            }
-        }
-
-        let mut substitutor = InterfaceSelfSubstitutor {
-            gcx: self.gcx(),
-            concrete_self_ty,
-        };
-        ty.fold_with(&mut substitutor)
     }
 
     pub fn lower_const_argument(
@@ -606,7 +591,10 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         let gcx = self.gcx();
         if crate::sema::models::callable_kind(gcx, interface_id).is_some()
             && let Some(args_ty) = arguments.get(1).and_then(|arg| arg.ty())
-            && !matches!(args_ty.kind(), TyKind::Tuple(_) | TyKind::Error)
+            && !matches!(
+                crate::sema::tycheck::utils::normalize_aliases(gcx, args_ty).kind(),
+                TyKind::Tuple(_) | TyKind::Error
+            )
         {
             // Legacy Fn[T, R] spells a single argument unless T explicitly names
             // an argument pack. Shorthand already supplies a tuple, preserving
@@ -790,7 +778,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         segment: &hir::PathSegment,
     ) -> Ty<'ctx> {
         let gcx = self.gcx();
-        let base_ty = self.lower_type(base_ty);
+        let base_ty = crate::sema::tycheck::utils::normalize_aliases(gcx, self.lower_type(base_ty));
         if let TyKind::Parameter(param) = base_ty.kind() {
             return self.lower_projection_type_path(param, segment);
         }
@@ -814,8 +802,8 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         let mut candidates: Vec<(DefinitionID, Span, Option<DefinitionID>)> = Vec::new();
 
         // For reference/pointer types, we need to filter by the actual inner type
-        // since TypeHead::Reference only contains mutability, not the inner type
-        let needs_self_ty_match = matches!(head, TypeHead::Reference(_));
+        // since TypeHead::Reference carries no inner type
+        let needs_self_ty_match = matches!(head, TypeHead::Reference);
 
         // Temporary storage for candidates (Alias ID, Span, Extension ID)
         let mut raw_candidates: Vec<(DefinitionID, Span, Option<DefinitionID>)> = Vec::new();
@@ -931,8 +919,52 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         let (alias_id, _, _) = visible[0];
         let _ = check_generics_prohibited(alias_id, segment, gcx);
         let args = self.lower_type_arguments(alias_id, segment);
+        let args = self.alias_arguments(alias_id, args, Some(base_ty));
         let ty = self.resolve_alias(alias_id);
-        instantiate_ty_with_args(gcx, ty, args)
+        if ty.is_error() {
+            return ty;
+        }
+        Ty::new(
+            TyKind::Alias {
+                kind: AliasKind::Inherent,
+                def_id: alias_id,
+                args,
+            },
+            gcx,
+        )
+    }
+
+    /// A retained alias must carry its parent's substitutions too. Expanding
+    /// immediately used to expose those parameters to outer instantiation;
+    /// dropping them from an alias node leaves Self::Element uninstantiated.
+    fn alias_arguments(
+        &self,
+        alias: DefinitionID,
+        own: GenericArguments<'ctx>,
+        base: Option<Ty<'ctx>>,
+    ) -> GenericArguments<'ctx> {
+        let gcx = self.gcx();
+        let generics = gcx.generics_of(alias);
+        if generics.parent_count == 0 {
+            return own;
+        }
+        let Some(parent) = generics.parent else {
+            return own;
+        };
+        let inherited = base
+            .and_then(|base| crate::sema::impl_engine::deduce_impl_subst(gcx, parent, base, &[]))
+            .unwrap_or_else(|| {
+                crate::sema::tycheck::utils::generics::GenericsBuilder::identity_for_item(
+                    gcx, parent,
+                )
+            });
+        let mut arguments: Vec<_> = inherited
+            .iter()
+            .take(generics.parent_count)
+            .copied()
+            .collect();
+        arguments.extend(own.iter().copied());
+        gcx.store.interners.intern_generic_args(arguments)
     }
 
     /// Check if two types match for associated type lookup purposes.
@@ -941,7 +973,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
     fn types_match_for_assoc_lookup(&self, base_ty: Ty<'ctx>, ext_self_ty: Ty<'ctx>) -> bool {
         match (base_ty.kind(), ext_self_ty.kind()) {
             // Reference types: compare inner types
-            (TyKind::Reference(inner1, m1), TyKind::Reference(inner2, m2)) if m1 == m2 => {
+            (TyKind::Reference(inner1), TyKind::Reference(inner2)) => {
                 self.types_match_for_assoc_lookup(inner1, inner2)
             }
             // Pointer types: compare inner types
@@ -1115,6 +1147,51 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             if matches!(ty.kind(), TyKind::Parameter(param) if param == base_param) {
                 has_bounds = true;
                 self.collect_projection_candidates(interface, name, &mut candidates);
+            }
+        }
+
+        if candidates.is_empty() {
+            // Associated aliases are resolved before complete constraints are
+            // collected. Read their surrounding declaration headers without
+            // making resolution depend on file/declaration order. Method-local
+            // where bounds remain scoped to that method, never its siblings.
+            let mut scopes = Vec::new();
+            let mut current = Some(def_id);
+            let mut visited = FxHashSet::default();
+            while let Some(owner) = current {
+                if !visited.insert(owner) {
+                    break;
+                }
+                scopes.push(owner);
+                let generics = gcx.generics_of(owner);
+                if let Some(parameter) = generics
+                    .parameters
+                    .iter()
+                    .find(|parameter| parameter.index == base_param.index)
+                {
+                    let headers: Vec<_> = {
+                        let stored = gcx.store.source_generic_bounds.borrow();
+                        scopes
+                            .iter()
+                            .flat_map(|scope| {
+                                stored
+                                    .get(&(*scope, parameter.id))
+                                    .into_iter()
+                                    .flatten()
+                                    .cloned()
+                            })
+                            .collect()
+                    };
+                    let self_ty = Ty::new(TyKind::Parameter(base_param), gcx);
+                    for bound in headers.iter() {
+                        has_bounds = true;
+                        for interface in self.lower_interface_references(self_ty, &bound.path) {
+                            self.collect_projection_candidates(interface, name, &mut candidates);
+                        }
+                    }
+                    break;
+                }
+                current = generics.parent.or_else(|| gcx.definition_parent(owner));
             }
         }
 

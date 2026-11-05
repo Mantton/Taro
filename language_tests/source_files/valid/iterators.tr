@@ -9,7 +9,7 @@ func main() {
 
 func usingMove() {
     print("Using Move\n")
-    var l = List[string]()
+    var l = List[string]::new()
     l.append("Hello!\n")
     l.append("World!\n")
     l.append("Foo!\n")
@@ -18,7 +18,7 @@ func usingMove() {
 
     var iter = l.iter()
     loop {
-        let res = iter.next()
+        res := iter.next()
         match res {
             case .some(value) => {
                 print(value)
@@ -32,7 +32,7 @@ func usingMove() {
 
 func usingBorrow() {
     print("Using Borrow\n")
-    var l = List[string]()
+    var l = List[string]::new()
     l.append("Hello!\n")
     l.append("World!\n")
     l.append("Foo!\n")
@@ -42,10 +42,10 @@ func usingBorrow() {
     var borrow = &l
     var iter = borrow.iter()
     loop {
-        let res = iter.next()
+        res := iter.next()
         match res {
             case .some(value) => {
-                print(*value)
+                print(value)
             }
             case .none => {
                 break

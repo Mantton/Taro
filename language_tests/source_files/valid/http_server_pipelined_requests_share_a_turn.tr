@@ -1,0 +1,79 @@
+// ENV: TARO_WORKERS=1
+// Requests a peer has already sent need nothing else to run first, so a connection
+// serves them in one scheduler turn, up to a limit that keeps other connections going.
+// The counter below advances only when the connection gives up the one worker.
+import std::collections::List
+import std::http::{Error, Request, Response, Server}
+import std::net::{SocketAddress, TcpStream}
+import std::mem::Span
+import std::result::Result
+
+const REQUESTS: usize = 17
+const REQUESTS_IN_A_TURN: usize = 16
+
+final class Turns {
+    count: std::sync::atomic::Uint64
+    stopped: std::sync::atomic::Bool
+    urls: List[string]
+    seen: List[uint64]
+}
+extend Turns {
+    init() {
+        self.count = std::sync::atomic::Uint64::new(0_u64)
+        self.stopped = std::sync::atomic::Bool::new(false)
+        self.urls = List[string]::new()
+        self.seen = List[uint64]::new()
+    }
+}
+
+func main() async {
+    turns := Turns()
+    server := Server::bind(SocketAddress::localhost(0_u16)).unwrap()
+    address := server.localAddress().unwrap()
+    serving := std::task::spawn(() async => {
+        return await server.serve((request: &Request) async -> Result[Response, Error] => {
+            turns.urls.append(request.url)
+            turns.seen.append(turns.count.load())
+            return .ok(Response::text(200_u16, "ok"))
+        })
+    })
+    counting := std::task::spawn(() async => {
+        while !turns.stopped.load() {
+            turns.count.add(1_u64)
+            await std::task::yieldNow()
+        }
+    })
+
+    stream := (await TcpStream::connect(address)).unwrap()
+    var pipeline = ""
+    var index: usize = 0
+    while index < REQUESTS {
+        pipeline = std::sprintf("%sGET /%d HTTP/1.1\r\nHost: x\r\n\r\n", pipeline, index)
+        index += 1
+    }
+    // At 483 bytes, all of these fit in the server's first read of 512.
+    (await stream.writeAll(Span[uint8]::fromString(&pipeline))).unwrap()
+
+    while turns.urls.count() < REQUESTS {
+        await std::task::sleep(std::time::Duration::fromMillis(1_u64))
+    }
+    turns.stopped.store(true)
+    var _ = await counting.result()
+
+    index = 0
+    while index < REQUESTS {
+        std::assert(turns.urls[index] == std::sprintf("/%d", index), "requests are served in order")
+        index += 1
+    }
+    index = 1
+    while index < REQUESTS_IN_A_TURN {
+        std::assert(turns.seen[index] == turns.seen[0], "requests already here share a turn")
+        index += 1
+    }
+    std::assert(turns.seen[REQUESTS_IN_A_TURN] > turns.seen[0], "others get a turn after the limit")
+
+    var _ = stream.close()
+    server.close().unwrap()
+    (await serving.result()).unwrap().unwrap()
+    std::println("ok")
+}

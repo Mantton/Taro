@@ -1,0 +1,4 @@
+error: cannot call an erased interface method whose arguments or result expose its hidden Self type
+ -> language_tests/source_files/invalid/erased_self_parameter.tr:5:9
+	    left.same(right)
+	         ^^^^

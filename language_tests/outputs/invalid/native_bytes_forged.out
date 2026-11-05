@@ -1,0 +1,12 @@
+error: type 'NativeBytes' is not visible here
+ -> language_tests/source_files/invalid/native_bytes_forged.tr:2:16
+	    var forged: std::mem::NativeBytes = std::mem::NativeBytes::new(1)
+	                ^^^^^^^^^^^^^^^^^^^^^
+error: type 'NativeBytes' is not visible here
+ -> language_tests/source_files/invalid/native_bytes_forged.tr:2:40
+	    var forged: std::mem::NativeBytes = std::mem::NativeBytes::new(1)
+	                                        ^^^^^^^^^^^^^^^^^^^^^
+error: unknown associated symbol named 'new' on type '<<error>>'
+ -> language_tests/source_files/invalid/native_bytes_forged.tr:2:63
+	    var forged: std::mem::NativeBytes = std::mem::NativeBytes::new(1)
+	                                                               ^^^

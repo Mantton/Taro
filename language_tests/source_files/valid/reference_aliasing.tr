@@ -1,0 +1,86 @@
+// TEST
+// Reference values share storage; copying or retargeting a header preserves
+// existing aliases. Keep straight-line, loop and nested projection cases.
+struct Pair { left: int32; right: int32 }
+
+func editFields(_ pair: &Pair) {
+    left := &pair.left
+    pair.right = 5
+    *left = 3
+}
+
+@test
+func referencesShareWritableFields() {
+    var pair = Pair { left: 0, right: 0 }
+    editFields(&pair)
+    assert(pair.left == 3 && pair.right == 5, "references to disjoint fields remain independent")
+}
+
+@test
+func retargetingPreservesExistingAliases() {
+    var left: int32 = 0
+    var right: int32 = 0
+    var parent: &int32 = &left
+    child := &*parent
+    parent = &right
+    *child = 1
+    *parent = 2
+    assert(left == 1 && right == 2, "retargeting a header preserves its child's target")
+
+    current := &right
+    next := &*current
+    *next = 3
+    *current = 4
+    assert(right == 4, "overlapping references remain writable")
+}
+
+@test
+func loopsPreserveReferenceTargets() {
+    var pair = Pair { left: 0, right: 0 }
+    var parent: &Pair = &pair
+    var index: int32 = 0
+    while index < 3 {
+        parent = &*parent
+        parent.right += 1
+        index += 1
+    }
+    child := &parent.left
+    parent.right = 9
+    *child = 7
+    parent.left += 1
+    assert(parent.left == 8 && parent.right == 9, "loop aliases preserve field identity")
+
+    var left: int32 = 1
+    var right: int32 = 2
+    var saved: &int32 = &left
+    index = 0
+    while index < 3 {
+        saved = &*saved
+        index += 1
+    }
+    old := &*saved
+    saved = &right
+    *old = 3
+    *saved = 4
+    assert(left == 3 && right == 4, "retargeting after a loop preserves the old target")
+}
+
+@test
+func nestedReferencesProjectWritableFields() {
+    var pair = Pair { left: 1, right: 2 }
+    pointer := &pair
+    outer := &pointer
+    saved := &(**outer).left
+    (**outer).right = 9
+    assert(*saved == 1, "nested references preserve unrelated fields")
+    (**outer).left = 7
+    assert((**outer).left == 7, "nested field references remain writable")
+
+    var value: int32 = 3
+    inner := &value
+    nested := &inner
+    read := &**nested
+    assert(*read == 3, "nested scalar read")
+    **nested = 11
+    assert(**nested == 11, "nested scalar write")
+}

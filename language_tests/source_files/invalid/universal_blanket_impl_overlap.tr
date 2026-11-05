@@ -2,7 +2,7 @@ interface UniversalMarker {}
 
 struct UniversalConcrete {}
 
-impl[Value] UniversalMarker for Value {}
-impl UniversalMarker for UniversalConcrete {}
+conform[Value] Value to UniversalMarker {}
+conform UniversalConcrete to UniversalMarker {}
 
 func main() {}

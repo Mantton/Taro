@@ -1,4 +1,3 @@
-use crate::hir::StdItem;
 use crate::sema::resolve::models::LexicalScopeBinding;
 use crate::{
     PackageIndex,
@@ -38,6 +37,8 @@ pub struct Resolver<'arena> {
     pub builin_fn_bindings: FxHashMap<Symbol, Resolution>,
     pub resolutions: FxHashMap<NodeID, ResolutionState>,
     pub expression_resolutions: FxHashMap<NodeID, ExpressionResolutionState>,
+    pub(crate) member_bracket_diagnostics:
+        FxHashMap<NodeID, crate::diagnostics::BracketDiagnostics>,
     /// Variant names per enum, filled in the first time an enum is asked about.
     enum_variants: RefCell<FxHashMap<DefinitionID, FxHashSet<Symbol>>>,
 }
@@ -64,6 +65,7 @@ impl<'a> Resolver<'a> {
 
             resolutions: Default::default(),
             expression_resolutions: Default::default(),
+            member_bracket_diagnostics: Default::default(),
             enum_variants: Default::default(),
 
             builin_types_bindings: PrimaryType::ALL
@@ -75,14 +77,7 @@ impl<'a> Resolver<'a> {
                     )
                 })
                 .collect(),
-            builin_fn_bindings: {
-                let mut map = FxHashMap::default();
-                map.insert(
-                    context.intern_symbol("make"),
-                    Resolution::StdItem(StdItem::Make),
-                );
-                map
-            },
+            builin_fn_bindings: FxHashMap::default(),
         }
     }
 
@@ -720,6 +715,7 @@ impl<'a> Resolver<'a> {
             file_scope_mapping: self.file_scope_mapping,
             block_scope_mapping: self.block_scope_mapping,
             expression_resolutions: self.expression_resolutions,
+            member_bracket_diagnostics: self.member_bracket_diagnostics,
             root_scope: self.root_module_scope.unwrap(),
         }
     }

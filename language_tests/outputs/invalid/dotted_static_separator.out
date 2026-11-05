@@ -1,0 +1,4 @@
+error: qualified access to `answer` requires `::`
+ -> language_tests/source_files/invalid/dotted_static_separator.tr:6:15
+	    print(Tools.answer())
+	               ^

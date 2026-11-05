@@ -1,0 +1,3 @@
+struct Record { value: int32 }
+extend Record { var item: int32 { get async { self.value } }; }
+func main() {}

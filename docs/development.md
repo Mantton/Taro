@@ -88,13 +88,67 @@ taro build examples/arithmetic.tr --release \
 ```
 
 Panic reports prefer compact Taro frames. Set `TARO_BACKTRACE=full` for an
-unfiltered native backtrace. Runtime scheduler, I/O, and GC diagnostics are
+unfiltered native backtrace. Runtime scheduler, I/O, and native-task diagnostics are
 available through `taro run --runtime-stats` and `--runtime-trace`.
+
+## Configure the Garbage Collector
+
+GC programs read these variables at startup; invalid values abort with a
+message naming the variable.
+
+- `TARO_GC_PERCENT` (default `100`) collects once the heap grows by this
+  percentage over the live data left by the previous collection, with a minimum
+  heap goal of 4 MiB; `0` to `10000`, or `off` to disable percentage pacing.
+  An explicit soft memory limit can reduce that goal. When this is unset, the
+  goal can grow up to 16 times while collections take over 2% of the time.
+- `TARO_GC_MARK_THREADS` (`1` to `256`) marks on this many threads in every
+  collection. When this is unset, marking uses one thread until a collection
+  marks 16,384 objects, then up to one per mutator thread, at most 8 and at most
+  the available parallelism.
+- `TARO_GC_MEMORY_LIMIT` (default `off`) is a soft heap limit in decimal bytes
+  with a `B`, `KiB`, `MiB`, `GiB`, or `TiB` suffix. Before the heap grows past it
+  the collector runs; if live data still needs more room, the heap exceeds the
+  limit rather than failing.
+- `TARO_GC_STRESS=1` collects before every allocation and at every safepoint,
+  poisons freed memory and verifies the heap after marking. It is a debugging
+  mode, far slower than normal execution.
+- `TARO_GC_TRACE=1` prints one line per collection to stderr:
+
+  ```text
+  gc 3: pause 0.215ms, heap 4194304 -> 1048576 bytes (goal 2097152), freed 1234 objects, reserved 8388608 bytes, total pause 0.640ms
+  ```
+
+  `heap` is allocated-but-unfreed bytes before and after the collection, `goal`
+  the heap size that triggers the next one, and `reserved` the mapped heap.
+
+Small objects use 51 size classes through 8 KiB, with sizes and multi-page span
+geometry adapted from Go 1.26.2. Class selection preserves each descriptor's
+alignment; an over-aligned request can use a larger class. Larger objects use
+whole 8 KiB pages. The adapted tables' attribution is in `runtime/GO-LICENSE`,
+which is included with the SDK runtime.
+
+The collector releases completely empty segments, retaining one arena. Within
+remaining segments, it keeps at most 1 MiB of free pages ready for reuse, bounded
+by the next collection's allocation headroom. This avoids repeated page faults
+without retaining a historical heap peak. The reserve shrinks near the soft
+memory limit and reaches zero when the mapped heap meets that limit. Reused
+objects are still zeroed before publication.
+
+Programs can read the same counters with `std::runtime::gcStats()` (collections,
+heap, reserved and goal bytes, cumulative allocated/freed bytes, total and last
+pause), and force a collection with `std::runtime::collect()` for tests and
+benchmarks; neither is needed for correctness. `taro run --runtime-stats`
+reports pause percentiles and phase times alongside scheduler counters.
+
+Allocation never returns null. A request larger than `isize::MAX` bytes panics
+with `allocation size overflow`, and a heap that cannot grow after a collection
+panics with `out of memory`; like any panic, either can be observed through a
+task's result.
 
 ## Benchmarking
 
 `taro bench` runs synchronous, non-generic `@bench` functions with exactly one
-`&mut std.bench.Benchmark` parameter and a unit result. As with
+`&std::bench::Benchmark` parameter and a unit result. As with
 [test functions](testing.md#language-tests), the return-type annotation may be
 omitted, written as `-> ()`, or use a unit type alias. The parameter cannot be
 defaulted or variadic. Benchmarks compile in release/O2 by default and each
@@ -108,8 +162,11 @@ taro bench my-package --warmup 500ms --time 2s --samples 30
 taro bench my-package --format json
 ```
 
-Use `std.hint.blackBox(value)` as a best-effort optimizer barrier and
-`std.runtime.keepAlive(value)` when GC reachability is the requirement.
+Use `std::hint::blackBox(value)` as a best-effort optimizer barrier.
+Keep benchmark results observable and use `std::runtime::keepAlive` when an
+unsafe native operation needs an explicit liveness use. GC liveness follows
+actual uses rather than lexical scope, and dropping a local does not run a
+language destructor. Native requests retain storage until completion.
 `taro bench --help` documents the measurement and timeout controls.
 
 Repository tooling also provides compiler and showcase diagnostics:
@@ -125,7 +182,7 @@ the release baseline with O2, verifies equivalent output, and reports compile
 time, runtime, and executable size. The Monkey host-gap suite runs matched Taro
 and Go workloads for dictionary/environment lookup and churn, argument lists,
 successful `Result` propagation, and small allocations. It verifies checksums
-before reporting median time and allocation/GC counters; see
+before reporting median time and available allocation counters; see
 `development/benchmarks/monkey_host_gap/README.md` for interpretation guidance.
 
 ## Troubleshooting

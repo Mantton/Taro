@@ -1,0 +1,18 @@
+@cfg(bench)
+class Document {}
+namespace Models {
+    @cfg(bench)
+    final class Draft: Document {}
+}
+struct Counter { value: int32 }
+extend Counter {
+    @cfg(bench)
+    override func reset() {}
+    @cfg(bench)
+    public required init() {}
+}
+func main() {
+    var weak: int32 = 1
+    assert(weak == 1, "weak remains contextual")
+    print("cfg-filtered object syntax\n")
+}

@@ -1,0 +1,17 @@
+// VET
+@NoCopy
+struct State { value: int32 }
+final class Holder { state: State }
+func share(_ value: &State) { alias := value; alias.value += 1 }
+func shareHolder(_ value: Holder) { alias := value; var _ = alias }
+func main() {
+    var state = State { value: 1 }
+    reference := &state
+    copiedReference := reference
+    share(copiedReference)
+    var mutex = std::sync::Mutex[int32]::new(0).unwrap()
+    alias := &mutex
+    other := alias
+    var _ = other.tryLock().unwrap()
+    other.unlock().unwrap()
+}

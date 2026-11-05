@@ -1,0 +1,4 @@
+error: AnyObject is a compiler-provided class-only capability; value types cannot declare this conformance
+ -> language_tests/source_files/invalid/anyobject_value_conformance.tr:4:16
+	struct Counter: AnyObject { value: int32 }
+	                ^^^^^^^^^

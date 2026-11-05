@@ -1,0 +1,5 @@
+[package]
+name = "github.com/example/conversion-deref-app"
+kind = "executable"
+[require]
+"github.com/example/conversion-deref-dep" = { path = "../dep", alias = "dep" }

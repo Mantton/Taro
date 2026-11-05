@@ -1,11 +1,11 @@
-import dep.{DependencyError, dependencyResult}
+import dep::{DependencyError, dependencyResult}
 
 enum AppError {
     case dependency(DependencyError)
 }
 
-impl From[DependencyError] for AppError {
-    func from(_ value: DependencyError) -> AppError {
+conform AppError to From[DependencyError] {
+    static func from(_ value: DependencyError) -> AppError {
         .dependency(value)
     }
 }
@@ -23,5 +23,5 @@ func main() {
         case .err(.dependency(.failed)) => {}
         case _ => assert(false, "cross-package conversion should preserve the error")
     }
-    std.print("PASS: cross-package Result error conversion\n")
+    std::print("PASS: cross-package Result error conversion\n")
 }

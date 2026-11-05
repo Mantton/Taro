@@ -1,0 +1,4 @@
+error: field 'owner' of RawMutex is not visible here
+ -> language_tests/source_files/invalid/native_raw_mutex_forged.tr:2:31
+	    std::sys::sync::RawMutex { owner: pointer }
+	                               ^^^^^^

@@ -1,0 +1,5 @@
+struct InvalidResult { value: int32 }
+extend InvalidResult {
+    init() -> Result[int32, string] { return .ok(7) }
+}
+func main() {}

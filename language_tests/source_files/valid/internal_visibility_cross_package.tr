@@ -1,0 +1,2 @@
+// PACKAGE: internal_visibility
+// Cross-package metadata keeps package access separate from public access.

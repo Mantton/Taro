@@ -1,0 +1,23 @@
+struct Owned { value: int32 }
+
+func make(_ count: &int32) -> Owned {
+    *count += 1
+    Owned { value: *count }
+}
+
+func duplicate[T](_ value: T) -> [T; 2] {
+    [value; 2]
+}
+
+func main() {
+    var count: int32 = 0
+    var empty: [Owned; 0] = [make(&count); 0]
+    assert(count == 1, "zero repetition still evaluates its initializer once")
+    var single: [Owned; 1] = [make(&count); 1]
+    assert(count == 2, "singleton repetition initializes one owner")
+    assert(single.at(0).value == 2, "singleton receives the evaluated value")
+    var copies: [int32; 3] = [count; 3]
+    assert(*copies.at(2) == 2, "Copy elements still support repeated initialization")
+    var generic: [int32; 2] = duplicate(7_i32)
+    assert(*generic.at(1) == 7, "a declared Copy bound permits generic repetition")
+}

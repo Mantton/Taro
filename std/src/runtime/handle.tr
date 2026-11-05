@@ -1,0 +1,72 @@
+import std::intrinsic::{__intrinsic_class_from_owner, __intrinsic_class_owner, __intrinsic_keep_alive}
+
+extern "taro_rt" {
+    unsafe func __gc__handle_new(_ target: *const uint8) -> usize
+    unsafe func __gc__handle_value(_ id: usize) -> *mut uint8
+    unsafe func __gc__handle_delete(_ id: usize) -> bool
+}
+
+/// Keep `value` reachable until this call, even where the optimizer would
+/// otherwise end its lifetime at the last ordinary use.
+///
+/// The collector already traces every live local, raw pointer and argument,
+/// so this is needed only when the sole remaining user is invisible to it:
+/// foreign code holding an address derived from `value` after Taro's last
+/// use, for example. It has no runtime cost.
+public func keepAlive[T](_ value: T) {
+    __intrinsic_keep_alive[T](value)
+}
+
+internal final class HandleBox[T] {
+    internal value: T
+}
+
+extend[T] HandleBox[T] {
+    internal init(_ value: T) { self.value = value }
+}
+
+/// An integer that foreign code may store across collections in place of a
+/// managed value, like Go's `cgo.Handle`.
+///
+/// C must never keep a managed pointer beyond the call it was passed to: the
+/// collector cannot see foreign memory. A handle roots its value until
+/// `delete`, which the program must call exactly once; ids are never reused,
+/// so a stale handle is detected instead of reaching another value.
+public struct Handle[T] {
+    private id: usize
+}
+
+extend[T] Handle[T] {
+    /// Root a copy of `value` until `delete`.
+    public static func new(_ value: T) -> Self {
+        box := HandleBox[T](value)
+        id := unsafe { __gc__handle_new(__intrinsic_class_owner[HandleBox[T]](&box)) }
+        return Self { id }
+    }
+
+    /// Rebuild a handle from `raw()`. The caller guarantees the id came from
+    /// a `Handle` of this same `T`; a stale or deleted id panics on use.
+    public static unsafe func fromRaw(_ raw: usize) -> Self {
+        Self { id: raw }
+    }
+
+    /// The integer to give to foreign code. Never zero.
+    public func raw() -> usize { self.id }
+
+    /// A copy of the rooted value. Panics once the handle is deleted.
+    public func value() -> T {
+        owner := unsafe { __gc__handle_value(self.id) }
+        if unsafe { owner as usize } == 0 {
+            std::panic::panic("runtime handle used after delete")
+        }
+        box := unsafe { __intrinsic_class_from_owner[HandleBox[T]](owner as *const uint8) }
+        return box.value
+    }
+
+    /// Release the root. Panics when the handle was already deleted.
+    public func delete() {
+        if !unsafe { __gc__handle_delete(self.id) } {
+            std::panic::panic("runtime handle deleted twice")
+        }
+    }
+}

@@ -1,0 +1,52 @@
+// The task group form of gc_concurrent_spawn_admission: a group spawn allocates
+// a child's result storage, which must not happen under the admission lock
+// other spawners and group creators block on.
+// ENV: TARO_GC_STRESS=1
+// ENV: TARO_WORKERS=4
+
+import std::task::TaskGroup
+
+const SPAWNERS: int64 = 8
+const GROUPS: int64 = 30
+const CHILDREN: int64 = 5
+
+func groupTotal(_ seed: int64) async -> int64 {
+    return await std::task::withTaskGroup((group: &TaskGroup[int64]) async => {
+        var index: int64 = 0
+        while index < CHILDREN {
+            value := seed + index
+            group.spawn(() async => { return value })
+            index += 1
+        }
+        var total: int64 = 0
+        for await value in group {
+            total += value
+        }
+        return total
+    })
+}
+
+func spawner(_ seed: int64) async -> int64 {
+    var total: int64 = 0
+    var index: int64 = 0
+    while index < GROUPS {
+        total += await groupTotal(seed + index)
+        index += 1
+    }
+    return total
+}
+
+func main() async {
+    var spawners: List[std::task::Task[int64]] = []
+    var seed: int64 = 0
+    while seed < SPAWNERS {
+        current := seed
+        spawners.append(std::task::spawn(() async => { return await spawner(current) }))
+        seed += 1
+    }
+    var total: int64 = 0
+    for task in spawners {
+        total += (await task.result()).unwrap()
+    }
+    std::printf("total: %d\n", total)
+}

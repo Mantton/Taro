@@ -1,0 +1,5 @@
+[package]
+name = "github.com/taro-story/s35-class-client"
+kind = "executable"
+[require]
+"github.com/taro-story/s35-class-fields" = { path = "../dep", alias = "dep" }

@@ -1,0 +1,36 @@
+import std::hash::Hashable
+struct Record { value: int32 }
+final class Shared { value: int32 }
+extend Shared { init(_ value: int32) { self.value = value } }
+struct RefKey { value: int32 }
+conform &RefKey to std::ops::PartialEq[&RefKey] {
+    func eq(_ other: &RefKey) -> bool { self.value == other.value }
+}
+conform &RefKey to std::hash::Hashable {
+    func hash[H: std::hash::Hasher](into hasher: H) { self.value.hash(into: hasher) }
+}
+func main() {
+    var records: [string: Record] = [:]
+    records["first"] = Record { value: 7 }
+    var snapshot: Record = records.get(&"first").unwrap()
+    snapshot.value = 9
+    assert(records["first"].value == 7, "dictionary get returns value copies")
+    assert(records.get(&"absent").isNone(), "get handles absence")
+    var numbers: [string: int32] = [:]
+    numbers["first"] = 11
+    numbers["first"] += 2
+    assert(numbers["first"] == 13, "assignment inserts and compound assignment updates")
+    shared := Shared(17)
+    var handles: [string: Shared] = ["key": shared]
+    handles["key"].value += 2
+    kept := handles.get(&"key").unwrap()
+    handles.clear()
+    std::runtime::collect()
+    assert(shared.value == 19 && kept.value == 19, "copied class values keep their shared target")
+    var key = RefKey { value: 23 }
+    referenceKey := &key
+    var references: std::collections::Dictionary[&RefKey, string] = [:]
+    references[referenceKey] = "declared reference key"
+    assert(references.get(&referenceKey).unwrap() == "declared reference key", "a reference can itself be the declared key value type")
+
+}

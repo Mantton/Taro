@@ -1,0 +1,4 @@
+error: type 'View' does not conform to interface 'Read'
+ -> language_tests/source_files/invalid/deref_target_not_a_bound.tr:9:4
+	    accept(View { target: &point })
+	    ^^^^^^

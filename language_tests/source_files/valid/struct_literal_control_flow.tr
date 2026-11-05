@@ -13,7 +13,7 @@ func main() {
     assert(Flag { enabled: true }.enabled, "postfix field on literal")
     if (Flag { enabled: true }).enabled {} else { panic("parenthesized literal") }
     if accept(Flag { enabled: true }) {} else { panic("call argument") }
-    if [Flag { enabled: true }].at(0).enabled {} else { panic("collection literal") }
+    if [Flag { enabled: true }].len() == 1 {} else { panic("collection literal") }
     if { Flag { enabled: true }.enabled } {} else { panic("block expression") }
     if f"{Flag { enabled: true }.enabled}" == "true" {} else { panic("interpolation") }
     var iterations = 0
@@ -30,7 +30,7 @@ func main() {
     if case .some(value) = maybe(Count { value: 42 }) {
         assert(value.value == 42, "case condition")
     } else { panic("case condition failed") }
-    if let value = maybe(Count { value: 42 }) {
+    if var value = maybe(Count { value: 42 }) {
         assert(value.value == 42, "optional condition")
     } else { panic("optional condition failed") }
     assert(guarded() == 42, "guard condition")

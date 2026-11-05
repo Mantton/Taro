@@ -1,0 +1,15 @@
+interface Stored {}
+struct Counter { count: int32 }
+conform Counter to Stored {}
+func snapshot[T](_ source: &any Stored) -> T? { source as? T }
+func genericSnapshot[S, T](_ source: S) -> T? { source as? T }
+func main() {
+    var boxed: any Stored = Counter { count: 7 }
+    var first: Counter = snapshot[Counter](&boxed).unwrap()
+    first.count = 91
+    var second: Counter = genericSnapshot[&any Stored, Counter](&boxed).unwrap()
+    assert(second.count == 7, "Copy snapshots use independent value storage")
+    assert(snapshot[Counter](&boxed).unwrap().count == 7, "copy inspection preserves the original existential")
+    var primitive: int32 = (7 as? int32).unwrap()
+    assert(primitive == 7, "checked-cast ownership checks preserve literal defaulting")
+}

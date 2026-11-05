@@ -1,0 +1,33 @@
+final class Counter { value: int32 }
+extend Counter {
+    init(_ value: int32) { self.value = value }
+    func read() -> int32 { self.value }
+    func increment() -> int32 { self.value += 1; self.value }
+    func later() async -> int32 { await std::testing::yieldNow(); self.value }
+}
+struct Value { number: int32 }
+extend Value { func read() -> int32 { self.number }; }
+func selected(_ calls: &int32, _ value: Counter) -> Counter { *calls += 1; value }
+func main() async {
+    var counter = Counter(1)
+    original := counter
+    read := counter.read
+    increment := counter.increment
+    later := counter.later
+    literal := () => counter.read()
+    counter = Counter(20)
+    assert(read() == 1 && literal() == 20, "method values bind the object; literals reread the variable")
+    copy := increment
+    assert(increment() == 2 && copy() == 3 && original.value == 3, "callback copies share the selected object")
+    assert((await later()) == 3, "async method values retain the selected object")
+    var left = Value { number: 4 }
+    right := Value { number: 9 }
+    var reference = &left
+    referenceRead := reference.read
+    reference = &right
+    left.number = 5
+    assert(referenceRead() == 4, "value receivers copy the pointee once")
+    var calls: int32 = 0
+    chosen := selected(&calls, original).read
+    assert(chosen() == 3 && chosen() == 3 && calls == 1, "receiver expressions execute once")
+}

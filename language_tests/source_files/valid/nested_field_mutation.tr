@@ -1,0 +1,14 @@
+struct Inner { count: int32 }
+struct Outer { inner: Inner }
+
+func setCount(_ outer: &Outer, _ count: int32) {
+    outer.inner.count = count
+}
+
+func main() {
+    var outer = Outer { inner: Inner { count: 1 } }
+    outer.inner.count = 2
+    assert(outer.inner.count == 2, "direct nested assignment")
+    setCount(&outer, 3)
+    assert(outer.inner.count == 3, "nested assignment through mutable reference")
+}

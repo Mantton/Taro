@@ -1,12 +1,13 @@
-import std.mem.Span
-import std.runtime
+import std::mem::Span
+import std::runtime
 
 const SIP_V0_INIT: uint64 = 0x736f6d6570736575
 const SIP_V1_INIT: uint64 = 0x646f72616e646f6d
 const SIP_V2_INIT: uint64 = 0x6c7967656e657261
 const SIP_V3_INIT: uint64 = 0x7465646279746573
 
-func sipRound(_ v0: &mut uint64, _ v1: &mut uint64, _ v2: &mut uint64, _ v3: &mut uint64) {
+@inline
+func sipRound(_ v0: &uint64, _ v1: &uint64, _ v2: &uint64, _ v3: &uint64) {
     *v0 += *v1
     *v2 += *v3
     *v1 = (*v1 << 13) | (*v1 >> 51)
@@ -24,17 +25,52 @@ func sipRound(_ v0: &mut uint64, _ v1: &mut uint64, _ v2: &mut uint64, _ v3: &mu
     *v2 = (*v2 << 32) | (*v2 >> 32)
 }
 
-func loadLeWord(_ bytes: &Span[uint8], _ start: usize, _ count: usize) -> uint64 {
-    var out: uint64 = 0
-    var idx: usize = 0
-    while idx < count {
-        let value = (*bytes.at(start + idx)) as uint64
-        out |= value << ((idx * (8 as usize)) as uint64)
-        idx += 1
+// Byte loads support unaligned input and define little-endian order on every
+// target. Callers establish the readable extent before entering these helpers.
+@inline
+unsafe func loadLeWord(_ bytes: *const uint8) -> uint64 {
+    unsafe {
+        (bytes.read() as uint64)
+            | ((bytes.add(1).read() as uint64) << 8)
+            | ((bytes.add(2).read() as uint64) << 16)
+            | ((bytes.add(3).read() as uint64) << 24)
+            | ((bytes.add(4).read() as uint64) << 32)
+            | ((bytes.add(5).read() as uint64) << 40)
+            | ((bytes.add(6).read() as uint64) << 48)
+            | ((bytes.add(7).read() as uint64) << 56)
     }
-    out
 }
 
+// Read exactly count bytes (0..7), including no reads for an empty span.
+@inline
+unsafe func loadLeTail(_ bytes: *const uint8, _ count: usize) -> uint64 {
+    unsafe {
+        var result: uint64 = 0
+        var offset: usize = 0
+        if count >= (4 as usize) {
+            result = (bytes.read() as uint64)
+                | ((bytes.add(1).read() as uint64) << 8)
+                | ((bytes.add(2).read() as uint64) << 16)
+                | ((bytes.add(3).read() as uint64) << 24)
+            offset = 4
+        }
+        if (count & (2 as usize)) != (0 as usize) {
+            pair := (bytes.add(offset).read() as uint64)
+                | ((bytes.add(offset + (1 as usize)).read() as uint64) << 8)
+            result |= pair << ((offset * (8 as usize)) as uint64)
+            offset += 2
+        }
+        if (count & (1 as usize)) != (0 as usize) {
+            result |= (bytes.add(offset).read() as uint64) << ((offset * (8 as usize)) as uint64)
+        }
+        result
+    }
+}
+
+/// Streaming SipHash-1-3 with a 128-bit key and a 64-bit result.
+/// One compression round per word and three finalization rounds; finish leaves
+/// the stream unchanged. Integer arithmetic in std is modular, as SipHash needs.
+/// Algorithm: https://github.com/veorq/SipHash (cROUNDS=1, dROUNDS=3).
 public struct SipHasher13 {
     length: usize
     v0: uint64
@@ -45,10 +81,10 @@ public struct SipHasher13 {
     ntail: usize
 }
 
-impl SipHasher13 {
-    public func new(
-        _ key0: uint64 = runtime.hashSeed0(),
-        _ key1: uint64 = runtime.hashSeed1(),
+extend SipHasher13 {
+    public static func new(
+        _ key0: uint64 = runtime::hashSeed0(),
+        _ key1: uint64 = runtime::hashSeed1(),
     ) -> Self {
         SipHasher13 {
             length: 0,
@@ -62,58 +98,65 @@ impl SipHasher13 {
     }
 }
 
-impl Hasher for SipHasher13 {
-    public func write(&mut self, _ bytes: Span[uint8]) {
-        let message_len = bytes.len()
-        self.length += message_len
+conform &SipHasher13 to Hasher {
+    @inline
+    public func write(_ bytes: Span[uint8]) {
+        length := bytes.len()
+        data := bytes.asPtr()
+        // Only the low byte of the total length enters the final block.
+        self.length = (self.length + (length & (255 as usize))) & (255 as usize)
+        var offset: usize = 0
 
-        var needed: usize = 0
-        if self.ntail != 0 {
-            needed = (8 as usize) - self.ntail
-            let take = if message_len < needed { message_len } else { needed }
-            self.tail |= loadLeWord(&bytes, 0, take) << ((self.ntail * (8 as usize)) as uint64)
-
-            if message_len < needed {
-                self.ntail += message_len
-                return
-            }
+        if self.ntail != (0 as usize) {
+            needed := (8 as usize) - self.ntail
+            take := if length < needed { length } else { needed }
+            self.tail |= unsafe { loadLeTail(data, take) }
+                << ((self.ntail * (8 as usize)) as uint64)
+            self.ntail += take
+            offset = take
+            if self.ntail < (8 as usize) { return }
 
             self.v3 ^= self.tail
-            sipRound(&mut self.v0, &mut self.v1, &mut self.v2, &mut self.v3)
+            sipRound(&self.v0, &self.v1, &self.v2, &self.v3)
             self.v0 ^= self.tail
+            self.tail = 0
             self.ntail = 0
         }
 
-        let len = message_len - needed
-        let left = len & (7 as usize)
-        var idx = needed
-        while idx < (len - left) {
-            let word = loadLeWord(&bytes, idx, 8 as usize)
+        while length - offset >= (8 as usize) {
+            word := unsafe { loadLeWord(data.add(offset)) }
             self.v3 ^= word
-            sipRound(&mut self.v0, &mut self.v1, &mut self.v2, &mut self.v3)
+            sipRound(&self.v0, &self.v1, &self.v2, &self.v3)
             self.v0 ^= word
-            idx += 8 as usize
+            offset += 8
         }
 
-        self.tail = loadLeWord(&bytes, idx, left)
-        self.ntail = left
+        self.ntail = length - offset
+        self.tail = unsafe { loadLeTail(data.add(offset), self.ntail) }
     }
 
-    public func finish(&self) -> uint64 {
+    public func writeString(_ value: &string) {
+        // `write` only reads its span, so it can view the immutable string
+        // bytes in place instead of copying them.
+        len := std::intrinsic::__intrinsic_string_len(value)
+        self.write(unsafe { Span[uint8]::from(std::intrinsic::__intrinsic_string_data(value), len) })
+    }
+
+    public func finish() -> uint64 {
         var v0 = self.v0
         var v1 = self.v1
         var v2 = self.v2
         var v3 = self.v3
 
-        let b = (((self.length as uint64) & 0xff_u64) << 56) | self.tail
+        b := (((self.length as uint64) & 0xff_u64) << 56) | self.tail
         v3 ^= b
-        sipRound(&mut v0, &mut v1, &mut v2, &mut v3)
+        sipRound(&v0, &v1, &v2, &v3)
         v0 ^= b
 
         v2 ^= 0xff_u64
-        sipRound(&mut v0, &mut v1, &mut v2, &mut v3)
-        sipRound(&mut v0, &mut v1, &mut v2, &mut v3)
-        sipRound(&mut v0, &mut v1, &mut v2, &mut v3)
+        sipRound(&v0, &v1, &v2, &v3)
+        sipRound(&v0, &v1, &v2, &v3)
+        sipRound(&v0, &v1, &v2, &v3)
 
         v0 ^ v1 ^ v2 ^ v3
     }

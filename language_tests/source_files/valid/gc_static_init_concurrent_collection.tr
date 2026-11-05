@@ -1,0 +1,44 @@
+// G45: tasks on several workers reach a static while its initializer runs.
+// The waiters park at a GC safepoint, so a collection started inside the
+// initializer completes. HEAD blocked waiters in std::sync::Once while still
+// running as mutators, and the initializer's collection waited for them
+// forever.
+// ENV: TARO_WORKERS=4
+extern "C" {
+    unsafe func usleep(_ micros: uint32) -> int32
+    unsafe func __gc__test_probe_create(_ target: *const uint8) -> *mut uint8
+    unsafe func __gc__test_collect_probe_is_live(_ probe: *mut uint8) -> bool
+}
+
+static var TABLE: std::collections::List[string] = buildTable()
+
+func buildTable() -> std::collections::List[string] {
+    var labels = std::collections::List[string]::new()
+    // Let the other workers reach the static and wait on its initialization.
+    var _ = unsafe { usleep(50000) }
+    var i = 0
+    while i < 100 {
+        labels.append(std::sprintf("label-%d", i))
+        i += 1
+    }
+    // Force a collection while the other workers wait on this initializer.
+    probe := unsafe { __gc__test_probe_create(0 as *const uint8) }
+    var _ = unsafe { __gc__test_collect_probe_is_live(probe) }
+    return labels
+}
+
+func main() async {
+    var (ready, started) = std::sync::bounded[int32](8).unwrap()
+    var tasks = std::collections::List[std::task::Task[int32]]::new()
+    var i = 0
+    while i < 4 {
+        tasks.append(std::task::spawn(() async => {
+            (await ready.send(1)).unwrap()
+            return TABLE.count() as int32
+        }))
+        i += 1
+    }
+    var total: int32 = 0
+    for task in tasks { total += (await task.result()).unwrap() }
+    std::printf("tasks saw %d labels in total\n", total)
+}

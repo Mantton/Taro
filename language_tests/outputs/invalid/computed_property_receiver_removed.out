@@ -1,0 +1,4 @@
+error: computed getters use `get { ... }` with implicit self; receiver parameters, async and result annotations are not supported
+ -> language_tests/source_files/invalid/computed_property_receiver_removed.tr:3:22
+	    var item: int32 { get(&self) { self.value } }
+	                      ^^^

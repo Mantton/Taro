@@ -1,0 +1,4 @@
+error: constructor can complete with uninitialized fields
+ -> language_tests/source_files/invalid/class_root_missing_field.tr:2:22
+	extend Document { init() { self.revision = 1 } }
+	                      ^^

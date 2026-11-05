@@ -389,7 +389,15 @@ impl Lexer {
             '@' => Token::At,
             '#' => Token::Hash,
             '~' => Token::Tilde,
-            ':' => Token::Colon,
+            ':' => {
+                if self.eat(':') {
+                    Token::ColonColon
+                } else if self.eat('=') {
+                    Token::ColonEq
+                } else {
+                    Token::Colon
+                }
+            }
             '.' => {
                 if self.eat('.') {
                     let token = if self.eat('.') {
@@ -441,14 +449,22 @@ impl Lexer {
             }
             '!' => {
                 if self.eat('=') {
-                    Token::Neq
+                    if self.eat('=') {
+                        Token::IdentityNeq
+                    } else {
+                        Token::Neq
+                    }
                 } else {
                     Token::Bang
                 }
             }
             '=' => {
                 if self.eat('=') {
-                    Token::Eql
+                    if self.eat('=') {
+                        Token::IdentityEql
+                    } else {
+                        Token::Eql
+                    }
                 } else if self.eat('>') {
                     Token::EqArrow
                 } else {
@@ -1127,9 +1143,12 @@ fn str_to_keyword(word: &str) -> Option<Token> {
         "guard" => Token::Guard,
         "if" => Token::If,
         "impl" => Token::Impl,
+        "extend" => Token::Extend,
+        "conform" => Token::Conform,
         "import" => Token::Import,
         "in" => Token::In,
         "init" => Token::Init,
+        "deinit" => Token::Deinit,
         "interface" => Token::Interface,
         "let" => Token::Let,
         "loop" => Token::Loop,
@@ -1139,6 +1158,7 @@ fn str_to_keyword(word: &str) -> Option<Token> {
         "nil" => Token::Nil,
         "operator" => Token::Operator,
         "private" => Token::Private,
+        "internal" => Token::Internal,
         "public" => Token::Public,
         "readonly" => Token::Readonly,
         "return" => Token::Return,
@@ -1169,7 +1189,6 @@ fn str_to_keyword(word: &str) -> Option<Token> {
 
 #[derive(Debug)]
 pub enum LexerError {
-    #[allow(unused)]
     InvalidCharacter(char),
     UnterminatedMultilineComment,
     UnterminatedEscapedIdentifier,
@@ -1232,8 +1251,13 @@ pub fn automatic_semicolon_insertion(tokens: Vec<Spanned<Token>>) -> Vec<Spanned
     let mut out = Vec::with_capacity(tokens.len() + 8);
     // Comments have already been consumed. Walk backwards for lookahead without clones.
     let mut next: Option<(usize, bool, bool)> = None;
-    for token in tokens.into_iter().rev() {
-        let insert = can_end_statement(&token.value)
+    let mut tokens = tokens.into_iter().rev().peekable();
+    while let Some(token) = tokens.next() {
+        // The wildcard in `import path::*` ends the declaration. An ordinary
+        // multiplication/dereference star still cannot end a statement.
+        let path_glob = matches!(token.value, Token::Star)
+            && matches!(tokens.peek(), Some(previous) if matches!(previous.value, Token::ColonColon));
+        let insert = (can_end_statement(&token.value) || path_glob)
             && match next {
                 None => true,
                 Some((line, eof, continuation)) => {
@@ -1321,14 +1345,14 @@ fn is_line_continuation_starter(tok: &Token) -> bool {
         | Caret | Bar
         | AmpAmp | BarBar
         // relational / equality
-        | LChevron | RChevron | Leq | Geq | Eql | Neq
+        | LChevron | RChevron | Leq | Geq | Eql | Neq | IdentityEql | IdentityNeq
         // shifts
         | Shl | Shr
         // assignment family (leading assignment style)
-        | Assign | PlusEq | MinusEq | MulEq | DivEq | RemEq
+        | Assign | ColonEq | PlusEq | MinusEq | MulEq | DivEq | RemEq
         | ShlEq | ShrEq | CaretEq | AmpEq | BarEq | DotDotEq
         // range / member / optional chaining
-        | Dot | DotDot | Ellipsis | QuestionDot
+        | Dot | ColonColon | DotDot | Ellipsis | QuestionDot
         // nullish / pipe
         | QuestionQuestion | Pipe
         // arrows can lead a continuation (e.g., in patterns or lambdas)
@@ -2089,6 +2113,8 @@ mod tests {
             ("guard", Token::Guard),
             ("if", Token::If),
             ("impl", Token::Impl),
+            ("extend", Token::Extend),
+            ("conform", Token::Conform),
             ("import", Token::Import),
             ("in", Token::In),
             ("interface", Token::Interface),
@@ -2101,6 +2127,7 @@ mod tests {
             ("nil", Token::Nil),
             ("operator", Token::Operator),
             ("private", Token::Private),
+            ("internal", Token::Internal),
             ("public", Token::Public),
             ("return", Token::Return),
             ("readonly", Token::Readonly),
@@ -2122,6 +2149,7 @@ mod tests {
             ("await", Token::Await),
             ("ref", Token::Ref),
             ("init", Token::Init),
+            ("deinit", Token::Deinit),
         ];
 
         for (text, expected_token) in keywords {
@@ -2157,6 +2185,8 @@ mod tests {
             (",", Token::Comma),
             (".", Token::Dot),
             (":", Token::Colon),
+            ("::", Token::ColonColon),
+            (":=", Token::ColonEq),
             ("(", Token::LParen),
             (")", Token::RParen),
             ("{", Token::LBrace),

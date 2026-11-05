@@ -1,0 +1,18 @@
+import std::task::{Task, spawn}
+
+func pass[T](_ value: T) -> T {
+    value
+}
+
+func forward[T](_ task: Task[T]) -> Task[T] {
+    pass(task)
+}
+
+func main() async {
+    var task: Task[int32] = spawn(() => 42_i32) // Task[int32]
+    var transferred: Task[int32] = forward(task) // Task[int32]; owns the same task
+    match await transferred.result() {
+        case .ok(value) => assert(value == 42_i32, "transferred task result")
+        case .err(_) => std::panic::panic("transferred task failed")
+    }
+}

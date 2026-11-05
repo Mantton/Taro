@@ -1,0 +1,296 @@
+import std::collections::List
+import std::io::{AsyncReader, Writer}
+import std::mem::Span
+import std::result::Result
+
+/// A streaming body producer. Reads return zero at EOF. The body owns close;
+/// implementations must not retain the writable span after read completes.
+/// Errors are terminal. A close requested during a read is deferred until that
+/// read finishes or is cancelled, so producers need no concurrent close/read.
+public interface BodySource {
+    public func read(_ into: Span[uint8]) async -> Result[usize, std::io::Error]
+    public func close() -> Result[(), std::io::Error]
+}
+
+// Holding the erased source behind a reference keeps BodyStorage a plain value:
+// otherwise every copy, for any kind of body, goes through the runtime's
+// erased-value copy, and copying a stream allocates a new box.
+final class BodyStream {
+    source: any BodySource
+}
+extend BodyStream {
+    init(_ source: any BodySource) { self.source = source }
+}
+
+enum BodyStorage {
+    case bytes(List[uint8])
+    case text(string)
+    case stream(BodyStream)
+    // Framing on a connection, the same for every incoming request and response.
+    case incoming(IncomingBody)
+    case closed
+}
+
+// Bits: 1 = active read; 2 = close requested. Only the holder of the read
+// lease or the successful idle->closed transition can access/release storage.
+final class BodyState {
+    storage: BodyStorage
+    knownLength: usize?
+    // A known-length stream can still suspend. This capability is immutable.
+    buffered: bool
+    position: std::sync::atomic::Usize
+    phase: std::sync::atomic::Uint8
+    eof: std::sync::atomic::Bool
+}
+extend BodyState {
+    init(_ storage: BodyStorage, _ length: usize?, _ buffered: bool) {
+        self.storage = storage
+        self.knownLength = length
+        self.buffered = buffered
+        self.position = std::sync::atomic::Usize::new(0)
+        self.phase = std::sync::atomic::Uint8::new(0_u8)
+        self.eof = std::sync::atomic::Bool::new(false)
+    }
+
+    func releaseStorage() -> Result[(), std::io::Error] {
+        storage := self.storage
+        self.storage = .closed
+        match storage {
+            case .stream(stream) => return stream.source.close()
+            case .incoming(source) => return source.close()
+            case _ => return .ok(())
+        }
+    }
+
+    func endRead() {
+        loop {
+            phase := self.phase.load()
+            if phase == 1_u8 && self.phase.compareExchange(1_u8, 0_u8) { return }
+            if phase == 3_u8 && self.phase.compareExchange(3_u8, 2_u8) {
+                match self.releaseStorage() {
+                    case .ok(_) => {}
+                    case .err(error) => std::eprintln(std::sprintf("deferred HTTP body close: %v", error))
+                }
+                return
+            }
+        }
+    }
+}
+
+/// A shared, single-consumer byte stream. Copies share cursor and close state;
+/// they do not replay the payload. Buffered constructors snapshot mutable bytes.
+/// EOF releases the source automatically; early exit requires explicit close.
+/// An empty body has nothing to read or release, so it is always at EOF and closed.
+public struct Body { state: BodyState? }
+extend Body {
+    public static func empty() -> Self { Body { state: .none } }
+    public static func fromString(_ text: string) -> Self {
+        Body { state: .some(BodyState(.text(text), .some(text.byteLen()), true)) }
+    }
+    public static func fromBytes(_ bytes: List[uint8]) -> Self {
+        Body::ownedBytes(bytes.copy())
+    }
+    // Internal paths have just filled fresh storage and can transfer its handle.
+    static func ownedBytes(_ bytes: List[uint8]) -> Self {
+        Body { state: .some(BodyState(.bytes(bytes), .some(bytes.len()), true)) }
+    }
+    public static func fromSource[S: BodySource](_ source: S, length: usize? = .none) -> Self {
+        Body { state: .some(BodyState(.stream(BodyStream(source)), length, false)) }
+    }
+    static func fromIncoming(_ source: IncomingBody, length: usize?) -> Self {
+        Body { state: .some(BodyState(.incoming(source), length, false)) }
+    }
+    public func isClosed() -> bool {
+        match self.state {
+            case .some(state) => return (state.phase.load() & 2_u8) != 0_u8
+            case .none => return true
+        }
+    }
+    // Whether sending this body is an error: an empty one has nothing to use up.
+    func isSpent() -> bool {
+        match self.state {
+            case .some(state) => return (state.phase.load() & 2_u8) != 0_u8
+            case .none => return false
+        }
+    }
+    public func remainingLength() -> usize? {
+        state := match self.state {
+            case .some(state) => state
+            case .none => return .some(0)
+        }
+        match state.knownLength {
+            case .none => return .none
+            case .some(length) => {
+                position := state.position.load()
+                return .some(if position < length { length - position } else { 0 })
+            }
+        }
+    }
+    /// Closing any copy invalidates the shared stream. An in-flight read may
+    /// finish; its source is closed when the read lease is released.
+    public func close() -> Result[(), std::io::Error] {
+        state := match self.state {
+            case .some(state) => state
+            case .none => return .ok(())
+        }
+        loop {
+            phase := state.phase.load()
+            if (phase & 2_u8) != 0_u8 { return .ok(()) }
+            if state.phase.compareExchange(phase, phase | 2_u8) {
+                if phase == 0_u8 { return state.releaseStorage() }
+                return .ok(())
+            }
+        }
+    }
+
+    // Buffer performs bulk byte copies and initialized-prefix publication.
+    // Keep collection separate from the final List/string snapshot so text
+    // decoding does not allocate a temporary List and copy it byte by byte.
+    func collect(_ maximum: usize) async -> Result[std::bytes::Buffer, Error] {
+        defer { var _ = self.close() }
+        var reserve: usize = 0
+        match self.remainingLength() {
+            case .some(length) => {
+                if length > maximum { return .err(failure(.limit, "HTTP body exceeds collection limit")) }
+                reserve = length
+            }
+            case .none => {}
+        }
+        output := std::bytes::Buffer::new()
+        match output.reserve(reserve) {
+            case .ok(_) => {}
+            case .err(error) => return .err(ioFailure(error))
+        }
+        // One scratch allocation per collection, reused after each completed
+        // read/write. BodySource's span contract permits this reuse.
+        var buffer: [uint8; 8192] = [0_u8; 8192]
+        span := unsafe { Span[uint8]::from((&buffer as *mut [uint8; 8192]) as *mut uint8, 8192) }
+        loop {
+            count := match await self.read(span) {
+                case .ok(count) => count
+                case .err(error) => return .err(ioFailure(error))
+            }
+            if count == 0 { return .ok(output) }
+            if count > maximum - output.len() { return .err(failure(.limit, "HTTP body exceeds collection limit")) }
+            match output.write(span.slice(0, count)) {
+                case .ok(_) => {}
+                case .err(error) => return .err(ioFailure(error))
+            }
+        }
+    }
+    public func readAll(maxBytes maximum: usize = DEFAULT_MAX_BODY_BYTES) async -> Result[List[uint8], Error] {
+        buffer := (await self.collect(maximum))!
+        return .ok(buffer.toBytes())
+    }
+    public func readToString(maxBytes maximum: usize = DEFAULT_MAX_BODY_BYTES) async -> Result[string, Error] {
+        buffer := (await self.collect(maximum))!
+        return .ok(buffer.toString())
+    }
+
+}
+
+extend Body {
+    func isBuffered() -> bool {
+        match self.state {
+            case .some(state) => return state.buffered
+            case .none => return true
+        }
+    }
+
+    // True when the caller now holds the read lease on `state`, which is then
+    // present. False at EOF, so an empty body never reaches its state.
+    func beginRead() -> Result[bool, std::io::Error] {
+        state := match self.state {
+            case .some(state) => state
+            case .none => return .ok(false)
+        }
+        if state.eof.load() { return .ok(false) }
+        if !state.phase.compareExchange(0_u8, 1_u8) {
+            kind := if self.isClosed() { std::io::ErrorKind::closed } else { std::io::ErrorKind::invalidInput }
+            return .err(std::io::Error::new(kind).withOperation("HTTP body read already active or closed"))
+        }
+        return .ok(true)
+    }
+
+    func finishRead(_ state: BodyState, _ count: usize, _ position: usize, _ capacity: usize) -> Result[usize, std::io::Error] {
+        if count > capacity {
+            var _ = self.close()
+            return .err(std::io::Error::new(.invalidData).withOperation("HTTP body source returned an invalid read count"))
+        }
+        match state.knownLength {
+            case .some(length) => {
+                if count > length - position || (count == 0 && position != length) {
+                    var _ = self.close()
+                    return .err(std::io::Error::new(.invalidData).withOperation("HTTP body length mismatch"))
+                }
+            }
+            case .none => {}
+        }
+        var _ = state.position.add(count)
+        if count == 0 {
+            state.eof.store(true)
+            var _ = self.close()
+        }
+        return .ok(count)
+    }
+
+    // Buffered data needs no future. Both readers share the same exclusive
+    // lease, cursor, length validation and EOF/close handling.
+    func readBuffered(_ into: Span[uint8]) -> Result[usize, std::io::Error] {
+        if !((self.beginRead())!) { return .ok(0) }
+        state := self.state.unwrap()
+        var completed = false
+        defer {
+            if !completed { var _ = self.close() }
+            state.endRead()
+        }
+        if into.len() == 0 { completed = true; return .ok(0) }
+        position := state.position.load()
+        var count: usize = 0
+        match state.storage {
+            case .bytes(bytes) => {
+                remaining := bytes.len() - position
+                count = if remaining < into.len() { remaining } else { into.len() }
+                if count > 0 {
+                    unsafe { std::intrinsic::__intrinsic_memcpy(into.asMutPtr(), bytes.asSpan().asPtr().add(position), count) }
+                }
+            }
+            case .text(text) => {
+                remaining := text.byteLen() - position
+                count = if remaining < into.len() { remaining } else { into.len() }
+                if count > 0 {
+                    unsafe { std::intrinsic::__intrinsic_memcpy(into.asMutPtr(), std::string::stringData(text).add(position), count) }
+                }
+            }
+            case .closed => return .err(std::io::Error::new(.closed))
+            case _ => return .err(std::io::Error::new(.invalidInput).withOperation("HTTP body is not buffered"))
+        }
+        result := self.finishRead(state, count, position, into.len())
+        completed = true
+        return result
+    }
+}
+
+conform Body to AsyncReader {
+    public func read(_ into: Span[uint8]) async -> Result[usize, std::io::Error] {
+        if self.isBuffered() { return self.readBuffered(into) }
+        if !((self.beginRead())!) { return .ok(0) }
+        state := self.state.unwrap()
+        var completed = false
+        defer {
+            if !completed { var _ = self.close() }
+            state.endRead()
+        }
+        if into.len() == 0 { completed = true; return .ok(0) }
+        position := state.position.load()
+        count := match state.storage {
+            case .stream(stream) => (await stream.source.read(into))!
+            case .incoming(source) => (await source.read(into))!
+            case .closed => return .err(std::io::Error::new(.closed))
+            case _ => return .err(std::io::Error::new(.invalidInput).withOperation("HTTP body storage changed"))
+        }
+        result := self.finishRead(state, count, position, into.len())
+        completed = true
+        return result
+    }
+}

@@ -3,7 +3,7 @@ mod canonical;
 mod goal;
 pub mod ref_ops;
 mod select;
-mod witness;
+pub(crate) mod witness;
 
 use crate::{
     compile::context::Gcx,
@@ -12,8 +12,13 @@ use crate::{
     },
 };
 
-pub use select::{prove_declared_interface_goal, prove_interface_goal, select_interface_impl};
-pub(crate) use witness::{find_method_witness, property_requirement_satisfied};
+pub(crate) use select::deduce_conformance_interface;
+pub(crate) use select::{builtin_copy_clone, closure_clone_fields};
+pub use select::{prove_interface_goal, select_interface_impl};
+pub(crate) use witness::{
+    class_receiver_requires_dynamic_self, find_method_witness, property_requirement_satisfied,
+    validate_class_default_adoptions,
+};
 
 pub fn build_conformance_witness<'ctx>(
     gcx: Gcx<'ctx>,

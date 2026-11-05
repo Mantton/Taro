@@ -2,12 +2,12 @@ struct Counter {
     base: int32
 }
 
-impl Counter {
-    func add(&self, value: int32 = 10) -> int32 {
+extend Counter {
+    func add( value: int32 = 10) -> int32 {
         self.base + value
     }
 
-    func run(&self, action: () -> int32 = || provider_call()) -> int32 {
+    func run( action: () -> int32 = () => provider_call()) -> int32 {
         self.base + action()
     }
 }
@@ -28,20 +28,20 @@ func call_provider(a: int32, b: int32 = provider_call()) -> int32 {
     a + b
 }
 
-func call_closure(action: () -> int32 = || 42) -> int32 {
+func call_closure(action: () -> int32 = () => 42) -> int32 {
     action()
 }
 
-func call_global_closure(action: () -> int32 = || provider_call()) -> int32 {
+func call_global_closure(action: () -> int32 = () => provider_call()) -> int32 {
     action()
 }
 
-func call_generic_closure[T](_ value: T, action: (T) -> T = |item: T| item) -> T {
+func call_generic_closure[T](_ value: T, action: (T) -> T = (item: T) => item) -> T {
     action(value)
 }
 
 func main() {
-    let counter = Counter { base: 7 }
+    counter := Counter { base: 7 }
 
     assert(counter.add() == 17, "counter.add() default")
     assert(counter.add(value: 5) == 12, "counter.add(value: 5)")
@@ -55,5 +55,5 @@ func main() {
     assert(call_global_closure() == 100, "global-referencing closure default")
     assert(call_generic_closure(23) == 23, "generic closure default")
 
-    std.print("PASS: Default parameters\n")
+    std::print("PASS: Default parameters\n")
 }

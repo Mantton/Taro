@@ -1,0 +1,95 @@
+import std::mem::swap
+
+struct Owner { values: [int32] }
+struct PointerStorage { pointer: *mut [int32] }
+func takeList(_ values: &[int32]) -> [int32] {
+    previous := *values
+    *values = []
+    previous
+}
+
+func read[T](_ value: &T) -> T { *value }
+func readPair[T](_ pair: &(T, T)) -> (T, T) { *pair }
+func readSharedPair[T](_ pair: &(T, T)) -> (T, T) { *pair }
+func readArray[T](_ array: &[T; 2]) -> [T; 2] { *array }
+func readOptional[T](_ optional: &T?) -> T? { *optional }
+func readPattern[T](_ pair: &(T, T)) -> (T, T) {
+    var copy = *pair
+    (copy.0, copy.1)
+}
+
+interface Source {
+    type Value
+}
+struct IntSource {}
+conform IntSource to Source {
+    type Value = int32
+}
+func readAssociated[S: Source](_ value: &S::Value) -> S::Value { *value }
+
+func reborrowReference(_ value: &int32) -> &int32 {
+    value
+}
+
+func main() {
+    var original: [int32] = [1, 2]
+    shared := &original
+    assert(shared.len() == 2, "aliased references can coexist")
+    writable := &original
+    taken := takeList(writable)
+    assert(writable.isEmpty(), "replacement leaves valid initialized storage")
+    writable.append(99)
+    assert(*writable.at(0) == 99, "aliased access observes the replacement")
+    assert(*taken.at(0) == 1, "old list handle still selects original storage")
+
+    var owner = Owner { values: [3] }
+    previous := owner
+    owner = Owner { values: [] }
+    assert(owner.values.isEmpty() && *previous.values.at(0) == 3, "ordinary assignment installs replacement")
+    var other: [int32] = [4]
+    swap(&original, &other)
+    assert(*original.at(0) == 4 && *other.at(0) == 99, "swap preserves both lists")
+
+    var pair = (19, 23)
+    first := readPair(&pair)
+    second := readSharedPair(&pair)
+    third := readPattern(&pair)
+    assert(first.0 + second.1 == 42 && third.0 == 19, "generic value tuple and pattern reads")
+    var array: [int32; 2] = [19, 23]
+    copied := readArray(&array)
+    again := readArray(&array)
+    assert(*copied.at(0) + *again.at(1) == 42, "generic value array reads")
+    var optional: int32? = .some(42)
+    assert(readOptional(&optional).unwrap() == 42, "optional payload copy")
+    assert(readOptional(&optional).unwrap() == 42, "optional remains initialized")
+    assert(readAssociated[IntSource](&pair.0) == 19, "associated value copy")
+
+    var referent: int32 = 41
+    returned := reborrowReference(&referent)
+    *returned += 1
+    assert(*returned == 42, "returned reference retains its referent")
+
+    // A raw pointer into a native stack slot does not trace that slot's GC
+    // fields. Keep its owner live until all raw accesses have finished.
+    unsafe {
+        pointer := &other as *mut [int32]
+        old := pointer.read()
+        pointer.write([])
+        assert(*old.at(0) == 99 && other.isEmpty(), "raw pointer replacement")
+        storage := PointerStorage { pointer: &original as *mut [int32] }
+        previous := *storage.pointer
+        storage.pointer.write(std::collections::List[int32]::new())
+        assert(*previous.at(0) == 4 && original.isEmpty(), "reading a pointee preserves the pointer field")
+
+        var pointer = &other as *mut [int32]
+        borrowedPointer := &pointer
+        movedThroughPointer := **borrowedPointer
+        pointer.write(std::collections::List[int32]::new())
+        assert(movedThroughPointer.isEmpty(), "raw pointer read through a reference")
+        sharedPointer := &pointer
+        movedThroughSharedPointer := **sharedPointer
+        pointer.write(std::collections::List[int32]::new())
+        assert(movedThroughSharedPointer.isEmpty(), "raw pointer read through an alias")
+    }
+    std::runtime::keepAlive(other)
+}

@@ -1,0 +1,4 @@
+error: cannot override a final method
+ -> language_tests/source_files/invalid/class_final_override.tr:5:31
+	extend Derived { override func read() -> int32 { 2 }
+	                               ^^^^

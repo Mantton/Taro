@@ -1,0 +1,217 @@
+import std::collections::List
+import std::result::Result
+import std::encoding::{Codable, Encodable, Encoder}
+import std::io::Writer
+
+struct AllocationPerson: Codable { name: string; age: uint8 }
+
+@test
+func genericBufferStringWritesReuseStorage() {
+    buffer := std::bytes::Buffer::new()
+    buffer.reserve(64).unwrap()
+    before := std::runtime::gcStats()
+    var index: usize = 0
+    while index < 64 {
+        buffer.reset()
+        std::io::writeString(buffer, "reused capacity").unwrap()
+        index += 1
+    }
+    after := std::runtime::gcStats()
+    std::assert(buffer.toString() == "reused capacity", "generic writer dispatch preserves bytes")
+    std::assert(after.allocatedBytes == before.allocatedBytes, "string writes must use the buffer's existing capacity")
+}
+
+@test
+func printfRendersPlainArgumentsInPlace() {
+    before := std::runtime::gcStats()
+    value := std::sprintf("record %d of %s", 7, "ten")
+    after := std::runtime::gcStats()
+    std::assert(value == "record 7 of ten", "formatted output")
+    // Formerly each argument took a builder and a string of its own besides.
+    std::assert(after.allocatedBytes - before.allocatedBytes <= 400, "printf arguments must not be rendered twice")
+}
+
+@test
+func decimalStringsAllocateOnlyTheString() {
+    before := std::runtime::gcStats()
+    value := std::fmt::signedDecimalString(-9223372036854775808)
+    unsigned := std::fmt::unsignedDecimalString(18446744073709551615_u64)
+    after := std::runtime::gcStats()
+    std::assert(value == "-9223372036854775808", "the minimum keeps its digits")
+    std::assert(unsigned == "18446744073709551615", "the maximum keeps its digits")
+    std::assert(std::fmt::signedDecimalString(0) == "0", "zero has one digit")
+    std::assert(after.allocatedBytes - before.allocatedBytes <= 128, "decimal strings need one allocation each")
+}
+
+@test
+func decimalFormattingAvoidsDigitLists() {
+    before := std::runtime::gcStats()
+    value := std::sprintf("%d", 37_u64)
+    after := std::runtime::gcStats()
+    std::assert(value == "37", "decimal output")
+    std::assert(after.allocatedBytes - before.allocatedBytes <= 360, "decimal conversion must not allocate a reverse-digit List")
+}
+
+@test
+func jsonRecordEncodingAvoidsPerTokenAllocation() {
+    people := List[AllocationPerson]::new()
+    var index: usize = 0
+    while index < 128 {
+        people.append(AllocationPerson { name: "Ada", age: 37 })
+        index += 1
+    }
+    before := std::runtime::gcStats()
+    encoded := std::json::encode(&people).unwrap()
+    after := std::runtime::gcStats()
+    std::assert(encoded.byteLen() == 3073, "record fixture output length")
+    std::assert(after.allocatedBytes - before.allocatedBytes < 65536, "encoding must avoid temporary storage per token and eager paths")
+    std::runtime::collect()
+    std::assert(std::json::decode[List[AllocationPerson]](encoded).unwrap()[127].name == "Ada", "output remains rooted")
+}
+
+@test
+func jsonDecimalBoundariesAndFormattingRemainExact() {
+    minimum := -9223372036854775807_i64 - 1_i64
+    maximum := 18446744073709551615_u64
+    std::assert(std::json::encode(&minimum).unwrap() == "-9223372036854775808", "signed minimum")
+    std::assert(std::json::encode(&maximum).unwrap() == "18446744073709551615", "unsigned maximum")
+    zero := 0_u64
+    std::assert(std::json::encode(&zero).unwrap() == "0", "zero has a digit")
+    std::assert(std::sprintf("%021d", minimum) == "-09223372036854775808", "padding follows the sign")
+    std::assert(std::sprintf("%d", maximum) == "18446744073709551615", "printf unsigned maximum")
+}
+
+struct PathFailureWriter { remaining: usize }
+
+conform &PathFailureWriter to Writer {
+    public func write(_ bytes: std::mem::Span[uint8]) -> Result[usize, std::io::Error] {
+        if self.remaining == 0 { return .err(std::io::Error::new(.unexpected)) }
+        count := if self.remaining < bytes.len() { self.remaining } else { bytes.len() }
+        self.remaining -= count
+        return .ok(count)
+    }
+    public func flush() -> Result[(), std::io::Error] { .ok(()) }
+}
+
+@test
+func jsonEncoderErrorsKeepEveryTokenPath() {
+    value := std::json::parse("{\"a\":[1,2],\"b\":{}}").unwrap()
+    // Includes failures on key quotes, separators and closing delimiters.
+    expected := ["$", "$[\"a\"]", "$[\"a\"]", "$[\"a\"]", "$[\"a\"]",
+        "$[\"a\"]", "$[\"a\"][0]", "$[\"a\"]", "$[\"a\"][1]", "$[\"a\"]",
+        "$", "$[\"b\"]", "$[\"b\"]", "$[\"b\"]", "$[\"b\"]",
+        "$[\"b\"]", "$[\"b\"]", "$"]
+    var index: usize = 0
+    while index < expected.len() {
+        var writer = PathFailureWriter { remaining: index }
+        var encoder = std::json::Encoder::new(&writer)
+        match encoder.encode(&value) {
+            case .ok(_) => std::panic::panic("writer must fail")
+            case .err(error) => {
+                std::runtime::collect()
+                std::assert(error.path() == expected[index], "token failure path")
+                std::assert(error.ioError().isSome(), "writer failure keeps its cause")
+            }
+        }
+        index += 1
+    }
+}
+
+struct SavedEncoderPaths { paths: List[string] }
+
+conform SavedEncoderPaths to Encodable {
+    public func encode[E: Encoder](into encoder: E) -> Result[(), E::Error] {
+        var length: usize? = .some(1)
+        encoder.beginObject(length)!
+        encoder.beginField("☃")!
+        encoder.beginSequence(length)!
+        encoder.beginElement()!
+        encoder.encodeNull()!
+        self.paths.append(std::sprintf("%v", encoder.error(.invalidValue, "child")))
+        encoder.endSequence()!
+        self.paths.append(std::sprintf("%v", encoder.error(.invalidValue, "parent")))
+        encoder.endObject()!
+        self.paths.append(std::sprintf("%v", encoder.error(.invalidValue, "root")))
+        return .ok(())
+    }
+}
+
+@test
+func savedEncoderErrorPathsSurviveCursorChanges() {
+    probe := SavedEncoderPaths { paths: List[string]::new() }
+    std::json::encode(&probe).unwrap()
+    std::runtime::collect()
+    std::assert(probe.paths[0] == "value cannot be represented as JSON at $[\"\\xE2\\x98\\x83\"][0]: child", "saved child path")
+    std::assert(probe.paths[1] == "value cannot be represented as JSON at $[\"\\xE2\\x98\\x83\"]: parent", "closed container path")
+    std::assert(probe.paths[2] == "value cannot be represented as JSON at $: root", "closed root path")
+}
+
+@test
+func encodedStringsOutliveTheirEncoderAcrossCollections() {
+    var kept = List[string]::new()
+    var index: usize = 0
+    while index < 64 {
+        kept.append(std::json::encode(&AllocationPerson { name: "someone", age: index as uint8 }).unwrap())
+        index += 1
+    }
+    std::runtime::collect()
+    index = 0
+    while index < 64 {
+        std::assert(kept[index] == std::sprintf("{\"name\":\"someone\",\"age\":%d}", index as uint64), "encoded text survives collection")
+        index += 1
+    }
+}
+
+@test
+func longEncodedOutputKeepsItsContent() {
+    long := "x".repeat(5000)
+    encoded := std::json::encode(&AllocationPerson { name: long, age: 1_u8 }).unwrap()
+    std::assert(encoded == std::sprintf("{\"name\":\"%s\",\"age\":1}", long), "growth keeps every byte")
+}
+
+struct JsonEncodedInner: std::encoding::Codable { text: string; words: std::collections::List[string] }
+struct JsonEncodedOuter: std::encoding::Codable { first: JsonEncodedInner; second: JsonEncodedInner }
+
+@test
+func encodedStringsAroundPlainRunsAndNestedContainersKeepTheirShape() {
+    words := std::collections::List[string]::new()
+    words.append("plain")
+    words.append("")
+    words.append("a\"b\\c\nd\te")
+    words.append("caf\u{e9} \u{1d11e} tail")
+    value := JsonEncodedOuter {
+        first: JsonEncodedInner { text: "\"edge\"", words },
+        second: JsonEncodedInner { text: "\u{1}x", words: std::collections::List[string]::new() },
+    }
+    encoded := std::json::encode(&value).unwrap()
+    std::assert(encoded == "{\"first\":{\"text\":\"\\\"edge\\\"\",\"words\":[\"plain\",\"\",\"a\\\"b\\\\c\\nd\\te\",\"caf\u{e9} \u{1d11e} tail\"]},\"second\":{\"text\":\"\\u0001x\",\"words\":[]}}", encoded)
+}
+
+@test
+func everySpecialByteIsFoundAtEveryOffsetOfAPlainRun() {
+    var specials: [string; 6] = ["\"", "\\", "\n", "\t", "\u{1f}", "\u{e9}"]
+    var escapes: [string; 6] = ["\\\"", "\\\\", "\\n", "\\t", "\\u001F", "\u{e9}"]
+    var pair: usize = 0
+    while pair < 6 {
+        special := specials[pair]
+        escaped := escapes[pair]
+        var offset: usize = 0
+        while offset < 25 {
+            prefix := "a".repeat(offset)
+            suffix := "~".repeat(25 - offset)
+            value := AllocationPerson { name: std::sprintf("%s%s%s", prefix, special, suffix), age: 1_u8 }
+            std::assert(
+                std::json::encode(&value).unwrap() == std::sprintf("{\"name\":\"%s%s%s\",\"age\":1}", prefix, escaped, suffix),
+                "each byte class is noticed wherever a word boundary falls",
+            )
+            offset += 1
+        }
+        pair += 1
+    }
+    // The highest and lowest bytes that need nothing done stay as they are.
+    plain := AllocationPerson { name: "\u{7f} !#[]~\u{7f}\u{7f}\u{7f}\u{7f}\u{7f}\u{7f}\u{7f}\u{7f}", age: 1_u8 }
+    std::assert(
+        std::json::encode(&plain).unwrap() == "{\"name\":\"\u{7f} !#[]~\u{7f}\u{7f}\u{7f}\u{7f}\u{7f}\u{7f}\u{7f}\u{7f}\",\"age\":1}",
+        "bytes next to the special ranges aren't escaped",
+    )
+}

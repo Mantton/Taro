@@ -1,0 +1,5 @@
+// VET
+@NoCopy
+struct State { value: int32 }
+func inspect(_ state: State) -> int32 { state.value }
+func main() {}

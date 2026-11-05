@@ -12,12 +12,12 @@ use crate::{
         PlaceElem, Rvalue, StatementKind, TerminatorKind, UnaryOperator,
     },
     sema::models::{Const, ConstKind, ConstValue, Ty, TyKind},
-    thir::FieldIndex,
 };
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use std::rc::Rc;
 
 use super::MirPass;
+use crate::mir::analysis::mutability::is_place_mutable;
 
 // ============================================================================
 // MirPass Wrappers
@@ -49,29 +49,16 @@ impl<'ctx> MirPass<'ctx> for ValidateMutability {
     }
 }
 
-/// MIR pass that validates use-after-move.
-pub struct ValidateMoves;
+/// MIR pass that validates initialized storage.
+pub struct ValidateInitialization;
 
-impl<'ctx> MirPass<'ctx> for ValidateMoves {
+impl<'ctx> MirPass<'ctx> for ValidateInitialization {
     fn name(&self) -> &'static str {
-        "ValidateMoves"
+        "ValidateInitialization"
     }
 
     fn run(&mut self, gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
-        validate_moves(gcx, body)
-    }
-}
-
-/// MIR pass that validates that values are not moved while borrowed.
-pub struct ValidateBorrows;
-
-impl<'ctx> MirPass<'ctx> for ValidateBorrows {
-    fn name(&self) -> &'static str {
-        "ValidateBorrows"
-    }
-
-    fn run(&mut self, gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
-        validate_borrows(gcx, body)
+        crate::mir::analysis::initialization::validate_initialization(gcx, body)
     }
 }
 
@@ -153,7 +140,7 @@ pub fn validate_body_structure<'ctx>(
         );
     } else if !matches!(
         body.locals[body.return_local].kind,
-        crate::mir::LocalKind::Return
+        crate::mir::LocalKind::Return | crate::mir::LocalKind::ConstructorSelf
     ) {
         validator.error(
             format!(
@@ -161,16 +148,6 @@ pub fn validate_body_structure<'ctx>(
                 body.return_local
             ),
             Some(body.locals[body.return_local].span),
-        );
-    }
-
-    if body.escape_locals.len() != local_count {
-        validator.error(
-            format!(
-                "escape-local table has {} entries for {local_count} locals",
-                body.escape_locals.len()
-            ),
-            None,
         );
     }
 
@@ -274,9 +251,7 @@ impl<'ctx> StructureValidator<'ctx, '_> {
 
     fn check_operand(&mut self, operand: &Operand<'ctx>, span: crate::span::Span) {
         match operand {
-            Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
-                self.check_place(place, span)
-            }
+            Operand::Copy(place) | Operand::CopyWith(place, _) => self.check_place(place, span),
             Operand::Constant(constant) => {
                 if matches!(constant.ty.kind(), TyKind::Error | TyKind::Infer(_)) {
                     self.error(
@@ -293,6 +268,9 @@ impl<'ctx> StructureValidator<'ctx, '_> {
 
     fn check_rvalue(&mut self, rvalue: &Rvalue<'ctx>, span: crate::span::Span) {
         match rvalue {
+            Rvalue::CopyValue { source } => {
+                self.check_place(source, span);
+            }
             Rvalue::Use(operand) | Rvalue::UnaryOp { operand, .. } => {
                 self.check_operand(operand, span)
             }
@@ -309,21 +287,16 @@ impl<'ctx> StructureValidator<'ctx, '_> {
                     );
                 }
             }
-            Rvalue::Ref { place, .. } | Rvalue::Discriminant { place } => {
-                self.check_place(place, span)
-            }
-            Rvalue::Alloc { ty } => {
+            Rvalue::Ref { place, .. }
+            | Rvalue::CleanupAddress { place }
+            | Rvalue::Discriminant { place } => self.check_place(place, span),
+            Rvalue::Alloc { ty } | Rvalue::Zeroed { ty } => {
                 if matches!(ty.kind(), TyKind::Error | TyKind::Infer(_)) {
                     self.error(
-                        format!("allocation has unresolved type {}", ty.format(self.gcx)),
-                        Some(span),
-                    );
-                }
-            }
-            Rvalue::Zeroed { ty } => {
-                if matches!(ty.kind(), TyKind::Error | TyKind::Infer(_)) {
-                    self.error(
-                        format!("zeroed value has unresolved type {}", ty.format(self.gcx)),
+                        format!(
+                            "storage operation has unresolved type {}",
+                            ty.format(self.gcx)
+                        ),
                         Some(span),
                     );
                 }
@@ -353,8 +326,11 @@ impl<'ctx> StructureValidator<'ctx, '_> {
     fn check_statement(&mut self, statement: &crate::mir::Statement<'ctx>) {
         match &statement.kind {
             StatementKind::SourceScope(scope) => self.check_source_scope(*scope, statement.span),
-            StatementKind::StorageLive(local) => self.check_local(*local, statement.span),
+            StatementKind::StorageLive(local) | StatementKind::StorageDead(local) => {
+                self.check_local(*local, statement.span)
+            }
             StatementKind::SetInitialized(local) => self.check_local(*local, statement.span),
+
             StatementKind::Assign(place, rvalue) => {
                 self.check_place(place, statement.span);
                 self.check_rvalue(rvalue, statement.span);
@@ -383,6 +359,7 @@ impl<'ctx> StructureValidator<'ctx, '_> {
                 }
                 self.check_edge(*otherwise, span);
             }
+
             TerminatorKind::Call {
                 func,
                 args,
@@ -405,6 +382,7 @@ impl<'ctx> StructureValidator<'ctx, '_> {
                 value,
                 resume,
                 resume_arg,
+                no_result,
                 cancel,
                 cancel_complete,
                 unwind,
@@ -414,6 +392,9 @@ impl<'ctx> StructureValidator<'ctx, '_> {
                 self.check_edge(*resume, span);
                 self.check_edge(*cancel, span);
                 self.check_edge(*cancel_complete, span);
+                if let Some(failed) = no_result {
+                    self.check_edge(*failed, span);
+                }
                 if let CallUnwindAction::Cleanup(cleanup) = unwind {
                     self.check_edge(*cleanup, span);
                 }
@@ -429,28 +410,91 @@ impl<'ctx> StructureValidator<'ctx, '_> {
 // ============================================================================
 
 pub fn validate_body_invariants<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResult<()> {
-    validate_make_alloc_call_destination_invariant(gcx, body);
+    validate_body_invariants_with_output(gcx, body, None)
+}
 
-    if gcx.config.is_std_provider {
+/// Generated bodies are already concrete. Validate against the instantiated
+/// declaration, not its still-generic template, without mutating shared metadata.
+pub(crate) fn validate_generated_instance_body<'ctx>(
+    gcx: Gcx<'ctx>,
+    instance: crate::specialize::Instance<'ctx>,
+    body: &Body<'ctx>,
+) -> CompileResult<()> {
+    if body.owner != instance.def_id() || !gcx.is_instance_generated(body.owner) || body.is_async {
+        gcx.dcx()
+            .emit_error("invalid owner for generated instance MIR".into(), None);
+        return gcx.dcx().ok();
+    }
+    let signature = gcx.get_signature(body.owner);
+    let concrete = |ty| {
+        crate::sema::tycheck::utils::normalize_post_monomorphization(
+            gcx,
+            crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args(
+                gcx,
+                ty,
+                instance.args(),
+            ),
+        )
+    };
+    let parameters: Vec<_> = body
+        .locals
+        .iter()
+        .filter(|local| local.kind == crate::mir::LocalKind::Param)
+        .collect();
+    if parameters.len() != signature.inputs.len()
+        || parameters
+            .iter()
+            .zip(&signature.inputs)
+            .any(|(actual, expected)| actual.ty != concrete(expected.ty))
+    {
+        gcx.dcx().emit_error(
+            "generated instance MIR parameters do not match its concrete ABI".into(),
+            None,
+        );
+        return gcx.dcx().ok();
+    }
+    let output = if gcx.definition_is_async(body.owner) {
+        gcx.async_handle_ty()
+    } else {
+        concrete(signature.output)
+    };
+    validate_body_invariants_with_output(gcx, body, Some(output))
+}
+
+fn validate_body_invariants_with_output<'ctx>(
+    gcx: Gcx<'ctx>,
+    body: &Body<'ctx>,
+    concrete_output: Option<Ty<'ctx>>,
+) -> CompileResult<()> {
+    if gcx.config.is_std_provider && concrete_output.is_none() {
         return Ok(());
     }
 
     let normalize_icx = Rc::new(crate::sema::tycheck::infer::InferCtx::new(gcx));
-    let normalize_env = crate::sema::tycheck::utils::param_env::ParamEnv::new(
-        crate::sema::tycheck::constraints::canonical_constraints_of(gcx, body.owner)
-            .iter()
-            .map(|constraint| constraint.value)
-            .collect(),
-    );
+    let normalize_env = if concrete_output.is_some() {
+        // Generated storage/Clone glue has no source declaration environment;
+        // its eligibility and full substitution were checked before building it.
+        crate::sema::tycheck::utils::param_env::ParamEnv::default()
+    } else {
+        crate::sema::tycheck::utils::param_env::ParamEnv::new(
+            crate::sema::tycheck::constraints::canonical_constraints_of(gcx, body.owner)
+                .iter()
+                .map(|constraint| constraint.value)
+                .collect(),
+        )
+    };
     let return_local_ty = body.locals[body.return_local].ty;
-    let function_output = if body.is_async {
+    let function_output = if let Some(output) = concrete_output {
+        output
+    } else if body.is_async {
         gcx.function_body_output(body.owner)
     } else if gcx.definition_is_async(body.owner) {
         return_local_ty
     } else {
         gcx.get_signature(body.owner).output
     };
-    let require_return_slot = function_output != gcx.types.void;
+    let require_return_slot =
+        crate::sema::tycheck::utils::normalize_aliases(gcx, function_output) != gcx.types.void;
 
     if !types_compatible(
         &normalize_icx,
@@ -479,6 +523,10 @@ pub fn validate_body_invariants<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Comp
         let block = &body.basic_blocks[bb_id];
 
         for stmt in &block.statements {
+            if matches!(stmt.kind, StatementKind::SetInitialized(local) if local == body.return_local)
+            {
+                return_slot_initialized = true;
+            }
             if let StatementKind::Assign(destination, rvalue) = &stmt.kind {
                 let dest_ty = body.place_ty(gcx, destination);
                 if let Some(value_ty) = rvalue_ty(body, gcx, rvalue) {
@@ -594,9 +642,18 @@ pub fn validate_body_invariants<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Comp
                     resume,
                     resume_arg,
                     cancel,
+                    no_result,
                     unwind,
                     ..
                 } => {
+                    if let Some(failed) = no_result {
+                        propagate_bool_state(
+                            &mut block_states,
+                            &mut worklist,
+                            *failed,
+                            return_slot_initialized,
+                        );
+                    }
                     let mut resume_state = return_slot_initialized;
                     if is_full_return_place(body, resume_arg) {
                         resume_state = true;
@@ -620,8 +677,11 @@ pub fn validate_body_invariants<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Comp
                 TerminatorKind::Return => {
                     if require_return_slot && !return_slot_initialized {
                         gcx.dcx().emit_error(
-                            "internal error: MIR reached `Return` without initializing the return slot"
-                                .to_string(),
+                            if body.locals[body.return_local].kind == crate::mir::LocalKind::ConstructorSelf {
+                                "constructor can complete with uninitialized fields".to_string()
+                            } else {
+                                "internal error: MIR reached `Return` without initializing the return slot".to_string()
+                            },
                             Some(term.span),
                         );
                     }
@@ -641,53 +701,6 @@ pub fn validate_body_invariants<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Comp
     }
 
     gcx.dcx().ok()
-}
-
-fn validate_make_alloc_call_destination_invariant<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) {
-    for (bb_id, block) in body.basic_blocks.iter_enumerated() {
-        let mut fresh_alloc_locals: FxHashSet<_> = FxHashSet::default();
-
-        for stmt in &block.statements {
-            let StatementKind::Assign(destination, rvalue) = &stmt.kind else {
-                continue;
-            };
-
-            if destination.projection.is_empty() {
-                if matches!(rvalue, Rvalue::Alloc { .. }) {
-                    fresh_alloc_locals.insert(destination.local);
-                    continue;
-                }
-
-                fresh_alloc_locals.remove(&destination.local);
-            }
-
-            if matches!(destination.projection.first(), Some(PlaceElem::Deref)) {
-                fresh_alloc_locals.remove(&destination.local);
-            }
-        }
-
-        let Some(term) = &block.terminator else {
-            continue;
-        };
-        let TerminatorKind::Call { destination, .. } = &term.kind else {
-            continue;
-        };
-
-        if destination.projection.len() == 1
-            && matches!(destination.projection[0], PlaceElem::Deref)
-            && fresh_alloc_locals.contains(&destination.local)
-        {
-            gcx.dcx().emit_error(
-                format!(
-                    "internal error: MIR make-lowering invariant violated in bb{}: call result \
-                     was written directly into fresh alloc pointee `*local{}`",
-                    bb_id.index(),
-                    destination.local.index(),
-                ),
-                Some(term.span),
-            );
-        }
-    }
 }
 
 fn propagate_bool_state(
@@ -740,14 +753,17 @@ fn call_output_ty<'ctx>(
             }
 
             let output_from_ty = match constant.ty.kind() {
-                TyKind::FnPointer { output, .. } => Some(normalize_if_possible(gcx, output)),
+                TyKind::FnPointer {
+                    output, effects, ..
+                } => Some(
+                    if effects.kind == crate::sema::models::ClosureKind::AsyncFn {
+                        gcx.async_handle_ty()
+                    } else {
+                        normalize_if_possible(gcx, output)
+                    },
+                ),
                 TyKind::Closure { kind, output, .. } => Some(
-                    if matches!(
-                        kind,
-                        crate::sema::models::ClosureKind::AsyncFn
-                            | crate::sema::models::ClosureKind::AsyncFnMut
-                            | crate::sema::models::ClosureKind::AsyncFnOnce
-                    ) {
+                    if matches!(kind, crate::sema::models::ClosureKind::AsyncFn) {
                         gcx.async_handle_ty()
                     } else {
                         normalize_if_possible(gcx, output)
@@ -774,16 +790,19 @@ fn call_output_ty<'ctx>(
                 _ => output_from_ty,
             }
         }
-        Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
+        Operand::Copy(place) | Operand::CopyWith(place, _) => {
             match body.place_ty(gcx, place).kind() {
-                TyKind::FnPointer { output, .. } => Some(normalize_if_possible(gcx, output)),
+                TyKind::FnPointer {
+                    output, effects, ..
+                } => Some(
+                    if effects.kind == crate::sema::models::ClosureKind::AsyncFn {
+                        gcx.async_handle_ty()
+                    } else {
+                        normalize_if_possible(gcx, output)
+                    },
+                ),
                 TyKind::Closure { kind, output, .. } => Some(
-                    if matches!(
-                        kind,
-                        crate::sema::models::ClosureKind::AsyncFn
-                            | crate::sema::models::ClosureKind::AsyncFnMut
-                            | crate::sema::models::ClosureKind::AsyncFnOnce
-                    ) {
+                    if matches!(kind, crate::sema::models::ClosureKind::AsyncFn) {
                         gcx.async_handle_ty()
                     } else {
                         normalize_if_possible(gcx, output)
@@ -820,18 +839,31 @@ fn types_compatible<'ctx>(
     );
 
     actual == expected
+        || (normalize_env.has_type_equalities()
+            && !actual.contains_inference()
+            && !expected.contains_inference()
+            && crate::sema::tycheck::utils::unify::TypeUnifier::with_env(
+                normalize_icx.clone(),
+                normalize_env,
+            )
+            .unify(actual, expected)
+            .is_ok())
         || matches!(actual.kind(), TyKind::Never)
         || matches!(
             (expected.kind(), actual.kind()),
-            (TyKind::Reference(inner_expected, expected_mut), TyKind::Reference(inner_actual, actual_mut))
-                | (TyKind::Pointer(inner_expected, expected_mut), TyKind::Pointer(inner_actual, actual_mut))
+            (TyKind::Reference(inner_expected), TyKind::Reference(inner_actual))
+                if types_compatible(normalize_icx, normalize_env, inner_expected, inner_actual)
+        )
+        || matches!(
+            (expected.kind(), actual.kind()),
+            (TyKind::Pointer(inner_expected, expected_mut), TyKind::Pointer(inner_actual, actual_mut))
                 if expected_mut == actual_mut
                     && types_compatible(normalize_icx, normalize_env, inner_expected, inner_actual)
         )
         || matches!(
             (expected.kind(), actual.kind()),
-            (TyKind::Reference(inner_expected, _), TyKind::Pointer(inner_actual, _))
-                | (TyKind::Pointer(inner_expected, _), TyKind::Reference(inner_actual, _))
+            (TyKind::Reference(inner_expected), TyKind::Pointer(inner_actual, _))
+                | (TyKind::Pointer(inner_expected, _), TyKind::Reference(inner_actual))
                 if types_compatible(normalize_icx, normalize_env, inner_expected, inner_actual)
         )
         || matches!(
@@ -954,7 +986,9 @@ fn generic_args_compatible<'ctx>(
 
 fn rvalue_ty<'ctx>(body: &Body<'ctx>, gcx: Gcx<'ctx>, rvalue: &Rvalue<'ctx>) -> Option<Ty<'ctx>> {
     match rvalue {
+        Rvalue::Alloc { ty } => Some(Ty::new(TyKind::Reference(*ty), gcx)),
         Rvalue::Use(operand) => Some(body.operand_ty(gcx, operand)),
+        Rvalue::CopyValue { source } => Some(body.place_ty(gcx, source)),
         Rvalue::UnaryOp { op, operand } => Some(match op {
             UnaryOperator::LogicalNot => gcx.types.bool,
             UnaryOperator::Negate | UnaryOperator::BitwiseNot => body.operand_ty(gcx, operand),
@@ -969,19 +1003,12 @@ fn rvalue_ty<'ctx>(body: &Body<'ctx>, gcx: Gcx<'ctx>, rvalue: &Rvalue<'ctx>) -> 
             _ => body.operand_ty(gcx, lhs),
         }),
         Rvalue::Cast { ty, .. } => Some(*ty),
-        Rvalue::Ref { mutable, place } => Some(Ty::new(
-            TyKind::Reference(
-                body.place_ty(gcx, place),
-                if *mutable {
-                    Mutability::Mutable
-                } else {
-                    Mutability::Immutable
-                },
-            ),
+        Rvalue::CleanupAddress { place } => Some(Ty::new(
+            TyKind::Pointer(body.place_ty(gcx, place), Mutability::Mutable),
             gcx,
         )),
+        Rvalue::Ref { place } => Some(Ty::new(TyKind::Reference(body.place_ty(gcx, place)), gcx)),
         Rvalue::Discriminant { .. } => Some(gcx.types.uint),
-        Rvalue::Alloc { ty } => Some(Ty::new(TyKind::Pointer(*ty, Mutability::Immutable), gcx)),
         Rvalue::Zeroed { ty } => Some(*ty),
         Rvalue::Aggregate { kind, fields } => match kind {
             AggregateKind::Tuple => Some(Ty::new(
@@ -1079,871 +1106,60 @@ fn closure_aggregate_ty<'ctx>(
 // ============================================================================
 
 pub fn validate_mutability<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResult<()> {
-    for block in body.basic_blocks.iter() {
-        for stmt in &block.statements {
-            if let StatementKind::Assign(
-                _,
-                Rvalue::Ref {
-                    mutable: true,
-                    place,
-                },
-            ) = &stmt.kind
-            {
-                if !is_place_mutable(gcx, body, place) {
-                    let local_decl = &body.locals[place.local];
-                    let name = local_decl
-                        .name
-                        .map(|symbol| format!("'{}'", symbol))
-                        .unwrap_or_else(|| "<temporary>".to_string());
-                    gcx.dcx().emit_error(
-                        format!("cannot borrow immutable local {} as mutable", name),
-                        Some(stmt.span),
-                    );
-                }
-            }
-        }
-    }
-    gcx.dcx().ok()
-}
-
-fn is_place_mutable<'ctx>(_: Gcx<'ctx>, body: &Body<'ctx>, place: &Place<'ctx>) -> bool {
-    let local_decl = &body.locals[place.local];
-    let mut current_ty = local_decl.ty;
-    // Mutability starts at the storage slot. A mutable local may hold an
-    // immutable pointer and still be replaced, while an immutable local may
-    // hold a mutable pointer and permit writes only after dereferencing it.
-    let mut mutable = local_decl.mutable;
-
-    for elem in &place.projection {
-        match elem {
-            PlaceElem::Deref => match current_ty.kind() {
-                TyKind::Reference(inner, mutability) => {
-                    mutable = mutability == Mutability::Mutable;
-                    current_ty = inner;
-                }
-                TyKind::Pointer(inner, mutability) => {
-                    mutable = mutability == Mutability::Mutable;
-                    current_ty = inner;
-                }
-                _ => return mutable,
-            },
-            PlaceElem::Field(_, field_ty) => current_ty = *field_ty,
-            PlaceElem::VariantDowncast { .. } => {}
-        }
-    }
-
-    mutable
-}
-
-// ============================================================================
-// Move Validation
-// ============================================================================
-
-#[derive(Clone, Default)]
-struct MoveState {
-    moved_locals: FxHashSet<LocalId>,
-    partial_moves: FxHashMap<LocalId, FxHashSet<FieldIndex>>,
-}
-
-impl MoveState {
-    fn merge(&mut self, other: &MoveState) -> bool {
-        let mut changed = false;
-
-        for &local in &other.moved_locals {
-            if self.moved_locals.insert(local) {
-                changed = true;
-            }
-        }
-
-        for (&local, fields) in &other.partial_moves {
-            let entry = self.partial_moves.entry(local).or_default();
-            for &field in fields {
-                if entry.insert(field) {
-                    changed = true;
-                }
-            }
-        }
-
-        changed
-    }
-
-    fn mark_moved(&mut self, local: LocalId) {
-        self.moved_locals.insert(local);
-        self.partial_moves.remove(&local);
-    }
-
-    fn mark_field_moved(&mut self, local: LocalId, field: FieldIndex) {
-        if self.moved_locals.contains(&local) {
-            return;
-        }
-        self.partial_moves.entry(local).or_default().insert(field);
-    }
-
-    fn reinitialize(&mut self, local: LocalId) {
-        self.moved_locals.remove(&local);
-        self.partial_moves.remove(&local);
-    }
-
-    fn is_moved(&self, local: LocalId) -> bool {
-        self.moved_locals.contains(&local)
-    }
-
-    fn is_field_moved(&self, local: LocalId, field: FieldIndex) -> bool {
-        if self.moved_locals.contains(&local) {
-            return true;
-        }
-        self.partial_moves
-            .get(&local)
-            .is_some_and(|fields| fields.contains(&field))
-    }
-}
-
-pub fn validate_moves<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResult<()> {
-    let mut block_states: FxHashMap<BasicBlockId, MoveState> = FxHashMap::default();
-    let mut worklist = vec![body.start_block];
-    block_states.insert(body.start_block, MoveState::default());
-
-    while let Some(bb_id) = worklist.pop() {
-        let mut state = block_states.get(&bb_id).cloned().unwrap_or_default();
-        let block = &body.basic_blocks[bb_id];
-
-        for stmt in &block.statements {
-            match &stmt.kind {
-                StatementKind::StorageLive(local) => {
-                    state.reinitialize(*local);
-                }
-                StatementKind::SetInitialized(local) => {
-                    state.reinitialize(*local);
-                }
-                StatementKind::Assign(dest, rvalue) => {
-                    check_rvalue_uses(gcx, body, &state, rvalue, stmt.span)?;
-                    state.reinitialize(dest.local);
-                    collect_moves_from_rvalue(rvalue, &mut state);
-                }
-                StatementKind::KeepAlive(operand) => {
-                    check_operand(gcx, body, &state, operand, stmt.span)?;
-                    collect_move_from_operand(operand, &mut state);
-                }
-                StatementKind::SourceScope(_)
-                | StatementKind::SetDiscriminant { .. }
-                | StatementKind::GcSafepoint(_)
-                | StatementKind::Nop => {}
-            }
-        }
-
-        if let Some(term) = &block.terminator {
-            check_terminator_uses(gcx, body, &state, term)?;
-            collect_moves_from_terminator(term, &mut state);
-
-            match &term.kind {
-                TerminatorKind::Call {
-                    destination,
-                    target,
-                    unwind,
-                    ..
-                } => {
-                    let mut normal_state = state.clone();
-                    normal_state.reinitialize(destination.local);
-                    propagate_move_state(&mut block_states, &mut worklist, *target, &normal_state);
-
-                    if let CallUnwindAction::Cleanup(cleanup) = unwind {
-                        propagate_move_state(&mut block_states, &mut worklist, *cleanup, &state);
-                    }
-                }
-                TerminatorKind::Yield {
-                    resume,
-                    resume_arg,
-                    cancel,
-                    unwind,
-                    ..
-                } => {
-                    let mut resume_state = state.clone();
-                    resume_state.reinitialize(resume_arg.local);
-                    propagate_move_state(&mut block_states, &mut worklist, *resume, &resume_state);
-                    propagate_move_state(&mut block_states, &mut worklist, *cancel, &state);
-                    if let CallUnwindAction::Cleanup(cleanup) = unwind {
-                        propagate_move_state(&mut block_states, &mut worklist, *cleanup, &state);
-                    }
-                }
-                _ => {
-                    for succ in term.kind.successors() {
-                        propagate_move_state(&mut block_states, &mut worklist, succ, &state);
-                    }
-                }
-            }
-        }
-    }
-
-    gcx.dcx().ok()
-}
-
-fn propagate_move_state(
-    block_states: &mut FxHashMap<BasicBlockId, MoveState>,
-    worklist: &mut Vec<BasicBlockId>,
-    succ: BasicBlockId,
-    state: &MoveState,
-) {
-    let changed = if let Some(succ_state) = block_states.get_mut(&succ) {
-        succ_state.merge(state)
-    } else {
-        block_states.insert(succ, state.clone());
-        true
-    };
-
-    if changed && !worklist.contains(&succ) {
-        worklist.push(succ);
-    }
-}
-
-fn check_rvalue_uses<'ctx>(
-    gcx: Gcx<'ctx>,
-    body: &Body<'ctx>,
-    state: &MoveState,
-    rvalue: &Rvalue<'ctx>,
-    span: crate::span::Span,
-) -> CompileResult<()> {
-    match rvalue {
-        Rvalue::Use(op) => check_operand(gcx, body, state, op, span)?,
-        Rvalue::UnaryOp { operand, .. } => check_operand(gcx, body, state, operand, span)?,
-        Rvalue::BinaryOp { lhs, rhs, .. } => {
-            check_operand(gcx, body, state, lhs, span)?;
-            check_operand(gcx, body, state, rhs, span)?;
-        }
-        Rvalue::Cast { operand, .. } => check_operand(gcx, body, state, operand, span)?,
-        Rvalue::Ref { place, .. } => check_place_not_moved(gcx, body, state, place, span)?,
-        Rvalue::Discriminant { place } => check_place_not_moved(gcx, body, state, place, span)?,
-        Rvalue::Aggregate { fields, .. } => {
-            for op in fields.iter() {
-                check_operand(gcx, body, state, op, span)?;
-            }
-        }
-        Rvalue::Repeat { operand, .. } => check_operand(gcx, body, state, operand, span)?,
-        Rvalue::Alloc { .. } | Rvalue::Zeroed { .. } => {}
-    }
-    Ok(())
-}
-
-fn check_terminator_uses<'ctx>(
-    gcx: Gcx<'ctx>,
-    body: &Body<'ctx>,
-    state: &MoveState,
-    term: &crate::mir::Terminator<'ctx>,
-) -> CompileResult<()> {
-    let span = term.span;
-    match &term.kind {
-        TerminatorKind::SwitchInt { discr, .. } => check_operand(gcx, body, state, discr, span)?,
-        TerminatorKind::Call { func, args, .. } => {
-            check_operand(gcx, body, state, func, span)?;
-            for arg in args {
-                check_operand(gcx, body, state, arg, span)?;
-            }
-        }
-        TerminatorKind::Yield { value, .. } => check_operand(gcx, body, state, value, span)?,
-        TerminatorKind::Goto { .. }
-        | TerminatorKind::Return
-        | TerminatorKind::ResumeUnwind
-        | TerminatorKind::Unreachable
-        | TerminatorKind::UnresolvedGoto => {}
-    }
-    Ok(())
-}
-
-fn check_operand<'ctx>(
-    gcx: Gcx<'ctx>,
-    body: &Body<'ctx>,
-    state: &MoveState,
-    operand: &Operand<'ctx>,
-    span: crate::span::Span,
-) -> CompileResult<()> {
-    let Some((place, is_move)) = operand_place_and_move_kind(operand) else {
-        return Ok(());
-    };
-
-    check_place_not_moved(gcx, body, state, place, span)?;
-    if is_move {
-        check_borrow_move(gcx, body, place, span)?;
-    }
-    Ok(())
-}
-
-fn operand_place_and_move_kind<'a, 'ctx>(
-    operand: &'a Operand<'ctx>,
-) -> Option<(&'a Place<'ctx>, bool)> {
-    match operand {
-        Operand::Copy(place) => Some((place, false)),
-        Operand::Move(place) => Some((place, true)),
-        Operand::CopyWith(place, modifiers) => Some((place, modifiers.take)),
-        Operand::Constant(_) => None,
-    }
-}
-
-fn check_borrow_move<'ctx>(
-    gcx: Gcx<'ctx>,
-    body: &Body<'ctx>,
-    place: &Place<'ctx>,
-    span: crate::span::Span,
-) -> CompileResult<()> {
-    if place.projection.is_empty() {
-        return Ok(());
-    }
-
-    let local_decl = &body.locals[place.local];
-    let mut current_ty = local_decl.ty;
-    let mut moved_out_of_reference = false;
-
-    for elem in &place.projection {
-        match elem {
-            PlaceElem::Deref => match current_ty.kind() {
-                TyKind::Reference(inner, _) => {
-                    moved_out_of_reference = true;
-                    current_ty = inner;
-                }
-                TyKind::Pointer(inner, _) => {
-                    // A raw pointer addresses separate storage, even when the
-                    // pointer itself was read through a reference. A subsequent
-                    // reference dereference reestablishes borrowed access.
-                    moved_out_of_reference = false;
-                    current_ty = inner;
-                }
-                _ => {
-                    if let Some(inner) = current_ty.dereference() {
-                        current_ty = inner;
-                    }
-                }
-            },
-            PlaceElem::Field(_, field_ty) => current_ty = *field_ty,
-            PlaceElem::VariantDowncast { .. } => {}
-        }
-    }
-
-    if moved_out_of_reference && !is_type_copyable_in_body_context(gcx, body, current_ty) {
-        gcx.dcx().emit_error(
-            "cannot move out of borrowed content".to_string(),
-            Some(span),
-        );
-        return gcx.dcx().ok();
-    }
-
-    Ok(())
-}
-
-fn is_type_copyable_in_body_context<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>, ty: Ty<'ctx>) -> bool {
-    // Normalize alias types before checking copyability
-    let icx = Rc::new(crate::sema::tycheck::infer::InferCtx::new(gcx));
-    let env = crate::sema::tycheck::utils::param_env::ParamEnv::new(
-        gcx.canonical_constraints_of(body.owner)
-            .iter()
-            .map(|constraint| constraint.value)
-            .collect(),
-    );
-    let normalized = crate::sema::tycheck::utils::normalize::normalize_ty(icx, ty, &env);
-    let ty = if normalized != ty { normalized } else { ty };
-
-    gcx.is_type_copyable_in_def(ty, body.owner)
-}
-
-fn check_place_not_moved<'ctx>(
-    gcx: Gcx<'ctx>,
-    body: &Body<'ctx>,
-    state: &MoveState,
-    place: &Place<'ctx>,
-    span: crate::span::Span,
-) -> CompileResult<()> {
-    let local_decl = &body.locals[place.local];
-
-    if state.is_moved(place.local) {
-        let name = local_decl
-            .name
-            .map(|symbol| format!("'{}'", symbol))
-            .unwrap_or_else(|| "<temporary>".to_string());
-        gcx.dcx()
-            .emit_error(format!("use of moved value {}", name), Some(span));
-        return gcx.dcx().ok();
-    }
-
-    if let Some(PlaceElem::Field(idx, _)) = place.projection.first() {
-        if state.is_field_moved(place.local, *idx) {
-            let name = local_decl
-                .name
-                .map(|symbol| format!("'{}'", symbol))
-                .unwrap_or_else(|| "<temporary>".to_string());
-            gcx.dcx().emit_error(
-                format!(
-                    "use of partially moved value {} (field already moved)",
-                    name
-                ),
-                Some(span),
-            );
-            return gcx.dcx().ok();
-        }
-    }
-
-    if place.projection.is_empty() && state.partial_moves.contains_key(&place.local) {
-        let name = local_decl
-            .name
-            .map(|symbol| format!("'{}'", symbol))
-            .unwrap_or_else(|| "<temporary>".to_string());
-        gcx.dcx()
-            .emit_error(format!("use of partially moved value {}", name), Some(span));
-        return gcx.dcx().ok();
-    }
-
-    Ok(())
-}
-
-fn collect_moves_from_rvalue<'ctx>(
-    rvalue: &Rvalue<'ctx>,
-    state: &mut MoveState,
-) {
-    match rvalue {
-        Rvalue::Use(op) => collect_move_from_operand(op, state),
-        Rvalue::UnaryOp { operand, .. } => collect_move_from_operand(operand, state),
-        Rvalue::BinaryOp { lhs, rhs, .. } => {
-            collect_move_from_operand(lhs, state);
-            collect_move_from_operand(rhs, state);
-        }
-        Rvalue::Cast { operand, .. } => collect_move_from_operand(operand, state),
-        Rvalue::Aggregate { fields, .. } => {
-            for op in fields.iter() {
-                collect_move_from_operand(op, state);
-            }
-        }
-        Rvalue::Repeat { operand, .. } => collect_move_from_operand(operand, state),
-        Rvalue::Ref { .. }
-        | Rvalue::Discriminant { .. }
-        | Rvalue::Alloc { .. }
-        | Rvalue::Zeroed { .. } => {}
-    }
-}
-
-fn collect_moves_from_terminator<'ctx>(
-    term: &crate::mir::Terminator<'ctx>,
-    state: &mut MoveState,
-) {
-    match &term.kind {
-        TerminatorKind::SwitchInt { discr, .. } => collect_move_from_operand(discr, state),
-        TerminatorKind::Call { func, args, .. } => {
-            collect_move_from_operand(func, state);
-            for arg in args {
-                collect_move_from_operand(arg, state);
-            }
-        }
-        TerminatorKind::Yield { value, .. } => collect_move_from_operand(value, state),
-        TerminatorKind::Goto { .. }
-        | TerminatorKind::Return
-        | TerminatorKind::ResumeUnwind
-        | TerminatorKind::Unreachable
-        | TerminatorKind::UnresolvedGoto => {}
-    }
-}
-
-fn collect_move_from_operand<'ctx>(
-    operand: &Operand<'ctx>,
-    state: &mut MoveState,
-) {
-    let Some((place, is_move)) = operand_place_and_move_kind(operand) else {
-        return;
-    };
-    if !is_move {
-        return;
-    }
-
-    // Moving a pointee does not move the pointer/reference stored in the local
-    // or its fields. Reference moves are rejected by check_borrow_move; raw
-    // pointer operations remain the caller's responsibility.
-    if place.projection.contains(&PlaceElem::Deref) {
-        return;
-    }
-
-    if place.projection.is_empty() {
-        state.mark_moved(place.local);
-    } else if let Some(PlaceElem::Field(idx, _)) = place.projection.first() {
-        state.mark_field_moved(place.local, *idx);
-    }
-}
-
-// ============================================================================
-// Borrow Validation
-// ============================================================================
-
-type BorrowState = FxHashMap<LocalId, FxHashSet<LocalId>>;
-
-pub fn validate_borrows<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResult<()> {
-    use crate::mir::analysis::liveness::compute_liveness;
-
-    let liveness = compute_liveness(body);
-    let mut block_in_states: FxHashMap<BasicBlockId, BorrowState> = FxHashMap::default();
-    let mut worklist = vec![body.start_block];
-    block_in_states.insert(body.start_block, FxHashMap::default());
-
-    while let Some(bb) = worklist.pop() {
-        let block = &body.basic_blocks[bb];
-        let statements = &block.statements;
-        let mut active_borrows = block_in_states.get(&bb).cloned().unwrap_or_default();
-        for (idx, stmt) in statements.iter().enumerate() {
-            match &stmt.kind {
-                StatementKind::StorageLive(local) => {
-                    kill_borrower(*local, &mut active_borrows);
-                    active_borrows.remove(local);
-                }
-                StatementKind::Assign(dest, rvalue) => {
-                    check_rvalue_moves_borrowed(
-                        gcx,
-                        rvalue,
-                        &active_borrows,
-                        liveness.live_before_statement(bb, idx),
-                        stmt.span,
-                    )?;
-
-                    if dest.projection.is_empty() {
-                        kill_borrower(dest.local, &mut active_borrows);
-                    }
-
-                    if let Rvalue::Ref { place, .. } = rvalue {
-                        if dest.projection.is_empty() {
-                            active_borrows
-                                .entry(place.local)
-                                .or_default()
-                                .insert(dest.local);
-                        }
-                    }
-
-                    if dest.projection.is_empty() {
-                        for src_local in borrowed_source_locals(rvalue) {
-                            for borrowed in borrowed_locals_for_source(src_local, &active_borrows) {
-                                active_borrows
-                                    .entry(borrowed)
-                                    .or_default()
-                                    .insert(dest.local);
-                            }
-                        }
-                    }
-                }
-                StatementKind::KeepAlive(operand) => {
-                    check_operand_move_borrowed(
-                        gcx,
-                        operand,
-                        &active_borrows,
-                        liveness.live_before_statement(bb, idx),
-                        stmt.span,
-                    )?;
-                }
-                StatementKind::SourceScope(_)
-                | StatementKind::SetInitialized(_)
-                | StatementKind::SetDiscriminant { .. }
-                | StatementKind::GcSafepoint(_)
-                | StatementKind::Nop => {}
-            }
-        }
-
-        if let Some(term) = &block.terminator {
-            check_terminator_moves_borrowed(
-                gcx,
-                term,
-                &active_borrows,
-                liveness.live_before_terminator(bb),
-                term.span,
-            )?;
-
-            match &term.kind {
-                TerminatorKind::Call {
-                    target,
-                    destination,
-                    unwind,
-                    ..
-                } => {
-                    let mut normal_state = active_borrows.clone();
-                    if destination.projection.is_empty() {
-                        kill_borrower(destination.local, &mut normal_state);
-                    }
-                    propagate_borrow_state(
-                        &mut block_in_states,
-                        &mut worklist,
-                        *target,
-                        &normal_state,
-                    );
-
-                    if let CallUnwindAction::Cleanup(cleanup) = unwind {
-                        propagate_borrow_state(
-                            &mut block_in_states,
-                            &mut worklist,
-                            *cleanup,
-                            &active_borrows,
-                        );
-                    }
-                }
-                TerminatorKind::Yield {
-                    resume,
-                    resume_arg,
-                    cancel,
-                    unwind,
-                    ..
-                } => {
-                    let mut resume_state = active_borrows.clone();
-                    if resume_arg.projection.is_empty() {
-                        kill_borrower(resume_arg.local, &mut resume_state);
-                    }
-                    propagate_borrow_state(
-                        &mut block_in_states,
-                        &mut worklist,
-                        *resume,
-                        &resume_state,
-                    );
-                    propagate_borrow_state(
-                        &mut block_in_states,
-                        &mut worklist,
-                        *cancel,
-                        &active_borrows,
-                    );
-                    if let CallUnwindAction::Cleanup(cleanup) = unwind {
-                        propagate_borrow_state(
-                            &mut block_in_states,
-                            &mut worklist,
-                            *cleanup,
-                            &active_borrows,
-                        );
-                    }
-                }
-                _ => {
-                    for succ in term.kind.successors() {
-                        propagate_borrow_state(
-                            &mut block_in_states,
-                            &mut worklist,
-                            succ,
-                            &active_borrows,
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    gcx.dcx().ok()
-}
-
-fn propagate_borrow_state(
-    block_in_states: &mut FxHashMap<BasicBlockId, BorrowState>,
-    worklist: &mut Vec<BasicBlockId>,
-    succ: BasicBlockId,
-    state: &BorrowState,
-) {
-    let changed = if let Some(succ_state) = block_in_states.get_mut(&succ) {
-        merge_borrow_state(succ_state, state)
-    } else {
-        block_in_states.insert(succ, state.clone());
-        true
-    };
-
-    if changed && !worklist.contains(&succ) {
-        worklist.push(succ);
-    }
-}
-
-fn merge_borrow_state(into: &mut BorrowState, from: &BorrowState) -> bool {
-    let mut changed = false;
-    for (&borrowed, borrowers) in from {
-        let entry = into.entry(borrowed).or_default();
-        for &borrower in borrowers {
-            if entry.insert(borrower) {
-                changed = true;
-            }
-        }
-    }
-    changed
-}
-
-fn kill_borrower(borrower: LocalId, borrows: &mut BorrowState) {
-    for borrowers in borrows.values_mut() {
-        borrowers.remove(&borrower);
-    }
-}
-
-fn borrowed_source_locals<'ctx>(rvalue: &Rvalue<'ctx>) -> Vec<LocalId> {
-    match rvalue {
-        Rvalue::Use(op) => operand_local(op).into_iter().collect(),
-        Rvalue::Aggregate { fields, .. } => fields.iter().filter_map(operand_local).collect(),
-        _ => Vec::new(),
-    }
-}
-
-fn borrowed_locals_for_source(src_local: LocalId, borrows: &BorrowState) -> Vec<LocalId> {
-    let mut borrowed = Vec::new();
-    for (&borrowed_local, borrowers) in borrows {
-        if borrowers.contains(&src_local) {
-            borrowed.push(borrowed_local);
-        }
-    }
-    borrowed
-}
-
-fn operand_local<'ctx>(operand: &Operand<'ctx>) -> Option<LocalId> {
-    match operand {
-        Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _)
-            if place.projection.is_empty() =>
+    crate::mir::analysis::class_self::validate(gcx, body)?;
+    crate::mir::analysis::class_lifecycle::validate(gcx, body)?;
+    crate::mir::analysis::constructor::validate(gcx, body)?;
+    let check_write = |place: &Place<'ctx>, span| {
+        if !is_place_mutable(gcx, body, place)
+            && crate::mir::analysis::constructor::readonly_field(gcx, body, place).is_none()
         {
-            Some(place.local)
+            gcx.dcx()
+                .emit_error("cannot assign to an immutable place".into(), Some(span));
         }
-        Operand::Copy(_) | Operand::Move(_) | Operand::CopyWith(_, _) | Operand::Constant(_) => {
-            None
-        }
-    }
-}
-
-fn check_rvalue_moves_borrowed<'ctx>(
-    gcx: Gcx<'ctx>,
-    rvalue: &Rvalue<'ctx>,
-    borrows: &BorrowState,
-    live: &FxHashSet<LocalId>,
-    span: crate::span::Span,
-) -> CompileResult<()> {
-    match rvalue {
-        Rvalue::Use(op) => check_operand_move_borrowed(gcx, op, borrows, live, span),
-        Rvalue::UnaryOp { operand, .. }
-        | Rvalue::Cast { operand, .. }
-        | Rvalue::Repeat { operand, .. } => {
-            check_operand_move_borrowed(gcx, operand, borrows, live, span)
-        }
-        Rvalue::BinaryOp { lhs, rhs, .. } => {
-            check_operand_move_borrowed(gcx, lhs, borrows, live, span)?;
-            check_operand_move_borrowed(gcx, rhs, borrows, live, span)
-        }
-        Rvalue::Aggregate { fields, .. } => {
-            for field in fields {
-                check_operand_move_borrowed(gcx, field, borrows, live, span)?;
-            }
-            Ok(())
-        }
-        Rvalue::Ref { .. }
-        | Rvalue::Discriminant { .. }
-        | Rvalue::Alloc { .. }
-        | Rvalue::Zeroed { .. } => Ok(()),
-    }
-}
-
-fn check_terminator_moves_borrowed<'ctx>(
-    gcx: Gcx<'ctx>,
-    term: &crate::mir::Terminator<'ctx>,
-    borrows: &BorrowState,
-    live: &FxHashSet<LocalId>,
-    span: crate::span::Span,
-) -> CompileResult<()> {
-    match &term.kind {
-        TerminatorKind::Call { func, args, .. } => {
-            check_operand_move_borrowed(gcx, func, borrows, live, span)?;
-            for arg in args {
-                check_operand_move_borrowed(gcx, arg, borrows, live, span)?;
-            }
-            Ok(())
-        }
-        TerminatorKind::SwitchInt { discr, .. } => {
-            check_operand_move_borrowed(gcx, discr, borrows, live, span)
-        }
-        TerminatorKind::Yield { value, .. } => {
-            check_operand_move_borrowed(gcx, value, borrows, live, span)
-        }
-        TerminatorKind::Goto { .. }
-        | TerminatorKind::Return
-        | TerminatorKind::ResumeUnwind
-        | TerminatorKind::Unreachable
-        | TerminatorKind::UnresolvedGoto => Ok(()),
-    }
-}
-
-fn check_operand_move_borrowed<'ctx>(
-    gcx: Gcx<'ctx>,
-    operand: &Operand<'ctx>,
-    borrows: &BorrowState,
-    live: &FxHashSet<LocalId>,
-    span: crate::span::Span,
-) -> CompileResult<()> {
-    let Some((place, is_move)) = operand_place_and_move_kind(operand) else {
-        return Ok(());
     };
-    if !is_move {
-        return Ok(());
-    }
+    for block in &body.basic_blocks {
+        for statement in &block.statements {
+            match &statement.kind {
+                StatementKind::Assign(destination, value) => {
+                    // Generated construction writes fresh pointee storage,
+                    // including fields that become readonly after initialization.
+                    let initializing = matches!(value, Rvalue::Use(Operand::CopyWith(_, modifiers)) if modifiers.init);
+                    if !initializing && !destination.projection.is_empty() {
+                        check_write(destination, statement.span);
+                    }
+                }
 
-    if let Some(borrowers) = borrows.get(&place.local) {
-        if borrowers.iter().any(|borrower| live.contains(borrower)) {
-            gcx.dcx().emit_error(
-                "cannot move out of borrowed content".to_string(),
-                Some(span),
-            );
-            return gcx.dcx().ok();
+                _ => {}
+            }
         }
     }
-
-    Ok(())
+    gcx.dcx().ok()
 }
+
+// ============================================================================
+// Value capability checks
+// ============================================================================
 
 #[cfg(test)]
-mod borrow_liveness_tests {
-    use super::*;
-    use crate::mir::{
-        BasicBlockData, Statement, Terminator,
-        test_support::{minimal_body, push_temp, with_test_gcx},
-    };
+mod value_copy_tests {
+    use crate::test_support::analyze_script_mir_diagnostics;
 
     #[test]
-    fn borrowed_value_stays_live_when_call_replaces_its_borrower() {
-        with_test_gcx(|gcx| {
-            let mut body = minimal_body(gcx);
-            let span = body.locals[body.return_local].span;
-            let source = push_temp(&mut body, gcx.types.int);
-            let sink = push_temp(&mut body, gcx.types.int);
-            let ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
-                gcx.types.int,
-                crate::hir::Mutability::Immutable,
-            ));
-            let borrower = push_temp(&mut body, ref_ty);
-            let fn_ty = gcx.store.interners.intern_ty(TyKind::FnPointer {
-                inputs: gcx.store.interners.intern_ty_list(vec![ref_ty]),
-                output: ref_ty,
-            });
-            let function = push_temp(&mut body, fn_ty);
-            let target = body.basic_blocks.push(BasicBlockData {
-                note: None,
-                statements: vec![],
-                terminator: Some(Terminator {
-                    kind: TerminatorKind::Return,
-                    span,
-                }),
-            });
-            let entry = &mut body.basic_blocks[body.start_block];
-            entry.statements = vec![
-                Statement {
-                    kind: StatementKind::Assign(
-                        Place::from_local(borrower),
-                        Rvalue::Ref {
-                            place: Place::from_local(source),
-                            mutable: false,
-                        },
-                    ),
-                    span,
-                },
-                Statement {
-                    kind: StatementKind::Assign(
-                        Place::from_local(sink),
-                        Rvalue::Use(Operand::Move(Place::from_local(source))),
-                    ),
-                    span,
-                },
-            ];
-            entry.terminator = Some(Terminator {
-                kind: TerminatorKind::Call {
-                    func: Operand::Copy(Place::from_local(function)),
-                    args: vec![Operand::Copy(Place::from_local(borrower))],
-                    destination: Place::from_local(borrower),
-                    target,
-                    unwind: CallUnwindAction::Terminate,
-                    devirt_hint: None,
-                },
-                span,
-            });
-            assert!(
-                validate_borrows(gcx, &body).is_err(),
-                "moving a source while its borrower is still a call argument must fail"
+    fn reading_a_field_preserves_it_across_sibling_assignments() {
+        for replacement in ["Token { id: 3 }", "makeToken()"] {
+            let source = format!(
+                "struct Token {{ id: int32 }}\nstruct Pair {{ left: Token; right: Token }}\nfunc consume(_ value: Token) {{}}\nfunc makeToken() -> Token {{ Token {{ id: 3 }} }}\nfunc main() {{\nvar pair = Pair {{ left: Token {{ id: 1 }}, right: Token {{ id: 2 }} }}\nleft := pair.left\npair.right = {replacement}\nconsume(pair.left)\nconsume(left)\n}}"
             );
-        });
+            let diagnostics = analyze_script_mir_diagnostics(&source);
+            assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        }
+    }
+
+    #[test]
+    fn replacing_a_field_keeps_the_whole_value_initialized() {
+        let diagnostics = analyze_script_mir_diagnostics(
+            "struct Token { id: int32 }\nstruct Pair { left: Token; right: Token }\nfunc consume(_ value: Pair) {}\nfunc main() {\nvar pair = Pair { left: Token { id: 1 }, right: Token { id: 2 } }\nleft := pair.left\npair.left = Token { id: 3 }\nconsume(pair)\n}",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 }

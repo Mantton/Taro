@@ -1,0 +1,22 @@
+extern "C" {
+    unsafe func __gc__test_request_collection() -> usize
+    unsafe func __gc__test_collection_count() -> usize
+}
+struct View { value: &int32 }
+func makeView() -> View {
+    var value: int32 = 42
+    View { value: &value }
+}
+static var retained: View = makeView()
+final class Noise { value: int32 }
+extend Noise { init() { self.value = 1 } }
+@noinline
+func allocate() -> int32 { Noise().value }
+func main() {
+    copy := retained
+    before := unsafe { __gc__test_request_collection() }
+    assert(allocate() == 1, "execute an allocating safepoint")
+    assert(unsafe { __gc__test_collection_count() } > before, "collection actually runs")
+    assert(*copy.value == 42, "static GC values may contain references")
+    assert(*retained.value == 42, "the static keeps its reference target alive")
+}

@@ -1,0 +1,8 @@
+interface Missing {}
+interface Produce[T] {}
+struct Wrapper[T] { value: T }
+conform[T: Missing] Wrapper[T] to Produce[int32] {}
+func inspect[T](_ value: any Produce[T]) {}
+func main() {
+    inspect(Wrapper[bool] { value: true }) // An unproved conditional impl cannot supply inference.
+}

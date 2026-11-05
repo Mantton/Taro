@@ -1,0 +1,31 @@
+// A by-value match binding is a copy even when the scrutinee is reached
+// through a reference, such as a class field. HEAD aliased the source place:
+// later writes showed through the binding, and a `&mut` copied out of a class
+// field could not be passed on.
+final class Holder {
+    count: Optional[int64]
+    slot: Optional[&int64]
+}
+extend Holder {
+    init(_ r: &int64) {
+        self.count = .some(1)
+        self.slot = .some(r)
+    }
+}
+func bump(_ x: &int64) { *x += 1 }
+func main() {
+    var v = 1_i64
+    holder := Holder(&v)
+    match holder.count {
+        case .some(n) => {
+            holder.count = .some(99)
+            std::printf("binding after source write: %d\n", n)
+        }
+        case .none => {}
+    }
+    match holder.slot {
+        case .some(alias) => bump(alias)
+        case .none => {}
+    }
+    std::printf("bumped through field copy: %d\n", v)
+}

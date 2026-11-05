@@ -1,0 +1,18 @@
+struct Secret { private value: int32 }
+extend Secret {
+    static func create(_ value: int32) -> Secret { Secret { value } }
+    func get() -> int32 {
+        read := () => self.value
+        return read()
+    }
+}
+interface Read { func read() -> &int32; }
+conform Secret to Read {
+    func read() -> &int32 { &self.value }
+}
+func inspect[T: Read](_ value: &T) -> int32 { *value.read() }
+func main() {
+    var secret: Secret = Secret::create(7_i32)
+    assert(secret.get() == 7_i32, "owned extension can read a private field")
+    assert(inspect(&secret) == 7_i32, "owned conformance can borrow its private field")
+}

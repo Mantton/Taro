@@ -1,0 +1,68 @@
+// TEST
+import std::iter::{Iterable, Iterator}
+
+extern "C" {
+    unsafe func __gc__test_probe_create(_ target: *const uint8) -> *mut uint8
+    unsafe func __gc__test_collect_probe_is_live(_ probe: *mut uint8) -> bool
+}
+
+class ListPayload { value: int64 }
+extend ListPayload {
+    init(_ value: int64) { self.value = value }
+}
+
+@noinline
+func appendAndProbe(_ values: [ListPayload]) -> *mut uint8 {
+    payload := ListPayload(42)
+    values.append(payload)
+    return unsafe { __gc__test_probe_create(&payload.value as *const uint8) }
+}
+
+@test
+func exhaustedListCursorStaysExhausted() {
+    var values: [int64] = [1]
+    var cursor = values.iter()
+    var alias = cursor
+    assert(cursor.next().unwrap() == 1 && alias.next().isNone(), "cursor reaches exhaustion")
+    values.append(2)
+    assert(cursor.next().isNone(), "an exhausted cursor stays exhausted after mutation")
+}
+
+@test
+func emptyListClearDetachesPoppedValues() {
+    var values: [ListPayload] = []
+    probe := appendAndProbe(values)
+    var _ = values.pop()
+    assert(unsafe { __gc__test_collect_probe_is_live(probe) }, "popped storage stays initialized")
+    values.clear()
+    assert(!unsafe { __gc__test_collect_probe_is_live(probe) }, "clear detaches even empty storage")
+    assert(values.isEmpty(), "the list remains usable")
+}
+
+@test
+func listReplacementPreservesActiveCursor() {
+    // The separate panic fixture checks the diagnostic; this test verifies
+    // replacement remains non-structural for an active cursor.
+    var values: [int64] = [1]
+    var cursor = values.iter()
+    values.set(0, 2)
+    assert(cursor.next().unwrap() == 2, "an upcoming read sees replacement")
+}
+
+func listLength(_ values: [int64]) -> usize { values.len() }
+
+@test
+func clonedListHasIndependentStorage() {
+    var values: [int64] = [10, 20]
+    clone := values.clone()
+    assert(listLength(values) == 2 && clone.len() == 2,
+        "passing a list value and cloning it preserve both contents")
+    values.set(0, 11)
+    values.append(30)
+    clone.set(1, 99)
+    std::runtime::collect()
+    assert(values.len() == 3 && values[0] == 11 && values[1] == 20,
+        "editing the clone preserves the original storage")
+    assert(clone.len() == 2 && clone[0] == 10 && clone[1] == 99,
+        "editing or growing the original preserves the clone's storage")
+}

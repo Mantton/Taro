@@ -1,0 +1,11 @@
+struct ValueList { values: [int32] }
+extend ValueList {
+    var contents: [int32] { get { self.values } }
+}
+func main() {
+    var original: [int32] = [1_i32]
+    wrapper := ValueList { values: original }
+    copy := wrapper.contents
+    copy[0] = 2
+    assert(wrapper.contents[0] == 2 && original[0] == 2, "copied getter results retain ordinary handle sharing")
+}

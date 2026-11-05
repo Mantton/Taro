@@ -1,7 +1,7 @@
 // CHECK_ONLY
 
 func missingGreeting() -> string {
-    let greeting = "hello"
+    greeting := "hello"
 }
 
 func conditionalFallthrough(_ flag: bool) -> int32 {
@@ -9,7 +9,7 @@ func conditionalFallthrough(_ flag: bool) -> int32 {
         return 1
     }
 
-    let value = 2
+    value := 2
 }
 
 func bareReturnValue() -> int32 {
@@ -23,14 +23,14 @@ func neverBareReturn() -> ! {
 }
 
 func uninitializedLocal() {
-    let value: int32
-    let copy = value
+    var value: int32
+    copy := value
 }
 
 func uninitializedMutableBorrow() {
     var value: int32
-    let ptr = &mut value
-    let _ = ptr
+    ptr := &value
+    var _ = ptr
 }
 
 func nonExhaustiveMatch(_ value: bool) -> int32 {
@@ -44,7 +44,7 @@ func main() {}
 func deferScopeExitMaybeUninit(_ flag: bool) {
     var value: int32
     {
-        defer { let _ = value }
+        defer { var _ = value }
         if flag {
             value = 1
         }
@@ -53,7 +53,7 @@ func deferScopeExitMaybeUninit(_ flag: bool) {
 
 func deferReturnMaybeUninit(_ flag: bool) -> string {
     var value: string
-    defer { let _ = value }
+    defer { var _ = value }
     if flag {
         value = "ok"
     }
@@ -64,7 +64,7 @@ func deferBreakMaybeUninit() {
     var value: int32
     loop {
         {
-            defer { let _ = value }
+            defer { var _ = value }
             break
         }
     }

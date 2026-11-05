@@ -122,7 +122,11 @@ fn collect_from_declaration(
             }
 
             // Inspect the resolved type so aliases and explicit unit annotations agree.
-            if gcx.get_signature(decl.id).output != gcx.types.void {
+            if crate::sema::tycheck::utils::normalize_aliases(
+                gcx,
+                gcx.get_signature(decl.id).output,
+            ) != gcx.types.void
+            {
                 gcx.dcx().emit_error(
                     "@test functions must return unit (`()`)".into(),
                     Some(decl.span),

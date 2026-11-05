@@ -4,8 +4,14 @@
 //! layouts vary by operating system and architecture. Keeping that layout
 //! knowledge here lets `std.sys.fs` consume a small scalar ABI instead of
 //! duplicating libc internals in Taro source.
+//!
+//! Native ABI review: paths are copied before blocking, output-slot addresses
+//! remain call-local, and owned byte results (directory entry names included)
+//! require owned_bytes_free. Directory handles are never-reused registry ids,
+//! so copies of a shared handle may read and close concurrently.
 
 use crate::panic_unwind::RtString;
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Seek, SeekFrom};
@@ -13,6 +19,8 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::ptr;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 
 const FILE_TYPE_REGULAR: u8 = 1;
 const FILE_TYPE_DIRECTORY: u8 = 2;
@@ -126,11 +134,13 @@ pub extern "C" fn __rt__fs_metadata(
     0
 }
 
-struct RuntimeReadDir {
-    inner: fs::ReadDir,
-    // `dir_read` returns a borrowed pointer. Retaining the current name in the
-    // handle keeps that pointer valid until the next read or close call.
-    current_name: Vec<u8>,
+// A read in flight keeps its cursor alive after a concurrent close removes it.
+static DIRS: LazyLock<Mutex<HashMap<usize, Arc<Mutex<fs::ReadDir>>>>> =
+    LazyLock::new(Default::default);
+static NEXT_DIR: AtomicUsize = AtomicUsize::new(1);
+
+fn lock_dirs() -> std::sync::MutexGuard<'static, HashMap<usize, Arc<Mutex<fs::ReadDir>>>> {
+    DIRS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[unsafe(no_mangle)]
@@ -155,13 +165,13 @@ pub extern "C" fn __rt__fs_dir_open(path: RtString, error_out: *mut i32) -> usiz
         }
     };
 
-    Box::into_raw(Box::new(RuntimeReadDir {
-        inner,
-        current_name: Vec::new(),
-    })) as usize
+    let handle = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
+    lock_dirs().insert(handle, Arc::new(Mutex::new(inner)));
+    handle
 }
 
-/// Return 0 for an entry, -1 for EOF, or a positive errno on failure.
+/// Return 0 for an entry, -1 for EOF, or a positive errno on failure. The name
+/// is owned by the caller and released with owned_bytes_free.
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt__fs_dir_read(
     handle: usize,
@@ -176,23 +186,25 @@ pub extern "C" fn __rt__fs_dir_read(
         return libc::EINVAL;
     }
 
-    let state = unsafe { &mut *(handle as *mut RuntimeReadDir) };
-    let entry = match state.inner.next() {
-        Some(Ok(entry)) => entry,
-        Some(Err(error)) => return error_code(error),
-        None => return -1,
+    let Some(dir) = lock_dirs().get(&handle).cloned() else {
+        return libc::EBADF;
+    };
+    let entry = {
+        let mut cursor = dir.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        match cursor.next() {
+            Some(Ok(entry)) => entry,
+            Some(Err(error)) => return error_code(error),
+            None => return -1,
+        }
     };
     let file_type = match entry.file_type() {
         Ok(file_type) => file_type_code(file_type),
         Err(error) => return error_code(error),
     };
-    state.current_name = entry.file_name().into_vec();
-
-    unsafe {
-        name_out.write(state.current_name.as_mut_ptr());
-        len_out.write(state.current_name.len());
-        file_type_out.write(file_type);
+    if let Err(code) = allocate_owned_bytes(entry.file_name().as_bytes(), name_out, len_out) {
+        return code;
     }
+    unsafe { file_type_out.write(file_type) };
     0
 }
 
@@ -201,8 +213,10 @@ pub extern "C" fn __rt__fs_dir_close(handle: usize) -> i32 {
     if handle == 0 {
         return libc::EBADF;
     }
-    unsafe { drop(Box::from_raw(handle as *mut RuntimeReadDir)) };
-    0
+    match lock_dirs().remove(&handle) {
+        Some(_) => 0,
+        None => libc::EBADF,
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -502,5 +516,56 @@ mod tests {
 
         assert_eq!(__rt__fs_remove_dir_all(rt_path(&tree)), 0);
         assert!(target.join("kept").exists());
+    }
+
+    #[test]
+    fn shared_dir_handles_read_concurrently_and_reject_use_after_close() {
+        let root = TempDir::new("dir-share");
+        for index in 0..64 {
+            fs::write(root.join(format!("entry-{index}")), b"").unwrap();
+        }
+        let mut error = 0;
+        let handle = __rt__fs_dir_open(rt_path(&root), &mut error);
+        assert_ne!(handle, 0);
+
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                std::thread::spawn(move || {
+                    let mut names = Vec::new();
+                    loop {
+                        let (mut data, mut len, mut kind) = (ptr::null_mut(), 0, 0);
+                        match __rt__fs_dir_read(handle, &mut data, &mut len, &mut kind) {
+                            0 => {
+                                let name = unsafe { std::slice::from_raw_parts(data, len) };
+                                names.push(name.to_vec());
+                                __rt__fs_owned_bytes_free(data);
+                            }
+                            -1 => return names,
+                            code => panic!("dir read failed: {code}"),
+                        }
+                    }
+                })
+            })
+            .collect();
+        let mut names: Vec<_> = readers
+            .into_iter()
+            .flat_map(|r| r.join().unwrap())
+            .collect();
+        let total = names.len();
+        names.sort();
+        names.dedup();
+        assert_eq!(
+            (total, names.len()),
+            (64, 64),
+            "each entry is yielded exactly once"
+        );
+
+        assert_eq!(__rt__fs_dir_close(handle), 0);
+        let (mut data, mut len, mut kind) = (ptr::null_mut(), 0, 0);
+        assert_eq!(
+            __rt__fs_dir_read(handle, &mut data, &mut len, &mut kind),
+            libc::EBADF
+        );
+        assert_eq!(__rt__fs_dir_close(handle), libc::EBADF);
     }
 }

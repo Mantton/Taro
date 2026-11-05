@@ -15,3 +15,10 @@ its final value, but that preserves the result rather than every source-level
 operation. Inlining, constant folding, and loop simplification can remove calls
 or repeated work. Inspect generated code before interpreting a timing as
 per-call or per-iteration overhead, and record the optimization level used.
+
+`atomic_counter.tr` accepts increments per writer and writer count, and checks
+then prints the total. `channel_pingpong.tr` accepts round trips per pair and
+pair count; every echoed value is checked before it prints the total rounds.
+Build with `--release -O 3`; set `TARO_WORKERS` explicitly. Alternate old/new
+binaries without builds during timing. The review follow-up results record
+checksums, load, CPU time and retired instructions for these workloads.

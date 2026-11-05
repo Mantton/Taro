@@ -1,0 +1,3 @@
+[package]
+name = "github.com/taro-story/s36-static-dep"
+kind = "library"

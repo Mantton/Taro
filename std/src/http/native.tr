@@ -1,0 +1,67 @@
+import std::mem::Span
+
+@cfg(family("unix"))
+extern "taro_rt" {
+    unsafe func __rt__http_url(_ url: string, _ method: string) -> usize
+    unsafe func __rt__http_parse_response(_ input: *const uint8, _ len: usize, _ headers: usize, _ body: usize, _ head: bool) -> usize
+    unsafe func __rt__http_header_valid(_ name: string, _ value: string) -> bool
+    unsafe func __rt__task_should_stop_spinning() -> bool
+    unsafe func __rt__task_may_spin() -> bool
+    unsafe func __rt__http_parse_head(_ input: *const uint8, _ len: usize, _ headers: usize, _ body: usize) -> usize
+    unsafe func __rt__http_check_head(_ input: *const uint8, _ len: usize, _ headers: usize, _ body: usize, _ out: *mut usize) -> usize
+    unsafe func __rt__http_chunk_size(_ line: string, _ length: *mut usize) -> bool
+    unsafe func __rt__http_snapshot_info(_ handle: usize, _ field: usize) -> usize
+    unsafe func __rt__http_snapshot_bytes(_ handle: usize, _ field: usize, _ len: *mut usize) -> *const uint8
+    unsafe func __rt__http_snapshot_close(_ handle: usize)
+}
+// Added to a text field's number, asks whether that text is process-long.
+const SNAPSHOT_TEXT_IS_STATIC: usize = 4294967296
+func info(_ handle: usize, _ field: usize) -> usize { unsafe { __rt__http_snapshot_info(handle, field) } }
+func snapshotSpan(_ handle: usize, _ field: usize) -> Span[uint8] {
+    var length: usize = 0
+    data := unsafe { __rt__http_snapshot_bytes(handle, field, &length as *mut usize) }
+    return unsafe { Span[uint8]::from(data, length) }
+}
+func snapshotText(_ handle: usize, _ field: usize) -> string {
+    span := snapshotSpan(handle, field)
+    if info(handle, SNAPSHOT_TEXT_IS_STATIC + field) != 0 {
+        return unsafe { std::string::stringFromParts(span.asPtr(), span.len()) }
+    }
+    return std::string::stringFromBytes(span)
+}
+// Text parsed from `input`, sharing `copy`, the one copy of it every parsed field
+// of a head can use. Retaining any field keeps that whole copy alive.
+func snapshotTextIn(_ handle: usize, _ field: usize, _ input: Span[uint8], _ copy: string) -> string {
+    span := snapshotSpan(handle, field)
+    if info(handle, SNAPSHOT_TEXT_IS_STATIC + field) != 0 {
+        return unsafe { std::string::stringFromParts(span.asPtr(), span.len()) }
+    }
+    start := unsafe { span.asPtr() as usize }
+    base := unsafe { input.asPtr() as usize }
+    if start >= base && start - base <= input.len() && span.len() <= input.len() - (start - base) {
+        return unsafe { std::string::stringFromParts(std::string::stringData(copy).add(start - base), span.len()) }
+    }
+    // Normalized text exists only in the snapshot.
+    return std::string::stringFromBytes(span)
+}
+func appendSnapshotHeaders(_ store: HeaderStore, _ handle: usize, _ input: Span[uint8], _ copy: string) {
+    count := info(handle, 2)
+    var index: usize = 0
+    while index < count {
+        store.append(Header {
+            name: snapshotTextIn(handle, 4 + index * 2, input, copy),
+            value: snapshotTextIn(handle, 5 + index * 2, input, copy),
+        })
+        index += 1
+    }
+}
+func snapshotHeaders(_ handle: usize, _ input: Span[uint8], _ copy: string) -> Headers {
+    headers := Headers::new()
+    appendSnapshotHeaders(headers.store, handle, input, copy)
+    return headers
+}
+func snapshotError(_ handle: usize) -> Error {
+    code := info(handle, 0)
+    kind := if code == 7 { ErrorKind::invalidInput } else if code == 4 { ErrorKind::limit } else if code == 5 { ErrorKind::closed } else if code == 6 { ErrorKind::timeout } else if code == 2 { ErrorKind::protocol } else { ErrorKind::transport }
+    return failure(kind, snapshotText(handle, 0))
+}

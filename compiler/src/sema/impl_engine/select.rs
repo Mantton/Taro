@@ -46,35 +46,6 @@ pub fn prove_interface_goal<'ctx>(
     }
 }
 
-/// Return whether one declared conformance (rather than a synthesized builtin)
-/// proves this goal. Sendable's structural fallback uses this to respect the
-/// trust boundary of explicit marker impls on raw-storage owner types.
-pub fn prove_declared_interface_goal<'ctx>(
-    gcx: Gcx<'ctx>,
-    goal: InterfaceGoal<'ctx>,
-    mode: SelectionMode,
-) -> GoalResult {
-    if goal_has_unresolved_types(goal) {
-        return GoalResult::NoSolution;
-    }
-
-    let mut selector = Selector::new(gcx, mode);
-    let key = goal_key(gcx, goal, mode);
-    if !selector.visiting.insert(key) {
-        return GoalResult::Ambiguous;
-    }
-    let mut saw_ambiguous_obligation = false;
-    let candidates = selector.collect_declared_candidates(goal, &mut saw_ambiguous_obligation);
-    selector.visiting.remove(&key);
-
-    match candidates.len() {
-        0 if saw_ambiguous_obligation => GoalResult::Ambiguous,
-        0 => GoalResult::NoSolution,
-        1 => GoalResult::Proven,
-        _ => GoalResult::Ambiguous,
-    }
-}
-
 pub fn select_interface_impl<'ctx>(
     gcx: Gcx<'ctx>,
     goal: InterfaceGoal<'ctx>,
@@ -99,7 +70,9 @@ pub(crate) fn deduce_impl_subst<'ctx>(
     let icx = Rc::new(InferCtx::new(gcx));
     let span = crate::span::Span::empty(crate::span::FileID::from_usize(0));
     let fresh_args = icx.fresh_args_for_def(extension_id, span);
-    let instantiated = instantiate_ty_with_args(gcx, pattern_self, fresh_args);
+    let instantiated =
+        normalize_aliases(gcx, instantiate_ty_with_args(gcx, pattern_self, fresh_args));
+    let self_ty = normalize_aliases(gcx, self_ty);
     let unifier = TypeUnifier::new(icx.clone());
     if unifier.unify(instantiated, self_ty).is_err() {
         return None;
@@ -111,6 +84,57 @@ pub(crate) fn deduce_impl_subst<'ctx>(
     }
 
     Some(resolved)
+}
+
+/// Recover an interface header for discovery, not a conformance proof.
+/// Parameters absent from Self may be inferred from the selected method's
+/// arguments or result. Return only the resolved argument prefix: binding the
+/// selected requirement creates its remaining variables in the caller's context.
+/// Never export inference variables from this temporary context.
+pub(crate) fn deduce_conformance_interface<'ctx>(
+    gcx: Gcx<'ctx>,
+    record: &ConformanceRecord<'ctx>,
+    self_ty: Ty<'ctx>,
+) -> Option<crate::sema::models::InterfaceReference<'ctx>> {
+    if self_ty.contains_inference() {
+        return None;
+    }
+    if gcx.generics_of(record.extension).is_empty() {
+        return Some(record.interface);
+    }
+    let pattern = extension_self_ty(gcx, record.extension)?;
+    let icx = Rc::new(InferCtx::new(gcx));
+    let arguments = icx.fresh_args_for_def(record.extension, record.location);
+    let pattern = normalize_aliases(gcx, instantiate_ty_with_args(gcx, pattern, arguments));
+    TypeUnifier::new(icx.clone())
+        .unify(pattern, normalize_aliases(gcx, self_ty))
+        .ok()?;
+    let interface = crate::sema::tycheck::utils::instantiate::instantiate_interface_ref_with_args(
+        gcx,
+        record.interface,
+        icx.resolve_args_if_possible(arguments),
+    );
+    let prefix: Vec<_> = interface
+        .arguments
+        .iter()
+        .copied()
+        .take_while(|argument| !generic_arg_contains_unresolved_inference(argument))
+        .collect();
+    if !crate::sema::tycheck::utils::unresolved::interface_ref_contains_unresolved_inference(
+        interface,
+    ) {
+        return Some(interface);
+    }
+    // Self is fixed by the receiver; only trailing interface arguments may be
+    // supplied later. Associated bindings are checked by conformance selection.
+    if prefix.is_empty() {
+        return None;
+    }
+    Some(InterfaceReference {
+        id: interface.id,
+        arguments: gcx.store.interners.intern_generic_args(prefix),
+        bindings: &[],
+    })
 }
 
 struct Selector<'ctx> {
@@ -139,7 +163,9 @@ impl<'ctx> Selector<'ctx> {
         }
 
         if !self.visiting.insert(key) {
-            return SelectionResult::Ambiguous(Vec::new());
+            // Ordinary interface proofs are inductive. A where-clause cannot
+            // prove its own goal, nor does such a cycle create two candidates.
+            return SelectionResult::NoSolution(vec![SelectionError::NoCandidates(goal)]);
         }
 
         let (mut candidates, saw_ambiguous_obligation) = self.collect_candidates(goal);
@@ -152,10 +178,10 @@ impl<'ctx> Selector<'ctx> {
             CandidateSource::Impl(id) => (id.package.index(), id.index as usize),
             CandidateSource::ParamEnv => (usize::MAX - 4, 0),
             CandidateSource::BuiltinTuple => (usize::MAX - 3, 0),
-            CandidateSource::BuiltinClosure => (usize::MAX - 2, 0),
+            CandidateSource::BuiltinCallable => (usize::MAX - 2, 0),
             CandidateSource::BuiltinClone => (usize::MAX - 1, 0),
-            CandidateSource::BuiltinCopy => (usize::MAX, 0),
-            CandidateSource::BuiltinSendable => (usize::MAX, 1),
+            CandidateSource::BuiltinOperator => (usize::MAX, 0),
+            CandidateSource::BuiltinAnyObject => (usize::MAX, 1),
         });
 
         let result = match viable.len() {
@@ -198,23 +224,62 @@ impl<'ctx> Selector<'ctx> {
         let mut out = Vec::new();
         let mut saw_ambiguous_obligation = false;
 
+        // Codec field checks can assume the struct conformance currently being
+        // derived. A matching assumption already establishes these capability-
+        // only interfaces (which have no associated bindings); rediscovering
+        // its implementation would create a second candidate or recurse.
+        if [StdItem::Encodable, StdItem::Decodable]
+            .iter()
+            .any(|item| self.gcx.std_item_def(*item) == Some(goal.interface_id))
+            && let Some(candidate) = self.param_env_candidate(goal)
+        {
+            return (vec![candidate], false);
+        }
+
+        // Only class identities can establish this capability. A source impl
+        // assertion cannot turn an inline value or a borrowed handle into one.
+        if self.gcx.std_item_def(StdItem::AnyObject) == Some(goal.interface_id) {
+            if self.gcx.uses_native_class_handle(goal.self_ty)
+                || self
+                    .gcx
+                    .existential_requires_interface(goal.self_ty, StdItem::AnyObject)
+            {
+                out.push(ConfirmedCandidate {
+                    source: CandidateSource::BuiltinAnyObject,
+                    extension_id: None,
+                    record_id: None,
+                    subst: GenericArguments::empty(),
+                    obligations: Vec::new(),
+                });
+            } else if matches!(
+                normalize_aliases(self.gcx, goal.self_ty).kind(),
+                TyKind::Parameter(_) | TyKind::Alias { .. } | TyKind::ExistentialSelf(_)
+            ) && let Some(candidate) = self.param_env_candidate(goal)
+            {
+                out.push(candidate);
+            }
+            return (out, false);
+        }
+
         if let Some(candidate) = self.builtin_tuple_candidate(goal) {
             out.push(candidate);
         }
 
-        if let Some(candidate) = self.builtin_closure_candidate(goal) {
+        if crate::mir::primitive_operators::item_for_goal(self.gcx, goal).is_some() {
+            out.push(ConfirmedCandidate {
+                source: CandidateSource::BuiltinOperator,
+                extension_id: None,
+                record_id: None,
+                subst: GenericArguments::empty(),
+                obligations: Vec::new(),
+            });
+        }
+
+        if let Some(candidate) = self.builtin_callable_candidate(goal) {
             out.push(candidate);
         }
 
-        if let Some(candidate) = self.builtin_clone_candidate(goal) {
-            out.push(candidate);
-        }
-
-        if let Some(candidate) = self.builtin_copy_candidate(goal, &mut saw_ambiguous_obligation) {
-            out.push(candidate);
-        }
-
-        if let Some(candidate) = self.builtin_sendable_candidate(goal) {
+        if let Some(candidate) = self.builtin_clone_candidate(goal, &mut saw_ambiguous_obligation) {
             out.push(candidate);
         }
 
@@ -223,22 +288,6 @@ impl<'ctx> Selector<'ctx> {
         }
 
         out.extend(self.collect_declared_candidates(goal, &mut saw_ambiguous_obligation));
-
-        if self.gcx.std_item_def(StdItem::Sendable) == Some(goal.interface_id)
-            && out
-                .iter()
-                .any(|candidate| matches!(candidate.source, CandidateSource::Impl(_)))
-        {
-            // Sendable has a structural builtin candidate, but an explicit
-            // marker impl is the type author's trust boundary for hidden raw
-            // storage (for example List's managed buffer pointer). Once such
-            // an impl applies, keeping both candidates would report a false
-            // ambiguity for every structurally-Sendable instantiation of a
-            // conditional container like Result[T, E]. Coherence still checks
-            // overlaps between declared impls; only the synthesized fallback
-            // is suppressed here.
-            out.retain(|candidate| candidate.source != CandidateSource::BuiltinSendable);
-        }
 
         (out, saw_ambiguous_obligation)
     }
@@ -256,33 +305,76 @@ impl<'ctx> Selector<'ctx> {
                 head = type_head_from_value_ty(normalized);
             }
         }
-        let mut records: Vec<(ConformanceRecordId, ConformanceRecord<'ctx>)> =
-            self.gcx.collect_from_databases(|db| {
-                db.conformance_by_interface
-                    .get(&goal.interface_id)
-                    .into_iter()
-                    .flat_map(|ids| ids.iter())
-                    .filter_map(|id| {
-                        let record = db.conformance_records.get(id)?;
-                        (record.target.is_blanket() || head == Some(record.target))
-                            .then_some((*id, *record))
-                    })
-                    .collect()
-            });
-        records.sort_by_key(|(id, _)| (id.package.index(), id.index));
+        // Inherited conformances retain the base's resolved interface arguments
+        // (including defaults). Only the receiver is projected to its actual
+        // base instantiation for implementation matching; substituting Derived
+        // into every occurrence of Base would invent PartialEq[Derived].
+        let mut owners = vec![(head, goal.self_ty)];
+        owners.extend(
+            self.gcx
+                .class_ancestry(goal.self_ty)
+                .into_iter()
+                .skip(1)
+                .map(|owner| (type_head_from_value_ty(owner), owner)),
+        );
+        let mut records: Vec<(ConformanceRecordId, ConformanceRecord<'ctx>, Ty<'ctx>)> = self
+            .gcx
+            .conformance_ownership_packages(goal.interface_id, goal.self_ty, goal.interface_args)
+            .into_iter()
+            .flat_map(|package| {
+                self.gcx.with_type_database(package, |db| {
+                    db.conformance_by_interface
+                        .get(&goal.interface_id)
+                        .into_iter()
+                        .flat_map(|ids| ids.iter())
+                        .filter_map(|id| {
+                            let record = db.conformance_records.get(id)?;
+                            let owner = if record.target.is_blanket() {
+                                goal.self_ty
+                            } else {
+                                owners
+                                    .iter()
+                                    .find(|(head, _)| *head == Some(record.target))?
+                                    .1
+                            };
+                            Some((*id, *record, owner))
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        records.sort_by_key(|(id, _, _)| (id.package.index(), id.index));
         let mut seen_ids = FxHashSet::default();
 
-        for (record_id, record) in records {
+        let mut nearest_class = None;
+        for (record_id, record, owner) in records {
             if !seen_ids.insert(record_id) {
                 continue;
             }
-            if let Some(candidate) =
-                self.confirm_record_candidate(goal, record_id, record, saw_ambiguous_obligation)
-            {
-                out.push(candidate);
+            if let Some(candidate) = self.confirm_record_candidate(
+                InterfaceGoal {
+                    self_ty: owner,
+                    ..goal
+                },
+                record_id,
+                record,
+                saw_ambiguous_obligation,
+            ) {
+                let depth = (!record.target.is_blanket() && self.gcx.is_class_type(owner))
+                    .then(|| owners.iter().position(|(_, ty)| *ty == owner).unwrap());
+                if let Some(depth) = depth {
+                    nearest_class = Some(nearest_class.map_or(depth, |old: usize| old.min(depth)));
+                }
+                out.push((depth, candidate));
             }
         }
-        out
+        // A subclass block customizes one inherited conformance. It is not a
+        // second competing implementation; unrelated blanket candidates still
+        // participate in ordinary coherence/ambiguity checks.
+        out.into_iter()
+            .filter(|(depth, _)| depth.is_none() || *depth == nearest_class)
+            .map(|(_, candidate)| candidate)
+            .collect()
     }
 
     fn param_env_candidate(&self, goal: InterfaceGoal<'ctx>) -> Option<ConfirmedCandidate<'ctx>> {
@@ -294,7 +386,6 @@ impl<'ctx> Selector<'ctx> {
             if super::ref_ops::collect_interface_with_superfaces(self.gcx, bound)
                 .into_iter()
                 .any(|interface| interface_ref_matches_goal(self.gcx, interface, goal))
-                && self.param_env_satisfies_goal_bindings(goal)
             {
                 return Some(ConfirmedCandidate {
                     source: CandidateSource::ParamEnv,
@@ -328,27 +419,29 @@ impl<'ctx> Selector<'ctx> {
         })
     }
 
-    fn builtin_copy_candidate(
+    fn builtin_clone_candidate(
         &mut self,
         goal: InterfaceGoal<'ctx>,
         saw_ambiguous_obligation: &mut bool,
     ) -> Option<ConfirmedCandidate<'ctx>> {
-        let copy_id = self.gcx.std_item_def(StdItem::Copy)?;
-        if goal.interface_id != copy_id {
+        if self.gcx.std_item_def(StdItem::Clone) != Some(goal.interface_id) {
             return None;
         }
-        // Aggregate Copy depends on its elements under the caller's bounds,
-        // not on context-free copyability of still-generic element types.
-        let elements = match goal.self_ty.kind() {
-            TyKind::Tuple(elements) => elements.to_vec(),
-            TyKind::Array { element, .. } => vec![element],
-            _ if self.gcx.is_type_builtin_copyable(goal.self_ty) => Vec::new(),
-            _ => return None,
+        let ty = normalize_aliases(self.gcx, goal.self_ty);
+        let obligations = if builtin_copy_clone(self.gcx, ty) {
+            Vec::new()
+        } else {
+            let components = match ty.kind() {
+                TyKind::Tuple(fields) => fields.to_vec(),
+                TyKind::Array { element, .. } => vec![element],
+                TyKind::Closure { .. } => closure_clone_fields(self.gcx, ty)?,
+                _ => return None,
+            };
+            components
+                .into_iter()
+                .map(|self_ty| InterfaceGoal { self_ty, ..goal })
+                .collect()
         };
-        let obligations: Vec<_> = elements
-            .into_iter()
-            .map(|self_ty| InterfaceGoal { self_ty, ..goal })
-            .collect();
         match self.obligations_satisfied(&obligations) {
             GoalSatisfaction::Satisfied => {}
             GoalSatisfaction::Ambiguous => {
@@ -358,7 +451,7 @@ impl<'ctx> Selector<'ctx> {
             GoalSatisfaction::Unsatisfied => return None,
         }
         Some(ConfirmedCandidate {
-            source: CandidateSource::BuiltinCopy,
+            source: CandidateSource::BuiltinClone,
             extension_id: None,
             record_id: None,
             subst: GenericArguments::empty(),
@@ -366,92 +459,13 @@ impl<'ctx> Selector<'ctx> {
         })
     }
 
-    fn builtin_clone_candidate(
+    fn builtin_callable_candidate(
         &self,
         goal: InterfaceGoal<'ctx>,
     ) -> Option<ConfirmedCandidate<'ctx>> {
-        let clone_id = self.gcx.std_item_def(StdItem::Clone)?;
-        if goal.interface_id != clone_id || !self.gcx.is_type_copyable(goal.self_ty) {
-            return None;
-        }
-        Some(ConfirmedCandidate {
-            source: CandidateSource::BuiltinClone,
-            extension_id: None,
-            record_id: None,
-            subst: GenericArguments::empty(),
-            obligations: Vec::new(),
-        })
-    }
+        let (kind, inputs, output) = crate::sema::models::callable_signature(goal.self_ty)?;
 
-    fn builtin_sendable_candidate(
-        &self,
-        goal: InterfaceGoal<'ctx>,
-    ) -> Option<ConfirmedCandidate<'ctx>> {
-        let sendable_id = self.gcx.std_item_def(StdItem::Sendable)?;
-        if goal.interface_id != sendable_id || !self.gcx.is_type_sendable(goal.self_ty) {
-            return None;
-        }
-        Some(ConfirmedCandidate {
-            source: CandidateSource::BuiltinSendable,
-            extension_id: None,
-            record_id: None,
-            subst: GenericArguments::empty(),
-            obligations: Vec::new(),
-        })
-    }
-
-    fn builtin_closure_candidate(
-        &self,
-        goal: InterfaceGoal<'ctx>,
-    ) -> Option<ConfirmedCandidate<'ctx>> {
-        let TyKind::Closure {
-            kind,
-            inputs,
-            output,
-            ..
-        } = goal.self_ty.kind()
-        else {
-            return None;
-        };
-
-        let fn_id = self.gcx.std_item_def(StdItem::Fn);
-        let fn_mut_id = self.gcx.std_item_def(StdItem::FnMut);
-        let fn_once_id = self.gcx.std_item_def(StdItem::FnOnce);
-        let async_fn_id = self.gcx.std_item_def(StdItem::AsyncFn);
-        let async_fn_mut_id = self.gcx.std_item_def(StdItem::AsyncFnMut);
-        let async_fn_once_id = self.gcx.std_item_def(StdItem::AsyncFnOnce);
-        let allowed = if fn_id == Some(goal.interface_id) {
-            matches!(kind, crate::sema::models::ClosureKind::Fn)
-        } else if fn_mut_id == Some(goal.interface_id) {
-            matches!(
-                kind,
-                crate::sema::models::ClosureKind::Fn | crate::sema::models::ClosureKind::FnMut
-            )
-        } else if fn_once_id == Some(goal.interface_id) {
-            matches!(
-                kind,
-                crate::sema::models::ClosureKind::Fn
-                    | crate::sema::models::ClosureKind::FnMut
-                    | crate::sema::models::ClosureKind::FnOnce
-            )
-        } else if async_fn_id == Some(goal.interface_id) {
-            matches!(kind, crate::sema::models::ClosureKind::AsyncFn)
-        } else if async_fn_mut_id == Some(goal.interface_id) {
-            matches!(
-                kind,
-                crate::sema::models::ClosureKind::AsyncFn
-                    | crate::sema::models::ClosureKind::AsyncFnMut
-            )
-        } else if async_fn_once_id == Some(goal.interface_id) {
-            matches!(
-                kind,
-                crate::sema::models::ClosureKind::AsyncFn
-                    | crate::sema::models::ClosureKind::AsyncFnMut
-                    | crate::sema::models::ClosureKind::AsyncFnOnce
-            )
-        } else {
-            false
-        };
+        let allowed = crate::sema::models::callable_kind(self.gcx, goal.interface_id) == Some(kind);
         if !allowed {
             return None;
         }
@@ -476,7 +490,7 @@ impl<'ctx> Selector<'ctx> {
         }
 
         Some(ConfirmedCandidate {
-            source: CandidateSource::BuiltinClosure,
+            source: CandidateSource::BuiltinCallable,
             extension_id: None,
             record_id: None,
             subst: GenericArguments::empty(),
@@ -511,17 +525,72 @@ impl<'ctx> Selector<'ctx> {
         }
 
         let mut obligations = Vec::new();
+        if let Some(fields) = crate::sema::tycheck::derive::conditional_fields(self.gcx, record) {
+            let caller_env = ParamEnv::new(goal.param_env.to_vec());
+            let mut field_assumptions = goal.param_env.to_vec();
+            if [StdItem::Encodable, StdItem::Decodable]
+                .iter()
+                .any(|item| self.gcx.std_item_def(*item) == Some(goal.interface_id))
+                && matches!(record.target, TypeHead::Nominal(id)
+                    if self.gcx.try_get_struct_definition(id).is_some() || self.gcx.try_get_enum_definition(id).is_some())
+            {
+                // Recursive fields may use the conformance under construction,
+                // but unrelated leaves must still prove their own capability.
+                // Scope this assumption to structural fields: declared where
+                // clauses below retain the original, inductive environment.
+                // Including it in param_env also keeps assumption-dependent
+                // selection-cache entries separate from ordinary proofs.
+                field_assumptions.push(Constraint::Bound {
+                    ty: goal.self_ty,
+                    interface: instantiated,
+                });
+            }
+            let field_assumptions = self
+                .gcx
+                .store
+                .arenas
+                .global
+                .alloc_slice_clone(&field_assumptions);
+            let icx = Rc::new(InferCtx::new(self.gcx));
+            for field in fields {
+                let field = instantiate_ty_with_args(self.gcx, field, subst);
+                let field = normalize_ty(icx.clone(), field, &caller_env);
+                let arguments =
+                    if self.gcx.std_item_def(StdItem::PartialEq) == Some(goal.interface_id) {
+                        self.gcx
+                            .store
+                            .interners
+                            .intern_generic_args(vec![GenericArgument::Type(field)])
+                    } else {
+                        GenericArguments::empty()
+                    };
+                obligations.push(InterfaceGoal {
+                    self_ty: field,
+                    interface_args: arguments,
+                    bindings: &[],
+                    param_env: field_assumptions,
+                    ..goal
+                });
+            }
+            // Conditional synthesis cannot claim a derived interface while
+            // its resolved super-conformances are unavailable on this type.
+            for interface in
+                super::ref_ops::collect_interface_with_superfaces(self.gcx, instantiated)
+                    .into_iter()
+                    .skip(1)
+            {
+                obligations.push(interface_ref_to_goal(
+                    self.gcx,
+                    interface,
+                    goal.param_env,
+                    goal.self_ty,
+                ));
+            }
+        }
         for constraint in constraints {
             match constraint {
                 Constraint::Bound { ty, interface } => {
                     let obligation = interface_ref_to_goal(self.gcx, interface, goal.param_env, ty);
-                    if obligation.interface_id == goal.interface_id
-                        && obligation.self_ty == goal.self_ty
-                        && obligation.interface_args == goal.interface_args
-                        && obligation.bindings == goal.bindings
-                    {
-                        continue;
-                    }
                     obligations.push(obligation);
                 }
                 Constraint::TypeEquality(lhs, rhs) => {
@@ -567,6 +636,7 @@ impl<'ctx> Selector<'ctx> {
         let unifier = TypeUnifier::new(icx.clone());
 
         let instantiated_self = instantiate_ty_with_args(self.gcx, pattern_self, fresh_args);
+        let instantiated_self = normalize_aliases(self.gcx, instantiated_self);
         let normalized_goal_self = normalize_aliases(self.gcx, goal.self_ty);
         if unifier
             .unify(instantiated_self, normalized_goal_self)
@@ -630,6 +700,7 @@ impl<'ctx> Selector<'ctx> {
             self.mode,
             record.extension,
             fresh_args,
+            goal.param_env,
         );
         let resolved = icx.resolve_args_if_possible(fresh_args);
         if generic_args_contain_infer(resolved) {
@@ -659,53 +730,49 @@ impl<'ctx> Selector<'ctx> {
     fn goal_is_satisfied(&mut self, goal: InterfaceGoal<'ctx>) -> GoalSatisfaction {
         match self.select(goal) {
             SelectionResult::Selected(_) => GoalSatisfaction::Satisfied,
-            SelectionResult::Ambiguous(_) if self.mode == SelectionMode::Coherence => {
-                GoalSatisfaction::Satisfied
-            }
             SelectionResult::Ambiguous(_) => GoalSatisfaction::Ambiguous,
             SelectionResult::NoSolution(_) => GoalSatisfaction::Unsatisfied,
         }
     }
+}
 
-    fn param_env_satisfies_goal_bindings(&self, goal: InterfaceGoal<'ctx>) -> bool {
-        if goal.bindings.is_empty() {
-            return true;
-        }
+pub(crate) fn closure_clone_fields<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>) -> Option<Vec<Ty<'ctx>>> {
+    let TyKind::Closure {
+        closure_def_id,
+        captured_generics,
+        ..
+    } = ty.kind()
+    else {
+        return None;
+    };
+    let captures = gcx.get_closure_captures(closure_def_id)?;
+    Some(
+        captures
+            .captures
+            .iter()
+            .map(|capture| capture.storage_ty(gcx, captured_generics))
+            .collect(),
+    )
+}
 
-        let Some(requirements) = self.gcx.get_interface_requirements(goal.interface_id) else {
-            return false;
-        };
-        let env = ParamEnv::new(goal.param_env.to_vec());
-        let iface = goal.to_interface_ref(self.gcx);
-        let icx = Rc::new(InferCtx::new(self.gcx));
-        let unifier = TypeUnifier::new(icx.clone());
-
-        for binding in goal.bindings {
-            let Some(assoc) = requirements
-                .types
-                .iter()
-                .find(|assoc| assoc.name == binding.name)
-            else {
-                return false;
-            };
-
-            let projection = Ty::new(
-                TyKind::Alias {
-                    kind: AliasKind::Projection,
-                    def_id: assoc.id,
-                    args: iface.arguments,
-                },
-                self.gcx,
-            );
-            let expected = normalize_ty(icx.clone(), projection, &env);
-            let actual = normalize_ty(icx.clone(), binding.ty, &env);
-
-            if unifier.unify(expected, actual).is_err() {
-                return false;
-            }
-        }
-
-        true
+/// Only intrinsic representations whose Clone operation is defined to be a
+/// copy qualify. A user's Copy conformance says nothing about Clone, including
+/// inside a tuple or fixed array. Nominal Clone always comes from a declaration.
+pub(crate) fn builtin_copy_clone<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>) -> bool {
+    match normalize_aliases(gcx, ty).kind() {
+        TyKind::Bool
+        | TyKind::Rune
+        | TyKind::String
+        | TyKind::Int(_)
+        | TyKind::UInt(_)
+        | TyKind::Float(_)
+        | TyKind::Pointer(..)
+        | TyKind::Reference(_)
+        | TyKind::FnPointer { .. }
+        | TyKind::Never => true,
+        TyKind::Tuple(fields) => fields.iter().all(|field| builtin_copy_clone(gcx, *field)),
+        TyKind::Array { element, .. } => builtin_copy_clone(gcx, element),
+        _ => false,
     }
 }
 
@@ -750,6 +817,7 @@ fn refine_impl_args_from_constraints<'ctx>(
     mode: SelectionMode,
     impl_id: crate::hir::DefinitionID,
     impl_args: GenericArguments<'ctx>,
+    caller_assumptions: &'ctx [Constraint<'ctx>],
 ) {
     let constraints = gcx.canonical_constraints_of(impl_id);
     if constraints.is_empty() {
@@ -761,6 +829,7 @@ fn refine_impl_args_from_constraints<'ctx>(
         .map(|constraint| instantiate_constraint_with_args(gcx, constraint.value, impl_args))
         .collect();
     let env = ParamEnv::new(instantiated.clone());
+    let caller_env = ParamEnv::new(caller_assumptions.to_vec());
     let unifier = TypeUnifier::new(icx.clone());
 
     let passes = instantiated.len().max(1) * 2;
@@ -789,6 +858,35 @@ fn refine_impl_args_from_constraints<'ctx>(
                     } else {
                         GenericArguments::empty()
                     };
+                    // An associated binding can constrain an impl parameter
+                    // to a symbolic projection of a caller parameter. Asking
+                    // for a concrete witness first loses this case (the caller
+                    // has only a generic bound). Infer with the caller's
+                    // assumptions, not the impl's own circular equality.
+                    // This chooses substitutions only: confirmation below
+                    // still proves every conformance obligation separately.
+                    if let Some(requirements) = gcx.get_interface_requirements(interface.id) {
+                        for binding in interface.bindings {
+                            let Some(requirement) = requirements
+                                .types
+                                .iter()
+                                .find(|requirement| requirement.name == binding.name)
+                            else {
+                                continue;
+                            };
+                            let projection = Ty::new(
+                                TyKind::Alias {
+                                    kind: AliasKind::Projection,
+                                    def_id: requirement.id,
+                                    args: resolved_interface_args,
+                                },
+                                gcx,
+                            );
+                            let actual = normalize_ty(icx.clone(), projection, &caller_env);
+                            let expected = icx.resolve_vars_if_possible(binding.ty);
+                            let _ = unifier.unify(expected, actual);
+                        }
+                    }
                     let goal = InterfaceGoal {
                         interface_id: interface.id,
                         self_ty,
@@ -796,7 +894,7 @@ fn refine_impl_args_from_constraints<'ctx>(
                         // Build a witness from the interface header first, then
                         // use declared bindings below to refine unresolved impl args.
                         bindings: &[],
-                        param_env: &[],
+                        param_env: caller_assumptions,
                     };
 
                     let Ok(witness) = gcx.build_conformance_witness(goal, mode) else {
@@ -872,9 +970,9 @@ fn goal_has_unresolved_types(goal: InterfaceGoal<'_>) -> bool {
         return true;
     }
 
-    goal.bindings.iter().any(|binding| {
-        ty_contains_unresolved_inference(binding.ty) || binding.ty.needs_instantiation()
-    })
+    goal.bindings
+        .iter()
+        .any(|binding| ty_contains_unresolved_inference(binding.ty))
 }
 
 fn unify_generic_argument<'ctx>(
@@ -916,4 +1014,32 @@ fn expand_goal_interface_ref<'ctx>(
         iface.arguments = gcx.store.interners.intern_generic_args(args);
     }
     iface
+}
+
+#[cfg(test)]
+mod recursive_proof_tests {
+    #[test]
+    fn blanket_requirements_cannot_prove_themselves_directly_or_indirectly() {
+        for declarations in [
+            "interface P {}\nconform[T] T to P where T: P {}",
+            "interface P {}\ninterface Q {}\nconform[T] T to P where T: Q {}\nconform[T] T to Q where T: P {}",
+        ] {
+            let source = format!(
+                "{declarations}\nstruct Counter {{}}\nfunc main() {{ var value: any P = Counter {{}}; }}"
+            );
+            let diagnostics = crate::test_support::analyze_script_diagnostics(&source);
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("does not conform")),
+                "{source}\n{diagnostics:#?}"
+            );
+            assert!(
+                !diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("ambiguous conformance")),
+                "{diagnostics:#?}"
+            );
+        }
+    }
 }

@@ -1,0 +1,43 @@
+// TEST
+// Receiver arguments read the pre-call state, including through reference
+// receivers. Returned field references remain writable after the call.
+struct Counter { value: int32 }
+extend Counter {
+    func read() -> int32 { self.value }
+}
+extend &Counter {
+    func readReference() -> int32 { self.value }
+    func add(_ amount: int32) { self.value += amount }
+    func addPair(left: int32, right: int32) { self.value += left * 10 + right }
+    func valueReference() -> &int32 { &self.value }
+}
+
+@test
+func argumentsReadBeforeReceiverWrites() {
+    var counter = Counter { value: 1 }
+    counter.add(counter.readReference())
+    counter.addPair(right: counter.readReference(), left: counter.readReference())
+    assert(counter.value == 24, "labeled receiver arguments read the pre-call state")
+}
+
+@test
+func listArgumentReadsPreAppendLength() {
+    var values: [usize] = [1, 2]
+    values.append(values.len())
+    assert(values.len() == 3, "append extends the list after evaluating its argument")
+    assert(*values.at(2) == 2, "the appended value is the pre-call length")
+}
+
+@test
+func loopCallsReturnWritableFieldReferences() {
+    var counter = Counter { value: 1 }
+    var index: int32 = 0
+    while index < 3 {
+        counter.add(counter.read())
+        index += 1
+    }
+    assert(counter.value == 8, "loop receiver calls use the preceding value")
+    saved := counter.valueReference()
+    *saved = 11
+    assert(counter.value == 11, "a returned field reference addresses the original receiver")
+}

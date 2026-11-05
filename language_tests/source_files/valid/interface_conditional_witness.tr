@@ -1,0 +1,21 @@
+// A conformance does not promise the extra bounds of every conditional method.
+// Building its erased table must not instantiate unavailable method bodies.
+interface Measured {
+    type Element
+    func size() -> int32
+    func greater( _ left: &Self::Element, _ right: &Self::Element) -> bool where Self::Element: std::cmp::Ord {
+        left.gt(*right)
+    }
+}
+
+struct Label { count: int32 }
+
+conform Label to Measured {
+    type Element = Label
+    func size() -> int32 { self.count }
+}
+
+func main() {
+    var value: any Measured = Label { count: 7 } // any Measured; Label is not Ord
+    assert(value.size() == 7, "unconditional erased method remains callable")
+}

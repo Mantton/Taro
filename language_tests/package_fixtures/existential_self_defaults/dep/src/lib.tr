@@ -1,0 +1,32 @@
+
+public interface Root {}
+public interface Other[Rhs = Self] { func marker() -> int32; }
+public interface Nested[Storage = any Other[Self]] { func nested() -> int32; }
+public interface Parent[Storage = any Other[Self]] { func inherited() -> int32; }
+public interface Child: Parent[any Other[Self]] {}
+public struct Counter { count: int32 }
+conform Counter to Root {}
+conform Counter to Other {
+    public func marker() -> int32 { self.count }
+}
+conform Counter to Nested {
+    public func nested() -> int32 { self.count + 1 }
+}
+conform Counter to Parent {
+    public func inherited() -> int32 { self.count + 2 }
+}
+conform Counter to Child {}
+public struct Foreign {}
+conform Foreign to Root {}
+conform Foreign to Other[bool] {
+    public func marker() -> int32 { 99 }
+}
+
+public func inspect[T](_ source: &any Other) -> int32 { source.marker() }
+public func inspectExplicit[T](_ source: &any Other[T]) -> int32 { source.marker() }
+public func inspectNested[T](_ source: &any Nested) -> int32 { source.nested() }
+
+
+public func makeOther(_ count: int32) -> any Other { Counter { count } }
+public func makeRoot(_ count: int32) -> any Root { Counter { count } }
+public func makeChild(_ count: int32) -> any Child { Counter { count } }

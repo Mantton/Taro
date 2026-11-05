@@ -1,0 +1,22 @@
+interface Marker {}
+struct Box[T] { value: T }
+conform[T] Box[T] to Marker {}
+class Base[T] { value: T; tags: usize }
+extend[U] Base[Box[U]] {
+    init[Tag, const M: usize](_ value: Box[U], tag: [Tag; M]) { self.value = value; self.tags = M }
+    convenience init[Tag, const M: usize](_ value: Box[U], flags: [Tag; M], enabled: bool = true) {
+        self.init(value, tag: flags)
+        assert(enabled, "generic convenience default")
+    }
+    func get() -> &Box[U] { &self.value }
+}
+class Child[T: Marker, V, const N: usize]: Base[T] { extra: V? = .none; dimension: usize = N }
+final class Grandchild[T: Marker, V, const N: usize]: Child[T, V, N] { stamp: int32 = 17 }
+func construct[T, V](_ value: Box[T]) -> Grandchild[Box[T], V, 3] {
+    Grandchild[Box[T], V, 3](value, flags: [true, false])
+}
+func main() {
+    var value: Grandchild[Box[List[string]], bool, 3] = construct[List[string], bool](Box[List[string]] { value: ["kept", "payload"] })
+    assert(value.get().value[1] == "payload", "noncopyable payload transfers through generic convenience")
+    assert(value.extra.isNone() && value.dimension == 3 && value.tags == 2 && value.stamp == 17, "separate class/source/initializer generic coordinates")
+}

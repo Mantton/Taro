@@ -1,0 +1,30 @@
+interface Readable[T] {
+    func read() -> T
+}
+
+struct Box[T] {
+    value: T
+}
+
+extend[T] Box[T] {
+    static func new(_ value: T) -> Self {
+        Self { value }
+    }
+}
+
+conform[T] Box[T] to Readable[T] {
+    func read() -> T {
+        self.value
+    }
+}
+
+func inspect[T, B: Readable[T]](_ box: &B) -> T {
+    box.read()
+}
+
+func main() {
+    var box: Box[int32] = Box[int32]::new(7)
+    assert(inspect[int32, Box[int32]](&box) == 7, "generic conformance witness")
+    assert(box.read() == 7, "direct conformance witness")
+    print("declaration surface\n")
+}

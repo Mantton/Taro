@@ -93,32 +93,37 @@ between tokens, not line breaks. Strings and f-strings occupy one source line.
 ### Keywords
 
 ```
-any         as          is          break       case        const       continue
-async       await       defer       else        enum        export      extern      false
-for         func        guard       if          impl        import
-in          init        interface   let         loop        match
+any         as          is          break       case        conform     const       continue
+async       await       class       defer                   else        enum        export      extern      false
+final       for         func        guard       if          extend      import
+in          init        interface   loop        match
 mod         mut         namespace   nil         operator    private
-public      readonly    return      static      struct      true
+override    public      readonly    return      static      struct      true
 type        unsafe      var         where       while
 ```
 
 ### Reserved Keywords
 
 ```
-class       final       override    fileprivate protected ref
+fileprivate let protected ref
 ```
+
+`let` is reserved so that its removal can be diagnosed; locals use `var` or
+`:=`.
 
 ### Contextual Keywords
 
-`get` and `set` are interpreted as contextual keywords inside computed-property
-accessor blocks. `move` introduces a move closure, and `some` introduces an
-opaque return type. These words remain valid identifiers in other contexts.
+`get`, `set`, `address`, and `subscript` are contextual accessor/declaration
+keywords. Computed properties support `get`; native subscripts support all three
+accessors. `some` introduces an
+opaque return type. `required`/`convenience` modify initializers. These words
+remain valid identifiers in other contexts; `weak` is an ordinary identifier.
 
 ### Operators and Punctuation
 
 ```ebnf
 <operator>             ::= '+' | '-' | '*' | '/' | '%'
-                         | '='
+                         | '=' | ':='
                          | '&' | '|' | '^' | '~' | '!'
                          | '<' | '>' | '<<' | '>>'
                          | '==' | '!=' | '<=' | '>='
@@ -171,22 +176,41 @@ It does not introduce a module. The following constraints apply:
 <declaration_kind>     ::= <import_declaration>
                          | <export_declaration>
                          | <struct_declaration>
+                         | <class_declaration>
                          | <enum_declaration>
                          | <interface_declaration>
                          | <function_declaration>
                          | <static_variable_declaration>
                          | <constant_declaration>
                          | <type_alias_declaration>
-                         | <impl_declaration>
+                         | <implementation_declaration>
                          | <extern_block>
                          | <extern_function>
                          | <namespace_declaration>
 
-<visibility>           ::= [ 'public' | 'private' ]
+<visibility>           ::= [ 'public' | 'private' | 'internal' ]
 ```
 
-Omitted visibility is public. Declarations, including declarations with bodies,
+Omitted visibility is public, except initializers, which default to package
+visibility. Declarations, including declarations with bodies,
 need a terminating semicolon, which is normally supplied by ASI.
+
+Class declarations represent GC handles with separate object storage. Source
+initialization, inheritance, designated/convenience initializer
+inheritance and virtual method dispatch are supported; a class is never lowered
+as an inline struct. Required initializers and class interface conformances
+are supported. Configuration-disabled declarations are
+removed before availability checks.
+
+```ebnf
+<class_declaration>    ::= [ 'final' ] 'class' <identifier> [ <type_parameters> ]
+                           [ <conformances> ] [ <where_clause> ]
+                           '{' <struct_fields> '}'
+```
+
+Class header types are retained in source order for later base/interface
+classification. Methods and initializers belong in owning-package `extend` blocks; language
+destructors are removed. Use explicit resource close operations or `defer`.
 
 ### Import and Export
 
@@ -196,15 +220,15 @@ need a terminating semicolon, which is normally supplied by ASI.
 
 <use_tree>             ::= <use_tree_path> <use_tree_kind>
 
-<use_tree_path>        ::= <identifier> { '.' <identifier> }
+<use_tree_path>        ::= <identifier> { '::' <identifier> }
 
 <use_tree_kind>        ::= <use_tree_glob>
                          | <use_tree_simple>
                          | <use_tree_nested>
 
-<use_tree_glob>        ::= '.*'
+<use_tree_glob>        ::= '::' '*'
 <use_tree_simple>      ::= [ 'as' <identifier> ]
-<use_tree_nested>      ::= '.{' <use_tree_nested_list> '}'
+<use_tree_nested>      ::= '::' '{' <use_tree_nested_list> '}'
 
 <use_tree_nested_list> ::= <use_tree_nested_item> { ',' <use_tree_nested_item> } [ ',' ]
 <use_tree_nested_item> ::= <identifier> [ 'as' <identifier> ]
@@ -235,10 +259,12 @@ need a terminating semicolon, which is normally supplied by ASI.
 
 <variant>              ::= <identifier> [ <variant_kind> ] [ '=' <expression> ]
 
-<variant_kind>         ::= <tuple_variant>
+<variant_kind>         ::= <tuple_variant> | <named_variant>
+<named_variant>        ::= '{' [ <named_variant_field> { ( ',' | ';' ) <named_variant_field> } [ ',' | ';' ] ] '}'
+<named_variant_field>  ::= [ 'readonly' ] <identifier> ':' <type>
 <tuple_variant>        ::= '(' <tuple_variant_fields> ')'
 <tuple_variant_fields> ::= [ <tuple_field> { ',' <tuple_field> } [ ',' ] ]
-<tuple_field>          ::= <visibility> [ 'readonly' ] [ <label> ] <type>
+<tuple_field>          ::= [ 'readonly' ] [ <label> ] <type>
 ```
 
 ### Interface Declaration
@@ -252,49 +278,73 @@ need a terminating semicolon, which is normally supplied by ASI.
                        ::= { <attribute> } <visibility> <interface_associated_decl_kind> ';'
 
 <interface_associated_decl_kind>
-                       ::= <function_declaration>
+                       ::= { 'final' | 'override' } [ 'static' ] <function_declaration>
+                         | <initializer_declaration>
                          | <constant_declaration>
                          | <type_alias_declaration>
                          | <interface_property_declaration>
+                         | <subscript_requirement>
 
 <interface_property_declaration>
                        ::= 'var' <identifier> ':' <type>
-                           '{' ( <getter_requirement> [ <setter_requirement> ]
-                               | <setter_requirement> <getter_requirement> ) '}'
+                           '{' <getter_requirement> '}'
 
-<getter_requirement>   ::= 'get' '(' <self_parameter> ')' [ 'async' ] [ '->' <type> ] [ <block> ]
+<getter_requirement>   ::= 'get' [ <block> ]
 
-<setter_requirement>   ::= 'set' '(' '&' 'mut' 'self' ',' <identifier> ':' <type> ')'
-                           [ <block> ]
-
-<conformances>         ::= ':' <path_node> { ',' <path_node> }
+<conformances>         ::= ':' <generic_bound> { ',' <generic_bound> }
 ```
 
-### Implementation Declaration
+### Extensions and Conformances
 
 ```ebnf
-<impl_declaration>     ::= 'impl' [ <type_parameters> ] <type> [ 'for' <type> ]
-                           [ <where_clause> ] '{' { <impl_associated_declaration> } '}'
+<implementation_declaration>     ::= ( 'extend' [ <type_parameters> ] <type>
+                           | 'conform' [ <type_parameters> ] <type> 'to' <type> )
+                           [ <where_clause> ] '{' { <implementation_associated_declaration> } '}'
 
-<impl_associated_declaration>
-                       ::= { <attribute> } <visibility> <impl_associated_decl_kind> ';'
+<implementation_associated_declaration>
+                       ::= { <attribute> } <visibility> <implementation_associated_decl_kind> ';'
 
-<impl_associated_decl_kind>
-                       ::= <function_declaration>
+<implementation_associated_decl_kind>
+                       ::= { 'final' | 'override' } [ 'static' ] <function_declaration>
                          | <constant_declaration>
                          | <type_alias_declaration>
                          | <computed_property_declaration>
+                         | <subscript_declaration>
+                         | <initializer_declaration>
 
+<initializer_declaration>
+                       ::= { 'required' | 'convenience' | 'override' } 'init'
+                           [ <type_parameters> ] '(' [ <parameter_list> ] ')'
+                           [ '->' <type> ] [ <where_clause> ] <block>
 <computed_property_declaration>
                        ::= 'var' <identifier> ':' <type>
-                           '{' ( <getter_accessor> [ <setter_accessor> ]
-                               | <setter_accessor> <getter_accessor> ) '}'
+                           '{' <getter_accessor> '}'
 
-<getter_accessor>      ::= 'get' '(' <self_parameter> ')' [ 'async' ] [ '->' <type> ] <block>
+<getter_accessor>      ::= 'get' <block>
 
-<setter_accessor>      ::= 'set' '(' '&' 'mut' 'self' ',' <identifier> ':' <type> ')'
-                           <block>
+<subscript_declaration>::= { 'final' | 'override' } 'subscript'
+                           '(' <index_parameter_list> ')' '->' <type>
+                           '{' { <subscript_accessor> } '}'
+<subscript_requirement>::= 'subscript' '(' <index_parameter_list> ')' '->' <type>
+                           '{' { <subscript_accessor_requirement> } '}'
+<index_parameter_list>::= <index_parameter> { ',' <index_parameter> }
+<index_parameter>      ::= [ <identifier> | '_' ] <identifier> ':' <type>
+<subscript_accessor>   ::= 'get' <block> | 'set' '(' <identifier> ')' <block>
+                         | 'address' <block>
+<subscript_accessor_requirement>
+                       ::= 'get' [ <block> ]
+                         | 'set' | 'set' '(' <identifier> ')' [ <block> ]
+                         | 'address' [ <block> ]
 ```
+
+Native subscript accessors are synchronous and share their declaration's
+implicit receiver. Index parameters have fixed arity, no defaults or variadics,
+and are unlabeled unless an external label is explicitly provided. Accessor
+order is unrestricted; duplicates are rejected. An ordinary declaration must
+provide `get` or `address`. `address` returns a reference to the element and
+supplies omitted get/set bodies; explicit accessors replace their corresponding
+defaults. Read, set and address selection is static. Interface witnesses resolve
+individual accessors, which implementations may override independently.
 
 ### Function Declaration
 
@@ -304,19 +354,21 @@ need a terminating semicolon, which is normally supplied by ASI.
 
 <function_signature>   ::= <function_prototype>
 
-<function_prototype>   ::= '(' [ <function_parameters> ] ')' [ 'async' ] [ '->' <type> ]
+<function_prototype>   ::= '(' [ <parameter_list> ] ')' [ 'async' ] [ '->' <type> ]
 
-<function_parameters>  ::= <function_parameter> { ',' <function_parameter> } [ ',' ]
+<parameter_list>  ::= <function_parameter> { ',' <function_parameter> } [ ',' ]
 
 <function_parameter>   ::= { <attribute> } <parameter_name> ':'
                            <type> [ '...' ] [ '=' <expression> ]
-                         | <self_parameter>
 
 <parameter_name>       ::= <identifier> [ <identifier> ]
                          | '_' [ <identifier> ]
-<self_parameter>       ::= [ '&' [ 'const' | 'mut' ] ] 'self'
 <label>                ::= <identifier> ':'
 ```
+
+Instance functions have an implicit `self` with the declared target type.
+Explicit receiver parameters are rejected in functions and accessors. Computed
+getters are synchronous and use the same target-directed implicit receiver.
 
 Function bodies are required outside interfaces and extern declarations.
 `unsafe` precedes `func`, after visibility. Variadic parameters have `Span[T]`
@@ -329,17 +381,16 @@ standard-library interfaces; see [Operator Overloading](guide/syntax/declaration
 
 ```ebnf
 <static_variable_declaration>
-                       ::= 'static' ( 'let' | 'var' ) <identifier> ':' <type> '=' <expression>
+                       ::= 'static' 'var' <identifier> ':' <type> '=' <expression>
 
-<variable_declaration> ::= ( 'let' | 'var' ) <local_pattern> [ ':' <type> ] [ '=' <expression> ]
+<variable_declaration> ::= 'var' <local_pattern> [ ':' <type> ] [ '=' <expression> ]
+                         | <identifier> ':=' <expression>
 <local_pattern>        ::= <identifier_pattern> | <wildcard_pattern> | <tuple_pattern>
-                         | <reference_pattern>
 
 <constant_declaration> ::= 'const' <identifier> ':' <type> [ '=' <expression> ]
 ```
 
-Local binding patterns must be irrefutable, including nested tuple and
-reference patterns.
+Local binding patterns must be irrefutable, including nested tuple patterns.
 
 ### Type Alias Declaration
 
@@ -432,7 +483,7 @@ reference patterns.
 Const expressions are restricted by constant evaluation (see
 [Constants](guide/syntax/declarations.md#constant-declaration)); general calls
 and runtime values are not constant expressions. Associated bindings use
-`Iterator[Element = int32]`. Function/impl `where` clauses follow the signature
+`Iterator[Element = int32]`. Function/extension/conformance `where` clauses follow the signature
 or target; struct/enum clauses follow conformances. Interface clauses precede
 superinterfaces.
 
@@ -463,7 +514,7 @@ for legacy scalar spelling, generic argument packs, and existential calls.
 
 <pointer_type>         ::= '*' [ 'const' | 'mut' ] <type>
 
-<reference_type>       ::= '&' [ 'const' | 'mut' ] <type>
+<reference_type>       ::= '&' <type>
 
 <tuple_type>           ::= '(' ')'
                          | '(' <type> ',' ')'                /* one-element tuple */
@@ -478,6 +529,7 @@ for legacy scalar spelling, generic argument packs, and existential calls.
 <collection_type_inner>::= <type>                        /* list: [T] */
                          | <type> ':' <type>             /* dict: [K:V] */
                          | <type> ';' <const_expression> /* array: [T;N] */
+                         | <type> ';' '..'               /* Span: [T;..] */
 
 <existential_type>     ::= 'any' <path_node> { '&' <path_node> }
 
@@ -491,19 +543,18 @@ for legacy scalar spelling, generic argument packs, and existential calls.
 <qualified_type>       ::= '(' <type> 'as' <type> ')' '.' <identifier>
 ```
 
-Unqualified `&T` and `*T` are immutable; `const` is an explicit synonym and
-`mut` requests mutable access. `some` is restricted to supported return-type
+`&T` is a writable GC reference; `&mut` and `&const` are rejected.
+Raw pointers retain `*const T` (also `*T`) and `*mut T`. `some` is restricted to supported return-type
 positions. `(T as Interface).Member` selects an associated type explicitly.
 
 ### Path
 
 ```ebnf
-<path>                 ::= <path_segment> { '.' <path_segment> }
+<path>                 ::= <path_segment> { '::' <path_segment> }
 
 <path_segment>         ::= <identifier> [ <type_arguments> ]
                          | <callable_name> <callable_type_arguments>
-<callable_name>        ::= 'Fn' | 'FnMut' | 'FnOnce'
-                         | 'AsyncFn' | 'AsyncFnMut' | 'AsyncFnOnce'
+<callable_name>        ::= 'Fn' | 'AsyncFn'
 
 <path_node>            ::= <path>
 ```
@@ -521,7 +572,6 @@ positions. `(T as Interface).Member` selects an associated type explicitly.
                          | <tuple_pattern>
                          | <path_pattern>
                          | <literal_pattern>
-                         | <reference_pattern>
 
 <wildcard_pattern>     ::= '_'
 
@@ -532,9 +582,12 @@ positions. `(T as Interface).Member` selects an associated type explicitly.
 <tuple_pattern>        ::= '(' [ <pattern_list> ] ')'
 <pattern_list>         ::= <pattern> { ',' <pattern> } [ ',' ]
 
-<path_pattern>         ::= <pattern_path> [ <tuple_pattern> ]
+<path_pattern>         ::= <pattern_path> [ <tuple_pattern> | <named_pattern_fields> ]
+<named_pattern_fields> ::= '{' [ ( <named_pattern_field> { ',' <named_pattern_field> }
+                                 [ ',' '..' ] | '..' ) [ ',' ] ] '}'
+<named_pattern_field>  ::= <identifier> [ ':' <pattern> ]
 
-<pattern_path>         ::= <path>                        /* qualified: Foo.Bar */
+<pattern_path>         ::= <path>                        /* qualified: Foo::Bar */
                          | '.' <identifier>              /* inferred: .Bar */
 
 <match_pattern>        ::= <pattern> { '|' <pattern> }
@@ -542,19 +595,20 @@ positions. `(T as Interface).Member` selects an associated type explicitly.
 <literal_pattern>      ::= <literal>
                          | '-' ( <integer_literal> | <float_literal> )
 
-<reference_pattern>    ::= '&' [ 'const' | 'mut' ] <pattern>
 ```
 
 ---
 
 Or-patterns belong at the top level of match arms. Rest patterns are accepted
-inside tuple and variant-payload patterns. Explicit `&pattern` removes a
-reference layer; it does not itself make inner bindings references. Qualified
-path patterns resolve enum variants, not arbitrary constants. Numeric literal
+inside tuple and variant-payload patterns. Reference patterns are removed.
+Structural match/if-case patterns automatically dereference reference targets;
+plain identifier bindings copy references as values. Explicit `*` remains
+available, and all bindings are writable value copies. Qualified path
+patterns resolve enum variants, not arbitrary constants. Numeric literal
 patterns may have a leading minus sign, and integer patterns must fit their
 type. Arbitrary expressions and f-strings with interpolation are rejected;
-use a guard for those comparisons. Local reference bindings are described in
-[Reference Pattern](guide/syntax/patterns.md#reference-pattern).
+use a guard for those comparisons. See
+[Value Bindings and References](guide/syntax/patterns.md#value-bindings-and-references).
 
 ## Statements
 
@@ -592,7 +646,7 @@ use a guard for those comparisons. Local reference bindings are described in
 
 <continue_statement>   ::= 'continue' [ <identifier> ]
 
-<defer_statement>      ::= 'defer' <block>
+<defer_statement>      ::= 'defer' ( <block> | <expression> )
 
 <guard_statement>      ::= 'guard' <expression> 'else' <block>
 
@@ -670,14 +724,16 @@ are boolean; binding conditions produce a boolean and introduce bindings.
 <prefix_expression>    ::= <prefix_op> <prefix_expression>
                          | <postfix_expression>
 
-<prefix_op>            ::= '!' | '-' | '~' | '&' [ 'const' | 'mut' ] | '*'
+<prefix_op>            ::= '!' | '-' | '~' | '&' | '*'
 
 <postfix_expression>   ::= <primary_expression> { <postfix_op> }
 
-<postfix_op>           ::= '.' <identifier>                  /* member access */
+<postfix_op>           ::= '.' <identifier>                  /* instance member access */
+                         | '::' <identifier>                 /* namespace/type member */
                          | '.' <integer_literal>             /* tuple access */
                          | '(' <argument_list> ')'           /* call */
                          | '[' <type_argument_list> ']'      /* specialization */
+                         | '[' <argument> { ',' <argument> } [ ',' ] ']' /* native indexing */
                          | '!'                               /* Optional/Result propagation */
                          | '?.' <identifier>                 /* optional chain */
 
@@ -686,11 +742,12 @@ are boolean; binding conditions produce a boolean and introduce bindings.
 <argument>             ::= [ <label> ] <pipe_expression>
 ```
 
-Postfix `!` propagates only `Optional[T]` and `Result[T, E]`. `await` remains a
-keyword that consumes the following expression, so propagation of an awaited
-value is written as `(await expr)!`. Likewise use `(await expr) + value` to
-operate on the result. Assignments do not chain without explicit grouping.
-Nil coalescing is right-associative.
+Postfix `!` propagates only `Optional[T]` and `Result[T, E]`. `await` scopes the
+following expression: each resolved async call suspends before its result is
+used. Thus `await expr!`, `await operation() + value`, and chained calls are
+valid; parentheses may still narrow the scope. Closure bodies require their
+own markers. Assignments do not chain without explicit grouping. Nil coalescing
+is right-associative.
 
 ### Primary Expressions
 
@@ -763,13 +820,12 @@ Repeat literals require a compile-time count and construct fixed-size arrays.
 ### Closure Expression
 
 ```ebnf
-<closure_expression>   ::= [ 'move' ] <closure_params>
-                           ( 'async' [ '->' <type> ] <block>
-                           | '->' <type> 'async' <block>
-                           | [ '->' <type> ] <closure_body> )
+<closure_expression>   ::= <closure_params>
+                           ( 'async' [ '->' <type> ] '=>' <block>
+                           | '->' <type> 'async' '=>' <block>
+                           | [ '->' <type> ] '=>' <closure_body> )
 
-<closure_params>       ::= '|' [ <closure_param_list> ] '|'
-                         | '||'
+<closure_params>       ::= '(' [ <closure_param_list> ] ')'
 
 <closure_param_list>   ::= <closure_param> { ',' <closure_param> } [ ',' ]
 
@@ -782,13 +838,21 @@ Repeat literals require a compile-time count and construct fixed-size arrays.
 ### Struct Literal
 
 ```ebnf
-<struct_literal>       ::= <path> '{' [ <field_init_list> ] '}'
+<struct_literal>       ::= <pattern_path> '{' [ <field_init_list> ] '}'
 
-<field_init_list>      ::= <field_init> { ',' <field_init> } [ ',' ]
-
-<field_init>           ::= [ <label> ] <expression>
-                         | <identifier>   /* shorthand: foo instead of foo: foo */
+<field_init_list>      ::= <field_init> { ',' <field_init> } [ ',' <update_base> ] [ ',' ]
+                         | <update_base> [ ',' ]
+<field_init>           ::= <identifier> [ ':' <expression> ]
+<update_base>          ::= '..' <expression>
 ```
+
+Struct-style enum variants use named brace fields and patterns; tuple variants
+use positional patterns. Enum payload fields inherit variant visibility and
+reject field visibility modifiers. Update bases are allowed only for structs
+without `init`; classes and enum variants reject updates. Explicit fields run
+in written order before one evaluation of the exact-typed base. A redundant base
+warns and still evaluates. See the
+[expression guide](guide/syntax/expressions.md#struct-and-named-variant-literals).
 
 Bare struct literals are restricted in `if`/`while`/`guard` conditions,
 `for` iterators/filters, and `match` scrutinees. Parentheses, call arguments,
@@ -799,9 +863,10 @@ after the closing delimiter.
 ### Binding Conditions
 
 ```ebnf
-<binding_condition>    ::= 'case' <pattern> '=' <expression>
-                         | 'let' <identifier> '=' <expression>
-                         | 'let' <identifier>   /* shorthand optional binding */
+<binding_condition>    ::= 'case' [ 'var' ] <pattern> '=' <binding_initializer>
+                         | 'var' <identifier> [ '=' <binding_initializer> ]
+
+<binding_initializer>  ::= <expression> /* excluding unparenthesized outer && and || */
 ```
 
 ---
@@ -864,8 +929,7 @@ error. The comment grammar operates after CRLF normalization.
 
 ## Reserved for Future
 
-The following are reserved for future use:
-- `class`, `final`, `override`
+The following remain reserved for future use:
 - `ref`
 - `fileprivate`, `protected`
 
@@ -943,13 +1007,13 @@ foo(
 
 More examples:
 ```
-let arr = [
+arr := [
     1,          // comma required
     2,          // comma required
     3,          // comma required before closing delimiter on next line
 ]
 
-let user = User {
+user := User {
     id: 1,          // comma required
     name: "John",   // comma required before closing delimiter on next line
 }
@@ -980,9 +1044,52 @@ heads. Bare literals are disallowed there; enclosing delimiters remove the
 ambiguity:
 ```
 if condition { ... }           // block, not struct literal
-let x = Foo { field: value }   // struct literal OK here
+x := Foo { field: value }   // struct literal OK here
 if (Flag { enabled: true }).enabled { } // parentheses distinguish the literal
 ```
 
 Keep `else` on the same line as the preceding `}`. It does not suppress ASI.
 An `if` without `else` has unit type; it does not implicitly produce an optional.
+
+Instance functions use an implicit `self` of exactly their declared target
+type: `extend T` copies a value receiver, while `extend &T` receives a reference.
+Explicit receiver parameters are rejected. Use `static func` for receiver-free
+associated functions, including interface requirements. Free and namespace
+functions are receiver-free without `static`.
+
+Local `name := expression` creates a new mutable binding with an inferred type.
+It cannot carry a type annotation and does not update an earlier binding of
+the same name; use assignment for updates. It is unavailable in declaration
+scopes outside function/block bodies and in conditions.
+
+Binding conditions are valid directly in the condition or as unparenthesized
+positive `&&` conjuncts. Each
+binding is visible to subsequent conjuncts and the successful body (or after
+a successful guard). Bindings under `||`, negation, or ordinary call arguments
+are rejected. Nested closure and block bodies establish their own contexts.
+`var` makes an optional binding. All case bindings are writable, with or
+without the optional `var` spelling.
+
+Initializer signatures have no explicit receiver or result type, and
+initializers cannot be async. `required` and `convenience` are
+contextual modifiers; they remain valid identifiers outside declaration prefixes.
+`final`/`override` on ordinary methods require instance functions; static functions
+cannot use those modifiers. Repeated modifiers are rejected.
+
+Fields support synchronous `= expression` defaults. Defaults and initializers
+establish every field before use. References to self fields, whole-self escape
+and instance calls are rejected during construction. `readonly` prevents direct
+field assignment after construction; it does not freeze a shared referent.
+Use `std::weak::Weak[T]` for explicit weak references; `weak var`, weak fields
+and `deinit` are removed.
+
+### Removed capability markers
+
+Every value copies and every type may escape, so the `Copy`, `NoCopy`,
+`Sendable` and `Escapable` markers and `!Bound` relaxations no longer exist.
+`@NoCopy` is a separate, no-argument type declaration attribute for advisory
+`taro vet` checks; it is not a type, field or ownership bound.
+
+`internal` is a visibility modifier for declarations and stored fields. It allows
+access from the defining package, including sibling modules; `private` retains
+its narrower owner/owned-extension boundary.

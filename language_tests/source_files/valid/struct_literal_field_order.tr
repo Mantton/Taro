@@ -1,11 +1,11 @@
 // Struct literal field positions remain independent of member-read positions.
 
-struct Pair: Copy {
+struct Pair {
     a: int64
     b: int64
 }
 
-struct Triple: Copy {
+struct Triple {
     x: int64
     y: int64
     z: int64
@@ -25,18 +25,18 @@ func reorderedLiteral(_ input: Pair) -> Pair {
 }
 
 func main() {
-    let value = Pair { a: 1, b: 1000 }
+    value := Pair { a: 1, b: 1000 }
 
-    let other = swapped(value)
+    other := swapped(value)
     assert(other.a == 1000, "field a should hold the old field b")
     assert(other.b == 1, "field b should hold the old field a")
 
-    let same = reorderedLiteral(value)
+    same := reorderedLiteral(value)
     assert(same.a == 1, "field a should be preserved")
     assert(same.b == 1000, "field b should be preserved")
 
-    let triple = Triple { x: 10, y: 20, z: 30 }
-    let turned = rotated(triple)
+    triple := Triple { x: 10, y: 20, z: 30 }
+    turned := rotated(triple)
     assert(turned.x == 30, "field x should hold the old field z")
     assert(turned.y == 10, "field y should hold the old field x")
     assert(turned.z == 20, "field z should hold the old field y")

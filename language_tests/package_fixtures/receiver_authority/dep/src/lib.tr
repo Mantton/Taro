@@ -1,0 +1,10 @@
+public interface Inspect { func inspect() -> int32; }
+public interface Project { func project() -> &int32; }
+public struct Counter { value: int32 }
+conform Counter to Inspect {
+    func inspect() -> int32 { self.value }
+}
+conform Counter to Project {
+    func project() -> &int32 { &self.value }
+}
+public func counter(_ value: int32) -> Counter { Counter { value } }

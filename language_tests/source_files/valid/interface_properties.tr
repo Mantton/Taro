@@ -1,287 +1,79 @@
-interface NamedProperty {
-    var name: string {
-        get(&self)
-    };
+interface NamedProperty { var name: string { get }; }
+interface CountedProperty { var count: int32 { get }; }
+interface ValuedProperty { var value: int32 { get }; }
+interface FirstScopedValue { var scoped: int32 { get }; }
+interface SecondScopedValue { var scoped: int32 { get }; }
+interface OwnedItemsProperty { var items: std::collections::List[int32] { get }; }
+interface DefaultValueProperty { var value: int32 { get { 41 } }; }
+struct PropertyUser { name: string }
+conform PropertyUser to NamedProperty {}
+struct PropertyCounter { count: int32 }
+conform PropertyCounter to CountedProperty {}
+struct ComputedPropertyValue { storage: int32 }
+extend ComputedPropertyValue { var value: int32 { get { self.storage * 2 } }; }
+conform ComputedPropertyValue to ValuedProperty {}
+struct ScopedPropertyValue { first: int32; second: int32 }
+conform ScopedPropertyValue to FirstScopedValue { var scoped: int32 { get { self.first } }; }
+conform ScopedPropertyValue to SecondScopedValue { var scoped: int32 { get { self.second } }; }
+struct PropertyItemBag { storage: std::collections::List[int32] }
+conform PropertyItemBag to OwnedItemsProperty {
+    var items: std::collections::List[int32] { get { self.storage.clone() } };
 }
-
-interface CountedProperty {
-    var count: int32 {
-        get(&self)
-        set(&mut self, value: int32)
-    };
-}
-
-interface ValuedProperty {
-    var value: int32 {
-        get(&self)
-    };
-}
-
-interface AsyncValuedProperty {
-    var value: int32 {
-        get(&self) async
-    };
-}
-
-interface FirstScopedValue {
-    var scoped: int32 {
-        get(&self)
-    };
-}
-
-interface SecondScopedValue {
-    var scoped: int32 {
-        get(&self)
-    };
-}
-
-interface OwnedItemsProperty {
-    var items: std.collections.List[int32] {
-        get(self)
-    };
-}
-
-interface DefaultValueProperty {
-    var value: int32 {
-        get(&self) {
-            41
-        }
-
-        set(&mut self, value: int32) {
-        }
-    };
-}
-
-struct PropertyUser {
-    name: string
-}
-
-impl NamedProperty for PropertyUser {}
-
-struct PropertyCounter {
-    count: int32
-}
-
-impl CountedProperty for PropertyCounter {}
-
-struct ComputedPropertyValue {
-    storage: int32
-}
-
-impl ComputedPropertyValue {
-    var value: int32 {
-        get(&self) {
-            self.storage * 2
-        }
-
-        set(&mut self, value: int32) {
-            self.storage = value / 2
-        }
-    };
-}
-
-impl ValuedProperty for ComputedPropertyValue {}
-
-struct AsyncPropertyValue {
-    storage: int32
-}
-
-impl AsyncPropertyValue {
-    var value: int32 {
-        get(&self) async {
-            self.storage
-        }
-    };
-}
-
-impl AsyncValuedProperty for AsyncPropertyValue {}
-
-struct ScopedPropertyValue {
-    first: int32
-    second: int32
-}
-
-impl FirstScopedValue for ScopedPropertyValue {
-    var scoped: int32 {
-        get(&self) {
-            self.first
-        }
-    };
-}
-
-impl SecondScopedValue for ScopedPropertyValue {
-    var scoped: int32 {
-        get(&self) {
-            self.second
-        }
-    };
-}
-
-struct PropertyItemBag {
-    items: std.collections.List[int32]
-}
-
-impl OwnedItemsProperty for PropertyItemBag {}
-
 struct DefaultPropertyValue {}
-
-impl DefaultValueProperty for DefaultPropertyValue {}
-
+conform DefaultPropertyValue to DefaultValueProperty {}
 struct ExplicitDefaultPropertyOverride {}
-
-impl DefaultValueProperty for ExplicitDefaultPropertyOverride {
-    var value: int32 {
-        get(&self) {
-            73
-        }
-    };
-}
-
+conform ExplicitDefaultPropertyOverride to DefaultValueProperty { var value: int32 { get { 73 } }; }
 struct InherentDefaultPropertyOverride {}
-
-impl InherentDefaultPropertyOverride {
-    var value: int32 {
-        get(&self) {
-            89
-        }
-    };
-}
-
-impl DefaultValueProperty for InherentDefaultPropertyOverride {}
-
-struct FieldDefaultPropertyOverride {
-    value: int32
-}
-
-impl DefaultValueProperty for FieldDefaultPropertyOverride {}
-
-struct ExplicitPropertyValue {
-    storage: int32
-}
-
-struct ForwardedFieldValue {
-    value: int32
-}
-
-impl ValuedProperty for ForwardedFieldValue {
-    var value: int32 {
-        get(&self) {
-            self.value
-        }
-    };
-}
-
-impl ValuedProperty for ExplicitPropertyValue {
-    var value: int32 {
-        get(&self) {
-            self.storage + 1
-        }
-    };
-}
-
-func genericName[T: NamedProperty](_ value: &T) -> string {
-    value.name
-}
-
-func genericIncrement[T: CountedProperty](_ value: &mut T) {
-    value.count += 1
-}
-
-func genericSet[T: CountedProperty](_ value: &mut T, _ count: int32) {
-    value.count = count
-}
-
-func genericAsyncValue[T: AsyncValuedProperty](_ value: &T) async -> int32 {
-    await value.value
-}
-
-func takeItems[T: OwnedItemsProperty](_ value: T) -> std.collections.List[int32] {
-    value.items
-}
-
-func genericDefaultValue[T: DefaultValueProperty](_ value: &T) -> int32 {
-    value.value
-}
-
-func setDefaultValue[T: DefaultValueProperty](_ value: &mut T, _ newValue: int32) {
-    value.value = newValue
-}
-
-func main() async {
-    let user = PropertyUser { name: "Taro" }
-    assert(genericName(&user) == "Taro", "generic field-backed getter")
-    assert(NamedProperty.name(&user) == "Taro", "UFCS property getter")
-
-    let erasedUser: any NamedProperty = user
-    assert(erasedUser.name == "Taro", "existential field-backed getter")
-
-    var counter = PropertyCounter { count: 4 }
-    CountedProperty.count(&mut counter, value: 7)
-    assert(counter.count == 7, "UFCS property setter")
-    genericSet(&mut counter, 8)
-    assert(counter.count == 8, "generic field-backed assignment")
-    genericIncrement(&mut counter)
-    assert(counter.count == 9, "generic field-backed setter")
-
+extend InherentDefaultPropertyOverride { var value: int32 { get { 89 } }; }
+conform InherentDefaultPropertyOverride to DefaultValueProperty {}
+struct FieldDefaultPropertyOverride { value: int32 }
+conform FieldDefaultPropertyOverride to DefaultValueProperty {}
+struct ForwardedFieldValue { value: int32 }
+conform ForwardedFieldValue to ValuedProperty { var value: int32 { get { self.value } }; }
+struct ExplicitPropertyValue { storage: int32 }
+conform ExplicitPropertyValue to ValuedProperty { var value: int32 { get { self.storage + 1 } }; }
+func genericName[T: NamedProperty](_ value: &T) -> string { value.name }
+func genericCount[T: CountedProperty](_ value: &T) -> int32 { value.count }
+func genericItems[T: OwnedItemsProperty](_ value: &T) -> std::collections::List[int32] { value.items }
+func genericDefaultValue[T: DefaultValueProperty](_ value: &T) -> int32 { value.value }
+func main() {
+    var user: PropertyUser = PropertyUser { name: "Taro" }
+    assert(genericName(&user) == "Taro", "generic stored-field getter")
+    assert(NamedProperty::name(user) == "Taro", "UFCS property getter")
+    var erasedUser: any NamedProperty = user
+    assert(erasedUser.name == "Taro", "erased stored-field getter")
+    var counter: PropertyCounter = PropertyCounter { count: 4 }
+    assert(genericCount(&counter) == 4, "generic scalar getter")
     var erasedCounter: any CountedProperty = counter
-    erasedCounter.count = 9
-    assert(erasedCounter.count == 9, "existential field-backed setter")
-
-    let computed = ComputedPropertyValue { storage: 6 }
-    let erasedComputed: any ValuedProperty = computed
+    assert(erasedCounter.count == 4, "erased scalar getter")
+    var computed: ComputedPropertyValue = ComputedPropertyValue { storage: 6 }
+    var erasedComputed: any ValuedProperty = computed
     assert(erasedComputed.value == 12, "inherent computed-property witness")
-
-    let asyncValue = AsyncPropertyValue { storage: 13 }
-    let directAsyncValue = await asyncValue.value
-    assert(directAsyncValue == 13, "inherent async property")
-    let genericAsyncResult = await genericAsyncValue(&asyncValue)
-    assert(genericAsyncResult == 13, "generic async property witness")
-    let erasedAsync: any AsyncValuedProperty = asyncValue
-    let erasedAsyncValue = await erasedAsync.value
-    assert(erasedAsyncValue == 13, "existential async property witness")
-
-    let explicit = ExplicitPropertyValue { storage: 10 }
-    let erasedExplicit: any ValuedProperty = explicit
+    var explicit: ExplicitPropertyValue = ExplicitPropertyValue { storage: 10 }
+    var erasedExplicit: any ValuedProperty = explicit
     assert(erasedExplicit.value == 11, "explicit property witness")
-
-    let forwarded = ForwardedFieldValue { value: 17 }
-    let erasedForwarded: any ValuedProperty = forwarded
-    assert(erasedForwarded.value == 17, "explicit field-forwarding property witness")
-
-    let scoped = ScopedPropertyValue { first: 21, second: 34 }
-    assert(FirstScopedValue.scoped(&scoped) == 21, "first scoped property")
-    assert(SecondScopedValue.scoped(&scoped) == 34, "second scoped property")
-
-    var items: std.collections.List[int32] = std.collections.List()
+    var forwarded: ForwardedFieldValue = ForwardedFieldValue { value: 17 }
+    var erasedForwarded: any ValuedProperty = forwarded
+    assert(erasedForwarded.value == 17, "explicit field-forwarding property")
+    var scoped: ScopedPropertyValue = ScopedPropertyValue { first: 21, second: 34 }
+    assert(FirstScopedValue::scoped(scoped) == 21, "first interface's property")
+    assert(SecondScopedValue::scoped(scoped) == 34, "second interface's property")
+    var items: std::collections::List[int32] = std::collections::List::new()
     items.append(55)
-    let takenItems = takeItems(PropertyItemBag { items })
-    assert(takenItems.len() == 1, "consuming stored-field property witness")
-
-    let defaultValue = DefaultPropertyValue {}
-    assert(genericDefaultValue(&defaultValue) == 41, "default property getter")
-    let erasedDefaultValue: any DefaultValueProperty = defaultValue
-    assert(erasedDefaultValue.value == 41, "existential default property getter")
-
-    var explicitDefaultOverride = ExplicitDefaultPropertyOverride {}
-    setDefaultValue(&mut explicitDefaultOverride, 100)
-    assert(
-        genericDefaultValue(&explicitDefaultOverride) == 73,
-        "explicit getter with default setter",
-    )
-
-    var inherentDefaultOverride = InherentDefaultPropertyOverride {}
-    setDefaultValue(&mut inherentDefaultOverride, 100)
-    assert(
-        genericDefaultValue(&inherentDefaultOverride) == 89,
-        "inherent getter with default setter",
-    )
-
-    var fieldDefaultOverride = FieldDefaultPropertyOverride { value: 5 }
-    setDefaultValue(&mut fieldDefaultOverride, 8)
-    assert(
-        genericDefaultValue(&fieldDefaultOverride) == 8,
-        "stored field overrides default accessors",
-    )
-
-    std.print("PASS: interface properties\n")
+    var bag: PropertyItemBag = PropertyItemBag { storage: items }
+    var first = genericItems(&bag)
+    first.append(89)
+    second := genericItems(&bag)
+    assert(first.len() == 2 && second.len() == 1 && bag.storage.len() == 1, "owned NoCopy results explicitly cloned")
+    var defaultValue: DefaultPropertyValue = DefaultPropertyValue {}
+    assert(genericDefaultValue(&defaultValue) == 41, "default getter")
+    var erasedDefault: any DefaultValueProperty = defaultValue
+    assert(erasedDefault.value == 41, "erased default getter")
+    var explicitOverride: ExplicitDefaultPropertyOverride = ExplicitDefaultPropertyOverride {}
+    assert(genericDefaultValue(&explicitOverride) == 73, "explicit overrides default")
+    var inherentOverride: InherentDefaultPropertyOverride = InherentDefaultPropertyOverride {}
+    assert(genericDefaultValue(&inherentOverride) == 89, "inherent overrides default")
+    var fieldOverride: FieldDefaultPropertyOverride = FieldDefaultPropertyOverride { value: 5 }
+    assert(genericDefaultValue(&fieldOverride) == 5, "stored Copy field overrides default")
+    std::print("PASS: interface properties\n")
 }

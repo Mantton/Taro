@@ -1,0 +1,4 @@
+error: a readonly field can only be initialized once
+ -> language_tests/source_files/invalid/value_init_readonly_twice.tr:2:42
+	extend Counter { init() { self.first = 1; self.first = 2; self.second = 3 } }
+	                                          ^^^^^^^^^^^^^^

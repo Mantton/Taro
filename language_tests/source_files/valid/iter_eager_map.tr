@@ -1,0 +1,6 @@
+func main() {
+    var calls: int32 = 0
+    var values: List[int32] = [1, 2]
+    result := std::iter::map(values, (value: int32) => { calls += 1; value * 2 })
+    assert(calls == 2, "ordinary map executes eagerly")
+}

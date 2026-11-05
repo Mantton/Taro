@@ -1,0 +1,4 @@
+error: use of uninitialized value 'self'
+ -> language_tests/source_files/invalid/value_init_read_before_init.tr:2:34
+	extend Counter { init() { seen := self.first; self.first = 1; self.second = 2 } }
+	                                  ^^^^^^^^^^

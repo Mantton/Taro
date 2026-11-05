@@ -1,31 +1,13 @@
-/// Callable interfaces for closures and function-like types.
-
-@lang("FnOnce")
-public interface FnOnce[Args: Tuple, Output] {
-    func callOnce(self, args: Args) -> Output
-}
-
-@lang("FnMut")
-public interface FnMut[Args: Tuple, Output]: FnOnce[Args, Output] {
-    func callMut(&mut self, args: Args) -> Output
-}
-
+/// Repeatable calls over a persistent environment. Closure literals share
+/// captured variables; callers synchronize concurrent access when necessary.
 @lang("Fn")
-public interface Fn[Args: Tuple, Output]: FnMut[Args, Output] {
-    func call(&self, args: Args) -> Output
+public interface Fn[Args: Tuple, Output] {
+    func call(args: Args) -> Output
 }
 
-@lang("AsyncFnOnce")
-public interface AsyncFnOnce[Args: Tuple, Output] {
-    func callOnce(self, args: Args) async -> Output
-}
-
-@lang("AsyncFnMut")
-public interface AsyncFnMut[Args: Tuple, Output]: AsyncFnOnce[Args, Output] {
-    func callMut(&mut self, args: Args) async -> Output
-}
-
+/// Each invocation creates a new future over the same environment. Calls may
+/// overlap; completion of one call does not consume the callable.
 @lang("AsyncFn")
-public interface AsyncFn[Args: Tuple, Output]: AsyncFnMut[Args, Output] {
-    func call(&self, args: Args) async -> Output
+public interface AsyncFn[Args: Tuple, Output] {
+    func call(args: Args) async -> Output
 }

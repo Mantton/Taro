@@ -1,21 +1,28 @@
-struct AsyncEscapeRefNode {
-    value: &int64
-    next: Optional[&AsyncEscapeRefNode]
+// Owned ARC links coexist with private caller borrows across suspension.
+final class AsyncEscapeRefNode {
+    value: int64
+    next: Optional[AsyncEscapeRefNode]
 }
 
-func buildAsyncEscapeRefChain() async -> Optional[&AsyncEscapeRefNode] {
-    var head: Optional[&AsyncEscapeRefNode] = .none
+extend AsyncEscapeRefNode {
+    init(_ value: int64, _ next: Self?) { self.value = value; self.next = next }
+}
+
+func buildAsyncEscapeRefChain() async -> Optional[AsyncEscapeRefNode] {
+    var head: Optional[AsyncEscapeRefNode] = .none
     var i = 0 as int64
     while i < 3 {
         var value = i
-        let node = AsyncEscapeRefNode { value: &value, next: head }
-        head = .some(&node)
+        var borrowed: &int64 = &value
+        var node: AsyncEscapeRefNode = AsyncEscapeRefNode(value, head)
+        head = .some(node)
 
         // Keep the address-taken Copy binding live across suspension so async
         // lowering places it in the coroutine frame.
-        await std.testing.yieldNow()
+        await std::testing::yieldNow()
+        assert(*borrowed == i, "private local borrow survives suspension")
         if value > 100 {
-            std.printf("unreachable %v\n", value)
+            std::printf("unreachable %v\n", value)
         }
         i += 1
     }
@@ -25,11 +32,11 @@ func buildAsyncEscapeRefChain() async -> Optional[&AsyncEscapeRefNode] {
 func main() async {
     var cursor = await buildAsyncEscapeRefChain()
     var steps = 0 as int64
-    std.printf("async:")
+    std::printf("async:")
     while steps < 5 {
         match cursor {
             case .some(node) => {
-                std.printf(" %v", *node.value)
+                std::printf(" %v", node.value)
                 cursor = node.next
             }
             case .none => break
@@ -38,7 +45,7 @@ func main() async {
     }
 
     match cursor {
-        case .none => std.printf(" end\n")
-        case .some(_) => std.printf(" cycle\n")
+        case .none => std::printf(" end\n")
+        case .some(_) => std::printf(" cycle\n")
     }
 }

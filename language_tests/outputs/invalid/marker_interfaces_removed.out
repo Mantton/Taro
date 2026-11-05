@@ -1,0 +1,12 @@
+error: `Copy` was removed; every value copies, so delete this bound or conformance
+ -> language_tests/source_files/invalid/marker_interfaces_removed.tr:2:14
+	struct Point: Copy { x: int32 }
+	              ^^^^
+error: `Sendable` was removed; values may cross tasks freely, so delete this bound or conformance
+ -> language_tests/source_files/invalid/marker_interfaces_removed.tr:4:14
+	func share[T: Sendable](_ value: T) -> T { value }
+	              ^^^^^^^^
+error: `Escapable` was removed; every type is escapable, so delete this bound
+ -> language_tests/source_files/invalid/marker_interfaces_removed.tr:6:52
+	func keep[T](_ value: T) -> T where T: std::marker::Escapable { value }
+	                                                    ^^^^^^^^^

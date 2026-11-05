@@ -1,5 +1,5 @@
 use super::*;
-use crate::sema::models::AliasKind;
+use crate::sema::{models::AliasKind, tycheck::solve::LiteralConstructor};
 
 impl<'ctx> Checker<'ctx> {
     pub(super) fn add_type_constraints(&self, ty: Ty<'ctx>, span: Span, cs: &mut Cs<'ctx>) {
@@ -22,7 +22,7 @@ impl<'ctx> Checker<'ctx> {
             }
             TyKind::BoxedExistential { interfaces } => {
                 for iface in interfaces.iter() {
-                    cs.add_constraints_for_def(iface.id, Some(iface.arguments), span);
+                    cs.add_constraints_for_existential(*iface, span);
                 }
             }
             TyKind::Array { element, .. } => self.add_type_constraints(element, span, cs),
@@ -31,10 +31,10 @@ impl<'ctx> Checker<'ctx> {
                     self.add_type_constraints(*item, span, cs);
                 }
             }
-            TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => {
+            TyKind::Pointer(inner, _) | TyKind::Reference(inner) => {
                 self.add_type_constraints(inner, span, cs);
             }
-            TyKind::FnPointer { inputs, output } => {
+            TyKind::FnPointer { inputs, output, .. } => {
                 for input in inputs.iter() {
                     self.add_type_constraints(*input, span, cs);
                 }
@@ -50,6 +50,17 @@ impl<'ctx> Checker<'ctx> {
         expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
+        self.expression_contexts
+            .borrow_mut()
+            .insert(node.id, (node.span, self.unsafe_depth.get() > 0));
+        if let Some(ty) = self
+            .prechecked_bracket_receivers
+            .borrow()
+            .get(&node.id)
+            .copied()
+        {
+            return ty;
+        }
         let ty = self.synth_expression_kind(node, expectation, cs);
         cs.record_expr_ty(node.id, ty);
         // self.gcx().dcx().emit_info(
@@ -70,7 +81,43 @@ impl<'ctx> Checker<'ctx> {
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         match &expression.kind {
+            hir::ExpressionKind::MemberBrackets {
+                member,
+                type_arguments,
+                indexed,
+                diagnostics,
+            } => self.synth_member_brackets(
+                expression,
+                member,
+                type_arguments,
+                indexed.as_deref(),
+                diagnostics,
+                expectation,
+                cs,
+            ),
+            hir::ExpressionKind::Index {
+                target,
+                index,
+                nodes,
+            } => self.synth_index(expression, target, index, *nodes, cs),
             hir::ExpressionKind::Literal(node) => {
+                if matches!(node, hir::Literal::Nil) {
+                    // Nil has no standalone runtime type. Infer its nullable
+                    // target separately and materialize it at this literal,
+                    // preserving effects in surrounding blocks and branches.
+                    let target =
+                        expectation.unwrap_or_else(|| cs.infer_cx.next_ty_var(expression.span));
+                    let from = cs.infer_cx.next_nil_var();
+                    cs.add_goal(
+                        Goal::Coerce {
+                            node_id: expression.id,
+                            from,
+                            to: target,
+                        },
+                        expression.span,
+                    );
+                    return target;
+                }
                 if let hir::Literal::Integer { value, .. } = node {
                     cs.record_integer_literal(expression.id, *value);
                 }
@@ -127,17 +174,25 @@ impl<'ctx> Checker<'ctx> {
                 self.check_continue(expression.span);
                 Ty::new(TyKind::Never, self.gcx())
             }
-            hir::ExpressionKind::Reference(inner, mutability) => {
+            hir::ExpressionKind::Reference(inner) => {
                 let inner_ty = self.synth_with_expectation(inner, None, cs);
                 if inner_ty.is_error() {
                     return Ty::error(self.gcx());
                 }
-                if *mutability == hir::Mutability::Mutable {
-                    if !self.require_mut_borrow(inner, cs) {
-                        return Ty::error(self.gcx());
-                    }
+                if matches!(
+                    inner.kind,
+                    hir::ExpressionKind::Member { .. }
+                        | hir::ExpressionKind::Dereference(_)
+                        | hir::ExpressionKind::TupleAccess(..)
+                ) {
+                    cs.without_fallbacks(|cs| cs.solve_intermediate());
                 }
-                Ty::new(TyKind::Reference(inner_ty, *mutability), self.gcx())
+                if !self.require_reference_place(inner, cs) {
+                    return Ty::error(self.gcx());
+                }
+                self.receiver_is_addressable(inner, cs);
+                self.index_place_requests.borrow_mut().insert(inner.id);
+                Ty::new(TyKind::Reference(inner_ty), self.gcx())
             }
             hir::ExpressionKind::Dereference(inner) => {
                 let ptr_ty = self.synth_with_expectation(inner, None, cs);
@@ -145,10 +200,14 @@ impl<'ctx> Checker<'ctx> {
                     return Ty::error(self.gcx());
                 }
                 let result_ty = cs.infer_cx.next_ty_var(expression.span);
+                let receiver_addressable = self.receiver_is_addressable(inner, cs);
 
                 cs.add_goal(
                     Goal::Deref(DerefGoalData {
+                        operand_node: inner.id,
+                        receiver_addressable,
                         operand_ty: ptr_ty,
+                        is_unsafe_context: self.unsafe_depth.get() > 0,
                         result_ty,
                         span: expression.span,
                     }),
@@ -173,14 +232,12 @@ impl<'ctx> Checker<'ctx> {
                 self.synth_assign_expression(expression, lhs, rhs, cs)
             }
             hir::ExpressionKind::CastAs(value, ty) => {
-                self.synth_cast_expression(expression, value, ty, expectation, cs)
+                self.synth_cast_expression(expression, value, ty, cs)
             }
             hir::ExpressionKind::CastAsTry(value, ty) => {
-                self.synth_try_cast_expression(expression, value, ty, expectation, cs)
+                self.synth_try_cast_expression(value, ty, cs)
             }
-            hir::ExpressionKind::TypeIs(value, ty) => {
-                self.synth_type_is_expression(expression, value, ty, expectation, cs)
-            }
+            hir::ExpressionKind::TypeIs(value, ty) => self.synth_type_is_expression(value, ty, cs),
             hir::ExpressionKind::PatternBinding(condition) => {
                 self.synth_pattern_binding_expression(expression, condition, cs)
             }
@@ -194,13 +251,13 @@ impl<'ctx> Checker<'ctx> {
                 self.synth_propagate_expression(expression, inner, cs)
             }
             hir::ExpressionKind::StructLiteral(lit) => {
-                self.synth_struct_literal(expression, lit, cs)
+                self.synth_struct_literal(expression, lit, expectation, cs)
             }
             hir::ExpressionKind::Closure(closure) => {
                 self.synth_closure_expression(expression, closure, expectation, cs)
             }
             hir::ExpressionKind::Await(inner) => {
-                self.synth_await_expression(inner, expression.span, cs)
+                self.synth_await_expression(inner, expression.span, expectation, cs)
             }
             hir::ExpressionKind::Malformed => {
                 unreachable!("ICE: trying to typecheck a malformed expression node")
@@ -212,7 +269,6 @@ impl<'ctx> Checker<'ctx> {
         expression: &hir::Expression,
         value: &hir::Expression,
         target: &hir::Type,
-        expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         let target_ty = self.lower_type(target);
@@ -234,22 +290,15 @@ impl<'ctx> Checker<'ctx> {
             expression.span,
         );
 
-        if let Some(expectation) = expectation {
-            cs.add_goal(
-                Goal::ConstraintEqual(expectation, target_ty),
-                expression.span,
-            );
-        }
-
+        // The cast names its own result type. Any expectation is met by the
+        // enclosing site's coercion, as for every other expression.
         target_ty
     }
 
     pub(super) fn synth_try_cast_expression(
         &self,
-        expression: &hir::Expression,
         value: &hir::Expression,
         target: &hir::Type,
-        expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         let gcx = self.gcx();
@@ -262,21 +311,13 @@ impl<'ctx> Checker<'ctx> {
         }
 
         let (optional_ty, _) = self.mk_optional_type(target_ty);
-        if let Some(expectation) = expectation {
-            cs.add_goal(
-                Goal::ConstraintEqual(expectation, optional_ty),
-                expression.span,
-            );
-        }
         optional_ty
     }
 
     pub(super) fn synth_type_is_expression(
         &self,
-        expression: &hir::Expression,
         value: &hir::Expression,
         target: &hir::Type,
-        expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         let gcx = self.gcx();
@@ -288,38 +329,7 @@ impl<'ctx> Checker<'ctx> {
             return Ty::error(gcx);
         }
 
-        if let Some(expectation) = expectation {
-            cs.add_goal(
-                Goal::ConstraintEqual(expectation, gcx.types.bool),
-                expression.span,
-            );
-        }
-
         gcx.types.bool
-    }
-
-    pub(super) fn lookup_member_property_on_base_ty(
-        &self,
-        base_ty: Ty<'ctx>,
-        name: Symbol,
-    ) -> Option<crate::compile::context::ComputedPropertyEntry<'ctx>> {
-        let head = type_head_from_value_ty(base_ty)?;
-        let mut property = self.gcx().lookup_computed_property(head, name)?;
-        if !self
-            .gcx()
-            .is_visibility_allowed(property.visibility, self.current_def)
-        {
-            return None;
-        }
-
-        if let TyKind::Adt(_, args) = base_ty.kind()
-            && !args.is_empty()
-            && property.ty.needs_instantiation()
-        {
-            property.ty = instantiate_ty_with_args(self.gcx(), property.ty, args);
-        }
-
-        Some(property)
     }
 
     pub(super) fn mutable_binding_for_resolution(
@@ -336,8 +346,60 @@ impl<'ctx> Checker<'ctx> {
         }
     }
 
+    /// Deref returns a reference into independently addressed storage. Place
+    /// checks must inspect that target rather than fields of the wrapper.
+    fn receiver_place_info(&self, node: NodeID, cs: &Cs<'ctx>) -> Option<(Ty<'ctx>, bool, bool)> {
+        let mut ty = cs.infer_cx.resolve_vars_if_possible(cs.expr_ty(node)?);
+        let adjustments = cs.node_adjustments(node);
+        if !adjustments
+            .iter()
+            .any(|adjustment| matches!(adjustment, Adjustment::DerefCall { .. }))
+        {
+            return Some((ty, false, true));
+        }
+        let mut writable = true;
+        for adjustment in adjustments {
+            match adjustment {
+                Adjustment::DerefCall { result, .. } => {
+                    ty = cs.structurally_resolve(*result);
+                    writable = true;
+                }
+                Adjustment::Reference => ty = Ty::new(TyKind::Reference(ty), self.gcx()),
+                Adjustment::Dereference => match ty.kind() {
+                    TyKind::Reference(inner) => {
+                        ty = inner;
+                        writable = true;
+                    }
+                    TyKind::Pointer(inner, permission) => {
+                        ty = inner;
+                        writable = permission == hir::Mutability::Mutable
+                            || self.gcx().is_class_type(inner);
+                    }
+                    _ => return None,
+                },
+                Adjustment::ClassUpcast { to } => ty = *to,
+                _ => {}
+            }
+        }
+        Some((cs.structurally_resolve(ty), true, writable))
+    }
+
     pub(super) fn require_mut_place(&self, expr: &hir::Expression, cs: &Cs<'ctx>) -> bool {
+        if matches!(expr.kind, hir::ExpressionKind::MemberBrackets { .. }) {
+            let selected = self
+                .results
+                .borrow()
+                .selected_brackets
+                .get(&expr.id)
+                .cloned();
+            return selected.is_some_and(|selected| self.require_mut_place(&selected, cs));
+        }
         match &expr.kind {
+            hir::ExpressionKind::Index { .. } => {
+                self.receiver_is_addressable(expr, cs);
+                self.index_place_requests.borrow_mut().insert(expr.id);
+                true
+            }
             hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => {
                 match &path.resolution {
                     hir::Resolution::LocalVariable(_)
@@ -368,22 +430,30 @@ impl<'ctx> Checker<'ctx> {
                 }
             }
             hir::ExpressionKind::Dereference(inner) => {
-                let Some(ptr_ty) = cs.expr_ty(inner.id) else {
+                let Some((ptr_ty, _, writable)) = self.receiver_place_info(inner.id, cs) else {
                     self.gcx()
                         .dcx()
                         .emit_error("missing type for deref operand".into(), Some(expr.span));
                     return false;
                 };
 
+                if !writable {
+                    self.gcx().dcx().emit_error(
+                        "cannot assign through a `*const` pointer".into(),
+                        Some(expr.span),
+                    );
+                    return false;
+                }
                 let ptr_ty = cs.infer_cx.resolve_vars_if_possible(ptr_ty);
                 if ptr_ty.contains_inference() {
                     return true;
                 }
                 match ptr_ty.kind() {
-                    TyKind::Pointer(_, mutbl) | TyKind::Reference(_, mutbl) => {
+                    TyKind::Reference(_) => true,
+                    TyKind::Pointer(_, mutbl) => {
                         if mutbl != hir::Mutability::Mutable {
                             self.gcx().dcx().emit_error(
-                                "cannot assign through an immutable pointer/reference".into(),
+                                "cannot assign through a `*const` pointer".into(),
                                 Some(expr.span),
                             );
                         }
@@ -402,12 +472,22 @@ impl<'ctx> Checker<'ctx> {
                 }
             }
             hir::ExpressionKind::Member { target, name } => {
-                let Some(receiver_ty) = cs.expr_ty(target.id) else {
+                let Some((receiver_ty, shared_target, writable)) =
+                    self.receiver_place_info(target.id, cs)
+                else {
                     self.gcx()
                         .dcx()
                         .emit_error("missing type for member receiver".into(), Some(expr.span));
                     return false;
                 };
+
+                if !writable {
+                    self.gcx().dcx().emit_error(
+                        "cannot assign through a `*const` pointer".into(),
+                        Some(expr.span),
+                    );
+                    return false;
+                }
 
                 // Mutability through pointer/reference.
                 let receiver_ty = cs.infer_cx.resolve_vars_if_possible(receiver_ty);
@@ -415,69 +495,40 @@ impl<'ctx> Checker<'ctx> {
                     return true;
                 }
                 let (base_ty, via_ptr_mut) = match receiver_ty.kind() {
-                    TyKind::Pointer(inner, mutbl) | TyKind::Reference(inner, mutbl) => {
-                        (inner, mutbl == hir::Mutability::Mutable)
-                    }
+                    TyKind::Reference(inner) => (inner, true),
+                    TyKind::Pointer(inner, mutbl) => (inner, mutbl == hir::Mutability::Mutable),
                     _ => (receiver_ty, true),
                 };
 
-                if !via_ptr_mut {
+                if !via_ptr_mut && !self.gcx().is_class_type(base_ty) {
                     self.gcx().dcx().emit_error(
-                        "cannot assign through an immutable pointer/reference".into(),
+                        "cannot assign through a `*const` pointer".into(),
                         Some(expr.span),
                     );
                     return false;
                 }
 
-                // Ensure the receiver expression is an assignable place (e.g. `self`, local var).
-                let receiver_is_place = match &target.kind {
-                    hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path))
-                        if matches!(
-                            &path.resolution,
-                            hir::Resolution::LocalVariable(_)
-                                | hir::Resolution::Definition(_, DefinitionKind::ModuleVariable)
-                        ) =>
-                    {
-                        let binding_mutable = self
-                            .mutable_binding_for_resolution(&path.resolution)
-                            .unwrap_or(false);
-                        if !binding_mutable && !via_ptr_mut {
-                            let message = if matches!(
-                                &path.resolution,
-                                hir::Resolution::Definition(_, DefinitionKind::ModuleVariable)
-                            ) {
-                                "cannot assign through an immutable static variable"
-                            } else {
-                                "cannot assign through an immutable binding"
-                            };
-                            self.gcx()
-                                .dcx()
-                                .emit_error(message.into(), Some(target.span));
-                            false
-                        } else {
-                            true
-                        }
-                    }
-                    hir::ExpressionKind::Dereference(_) => true,
-                    _ => {
-                        self.gcx().dcx().emit_error(
-                            "left-hand side of assignment is not assignable".into(),
-                            Some(expr.span),
-                        );
-                        false
-                    }
-                };
-
-                if !receiver_is_place {
+                // A reference or `*mut` pointer grants access to its pointee
+                // even when the binding holding it is immutable. Inline fields
+                // instead inherit every containing place's mutability; recurse
+                // so nested fields cannot bypass immutable or readonly ancestors.
+                if !matches!(
+                    receiver_ty.kind(),
+                    TyKind::Pointer(..) | TyKind::Reference(..)
+                ) && !shared_target
+                    && !self.gcx().is_class_type(base_ty)
+                    && !self.require_mut_place(target, cs)
+                {
                     return false;
                 }
 
-                if let TyKind::Adt(def, args) = base_ty.kind()
+                if let TyKind::Adt(def, _) = base_ty.kind()
                     && self.gcx().definition_kind(def.id) == DefinitionKind::Struct
                 {
-                    let struct_def = self.gcx().get_struct_definition(def.id);
-                    let struct_def = crate::sema::tycheck::utils::instantiate::
-                        instantiate_struct_definition_with_args(self.gcx(), struct_def, args);
+                    let struct_def = self
+                        .gcx()
+                        .source_struct_definition(base_ty)
+                        .expect("struct source fields");
                     if let Some(field) = struct_def
                         .fields
                         .iter()
@@ -494,15 +545,12 @@ impl<'ctx> Checker<'ctx> {
                     }
                 }
 
-                if let Some(property) = cs.resolved_property_reads().get(&expr.id).copied() {
-                    if property.setter_id.is_none() {
-                        self.gcx().dcx().emit_error(
-                            "cannot assign to a read-only property".into(),
-                            Some(expr.span),
-                        );
-                        return false;
-                    }
-                    return true;
+                if cs.resolved_property_reads().contains_key(&expr.id) {
+                    self.gcx().dcx().emit_error(
+                        "cannot assign to a read-only property".into(),
+                        Some(expr.span),
+                    );
+                    return false;
                 }
 
                 self.gcx().dcx().emit_error(
@@ -512,14 +560,19 @@ impl<'ctx> Checker<'ctx> {
                 false
             }
             hir::ExpressionKind::TupleAccess(target, _) => {
-                let Some(receiver_ty) = cs.expr_ty(target.id) else {
+                let Some((receiver_ty, shared_target, writable)) =
+                    self.receiver_place_info(target.id, cs)
+                else {
                     return false;
                 };
 
+                if shared_target {
+                    return writable;
+                }
+
                 match cs.infer_cx.resolve_vars_if_possible(receiver_ty).kind() {
-                    TyKind::Pointer(_, mutbl) | TyKind::Reference(_, mutbl) => {
-                        mutbl == hir::Mutability::Mutable
-                    }
+                    TyKind::Reference(_) => true,
+                    TyKind::Pointer(_, mutbl) => mutbl == hir::Mutability::Mutable,
                     _ => self.require_mut_place(target, cs),
                 }
             }
@@ -538,428 +591,126 @@ impl<'ctx> Checker<'ctx> {
         }
     }
 
-    pub(super) fn can_mutably_borrow_receiver(
-        &self,
-        expr: &hir::Expression,
-        cs: &Cs<'ctx>,
-    ) -> bool {
-        if let Some(expr_ty) = cs.expr_ty(expr.id) {
-            let expr_ty = cs.infer_cx.resolve_vars_if_possible(expr_ty);
-            match expr_ty.kind() {
-                TyKind::Error => return true,
-                TyKind::Pointer(_, hir::Mutability::Mutable)
-                | TyKind::Reference(_, hir::Mutability::Mutable) => return true,
-                _ => {}
-            }
-        }
-
+    /// Autoref selects existing storage; it never invents a writable receiver
+    /// temporary. Class members and explicit dereferences already select storage.
+    pub(super) fn receiver_is_addressable(&self, expr: &hir::Expression, cs: &Cs<'ctx>) -> bool {
         match &expr.kind {
-            hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => {
-                match &path.resolution {
-                    hir::Resolution::LocalVariable(_)
-                    | hir::Resolution::Definition(_, DefinitionKind::ModuleVariable) => {
-                        if matches!(
-                            &path.resolution,
-                            hir::Resolution::LocalVariable(id) if self.get_local(*id).ty.is_error()
-                        ) {
-                            return true;
-                        }
-                        self.mutable_binding_for_resolution(&path.resolution)
-                            .unwrap_or(false)
-                    }
-                    _ => false,
-                }
+            hir::ExpressionKind::MemberBrackets { .. } => {
+                let selected = self
+                    .results
+                    .borrow()
+                    .selected_brackets
+                    .get(&expr.id)
+                    .cloned();
+                selected.is_some_and(|selected| self.receiver_is_addressable(&selected, cs))
             }
-            hir::ExpressionKind::Dereference(inner) => {
-                let Some(ptr_ty) = cs.expr_ty(inner.id) else {
-                    return false;
-                };
-
-                let ptr_ty = cs.infer_cx.resolve_vars_if_possible(ptr_ty);
-                if ptr_ty.contains_inference() {
-                    return true;
-                }
-
-                match ptr_ty.kind() {
-                    TyKind::Error => true,
-                    TyKind::Pointer(_, mutbl) | TyKind::Reference(_, mutbl) => {
-                        mutbl == hir::Mutability::Mutable
-                    }
-                    _ => false,
-                }
+            hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => matches!(
+                path.resolution,
+                hir::Resolution::LocalVariable(_)
+                    | hir::Resolution::Definition(_, DefinitionKind::ModuleVariable)
+            ),
+            hir::ExpressionKind::Index { .. } => {
+                self.receiver_index_roots
+                    .borrow_mut()
+                    .insert(expr.id, vec![(expr.id, vec![])]);
+                true
             }
-            hir::ExpressionKind::Member { target, name } => {
-                let Some(receiver_ty) = cs.expr_ty(target.id) else {
-                    return false;
-                };
-
-                let receiver_ty = cs.infer_cx.resolve_vars_if_possible(receiver_ty);
-                if receiver_ty.contains_inference() {
-                    return true;
-                }
-
-                let base_ty = match receiver_ty.kind() {
-                    TyKind::Error => return true,
-                    TyKind::Pointer(inner, mutbl) | TyKind::Reference(inner, mutbl) => {
-                        if mutbl != hir::Mutability::Mutable {
-                            return false;
-                        }
-                        inner
-                    }
-                    _ => {
-                        if !self.can_mutably_borrow_receiver(target, cs) {
-                            return false;
-                        }
-                        receiver_ty
-                    }
-                };
-
-                if let TyKind::Adt(def, args) = base_ty.kind()
-                    && self.gcx().definition_kind(def.id) == DefinitionKind::Struct
+            hir::ExpressionKind::Dereference(target) => cs.expr_ty(target.id).is_none_or(|ty| {
+                !matches!(
+                    cs.infer_cx.resolve_vars_if_possible(ty).kind(),
+                    TyKind::Pointer(_, hir::Mutability::Immutable)
+                )
+            }),
+            hir::ExpressionKind::Member { target, .. }
+            | hir::ExpressionKind::TupleAccess(target, _) => {
+                if self.results.borrow().property_read(expr.id).is_some()
+                    || cs.resolved_property_reads().contains_key(&expr.id)
                 {
-                    let struct_def = self.gcx().get_struct_definition(def.id);
-                    let struct_def = crate::sema::tycheck::utils::instantiate::
-                        instantiate_struct_definition_with_args(self.gcx(), struct_def, args);
-                    if struct_def
-                        .fields
-                        .iter()
-                        .any(|field| field.name == name.symbol)
+                    return false;
+                }
+                if let Some((_, true, writable)) = self.receiver_place_info(target.id, cs) {
+                    return writable;
+                }
+                if let Some(ty) = cs.expr_ty(target.id) {
+                    let ty = cs.infer_cx.resolve_vars_if_possible(ty);
+                    if let TyKind::Pointer(inner, hir::Mutability::Immutable) = ty.kind() {
+                        return self.gcx().is_class_type(inner);
+                    }
+                    if matches!(
+                        ty.kind(),
+                        TyKind::Reference(_) | TyKind::Pointer(_, hir::Mutability::Mutable)
+                    ) || self.gcx().is_class_type(ty)
                     {
                         return true;
                     }
                 }
-
-                if self
-                    .lookup_member_property_on_base_ty(base_ty, name.symbol)
-                    .is_some()
-                {
-                    return false;
-                }
-
-                false
-            }
-            hir::ExpressionKind::TupleAccess(target, _) => {
-                let Some(receiver_ty) = cs.expr_ty(target.id) else {
-                    return false;
-                };
-
-                let receiver_ty = cs.infer_cx.resolve_vars_if_possible(receiver_ty);
-                if receiver_ty.contains_inference() {
-                    return true;
-                }
-
-                match receiver_ty.kind() {
-                    TyKind::Error => true,
-                    TyKind::Pointer(_, mutbl) | TyKind::Reference(_, mutbl) => {
-                        mutbl == hir::Mutability::Mutable
+                let addressable = self.receiver_is_addressable(target, cs);
+                let roots = self.receiver_index_roots.borrow().get(&target.id).cloned();
+                if let Some(mut roots) = roots {
+                    for (_, path) in &mut roots {
+                        path.push(target.id);
                     }
-                    _ => self.can_mutably_borrow_receiver(target, cs),
+                    self.receiver_index_roots
+                        .borrow_mut()
+                        .insert(expr.id, roots);
                 }
-            }
-            hir::ExpressionKind::MethodCall {
-                receiver,
-                name,
-                arguments,
-            } => {
-                let Some(receiver_ty) = cs.expr_ty(receiver.id) else {
-                    return false;
-                };
-
-                self.can_mutably_borrow_receiver(receiver, cs)
-                    && self.method_call_can_yield_mutable_reference(
-                        receiver_ty,
-                        name,
-                        arguments.len(),
-                        cs,
-                    )
+                addressable
             }
             _ => false,
         }
     }
 
-    pub(super) fn require_mut_borrow(&self, expr: &hir::Expression, cs: &Cs<'ctx>) -> bool {
-        match &expr.kind {
-            hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => {
-                if let hir::Resolution::LocalVariable(_)
-                | hir::Resolution::Definition(_, DefinitionKind::ModuleVariable) =
-                    &path.resolution
-                {
-                    if matches!(&path.resolution, hir::Resolution::LocalVariable(id) if self.get_local(*id).ty.is_error())
-                    {
-                        return true;
-                    }
-                    let mutable = self
-                        .mutable_binding_for_resolution(&path.resolution)
-                        .unwrap_or(false);
-                    if !mutable {
-                        let message = if matches!(
-                            &path.resolution,
-                            hir::Resolution::Definition(_, DefinitionKind::ModuleVariable)
-                        ) {
-                            "cannot take a mutable reference to an immutable static variable"
-                        } else {
-                            "cannot take a mutable reference to an immutable binding"
-                        };
-                        self.gcx().dcx().emit_error(message.into(), Some(expr.span));
-                        return false;
-                    }
-                }
-                // A direct `&mut pointer_slot` borrows the slot, not the
-                // pointee. Pointer/reference mutability is therefore relevant
-                // only in the Dereference branch below; the path itself obeys
-                // its binding or static declaration's mutability.
-                true
-            }
-            hir::ExpressionKind::Dereference(inner) => {
-                let Some(ptr_ty) = cs.expr_ty(inner.id) else {
-                    self.gcx()
-                        .dcx()
-                        .emit_error("missing type for deref operand".into(), Some(expr.span));
-                    return false;
-                };
-
-                let ptr_ty = cs.infer_cx.resolve_vars_if_possible(ptr_ty);
-                if ptr_ty.contains_inference() {
-                    return true;
-                }
-                match ptr_ty.kind() {
-                    TyKind::Error => true,
-                    TyKind::Pointer(_, mutbl) | TyKind::Reference(_, mutbl) => {
-                        if mutbl != hir::Mutability::Mutable {
-                            self.gcx().dcx().emit_error(
-                                "cannot borrow through an immutable pointer/reference".into(),
-                                Some(expr.span),
-                            );
-                        }
-                        true
-                    }
-                    _ => {
-                        self.gcx().dcx().emit_error(
-                            "cannot borrow through a non-pointer/reference value".into(),
-                            Some(expr.span),
-                        );
-                        false
-                    }
-                }
-            }
-            hir::ExpressionKind::Member { target, name } => {
-                let Some(receiver_ty) = cs.expr_ty(target.id) else {
-                    self.gcx()
-                        .dcx()
-                        .emit_error("missing type for member receiver".into(), Some(expr.span));
-                    return false;
-                };
-
-                let receiver_ty = cs.infer_cx.resolve_vars_if_possible(receiver_ty);
-                if receiver_ty.contains_inference() {
-                    return true;
-                }
-
-                let (base_ty, via_ptr_mut, via_ptr) =
-                    if let hir::ExpressionKind::Dereference(inner) = &target.kind {
-                        let Some(ptr_ty) = cs.expr_ty(inner.id) else {
-                            self.gcx().dcx().emit_error(
-                                "missing type for deref operand".into(),
-                                Some(expr.span),
-                            );
-                            return false;
-                        };
-
-                        let ptr_ty = cs.infer_cx.resolve_vars_if_possible(ptr_ty);
-                        if ptr_ty.contains_inference() {
-                            return true;
-                        }
-
-                        match ptr_ty.kind() {
-                            TyKind::Error => return true,
-                            TyKind::Pointer(inner, mutbl) | TyKind::Reference(inner, mutbl) => {
-                                (inner, mutbl == hir::Mutability::Mutable, true)
-                            }
-                            _ => {
-                                self.gcx().dcx().emit_error(
-                                    "cannot borrow through a non-pointer/reference value".into(),
-                                    Some(expr.span),
-                                );
-                                return false;
-                            }
-                        }
-                    } else {
-                        match receiver_ty.kind() {
-                            TyKind::Error => return true,
-                            TyKind::Pointer(inner, mutbl) | TyKind::Reference(inner, mutbl) => {
-                                (inner, mutbl == hir::Mutability::Mutable, true)
-                            }
-                            _ => (receiver_ty, true, false),
-                        }
-                    };
-
-                if !via_ptr_mut {
-                    self.gcx().dcx().emit_error(
-                        "cannot borrow through an immutable pointer/reference".into(),
-                        Some(expr.span),
-                    );
-                    return false;
-                }
-
-                if !via_ptr {
-                    if let hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) =
-                        &target.kind
-                    {
-                        if matches!(
-                            &path.resolution,
-                            hir::Resolution::LocalVariable(_)
-                                | hir::Resolution::Definition(_, DefinitionKind::ModuleVariable)
-                        ) {
-                            let mutable = self
-                                .mutable_binding_for_resolution(&path.resolution)
-                                .unwrap_or(false);
-                            if !mutable {
-                                let message = if matches!(
-                                    &path.resolution,
-                                    hir::Resolution::Definition(_, DefinitionKind::ModuleVariable)
-                                ) {
-                                    "cannot take a mutable reference to an immutable static variable"
-                                } else {
-                                    "cannot take a mutable reference to an immutable binding"
-                                };
-                                self.gcx()
-                                    .dcx()
-                                    .emit_error(message.into(), Some(target.span));
-                                return false;
-                            }
-                        }
-                    }
-                }
-
-                if let TyKind::Adt(def, args) = base_ty.kind()
-                    && self.gcx().definition_kind(def.id) == DefinitionKind::Struct
-                {
-                    let struct_def = self.gcx().get_struct_definition(def.id);
-                    let struct_def = crate::sema::tycheck::utils::instantiate::
-                        instantiate_struct_definition_with_args(self.gcx(), struct_def, args);
-                    if let Some(field) = struct_def
-                        .fields
-                        .iter()
-                        .find(|field| field.name == name.symbol)
-                    {
-                        if field.mutability != hir::Mutability::Mutable {
-                            self.gcx().dcx().emit_error(
-                                "cannot take a mutable reference to an immutable field".into(),
-                                Some(expr.span),
-                            );
-                            return false;
-                        }
-                        return true;
-                    }
-                }
-
-                if self
-                    .lookup_member_property_on_base_ty(base_ty, name.symbol)
-                    .is_some()
-                {
-                    self.gcx().dcx().emit_error(
-                        "cannot take a mutable reference to a computed property".into(),
-                        Some(expr.span),
-                    );
-                    return false;
-                }
-
-                if matches!(base_ty.kind(), TyKind::Adt(def, _) if self.gcx().definition_kind(def.id) == DefinitionKind::Struct)
-                {
-                    self.gcx().dcx().emit_error(
-                        format!("unknown field '{}'", self.gcx().symbol_text(name.symbol)),
-                        Some(expr.span),
-                    );
-                    return false;
-                }
-
+    /// A reference cannot grant write access to a raw const pointee. Reading a
+    /// class handle still permits references into the shared object's fields.
+    pub(super) fn require_reference_place(&self, expr: &hir::Expression, cs: &Cs<'ctx>) -> bool {
+        let receiver = match &expr.kind {
+            hir::ExpressionKind::Dereference(target)
+            | hir::ExpressionKind::Member { target, .. }
+            | hir::ExpressionKind::TupleAccess(target, _) => Some(target.id),
+            _ => None,
+        };
+        if let Some((_, true, writable)) =
+            receiver.and_then(|node| self.receiver_place_info(node, cs))
+        {
+            if !writable {
                 self.gcx().dcx().emit_error(
-                    "cannot borrow a member of a non-struct value".into(),
+                    "cannot take a reference through a `*const` pointer".into(),
                     Some(expr.span),
                 );
-                false
             }
-            hir::ExpressionKind::TupleAccess(target, _) => {
-                let Some(receiver_ty) = cs.expr_ty(target.id) else {
-                    return false;
-                };
-
-                match receiver_ty.kind() {
-                    TyKind::Error => true,
-                    TyKind::Pointer(_, mutbl) | TyKind::Reference(_, mutbl) => {
-                        if mutbl != hir::Mutability::Mutable {
-                            self.gcx().dcx().emit_error(
-                                "cannot borrow through an immutable pointer/reference".into(),
-                                Some(expr.span),
-                            );
-                        }
-                        true
-                    }
-                    _ => {
-                        if let hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) =
-                            &target.kind
-                        {
-                            if matches!(
-                                &path.resolution,
-                                hir::Resolution::LocalVariable(_)
-                                    | hir::Resolution::Definition(
-                                        _,
-                                        DefinitionKind::ModuleVariable
-                                    )
-                            ) {
-                                let mutable = self
-                                    .mutable_binding_for_resolution(&path.resolution)
-                                    .unwrap_or(false);
-                                if !mutable {
-                                    let message = if matches!(
-                                        &path.resolution,
-                                        hir::Resolution::Definition(
-                                            _,
-                                            DefinitionKind::ModuleVariable
-                                        )
-                                    ) {
-                                        "cannot take a mutable reference to an immutable static variable"
-                                    } else {
-                                        "cannot take a mutable reference to an immutable binding"
-                                    };
-                                    self.gcx()
-                                        .dcx()
-                                        .emit_error(message.into(), Some(target.span));
-                                    return false;
-                                }
-                            }
-                        }
-                        true
-                    }
-                }
-            }
-            _ => true,
+            return writable;
         }
-    }
-
-    fn require_mut_receiver_borrow(&self, expr: &hir::Expression, cs: &Cs<'ctx>) -> bool {
-        if let Some(expr_ty) = cs.expr_ty(expr.id) {
-            let expr_ty = cs.infer_cx.resolve_vars_if_possible(expr_ty);
-            match expr_ty.kind() {
-                TyKind::Error => return true,
-                TyKind::Pointer(_, hir::Mutability::Mutable)
-                | TyKind::Reference(_, hir::Mutability::Mutable) => return true,
-                TyKind::Pointer(_, hir::Mutability::Immutable)
-                | TyKind::Reference(_, hir::Mutability::Immutable) => {
-                    self.gcx().dcx().emit_error(
-                        "cannot borrow through an immutable pointer/reference".into(),
-                        Some(expr.span),
-                    );
-                    return false;
+        let target = match &expr.kind {
+            hir::ExpressionKind::Dereference(target) => target,
+            hir::ExpressionKind::Member { target, .. }
+            | hir::ExpressionKind::TupleAccess(target, _) => {
+                if let Some(ty) = cs.expr_ty(target.id)
+                    && !matches!(
+                        cs.infer_cx.resolve_vars_if_possible(ty).kind(),
+                        TyKind::Pointer(..)
+                    )
+                {
+                    return self.require_reference_place(target, cs);
                 }
-                _ => {}
+                target
             }
+            _ => return true,
+        };
+        let Some(ty) = cs.expr_ty(target.id) else {
+            return true;
+        };
+        if let TyKind::Pointer(inner, hir::Mutability::Immutable) =
+            cs.infer_cx.resolve_vars_if_possible(ty).kind()
+            && !(matches!(expr.kind, hir::ExpressionKind::Member { .. })
+                && self.gcx().is_class_type(inner))
+        {
+            self.gcx().dcx().emit_error(
+                "cannot take a reference through a `*const` pointer".into(),
+                Some(expr.span),
+            );
+            return false;
         }
-
-        // A method/property receiver is implicitly dereferenced, so an immutable
-        // binding that stores `&mut T` may still mutate `T`. Explicit `&mut slot`
-        // uses `require_mut_borrow` directly because it borrows the storage slot.
-        self.require_mut_borrow(expr, cs)
+        true
     }
 
     pub(super) fn synth_assign_expression(
@@ -976,10 +727,30 @@ impl<'ctx> Checker<'ctx> {
         if lhs_ty.is_error() {
             return Ty::error(self.gcx());
         }
-        if matches!(lhs.kind, hir::ExpressionKind::Member { .. }) {
-            cs.solve_intermediate();
+        if matches!(
+            lhs.kind,
+            hir::ExpressionKind::Member { .. }
+                | hir::ExpressionKind::Dereference(_)
+                | hir::ExpressionKind::TupleAccess(..)
+        ) {
+            cs.without_fallbacks(|cs| cs.solve_intermediate());
         }
-        if !self.require_mut_place(lhs, cs) {
+        let initializes_self_field = if let hir::ExpressionKind::Member { target, .. } = &lhs.kind {
+            matches!(&target.kind, hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path))
+                if matches!(path.resolution, hir::Resolution::LocalVariable(id) if self.constructor_self.get() == Some(id)))
+        } else {
+            false
+        };
+        // This only admits direct assignment. MIR proves one-time readonly
+        // initialization across branches/loops; mutable borrowing is unchanged.
+        let initializes_self_field = initializes_self_field
+            && cs.resolved_field_indices().contains_key(&lhs.id)
+            && !matches!(&lhs.kind, hir::ExpressionKind::Member { target, .. } if cs.node_adjustments(target.id).iter().any(|adjustment| matches!(adjustment, Adjustment::DerefCall { .. })));
+        let index_assignment = self.pending_indices.borrow().contains_key(&lhs.id);
+        if index_assignment {
+            self.index_setter_uses.borrow_mut().insert(lhs.id);
+        }
+        if !initializes_self_field && !index_assignment && !self.require_mut_place(lhs, cs) {
             return Ty::error(self.gcx());
         }
 
@@ -987,19 +758,6 @@ impl<'ctx> Checker<'ctx> {
         let rhs_ty = self.synth_with_expectation(rhs, Some(lhs_ty), cs);
         if lhs_ty.is_error() || rhs_ty.is_error() {
             return Ty::error(self.gcx());
-        }
-
-        if let Some(property) = cs.resolved_property_reads().get(&lhs.id).copied()
-            && let Some(setter_id) = property.setter_id
-        {
-            cs.record_property_write(
-                expr.id,
-                crate::sema::tycheck::solve::ResolvedPropertyWrite {
-                    property_id: property.property_id,
-                    setter_id,
-                    ty: property.ty,
-                },
-            );
         }
 
         cs.add_goal(
@@ -1026,6 +784,8 @@ impl<'ctx> Checker<'ctx> {
 
         if let Some(tail) = block.tail.as_deref() {
             self.synth_with_expectation(tail, expectation, cs)
+        } else if crate::sema::tycheck::utils::divergence::ends_in_unbroken_loop(block) {
+            Ty::new(TyKind::Never, self.gcx())
         } else {
             self.gcx().types.void
         }
@@ -1126,8 +886,9 @@ impl<'ctx> Checker<'ctx> {
         node_id: NodeID,
         span: Span,
         resolution: &hir::Resolution,
-        expectation: Option<Ty<'ctx>>,
+        _expectation: Option<Ty<'ctx>>,
         instantiation_args: Option<GenericArguments<'ctx>>,
+        static_owner: Option<Ty<'ctx>>,
         allow_unsafe_callable_values: bool,
         prefer_async: Option<bool>,
         cs: &mut Cs<'ctx>,
@@ -1143,43 +904,8 @@ impl<'ctx> Checker<'ctx> {
                     return Ty::error(self.gcx());
                 }
                 match kind {
-                    DefinitionKind::Struct => {
-                        let Some(nominal) = self.constructor_nominal_from_resolution(resolution)
-                        else {
-                            return Ty::error(self.gcx());
-                        };
-                        self.synth_constructor_value_expression(
-                            node_id,
-                            nominal,
-                            span,
-                            expectation,
-                            instantiation_args,
-                            cs,
-                        )
-                    }
-                    DefinitionKind::TypeAlias => {
-                        let Some((nominal, constructor_args)) =
-                            self.type_alias_constructor_target(*id, instantiation_args)
-                        else {
-                            let name = self.gcx().definition_ident(*id).symbol;
-                            self.gcx().dcx().emit_error(
-                                format!(
-                                    "type alias '{}' does not name a constructible struct",
-                                    self.gcx().symbol_text(name)
-                                )
-                                .into(),
-                                Some(span),
-                            );
-                            return Ty::error(self.gcx());
-                        };
-                        self.synth_constructor_value_expression(
-                            node_id,
-                            nominal,
-                            span,
-                            expectation,
-                            constructor_args,
-                            cs,
-                        )
+                    DefinitionKind::Struct | DefinitionKind::Enum | DefinitionKind::TypeAlias => {
+                        self.emit_type_name_value_error(span)
                     }
                     DefinitionKind::ConstParameter => {
                         let Some(owner) = self.gcx().definition_parent(*id) else {
@@ -1197,14 +923,19 @@ impl<'ctx> Checker<'ctx> {
                             _ => Ty::error(self.gcx()),
                         }
                     }
+                    DefinitionKind::Module | DefinitionKind::Namespace => {
+                        self.gcx().dcx().emit_error(
+                            format!("a {} cannot be used as a value", kind.description()).into(),
+                            Some(span),
+                        );
+                        Ty::error(self.gcx())
+                    }
                     _ => {
                         if !allow_unsafe_callable_values
                             && self.is_unsafe_callable_definition(*id)
                             && matches!(
                                 kind,
-                                DefinitionKind::Function
-                                    | DefinitionKind::AssociatedFunction
-                                    | DefinitionKind::AssociatedOperator
+                                DefinitionKind::Function | DefinitionKind::AssociatedFunction
                             )
                         {
                             return self.emit_unsafe_callable_value_error(*id, span);
@@ -1213,19 +944,7 @@ impl<'ctx> Checker<'ctx> {
                     }
                 }
             }
-            hir::Resolution::SelfConstructor(..) => {
-                let Some(nominal) = self.constructor_nominal_from_resolution(resolution) else {
-                    return Ty::error(self.gcx());
-                };
-                self.synth_constructor_value_expression(
-                    node_id,
-                    nominal,
-                    span,
-                    expectation,
-                    instantiation_args,
-                    cs,
-                )
-            }
+            hir::Resolution::SelfConstructor(..) => self.emit_type_name_value_error(span),
             hir::Resolution::FunctionSet(candidates) => {
                 let visible: Vec<_> = candidates
                     .iter()
@@ -1255,6 +974,7 @@ impl<'ctx> Checker<'ctx> {
                 for candidate in visible {
                     let candidate_ty = self.gcx().get_type(candidate);
                     let goal = Goal::BindOverload(BindOverloadGoalData {
+                        static_owner,
                         node_id,
                         var_ty: ty,
                         candidate_ty,
@@ -1265,7 +985,6 @@ impl<'ctx> Checker<'ctx> {
                         goal,
                         source: Some(candidate),
                         autoref_cost: 0,
-                        matches_expectation: false,
                         matches_async_preference: prefer_async.is_some_and(|want_async| {
                             self.gcx().definition_is_async(candidate) == want_async
                         }),
@@ -1275,23 +994,7 @@ impl<'ctx> Checker<'ctx> {
                 cs.add_goal(Goal::Disjunction(branches), span);
                 ty
             }
-            hir::Resolution::SelfTypeAlias(..) => {
-                let Some(nominal) = self.constructor_nominal_from_resolution(resolution) else {
-                    self.gcx().dcx().emit_error(
-                        "cannot use `Self` as a value in this context".into(),
-                        Some(span),
-                    );
-                    return Ty::error(self.gcx());
-                };
-                self.synth_constructor_value_expression(
-                    node_id,
-                    nominal,
-                    span,
-                    expectation,
-                    instantiation_args,
-                    cs,
-                )
-            }
+            hir::Resolution::SelfTypeAlias(..) => self.emit_type_name_value_error(span),
             hir::Resolution::PrimaryType(..) => {
                 self.gcx().dcx().emit_error(
                     "primitive types cannot be used as values".into(),
@@ -1322,18 +1025,11 @@ impl<'ctx> Checker<'ctx> {
                     );
                     return Ty::error(self.gcx());
                 };
-                // Treat Foundation types like struct/enum constructors - bind to constructor overload set
                 let kind = self.gcx().definition_kind(def_id);
                 match kind {
-                    DefinitionKind::Struct | DefinitionKind::Enum => self
-                        .synth_constructor_value_expression(
-                            node_id,
-                            def_id,
-                            span,
-                            expectation,
-                            instantiation_args,
-                            cs,
-                        ),
+                    DefinitionKind::Struct | DefinitionKind::Enum => {
+                        self.emit_type_name_value_error(span)
+                    }
                     _ => {
                         // For other types (interfaces, aliases), just return the type
                         self.gcx().get_type(def_id)
@@ -1344,23 +1040,14 @@ impl<'ctx> Checker<'ctx> {
         }
     }
 
-    pub(super) fn synth_constructor_value_expression(
-        &self,
-        node_id: NodeID,
-        nominal: DefinitionID,
-        span: Span,
-        expectation: Option<Ty<'ctx>>,
-        instantiation_args: Option<GenericArguments<'ctx>>,
-        cs: &mut Cs<'ctx>,
-    ) -> Ty<'ctx> {
-        let ty = cs.infer_cx.next_ty_var(span);
-        if !self.bind_constructor_overload_set(node_id, nominal, span, ty, instantiation_args, cs) {
-            return Ty::error(self.gcx());
-        }
-        if let Some(expectation) = expectation {
-            cs.equal(expectation, ty, span);
-        }
-        ty
+    /// A type path has no implicit value meaning. In particular, `new` is an
+    /// ordinary associated factory, never an implicit constructor overload set.
+    pub(super) fn emit_type_name_value_error(&self, span: Span) -> Ty<'ctx> {
+        self.gcx().dcx().emit_error(
+            "a type name cannot select `new` implicitly; use an explicit `::new` factory".into(),
+            Some(span),
+        );
+        Ty::error(self.gcx())
     }
 
     pub(super) fn synth_call_expression(
@@ -1371,107 +1058,248 @@ impl<'ctx> Checker<'ctx> {
         expect_ty: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
-        let prefer_async_call = self.direct_await_operand.get() == Some(expression.id);
-
-        // Register targeted Sendable diagnostics before resolving the callee:
-        // path and closure inference can both run intermediate solver passes.
-        if let Some(context) = self.compiler_call_context(expression, callee, arguments) {
-            cs.record_compiler_call_context(callee.id, context);
+        self.record_await_scope_call(expression.id);
+        let prefer_async_call = self.call_is_awaited();
+        // Opening is authority of this inferred call, never a conformance of
+        // an explicitly named existential type or a stored generic wrapper.
+        let inferred_path = match &callee.kind {
+            hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => path
+                .segments
+                .last()
+                .is_some_and(|segment| segment.arguments.is_none()),
+            hir::ExpressionKind::Path(hir::ResolvedPath::Relative(_, segment)) => {
+                segment.arguments.is_none()
+            }
+            _ => false,
+        };
+        if inferred_path {
+            cs.allow_inferred_opening(callee.id);
         }
 
-        // Builtin `make`: returns a pointer to the argument type.
-        if let hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) = &callee.kind
-            && matches!(
-                path.resolution,
-                hir::Resolution::StdItem(hir::StdItem::Make)
-            )
-        {
-            if arguments.len() != 1 {
-                self.gcx().dcx().emit_error(
-                    "`make` expects exactly one argument".into(),
-                    Some(expression.span),
-                );
-                return Ty::error(self.gcx());
+        // Select member brackets using normal lookup, but a following call
+        // invokes the method directly. Reference results depend on its receiver,
+        // not the lifetime of an unnecessary temporary callback environment.
+        let mut prechecked_bracket_callee = None;
+        if matches!(callee.kind, hir::ExpressionKind::MemberBrackets { .. }) {
+            let prior = self.direct_method_selection.replace(Some(callee.id));
+            let selected_ty = self.synth(callee, cs);
+            self.direct_method_selection.set(prior);
+            if selected_ty.is_error() {
+                return selected_ty;
             }
-            let arg_ty = self.synth(&arguments[0].expression, cs);
-            let ptr_ty = self
-                .gcx()
-                .store
-                .interners
-                .intern_ty(TyKind::Reference(arg_ty, hir::Mutability::Mutable));
-            return ptr_ty;
+            prechecked_bracket_callee = Some(selected_ty);
+            let selected = self
+                .results
+                .borrow()
+                .selected_brackets
+                .get(&callee.id)
+                .cloned();
+            if let Some(hir::Expression {
+                kind: hir::ExpressionKind::Member { target, name },
+                ..
+            }) = selected
+                && let Some(source) = cs.resolved_overload_sources().get(&callee.id).copied()
+            {
+                let instantiation = cs.instantiation(callee.id).unwrap_or_default();
+                self.results
+                    .borrow_mut()
+                    .selected_method_calls
+                    .insert(expression.id, (source, instantiation));
+                let method = hir::Expression {
+                    id: expression.id,
+                    span: expression.span,
+                    kind: hir::ExpressionKind::MethodCall {
+                        receiver: target.clone(),
+                        name,
+                        arguments: arguments.to_vec(),
+                    },
+                };
+                self.results
+                    .borrow_mut()
+                    .elaborated_method_calls
+                    .insert(expression.id, method.clone());
+                let receiver_ty = cs.expr_ty(target.id).expect("checked specialized receiver");
+                return self.with_prechecked_bracket_receiver(target.id, receiver_ty, || {
+                    self.synth_method_call_expression(
+                        &method, &target, &name, arguments, expect_ty, cs,
+                    )
+                });
+            }
         }
 
-        let callee_ty = match &callee.kind {
-            hir::ExpressionKind::InferredMember { name } => {
-                let result_ty = cs.infer_cx.next_ty_var(callee.span);
-                cs.add_goal(
-                    Goal::InferredStaticMember(InferredStaticMemberGoalData {
-                        node_id: callee.id,
-                        name: *name,
-                        expr_ty: result_ty,
-                        base_hint: expect_ty,
-                        allow_unsafe_callable_values: true,
-                        prefer_async: prefer_async_call,
-                        span: callee.span,
-                    }),
-                    callee.span,
-                );
-                cs.record_expr_ty(callee.id, result_ty);
-                result_ty
+        let mut constructor_result = None;
+        let selected = self
+            .results
+            .borrow()
+            .selected_method_calls
+            .get(&expression.id)
+            .copied();
+        let callee_ty = if let Some(prechecked) = prechecked_bracket_callee {
+            prechecked
+        } else if let Some((source, arguments)) = selected {
+            let ty = cs.infer_cx.next_ty_var(callee.span);
+            cs.add_goal(
+                Goal::BindOverload(BindOverloadGoalData {
+                    static_owner: None,
+                    node_id: callee.id,
+                    var_ty: ty,
+                    candidate_ty: self.gcx().get_type(source),
+                    source,
+                    instantiation_args: Some(arguments),
+                }),
+                callee.span,
+            );
+            cs.record_expr_ty(callee.id, ty);
+            cs.without_fallbacks(|cs| cs.solve_intermediate());
+            cs.structurally_resolve(ty)
+        } else {
+            match &callee.kind {
+                hir::ExpressionKind::InferredMember { name } => {
+                    let result_ty = cs.infer_cx.next_ty_var(callee.span);
+                    cs.add_goal(
+                        Goal::InferredStaticMember(InferredStaticMemberGoalData {
+                            node_id: callee.id,
+                            name: *name,
+                            expr_ty: result_ty,
+                            base_hint: expect_ty,
+                            allow_unsafe_callable_values: true,
+                            prefer_async: prefer_async_call,
+                            span: callee.span,
+                        }),
+                        callee.span,
+                    );
+                    cs.record_expr_ty(callee.id, result_ty);
+                    result_ty
+                }
+                hir::ExpressionKind::Path(path) => {
+                    let resolution = match path {
+                        hir::ResolvedPath::Resolved(path) => &path.resolution,
+                        hir::ResolvedPath::Relative(_, segment) => &segment.resolution,
+                    };
+                    let is_type = match resolution {
+                        hir::Resolution::Definition(
+                            _,
+                            DefinitionKind::Struct | DefinitionKind::TypeAlias,
+                        )
+                        | hir::Resolution::SelfTypeAlias(_) => true,
+                        hir::Resolution::StdItem(item) => {
+                            self.gcx().std_item_def(*item).is_some_and(|id| {
+                                self.gcx().definition_kind(id) == DefinitionKind::Struct
+                            })
+                        }
+                        _ => false,
+                    };
+                    let result_ty = if is_type {
+                        let base = hir::Type {
+                            id: callee.id,
+                            kind: hir::TypeKind::Nominal(path.clone()),
+                            span: callee.span,
+                        };
+                        let target = self.lower_type(&base);
+                        self.add_type_constraints(target, base.span, cs);
+                        constructor_result = Some(target);
+                        let Some(head) = type_head_from_value_ty(target) else {
+                            return self.emit_type_name_value_error(callee.span);
+                        };
+                        let name = crate::span::Identifier {
+                            symbol: self.gcx().intern_symbol("init"),
+                            span: callee.span,
+                        };
+                        let resolution = self.resolve_static_member_resolution(
+                            head,
+                            target,
+                            &name,
+                            callee.span,
+                            true,
+                        );
+                        let resolution = self.narrow_callable_shape(resolution, arguments);
+                        self.record_value_path_resolution(callee.id, &resolution);
+                        // Extension parameters need not have the nominal type's
+                        // order (or shape). Infer them through the constructor's
+                        // result, just as for super.init, rather than reusing the
+                        // class arguments positionally as extension arguments.
+                        self.instantiate_value_path(
+                            callee.id,
+                            callee.span,
+                            &resolution,
+                            None,
+                            None,
+                            None,
+                            true,
+                            Some(prefer_async_call),
+                            cs,
+                        )
+                    } else {
+                        self.synth_path_expression_with_policy(
+                            callee,
+                            path,
+                            None,
+                            true,
+                            Some(prefer_async_call),
+                            cs,
+                        )
+                    };
+                    cs.record_expr_ty(callee.id, result_ty);
+                    result_ty
+                }
+                _ => self.synth(callee, cs),
             }
-            hir::ExpressionKind::Path(path) => {
-                let result_ty = self.synth_path_expression_with_policy(
-                    callee,
-                    path,
-                    None,
-                    true,
-                    Some(prefer_async_call),
-                    cs,
-                );
-                cs.record_expr_ty(callee.id, result_ty);
-                result_ty
-            }
-            _ => self.synth(callee, cs),
         };
 
+        let callable_ty = self.callable_value_type(cs.structurally_resolve(callee_ty));
         let callee_def = self.resolve_callee(callee, cs);
         let arg_expectations = if !callee_ty.is_error() {
             self.argument_expectations_for_call(
-                callee, arguments, callee_ty, expect_ty, callee_def, cs,
+                callee,
+                arguments,
+                callable_ty,
+                constructor_result.or(expect_ty),
+                callee_def,
+                cs,
             )
         } else {
             None
         };
 
-        let apply_arguments: Vec<ApplyArgument<'ctx>> = arguments
-            .iter()
-            .enumerate()
-            .map(|(index, n)| {
-                let expected = arg_expectations
-                    .as_ref()
-                    .and_then(|items| items.get(index))
-                    .and_then(|item| *item);
-                let ty = if let Some(expected) = expected {
-                    let is_closure = matches!(n.expression.kind, hir::ExpressionKind::Closure(_));
-                    if expected.expects_async_callable && is_closure {
-                        self.with_forced_async_closure_expr(n.expression.id, || {
+        let apply_arguments: Vec<ApplyArgument<'ctx>> = cs.with_deferred_callee(callee.id, |cs| {
+            arguments
+                .iter()
+                .enumerate()
+                .map(|(index, n)| {
+                    let expected = arg_expectations
+                        .as_ref()
+                        .and_then(|items| items.get(index))
+                        .and_then(|item| *item);
+                    let ty = if let Some(expected) = expected {
+                        let is_closure =
+                            matches!(n.expression.kind, hir::ExpressionKind::Closure(_));
+                        if is_closure {
+                            self.with_closure_argument_context(
+                                n.expression.id,
+                                expected.expects_async_callable,
+                                || {
+                                    self.synth_with_expectation(
+                                        &n.expression,
+                                        Some(expected.ty),
+                                        cs,
+                                    )
+                                },
+                            )
+                        } else {
                             self.synth_with_expectation(&n.expression, Some(expected.ty), cs)
-                        })
+                        }
                     } else {
-                        self.synth_with_expectation(&n.expression, Some(expected.ty), cs)
+                        self.synth(&n.expression, cs)
+                    };
+                    ApplyArgument {
+                        id: n.expression.id,
+                        label: n.label.map(|n| n.identifier),
+                        ty,
+                        span: n.expression.span,
                     }
-                } else {
-                    self.synth(&n.expression, cs)
-                };
-                ApplyArgument {
-                    id: n.expression.id,
-                    label: n.label.map(|n| n.identifier),
-                    ty,
-                    span: n.expression.span,
-                }
-            })
-            .collect();
+                })
+                .collect()
+        });
 
         if callee_ty.is_error() || apply_arguments.iter().any(|arg| arg.ty.is_error()) {
             return Ty::error(self.gcx());
@@ -1488,6 +1316,9 @@ impl<'ctx> Checker<'ctx> {
             }
             _ => cs.infer_cx.next_ty_var(expression.span),
         };
+        if let Some(target) = constructor_result {
+            cs.add_goal(Goal::ConstructorResult(result_ty, target), expression.span);
+        }
         cs.record_expr_ty(expression.id, result_ty);
 
         let is_known_async_call = callee_def
@@ -1497,113 +1328,82 @@ impl<'ctx> Checker<'ctx> {
             self.results.borrow_mut().record_async_call(expression.id);
         }
 
-        let uses_function_overload_set = match &callee.kind {
+        let uses_function_overload_set = matches!(
+            self.results.borrow().value_resolution(callee.id),
+            Some(hir::Resolution::FunctionSet(_))
+        ) || match &callee.kind {
             hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => {
                 matches!(path.resolution, hir::Resolution::FunctionSet(_))
             }
             hir::ExpressionKind::Path(hir::ResolvedPath::Relative(_, segment)) => {
                 matches!(segment.resolution, hir::Resolution::FunctionSet(_))
             }
-            _ => matches!(
-                self.results.borrow().value_resolution(callee.id),
-                Some(hir::Resolution::FunctionSet(_))
-            ),
+            _ => false,
         };
         let may_resolve_async_via_overload = uses_function_overload_set
             || matches!(callee.kind, hir::ExpressionKind::InferredMember { .. });
 
         let data = ApplyGoalData {
             call_node_id: expression.id,
+            callee_node_id: Some(callee.id),
             call_span: expression.span,
             callee_ty,
             callee_source: callee_def,
             is_unsafe_context: self.unsafe_depth.get() > 0,
             result_ty,
-            _expect_ty: expect_ty,
             arguments: apply_arguments,
             skip_labels: false,
+            input_only_selection: false,
         };
         cs.add_goal(Goal::Apply(data), expression.span);
 
-        if !is_known_async_call && may_resolve_async_via_overload {
-            self.defer_async_call_surface_check(expression.id, expression.span);
+        if !is_known_async_call
+            && (may_resolve_async_via_overload || callee_ty.contains_inference())
+        {
+            self.defer_callable_async_surface_check(expression.id, callee.id, expression.span);
             return result_ty;
         }
 
         self.finish_async_call_surface_check(expression.id, expression.span, result_ty)
     }
 
-    fn compiler_call_context(
+    /// Arity and labels do not depend on argument types. Selecting a unique
+    /// constructor shape before checking expressions supplies collection literals
+    /// and callbacks with their context. Ambiguous type overloads stay unresolved.
+    pub(super) fn narrow_callable_shape(
         &self,
-        expression: &hir::Expression,
-        callee: &hir::Expression,
+        resolution: hir::Resolution,
         arguments: &[hir::ExpressionArgument],
-    ) -> Option<CompilerCallContext> {
-        let hir::ExpressionKind::Path(path) = &callee.kind else {
-            return None;
+    ) -> hir::Resolution {
+        let hir::Resolution::FunctionSet(candidates) = &resolution else {
+            return resolution;
         };
-        let resolution = match path {
-            hir::ResolvedPath::Resolved(path) => &path.resolution,
-            hir::ResolvedPath::Relative(_, segment) => &segment.resolution,
-        };
-        let candidates: &[DefinitionID] = match resolution {
-            hir::Resolution::FunctionSet(candidates) => candidates,
-            hir::Resolution::Definition(id, DefinitionKind::Function) => std::slice::from_ref(id),
-            _ => return None,
-        };
-        for &candidate in candidates {
-            let name = self.gcx().definition_symbol_or_fallback(candidate);
-            if self.gcx().symbol_eq(name, "blocking")
-                && self.definition_is_in_std_module(candidate, "task")
-                && let Some(closure) = arguments.first()
-            {
-                return Some(CompilerCallContext::Blocking {
-                    callee: candidate,
-                    closure_span: closure.expression.span,
-                    call_span: expression.span,
-                });
-            }
-            if self.gcx().symbol_eq(name, "addCleanup")
-                && self.definition_is_in_std_module(candidate, "runtime")
-                && let (Some(state), Some(callback)) = (arguments.get(1), arguments.get(2))
-            {
-                return Some(CompilerCallContext::AddCleanup {
-                    callee: candidate,
-                    state_span: state.expression.span,
-                    callback_span: callback.expression.span,
-                });
-            }
+        let gcx = self.gcx();
+        let matching: Vec<_> = candidates
+            .iter()
+            .copied()
+            .filter(|&id| {
+                let signature = gcx.get_signature(id);
+                validate_arity(signature, arguments.len()).is_ok()
+                    && match_arguments_to_parameters(
+                        &signature.inputs,
+                        signature.is_variadic,
+                        arguments.iter().map(|argument| {
+                            (
+                                argument.label.map(|label| label.identifier),
+                                argument.expression.span,
+                            )
+                        }),
+                        false,
+                    )
+                    .is_ok()
+            })
+            .collect();
+        if let [id] = matching.as_slice() {
+            hir::Resolution::Definition(*id, gcx.definition_kind(*id))
+        } else {
+            resolution
         }
-        None
-    }
-
-    fn definition_is_in_std_module(&self, id: DefinitionID, module: &str) -> bool {
-        let Some(std_package) = self.gcx().std_package_index() else {
-            return false;
-        };
-        if id.package() != std_package {
-            return false;
-        }
-
-        let output = self.gcx().resolution_output(std_package);
-        let mut current = id;
-        while let Some(parent) = output.definition_to_parent.get(&current).copied() {
-            if parent == current {
-                break;
-            }
-            current = parent;
-            if matches!(
-                output.definition_to_kind.get(&current),
-                Some(DefinitionKind::Module)
-            ) && output
-                .definition_to_ident
-                .get(&current)
-                .is_some_and(|ident| self.gcx().symbol_eq(ident.symbol, module))
-            {
-                return true;
-            }
-        }
-        false
     }
 
     pub(super) fn argument_expectations_for_call(
@@ -1634,14 +1434,10 @@ impl<'ctx> Checker<'ctx> {
             }
         }
 
-        if let Some(expectations) = self.constructor_argument_expectations(callee, arguments, cs) {
-            return Some(expectations);
-        }
-
         // Get the callee type (may still have type params if not yet instantiated)
         let callee_ty = cs.infer_cx.resolve_vars_if_possible(callee_ty);
         let (instantiated_inputs, instantiated_output) = match callee_ty.kind() {
-            TyKind::FnPointer { inputs, output } | TyKind::Closure { inputs, output, .. } => {
+            TyKind::FnPointer { inputs, output, .. } | TyKind::Closure { inputs, output, .. } => {
                 (inputs.to_vec(), output)
             }
             _ => {
@@ -1720,61 +1516,6 @@ impl<'ctx> Checker<'ctx> {
             callee_def,
             &instantiated_inputs,
             &parameter_async_expectations,
-            arguments,
-        )
-    }
-
-    /// Argument expectations for the initializer shorthand `Type(...)`.
-    ///
-    /// The callee of a shorthand call is an overload set over the type's `new`
-    /// methods rather than a resolved function, so the `FnPointer` path cannot
-    /// supply parameter types. Without them an inferred member argument has no
-    /// base type to resolve against and `Type(field: .case(x))` fails, even
-    /// though the equivalent `Type.new(field: .case(x))` succeeds.
-    ///
-    /// This deliberately gives up unless a single `new` exists. Overload
-    /// selection probes candidates speculatively and rolls back inference
-    /// (`solve_disjunction`), but arguments are synthesized once, up front, and
-    /// that is not rolled back: recorded expression types, adjustments and
-    /// resolutions all persist. Guessing a candidate that later loses the probe
-    /// would leave arguments checked against the wrong parameter types.
-    ///
-    /// Parameters whose type is not concrete are skipped for the same reason: a
-    /// bare type parameter is not a usable expectation, and the apply goal
-    /// infers those arguments anyway.
-    fn constructor_argument_expectations(
-        &self,
-        callee: &hir::Expression,
-        arguments: &[hir::ExpressionArgument],
-        cs: &mut Cs<'ctx>,
-    ) -> Option<Vec<Option<ArgumentExpectation<'ctx>>>> {
-        let nominal = self.resolve_callee_nominal(callee, cs)?;
-        let name = self.gcx().intern_symbol("new");
-        let candidates = self.collect_static_member_candidates(TypeHead::Nominal(nominal), name);
-        let [constructor] = candidates.as_slice() else {
-            return None;
-        };
-        let constructor = *constructor;
-
-        if !self.gcx().generics_of(constructor).is_empty() {
-            return None;
-        }
-
-        let signature = self.gcx().get_signature(constructor);
-        let parameter_tys: Vec<Ty<'ctx>> = signature.inputs.iter().map(|input| input.ty).collect();
-        if !parameter_tys.iter().all(|ty| is_expectation_usable(*ty)) {
-            return None;
-        }
-
-        let parameter_expects_async: Vec<bool> = parameter_tys
-            .iter()
-            .map(|ty| self.ty_is_known_async_callable(*ty))
-            .collect();
-
-        self.map_argument_expectations(
-            Some(constructor),
-            &parameter_tys,
-            &parameter_expects_async,
             arguments,
         )
     }
@@ -1887,14 +1628,6 @@ impl<'ctx> Checker<'ctx> {
         let gcx = self.gcx();
         let constraints = crate::sema::tycheck::constraints::canonical_constraints_of(gcx, def_id);
 
-        // Look for callable bounds on this parameter.
-        let fn_def = gcx.std_item_def(hir::StdItem::Fn);
-        let fn_mut_def = gcx.std_item_def(hir::StdItem::FnMut);
-        let async_fn_def = gcx.std_item_def(hir::StdItem::AsyncFn);
-        let async_fn_mut_def = gcx.std_item_def(hir::StdItem::AsyncFnMut);
-        let fn_once_def = gcx.std_item_def(hir::StdItem::FnOnce);
-        let async_fn_once_def = gcx.std_item_def(hir::StdItem::AsyncFnOnce);
-
         for constraint in constraints {
             if let crate::sema::models::Constraint::Bound {
                 ty: bound_ty,
@@ -1911,19 +1644,10 @@ impl<'ctx> Checker<'ctx> {
                     continue;
                 }
 
-                let is_fn_trait = fn_def == Some(interface.id)
-                    || fn_mut_def == Some(interface.id)
-                    || fn_once_def == Some(interface.id)
-                    || async_fn_def == Some(interface.id)
-                    || async_fn_mut_def == Some(interface.id)
-                    || async_fn_once_def == Some(interface.id);
-
-                if !is_fn_trait {
+                let Some(kind) = crate::sema::models::callable_kind(gcx, interface.id) else {
                     continue;
-                }
-                let expects_async_callable = async_fn_def == Some(interface.id)
-                    || async_fn_mut_def == Some(interface.id)
-                    || async_fn_once_def == Some(interface.id);
+                };
+                let expects_async_callable = kind == crate::sema::models::ClosureKind::AsyncFn;
 
                 interface = instantiate_interface_ref_with_args(gcx, interface, instantiation_args);
 
@@ -1946,6 +1670,10 @@ impl<'ctx> Checker<'ctx> {
                 let fn_signature_ty = match args_ty.kind() {
                     TyKind::Tuple(inputs) => {
                         Some(gcx.store.interners.intern_ty(TyKind::FnPointer {
+                            effects: crate::sema::models::FunctionPointerEffects {
+                                kind,
+                                ..Default::default()
+                            },
                             inputs,
                             output: output_ty,
                         }))
@@ -2001,8 +1729,8 @@ impl<'ctx> Checker<'ctx> {
             TyKind::Parameter(param) => {
                 Self::record_generic_binding(param.index, GenericArgument::Type(actual), inferred);
             }
-            TyKind::Reference(pattern_inner, _) | TyKind::Pointer(pattern_inner, _) => {
-                if let TyKind::Reference(actual_inner, _) | TyKind::Pointer(actual_inner, _) =
+            TyKind::Reference(pattern_inner) | TyKind::Pointer(pattern_inner, _) => {
+                if let TyKind::Reference(actual_inner) | TyKind::Pointer(actual_inner, _) =
                     actual.kind()
                 {
                     Self::record_generic_bindings_from_ty(pattern_inner, actual_inner, inferred);
@@ -2031,10 +1759,12 @@ impl<'ctx> Checker<'ctx> {
                 }
             }
             TyKind::FnPointer {
+                effects: _,
                 inputs: pattern_inputs,
                 output: pattern_output,
             } => {
                 let TyKind::FnPointer {
+                    effects: _,
                     inputs: actual_inputs,
                     output: actual_output,
                 } = actual.kind()
@@ -2173,15 +1903,26 @@ impl<'ctx> Checker<'ctx> {
             }
             _ => expect_ty,
         };
-        let base_ty = cs.infer_cx.resolve_vars_if_possible(base_ty);
+        let mut base_ty = cs.infer_cx.resolve_vars_if_possible(base_ty);
 
         let head = type_head_from_value_ty(base_ty)?;
+        let mut resolution =
+            self.resolve_static_member_resolution(head, base_ty, name, span, false);
+        // An overload set is still a successful outer lookup. Its own
+        // signatures, rather than a success factory, must guide the arguments.
+        if matches!(resolution, hir::Resolution::Error)
+            && let Some((success, _)) = self.gcx().result_parts(base_ty)
+        {
+            let success = cs.structurally_resolve(success);
+            let head = type_head_from_value_ty(success)?;
+            resolution = self.resolve_static_member_resolution(head, success, name, span, false);
+            base_ty = success;
+        }
         let base_args = match base_ty.kind() {
             TyKind::Adt(_, args) if !args.is_empty() => Some(args),
             _ => None,
         };
 
-        let resolution = self.resolve_static_member_resolution(head, base_ty, name, span, false);
         let def_id = resolution.definition_id()?;
         let signature = self.gcx().get_signature(def_id);
 
@@ -2212,11 +1953,25 @@ impl<'ctx> Checker<'ctx> {
         expect_ty: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
-        let prefer_async_call = self.direct_await_operand.get() == Some(expression.id);
+        self.record_await_scope_call(expression.id);
+        let prefer_async_call = self.call_is_awaited();
 
+        if name.symbol.as_str() == "init"
+            && matches!(&receiver.kind, hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path))
+                if path.segments.len() == 1 && path.segments[0].identifier.symbol.as_str() == "self"
+                    && matches!(path.resolution, hir::Resolution::LocalVariable(id) if self.constructor_self.get() == Some(id)))
+        {
+            return self.synth_self_initializer(expression, receiver, name, arguments, cs);
+        }
         // Static member invocation on a type (e.g., `List[Int].new()`).
+        if name.symbol.as_str() == "init"
+            && matches!(&receiver.kind, hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path))
+                if path.segments.len() == 1 && path.segments[0].identifier.symbol.as_str() == "super")
+        {
+            return self.synth_base_initializer(expression, receiver, name, arguments, cs);
+        }
         if let hir::ExpressionKind::Path(path) = &receiver.kind {
-            let (resolution, base_args) =
+            let (resolution, base_args, _) =
                 self.resolve_value_path_resolution_with_args(path, receiver.span, true, cs);
             if let Some(def_id) = self.value_path_def_id(&resolution) {
                 match self.gcx().definition_kind(def_id) {
@@ -2257,12 +2012,15 @@ impl<'ctx> Checker<'ctx> {
                             &resolution,
                             &segment,
                             base_args,
+                            Some(base_ty),
+                            cs,
                         );
                         let callee_ty = self.instantiate_value_path(
                             receiver.id,
                             receiver.span,
                             &resolution,
                             instantiation_args,
+                            Some(base_ty),
                             expect_ty,
                             true,
                             Some(prefer_async_call),
@@ -2290,14 +2048,15 @@ impl<'ctx> Checker<'ctx> {
 
                         let data = ApplyGoalData {
                             call_node_id: expression.id,
+                            callee_node_id: None,
                             call_span: expression.span,
                             callee_ty,
                             callee_source: resolution.definition_id(),
                             is_unsafe_context: self.unsafe_depth.get() > 0,
                             result_ty,
-                            _expect_ty: expect_ty,
                             arguments: apply_arguments,
                             skip_labels: false,
+                            input_only_selection: false,
                         };
                         cs.add_goal(Goal::Apply(data), expression.span);
 
@@ -2323,7 +2082,38 @@ impl<'ctx> Checker<'ctx> {
             }
         }
 
-        let recv_ty = self.synth(receiver, cs);
+        let is_super = matches!(&receiver.kind,hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) if path.segments.len() == 1 && path.segments[0].identifier.symbol.as_str() == "super");
+        let recv_ty = if is_super {
+            let hir::ExpressionKind::Path(path) = &receiver.kind else {
+                unreachable!()
+            };
+            let original =
+                self.synth_path_expression_with_policy(receiver, path, None, false, None, cs);
+            cs.record_expr_ty(receiver.id, original);
+            if let Some(base) = self.gcx().class_base(original) {
+                let target = base;
+                cs.append_adjustments(
+                    receiver.id,
+                    vec![crate::sema::tycheck::solve::Adjustment::ClassUpcast { to: target }],
+                );
+                self.gcx()
+                    .store
+                    .class_super_calls
+                    .borrow_mut()
+                    .entry(self.gcx().package_index())
+                    .or_default()
+                    .insert(expression.span);
+                target
+            } else {
+                self.gcx().dcx().emit_error(
+                    "super requires an instance receiver with a base class".into(),
+                    Some(receiver.span),
+                );
+                Ty::error(self.gcx())
+            }
+        } else {
+            self.synth(receiver, cs)
+        };
         // Collection literals need the receiver's parameter types even when
         // it was inferred from an earlier expression, such as a pointer cast.
         // Keep closure inference on its existing path: its speculative callable
@@ -2337,7 +2127,6 @@ impl<'ctx> Checker<'ctx> {
         if has_collection_argument && cs.infer_cx.resolve_vars_if_possible(recv_ty).is_infer() {
             cs.solve_intermediate();
         }
-        let receiver_can_mut_borrow = self.can_mutably_borrow_receiver(receiver, cs);
         let arg_expectations = if recv_ty.is_error() {
             None
         } else {
@@ -2354,10 +2143,12 @@ impl<'ctx> Checker<'ctx> {
                     .and_then(|item| *item);
                 let ty = if let Some(expected) = expected {
                     let is_closure = matches!(n.expression.kind, hir::ExpressionKind::Closure(_));
-                    if expected.expects_async_callable && is_closure {
-                        self.with_forced_async_closure_expr(n.expression.id, || {
-                            self.synth_with_expectation(&n.expression, Some(expected.ty), cs)
-                        })
+                    if is_closure {
+                        self.with_closure_argument_context(
+                            n.expression.id,
+                            expected.expects_async_callable,
+                            || self.synth_with_expectation(&n.expression, Some(expected.ty), cs),
+                        )
                     } else {
                         self.synth_with_expectation(&n.expression, Some(expected.ty), cs)
                     }
@@ -2383,15 +2174,20 @@ impl<'ctx> Checker<'ctx> {
 
         cs.add_goal(
             Goal::MethodCall(MethodCallData {
+                receiver_addressable: self.receiver_is_addressable(receiver, cs),
+                selected: self
+                    .results
+                    .borrow()
+                    .selected_method_calls
+                    .get(&expression.id)
+                    .copied(),
                 node_id: expression.id,
                 receiver: recv_ty,
-                receiver_can_mut_borrow,
                 reciever_node: receiver.id,
                 reciever_span: receiver.span,
                 is_unsafe_context: self.unsafe_depth.get() > 0,
                 method_ty: method_ty,
                 prefer_async: prefer_async_call,
-                expect_ty,
                 name: *name,
                 arguments: args,
                 result: result_ty,
@@ -2424,12 +2220,36 @@ impl<'ctx> Checker<'ctx> {
         // earlier level must not hide a viable method on the pointee.
         let mut candidates = Vec::new();
         loop {
-            if let Some(head) = type_head_from_value_ty(candidate_ty) {
-                candidates.extend(
-                    self.collect_inherent_instance_candidates(head, name.symbol)
-                        .into_iter()
-                        .map(|def_id| (candidate_ty, def_id)),
-                );
+            // Inherited methods are declared in their owner's coordinates.
+            // Pair them with that instantiated ancestor before supplying a
+            // collection/callback context, just as actual method lookup does.
+            let ancestry = gcx.class_ancestry(candidate_ty);
+            let owners = if ancestry.is_empty() {
+                vec![candidate_ty]
+            } else {
+                ancestry
+            };
+            for owner in owners {
+                for lookup in [owner, Ty::new(TyKind::Reference(owner), gcx)] {
+                    if let Some(head) = type_head_from_value_ty(lookup) {
+                        for def_id in self.collect_inherent_instance_candidates(head, name.symbol) {
+                            let applicable = gcx.definition_parent(def_id)
+                                .and_then(|parent| gcx.get_impl_target_ty(parent).map(|target| (parent, target)))
+                                .is_none_or(|(parent, target)| cs.infer_cx.probe(|_| {
+                                    let arguments = cs.infer_cx.fresh_args_for_def(parent, name.span);
+                                    let target = crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args(gcx, target, arguments);
+                                    crate::sema::tycheck::utils::unify::TypeUnifier::new(cs.infer_cx.clone())
+                                        .unify(
+                                            crate::sema::tycheck::utils::normalize_aliases(gcx, target),
+                                            crate::sema::tycheck::utils::normalize_aliases(gcx, lookup),
+                                        ).is_ok()
+                                }));
+                            if applicable {
+                                candidates.push((lookup, def_id));
+                            }
+                        }
+                    }
+                }
             }
 
             let Some(inner) = candidate_ty.dereference() else {
@@ -2444,6 +2264,11 @@ impl<'ctx> Checker<'ctx> {
             return None;
         }
 
+        // An explicit &T finds the same &T extension both directly and by
+        // dereferencing then auto-referencing T. Freshening that candidate twice
+        // creates unrelated callable-output variables and discards its context.
+        let mut seen_candidates = rustc_hash::FxHashSet::default();
+        candidates.retain(|candidate| seen_candidates.insert(*candidate));
         let mut candidate_inputs: Vec<Vec<Option<ArgumentExpectation<'ctx>>>> = vec![];
 
         for (base_ty, def_id) in candidates {
@@ -2468,7 +2293,11 @@ impl<'ctx> Checker<'ctx> {
                     let Some(impl_target) = gcx.get_impl_target_ty(parent) else {
                         continue;
                     };
-                    Self::record_generic_bindings_from_ty(impl_target, base_ty, &mut inferred);
+                    Self::record_generic_bindings_from_ty(
+                        crate::sema::tycheck::utils::normalize_aliases(gcx, impl_target),
+                        crate::sema::tycheck::utils::normalize_aliases(gcx, base_ty),
+                        &mut inferred,
+                    );
                     if inferred
                         .iter()
                         .take(generics.parent_count)
@@ -2569,63 +2398,6 @@ impl<'ctx> Checker<'ctx> {
         }
     }
 
-    pub(super) fn method_call_can_yield_mutable_reference(
-        &self,
-        receiver_ty: Ty<'ctx>,
-        name: &crate::span::Identifier,
-        argument_count: usize,
-        cs: &Cs<'ctx>,
-    ) -> bool {
-        let gcx = self.gcx();
-
-        let mut base_ty = cs.infer_cx.resolve_vars_if_possible(receiver_ty);
-        if base_ty.is_error() || base_ty.is_infer() || base_ty.contains_inference() {
-            return false;
-        }
-
-        loop {
-            match base_ty.kind() {
-                TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => {
-                    base_ty = cs.infer_cx.resolve_vars_if_possible(inner);
-                    if base_ty.is_error() || base_ty.is_infer() || base_ty.contains_inference() {
-                        return false;
-                    }
-                }
-                _ => break,
-            }
-        }
-
-        let Some(head) = type_head_from_value_ty(base_ty) else {
-            return false;
-        };
-
-        let base_args = match base_ty.kind() {
-            TyKind::Adt(_, args) if !args.is_empty() => Some(args),
-            _ => None,
-        };
-
-        self.collect_inherent_instance_candidates(head, name.symbol)
-            .into_iter()
-            .filter(|def_id| gcx.is_definition_visible(*def_id, self.current_def))
-            .any(|def_id| {
-                let signature = gcx.get_signature(def_id);
-                let signature = if let Some(base_args) = base_args {
-                    instantiate_signature_with_args(gcx, signature, base_args)
-                } else {
-                    signature.clone()
-                };
-
-                if signature.inputs.len() != argument_count + 1 {
-                    return false;
-                }
-
-                matches!(
-                    signature.output.kind(),
-                    TyKind::Reference(_, hir::Mutability::Mutable)
-                )
-            })
-    }
-
     pub(super) fn freshen_method_expectation_ty(
         &self,
         def_id: DefinitionID,
@@ -2645,7 +2417,7 @@ impl<'ctx> Checker<'ctx> {
                 TyKind::Parameter(param) => {
                     indices.insert(param.index);
                 }
-                TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => {
+                TyKind::Reference(inner) | TyKind::Pointer(inner, _) => {
                     collect_generic_param_indices(inner, indices);
                 }
                 TyKind::Tuple(items) => {
@@ -2653,7 +2425,7 @@ impl<'ctx> Checker<'ctx> {
                         collect_generic_param_indices(item, indices);
                     }
                 }
-                TyKind::FnPointer { inputs, output } => {
+                TyKind::FnPointer { inputs, output, .. } => {
                     for &input in inputs.iter() {
                         collect_generic_param_indices(input, indices);
                     }
@@ -2732,102 +2504,6 @@ impl<'ctx> Checker<'ctx> {
         members
     }
 
-    pub(super) fn constructor_nominal_from_resolution(
-        &self,
-        resolution: &hir::Resolution,
-    ) -> Option<DefinitionID> {
-        let gcx = self.gcx();
-        match resolution {
-            hir::Resolution::Definition(id, DefinitionKind::Struct) => Some(*id),
-            hir::Resolution::SelfConstructor(id) | hir::Resolution::SelfTypeAlias(id) => {
-                match gcx.definition_kind(*id) {
-                    DefinitionKind::Struct => Some(*id),
-                    DefinitionKind::Impl => match gcx.get_impl_type_head(*id)? {
-                        TypeHead::Nominal(nominal) => Some(nominal),
-                        _ => None,
-                    },
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
-    }
-
-    fn type_alias_constructor_target(
-        &self,
-        alias_id: DefinitionID,
-        alias_args: Option<GenericArguments<'ctx>>,
-    ) -> Option<(DefinitionID, Option<GenericArguments<'ctx>>)> {
-        let gcx = self.gcx();
-        let mut target = gcx.try_get_alias_type(alias_id)?;
-        if let Some(args) = alias_args {
-            target = instantiate_ty_with_args(gcx, target, args);
-        }
-        target = crate::sema::tycheck::utils::normalize_aliases(gcx, target);
-
-        let TyKind::Adt(def, target_args) = target.kind() else {
-            return None;
-        };
-        if def.kind != crate::sema::models::AdtKind::Struct {
-            return None;
-        }
-
-        // Constructor methods inherit the target struct's generic parameters, not
-        // the alias's. Forward the normalized target arguments so aliases that
-        // reorder or fix parameters bind the same constructor as the named struct.
-        let target_args = if target_args.is_empty() {
-            None
-        } else {
-            Some(target_args)
-        };
-        Some((def.id, target_args))
-    }
-
-    pub(super) fn bind_constructor_overload_set(
-        &self,
-        node_id: NodeID,
-        nominal: DefinitionID,
-        span: Span,
-        var_ty: Ty<'ctx>,
-        instantiation_args: Option<GenericArguments<'ctx>>,
-        cs: &mut Cs<'ctx>,
-    ) -> bool {
-        let gcx = self.gcx();
-        let head = TypeHead::Nominal(nominal);
-        let name = gcx.intern_symbol("new");
-        let constructors = self.collect_static_member_candidates(head, name);
-
-        if constructors.is_empty() {
-            let name = gcx.definition_ident(nominal).symbol;
-            gcx.dcx().emit_error(
-                format!("type '{name}' defines no methods named 'new'").into(),
-                Some(span),
-            );
-            return false;
-        }
-
-        let mut branches = Vec::with_capacity(constructors.len());
-        for ctor in constructors {
-            let candidate_ty = gcx.get_type(ctor);
-            branches.push(DisjunctionBranch {
-                goal: Goal::BindOverload(BindOverloadGoalData {
-                    node_id,
-                    var_ty,
-                    candidate_ty,
-                    source: ctor,
-                    instantiation_args,
-                }),
-                source: Some(ctor),
-                autoref_cost: 0,
-                matches_expectation: false,
-                matches_async_preference: false,
-                deref_steps: 0,
-            });
-        }
-
-        cs.add_goal(Goal::Disjunction(branches), span);
-        true
-    }
     pub(super) fn synth_if_expression(
         &self,
         expression: &hir::Expression,
@@ -2876,7 +2552,7 @@ impl<'ctx> Checker<'ctx> {
                 let result_ty =
                     expectation.unwrap_or_else(|| cs.infer_cx.next_ty_var(expression.span));
 
-                if matches!(resolved_then.kind(), TyKind::Never) {
+                if expectation.is_some() || matches!(resolved_then.kind(), TyKind::Never) {
                     cs.add_goal(
                         Goal::Coerce {
                             node_id: node.then_block.id,
@@ -2893,7 +2569,7 @@ impl<'ctx> Checker<'ctx> {
                     .else_block
                     .as_ref()
                     .expect("else_ty exists iff else block exists");
-                if matches!(resolved_else.kind(), TyKind::Never) {
+                if expectation.is_some() || matches!(resolved_else.kind(), TyKind::Never) {
                     cs.add_goal(
                         Goal::Coerce {
                             node_id: else_expr.id,
@@ -2936,7 +2612,7 @@ impl<'ctx> Checker<'ctx> {
         // Typecheck the expression being matched
         let expr_ty = self.synth(&condition.expression, cs);
         if expr_ty.is_error() {
-            GatherLocalsVisitor::from_match_arm(cs, self, &condition.pattern);
+            GatherLocalsVisitor::from_binding_condition(cs, self, condition);
             self.mark_pattern_bindings_error(&condition.pattern);
             return Ty::error(self.gcx());
         }
@@ -2965,7 +2641,7 @@ impl<'ctx> Checker<'ctx> {
         }
 
         // Gather local bindings from the pattern before checking
-        GatherLocalsVisitor::from_match_arm(cs, self, &condition.pattern);
+        GatherLocalsVisitor::from_binding_condition(cs, self, condition);
 
         // Check the pattern against the expression's type
         let scrutinee_id = condition.expression.id;
@@ -3006,7 +2682,7 @@ impl<'ctx> Checker<'ctx> {
             self.with_infer_ctx(scrutinee_cs.infer_cx.clone(), || {
                 let ty = self.synth(&node.value, &mut scrutinee_cs);
                 scrutinee_cs.solve_intermediate();
-                self.commit_constraint_results(&scrutinee_cs);
+                self.commit_constraint_results(&mut scrutinee_cs);
                 _cs.merge(scrutinee_cs);
                 ty
             })
@@ -3099,9 +2775,13 @@ impl<'ctx> Checker<'ctx> {
                 // Check if the resolved arm type is Never
                 let resolved_arm_ty = arm_cs.infer_cx.resolve_vars_if_possible(arm_ty);
 
-                // Use coercion for Never type (!) arms to allow diverging branches,
-                // but use equality for other arms to preserve type inference behavior
-                if matches!(resolved_arm_ty.kind(), TyKind::Never) {
+                if !matches!(resolved_arm_ty.kind(), TyKind::Never) {
+                    all_arms_never = false;
+                }
+                // Contextual arms use ordinary coercions. Without a supplied
+                // result type, equality retains common-type inference; Never
+                // never binds that common type on its own.
+                if had_expectation || matches!(resolved_arm_ty.kind(), TyKind::Never) {
                     arm_cs.add_goal(
                         Goal::Coerce {
                             node_id: arm.body.id,
@@ -3111,13 +2791,12 @@ impl<'ctx> Checker<'ctx> {
                         arm.body.span,
                     );
                 } else {
-                    all_arms_never = false;
                     arm_cs.equal(result_ty, arm_ty, arm.body.span);
                 }
 
                 // Solve and commit each arm independently
                 arm_cs.solve_intermediate();
-                self.commit_constraint_results(&arm_cs);
+                self.commit_constraint_results(&mut arm_cs);
                 _cs.merge(arm_cs);
             }
 
@@ -3208,7 +2887,7 @@ impl<'ctx> Checker<'ctx> {
                     }
                 }
 
-                self.commit_constraint_results(&arm_cs);
+                self.commit_constraint_results(&mut arm_cs);
                 cs.merge(arm_cs);
                 (result_ty, wrap_some, optional_args)
             };
@@ -3235,7 +2914,7 @@ impl<'ctx> Checker<'ctx> {
             none_cs.equal(result_ty, none_ty, none_arm.body.span);
 
             none_cs.solve_intermediate();
-            self.commit_constraint_results(&none_cs);
+            self.commit_constraint_results(&mut none_cs);
             cs.merge(none_cs);
 
             let resolved = shared_infer_cx.resolve_vars_if_possible(result_ty);
@@ -3255,11 +2934,16 @@ impl<'ctx> Checker<'ctx> {
         expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
-        // For negate/bitwise-not the result type equals the operand type, so
-        // forward the expectation to help infer literal types
-        // (e.g. `let x: int8 = -56`), mirroring synth_binary_expression.
+        // Numeric expectations guide literals, but boxing/Optional wrapping
+        // belongs to the completed expression, not its operand.
+        let numeric_expectation = expectation.filter(|ty| {
+            matches!(
+                cs.structurally_resolve(*ty).kind(),
+                TyKind::Int(_) | TyKind::UInt(_) | TyKind::Float(_)
+            )
+        });
         let operand_expectation = match operator {
-            hir::UnaryOperator::Negate | hir::UnaryOperator::BitwiseNot => expectation,
+            hir::UnaryOperator::Negate | hir::UnaryOperator::BitwiseNot => numeric_expectation,
             _ => None,
         };
         let operand_ty = self.synth_with_expectation(operand, operand_expectation, cs);
@@ -3269,9 +2953,9 @@ impl<'ctx> Checker<'ctx> {
         let result_ty = cs.infer_cx.next_ty_var(expression.span);
 
         let data = UnOpGoalData {
+            receiver_addressable: self.receiver_is_addressable(operand, cs),
             lhs: operand_ty,
             rho: result_ty,
-            expectation,
             operator,
             span: expression.span,
             node_id: expression.id,
@@ -3291,8 +2975,15 @@ impl<'ctx> Checker<'ctx> {
         expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
-        // For arithmetic/bitwise ops where result type = operand type, forward expectation
-        // to help infer literal types (e.g., 2 * 3 with expectation isize)
+        // Only a numeric expectation can guide the operands' literal types.
+        // Forwarding an erased/Optional result type into nested operators would
+        // coerce their results before this operator consumes them.
+        let numeric_expectation = expectation.filter(|ty| {
+            matches!(
+                cs.structurally_resolve(*ty).kind(),
+                TyKind::Int(_) | TyKind::UInt(_) | TyKind::Float(_)
+            )
+        });
         let operand_expectation = match operator {
             hir::BinaryOperator::Add
             | hir::BinaryOperator::Sub
@@ -3303,22 +2994,33 @@ impl<'ctx> Checker<'ctx> {
             | hir::BinaryOperator::BitOr
             | hir::BinaryOperator::BitXor
             | hir::BinaryOperator::BitShl
-            | hir::BinaryOperator::BitShr => expectation,
+            | hir::BinaryOperator::BitShr => numeric_expectation,
             // Comparison/boolean ops return bool, not operand type
             _ => None,
         };
         let lhs_ty = self.synth_with_expectation(lhs, operand_expectation, cs);
-        let rhs_ty = self.synth_with_expectation(rhs, operand_expectation, cs);
+        // Only primitive arithmetic has the same operand/result type. A
+        // custom operator's associated Output never supplies its RHS type.
+        let rhs_expectation = match cs.structurally_resolve(lhs_ty).kind() {
+            TyKind::Int(_)
+            | TyKind::UInt(_)
+            | TyKind::Float(_)
+            | TyKind::Infer(
+                crate::sema::models::InferTy::IntVar(_) | crate::sema::models::InferTy::FloatVar(_),
+            ) => operand_expectation,
+            _ => None,
+        };
+        let rhs_ty = self.synth_with_expectation(rhs, rhs_expectation, cs);
         if lhs_ty.is_error() || rhs_ty.is_error() {
             return Ty::error(self.gcx());
         }
         let result_ty = cs.infer_cx.next_ty_var(expression.span);
 
         let data = BinOpGoalData {
+            receiver_addressable: self.receiver_is_addressable(lhs, cs),
             lhs: lhs_ty,
             rhs: rhs_ty,
             rho: result_ty,
-            expectation,
             operator,
             span: expression.span,
             node_id: expression.id,
@@ -3338,76 +3040,13 @@ impl<'ctx> Checker<'ctx> {
         rhs: &hir::Expression,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
-        // Resolve the member before asking whether the LHS is a mutable place. A
-        // computed property is a value, not a place, but compound assignment can
-        // still update it by reading into a temporary and writing through its setter.
+        // Evaluate the receiver once. Whether its caller slot must be writable
+        // depends on the selected operator, not merely assignment syntax.
         let lhs_ty = self.synth(lhs, cs);
         if lhs_ty.is_error() {
             return Ty::error(self.gcx());
         }
         cs.solve_intermediate();
-
-        let property_read = cs.resolved_property_reads().get(&lhs.id).copied();
-        if let Some(property) = property_read {
-            let hir::ExpressionKind::Member { target, name } = &lhs.kind else {
-                unreachable!("resolved property read must originate from a member expression");
-            };
-
-            let Some(setter_id) = property.setter_id else {
-                self.gcx().dcx().emit_error(
-                    format!(
-                        "cannot apply compound assignment to read-only property '{}'; property has no setter",
-                        self.gcx().symbol_text(name.symbol)
-                    ),
-                    Some(lhs.span),
-                );
-                return Ty::error(self.gcx());
-            };
-
-            if property.getter_is_async {
-                self.cancel_async_property_surface_check(lhs.id);
-                self.gcx().dcx().emit_error(
-                    format!(
-                        "async getter for property '{}' cannot be used in compound assignment",
-                        self.gcx().symbol_text(name.symbol)
-                    ),
-                    Some(lhs.span),
-                );
-                return Ty::error(self.gcx());
-            }
-
-            if !self.require_mut_receiver_borrow(target, cs) {
-                return Ty::error(self.gcx());
-            }
-
-            let getter_sig = self.gcx().get_signature(property.getter_id);
-            let getter_consumes_receiver = getter_sig
-                .inputs
-                .first()
-                .is_some_and(|input| !matches!(input.ty.kind(), TyKind::Reference(_, _)));
-            if getter_consumes_receiver && !self.gcx().is_type_copyable(property.receiver_ty) {
-                self.gcx().dcx().emit_error(
-                    format!(
-                        "compound assignment to property '{}' cannot use a consuming getter on non-Copy receiver type '{}'",
-                        self.gcx().symbol_text(name.symbol),
-                        property.receiver_ty.format(self.gcx())
-                    ),
-                    Some(lhs.span),
-                );
-                return Ty::error(self.gcx());
-            }
-
-            cs.record_property_write(
-                expression.id,
-                crate::sema::tycheck::solve::ResolvedPropertyWrite {
-                    property_id: property.property_id,
-                    setter_id,
-                    ty: property.ty,
-                },
-            );
-        } else if !self.require_mut_place(lhs, cs) {
-            return Ty::error(self.gcx());
-        }
 
         let rhs_ty = self.synth(rhs, cs);
         if rhs_ty.is_error() {
@@ -3415,6 +3054,7 @@ impl<'ctx> Checker<'ctx> {
         }
 
         let data = AssignOpGoalData {
+            receiver_addressable: self.receiver_is_addressable(lhs, cs),
             lhs: lhs_ty,
             rhs: rhs_ty,
             operator,
@@ -3425,9 +3065,46 @@ impl<'ctx> Checker<'ctx> {
         };
 
         cs.add_goal(Goal::AssignOp(data), expression.span);
+        self.pending_compound_assignments
+            .borrow_mut()
+            .push((expression.id, lhs.clone()));
 
         // Assign ops return void/unit
         self.gcx().types.void
+    }
+
+    /// Only intrinsic writeback assigns the caller's slot. Custom operators
+    /// use ordinary method semantics, including writable reference values.
+    pub(super) fn finalize_compound_assignments(&self, cs: &mut Cs<'ctx>) {
+        let pending = std::mem::take(&mut *self.pending_compound_assignments.borrow_mut());
+        let overloads = cs.resolved_overload_sources();
+        let properties = cs.resolved_property_reads();
+        for (node, lhs) in pending {
+            if cs.expr_ty(lhs.id).is_none() {
+                self.pending_compound_assignments
+                    .borrow_mut()
+                    .push((node, lhs));
+                continue;
+            }
+            if overloads.contains_key(&node) {
+                continue;
+            }
+            if self.pending_indices.borrow().contains_key(&lhs.id) {
+                self.index_compound_uses.borrow_mut().insert(lhs.id);
+                continue;
+            }
+            let Some(_) = properties.get(&lhs.id) else {
+                self.require_mut_place(&lhs, cs);
+                continue;
+            };
+            let hir::ExpressionKind::Member { name, .. } = &lhs.kind else {
+                unreachable!("property compound assignment must originate from a member");
+            };
+            self.gcx().dcx().emit_error(
+                format!("cannot apply compound assignment to read-only property '{}'; property has no setter", self.gcx().symbol_text(name.symbol)),
+                Some(lhs.span),
+            );
+        }
     }
 
     pub(super) fn synth_path_expression_with_policy(
@@ -3439,7 +3116,7 @@ impl<'ctx> Checker<'ctx> {
         prefer_async: Option<bool>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
-        let (resolution, base_args) =
+        let (resolution, base_args, static_owner) =
             self.resolve_value_path_resolution_with_args(path, expression.span, true, cs);
         self.record_value_path_resolution(expression.id, &resolution);
         let segment = match path {
@@ -3448,8 +3125,13 @@ impl<'ctx> Checker<'ctx> {
             }
             hir::ResolvedPath::Relative(_, segment) => segment,
         };
-        let instantiation_args =
-            self.lower_value_path_instantiation_args(&resolution, segment, base_args);
+        let instantiation_args = self.lower_value_path_instantiation_args(
+            &resolution,
+            segment,
+            base_args,
+            static_owner,
+            cs,
+        );
         // Note: For relative paths like `Optional.some`, we don't need to add type constraints
         // for the base type `Optional` since it's only used for name resolution, not as a value.
         // Adding constraints here creates spurious type variables that cause inference failures.
@@ -3458,6 +3140,7 @@ impl<'ctx> Checker<'ctx> {
             expression.span,
             &resolution,
             instantiation_args,
+            static_owner,
             expectation,
             allow_unsafe_callable_values,
             prefer_async,
@@ -3472,6 +3155,14 @@ impl<'ctx> Checker<'ctx> {
         expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
+        if matches!(path,hir::ResolvedPath::Resolved(path) if path.segments.len() == 1 && path.segments[0].identifier.symbol.as_str() == "super")
+        {
+            self.gcx().dcx().emit_error(
+                "super is only valid as the receiver of a base method call".into(),
+                Some(expression.span),
+            );
+            return Ty::error(self.gcx());
+        }
         self.synth_path_expression_with_policy(expression, path, expectation, false, None, cs)
     }
 
@@ -3483,45 +3174,138 @@ impl<'ctx> Checker<'ctx> {
         expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
-        // Instance receiver (`value.member`) uses synthesized receiver type.
-        let receiver_ty = self.synth_with_expectation(target, None, cs);
-        if receiver_ty.is_error() {
-            return Ty::error(self.gcx());
-        }
-        let receiver_can_mut_borrow = self.can_mutably_borrow_receiver(target, cs);
+        self.synth_member_expression_with_arguments(expression, target, name, expectation, None, cs)
+    }
 
-        // A field read on an already-known struct has a known type, so bind it
-        // now instead of leaving a variable for the member goal to resolve.
-        // Consumers that run before the deferred queue drains — argument
-        // expectations for `receiver.field.method(...)`, most visibly — would
-        // otherwise see an unresolved receiver and give up. The goal is still
-        // emitted, and equating it against this type turns a mismatch into a
-        // reported error rather than a silent divergence.
-        let result_ty = self
-            .known_field_ty(receiver_ty, name.symbol, cs)
-            .unwrap_or_else(|| cs.infer_cx.next_ty_var(expression.span));
-        cs.add_goal(
-            Goal::Member(MemberGoalData {
-                node_id: expression.id,
-                receiver_node: target.id,
-                receiver: receiver_ty,
-                receiver_can_mut_borrow,
-                name: *name,
-                result: result_ty,
-                span: expression.span,
-            }),
-            expression.span,
-        );
+    pub(super) fn synth_member_expression_with_arguments(
+        &self,
+        expression: &hir::Expression,
+        target: &hir::Expression,
+        name: &crate::span::Identifier,
+        expectation: Option<Ty<'ctx>>,
+        explicit_arguments: Option<&hir::TypeArguments>,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        cs.without_fallbacks(|cs| {
+            // Earlier declarations may still constrain this receiver. The call
+            // checker separately defers its unfinished callee overload.
+            // Instance receiver (`value.member`) uses synthesized receiver type.
+            let receiver_ty = self.synth_with_expectation(target, None, cs);
+            if receiver_ty.is_error() {
+                return Ty::error(self.gcx());
+            }
+            if matches!(
+                &target.kind,
+                hir::ExpressionKind::Path(hir::ResolvedPath::Relative(..))
+            ) {
+                // Resolution cannot distinguish an associated type from a value
+                // when parsing a chain such as `Self::member.field`. Once known,
+                // a type must still use `::`, never fictitious instance storage.
+                let resolution = self.results.borrow().value_resolution(target.id);
+                if matches!(
+                    resolution,
+                    Some(
+                        hir::Resolution::Definition(
+                            _,
+                            DefinitionKind::AssociatedType
+                                | DefinitionKind::TypeAlias
+                                | DefinitionKind::TypeParameter
+                                | DefinitionKind::Struct
+                                | DefinitionKind::Enum
+                                | DefinitionKind::Interface
+                        ) | hir::Resolution::SelfConstructor(..)
+                            | hir::Resolution::SelfTypeAlias(..)
+                            | hir::Resolution::InterfaceSelfTypeParameter(..)
+                            | hir::Resolution::PrimaryType(..)
+                    )
+                ) {
+                    self.gcx().dcx().emit_error(
+                        format!("qualified access to `{}` requires `::`", name.symbol).into(),
+                        Some(crate::span::Span {
+                            start: target.span.end,
+                            end: name.span.start,
+                            file: expression.span.file,
+                        }),
+                    );
+                    return Ty::error(self.gcx());
+                }
+            }
+            let receiver_adjustments = cs.receiver_adjustments(target.id);
 
-        self.defer_async_property_surface_check(expression.id, expression.span);
+            // A field read on an already-known struct has a known type, so bind it
+            // now instead of leaving a variable for the member goal to resolve.
+            // Consumers that run before the deferred queue drains — argument
+            // expectations for `receiver.field.method(...)`, most visibly — would
+            // otherwise see an unresolved receiver and give up. The goal is still
+            // emitted, and equating it against this type turns a mismatch into a
+            // reported error rather than a silent divergence.
+            let known_field = self.known_field_ty(receiver_ty, name.symbol, cs);
+            let result_ty = known_field.unwrap_or_else(|| cs.infer_cx.next_ty_var(expression.span));
+            let signature_hint = expectation.and_then(|expected| {
+                let inputs = self.extract_closure_expected_inputs(expected, cs)?;
+                let output = self.extract_closure_expected_output(expected, cs)?;
+                Some(Ty::new(
+                    TyKind::FnPointer {
+                        effects: Default::default(),
+                        inputs: self.gcx().store.interners.intern_ty_list(inputs),
+                        output,
+                    },
+                    self.gcx(),
+                ))
+            });
+            cs.add_goal(
+                Goal::Member(MemberGoalData {
+                    classify_only: false,
+                    receiver_addressable: self.receiver_is_addressable(target, cs),
+                    explicit_arguments: explicit_arguments.cloned(),
+                    node_id: expression.id,
+                    receiver_node: target.id,
+                    receiver: receiver_ty,
+                    signature_hint,
+                    name: *name,
+                    result: result_ty,
+                    span: expression.span,
+                }),
+                expression.span,
+            );
 
-        // The expectation is only a hint here. Equating it with the member's
-        // result would force the field type to match exactly and defeat any
-        // coercion the consuming context applies, such as boxing into an
-        // existential or wrapping into an `Optional`. Contexts that require a
-        // conversion emit their own coercion goal for this node.
-        let _ = expectation;
-        result_ty
+            // Ordinary known fields need no callable environment. Keep their
+            // goals deferred, as before, instead of repeatedly draining the
+            // solver for every field in a large function.
+            if known_field.is_some() {
+                return result_ty;
+            }
+            cs.solve_intermediate();
+            if !cs.resolved_field_indices().contains_key(&expression.id)
+                && !cs.resolved_property_reads().contains_key(&expression.id)
+                && let Some(source) = cs.resolved_overload_sources().get(&expression.id).copied()
+                && matches!(
+                    cs.structurally_resolve(result_ty).kind(),
+                    TyKind::FnPointer { .. }
+                )
+            {
+                if self.direct_method_selection.get() == Some(expression.id) {
+                    cs.restore_receiver_adjustments(target.id, receiver_adjustments);
+                    return cs.structurally_resolve(result_ty);
+                }
+                return self.synth_bound_method(
+                    expression,
+                    target,
+                    *name,
+                    source,
+                    cs.structurally_resolve(result_ty),
+                    cs,
+                );
+            }
+
+            // The expectation is only a hint here. Equating it with the member's
+            // result would force the field type to match exactly and defeat any
+            // coercion the consuming context applies, such as boxing into an
+            // existential or wrapping into an `Optional`. Contexts that require a
+            // conversion emit their own coercion goal for this node.
+            let _ = expectation;
+            result_ty
+        })
     }
 
     pub(super) fn synth_inferred_member_expression(
@@ -3569,7 +3353,7 @@ impl<'ctx> Checker<'ctx> {
                 return None;
             }
             match base_ty.kind() {
-                TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => {
+                TyKind::Reference(inner) | TyKind::Pointer(inner, _) => {
                     base_ty = cs.infer_cx.resolve_vars_if_possible(inner);
                 }
                 _ => break,
@@ -3601,98 +3385,179 @@ impl<'ctx> Checker<'ctx> {
         Some(field.ty)
     }
 
-    /// Declared type of `name` on `struct_ty`, when that type is already known.
-    ///
-    /// Returns `None` for unresolved or non-struct types and for unknown field
-    /// names; both are diagnosed later by the struct literal goal.
-    fn struct_literal_field_ty(&self, struct_ty: Ty<'ctx>, name: Symbol) -> Option<Ty<'ctx>> {
-        let TyKind::Adt(def, args) = struct_ty.kind() else {
-            return None;
-        };
-        if self.gcx().definition_kind(def.id) != DefinitionKind::Struct {
-            return None;
-        }
-        let struct_def = self.gcx().get_struct_definition(def.id);
-        let struct_def =
-            crate::sema::tycheck::utils::instantiate::instantiate_struct_definition_with_args(
-                self.gcx(),
-                struct_def,
-                args,
-            );
-        struct_def
-            .fields
-            .iter()
-            .find(|field| field.name == name)
-            .map(|field| field.ty)
-    }
-
     pub(super) fn synth_struct_literal(
         &self,
         expression: &hir::Expression,
         lit: &hir::StructLiteral,
+        expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
-        let span = expression.span;
-
-        // Lower path to type to hook up WF goals
-        let type_span = match &lit.path {
-            hir::ResolvedPath::Resolved(p) => p.span,
-            hir::ResolvedPath::Relative(_, s) => s.span,
-        };
-
-        // Lower the struct type in inference mode so that:
-        // - Omitted generic args get fresh inference variables (inferred from fields)
-        // - Default fallbacks are registered for params with defaults
-        let type_node = hir::Type {
-            id: expression.id,
-            kind: hir::TypeKind::Nominal(lit.path.clone()),
-            span: type_span,
-        };
-        let struct_ty = self.lower_type(&type_node);
         let gcx = self.gcx();
-        let is_struct = match struct_ty.kind() {
-            TyKind::Adt(def, _) => gcx.definition_kind(def.id) == DefinitionKind::Struct,
-            TyKind::Error => return struct_ty,
-            _ => false,
+        let span = expression.span;
+        let (mut struct_ty, constructor, type_span) = match &lit.path {
+            hir::ConstructorPath::Qualified { path } => {
+                let type_span = match path {
+                    hir::ResolvedPath::Resolved(path) => path.span,
+                    hir::ResolvedPath::Relative(_, segment) => segment.span,
+                };
+                let (resolution, args, _) =
+                    self.resolve_value_path_resolution_with_args(path, type_span, false, cs);
+                if matches!(
+                    resolution,
+                    hir::Resolution::Definition(_, DefinitionKind::VariantConstructor(..))
+                ) {
+                    self.record_value_path_resolution(expression.id, &resolution);
+                    let context = cs.infer_cx.next_ty_var(span);
+                    let Some((variant, ty)) = self.resolve_enum_variant_from_resolution(
+                        context, resolution, type_span, cs, args,
+                    ) else {
+                        return Ty::error(gcx);
+                    };
+                    if !self.require_struct_variant(variant, type_span) {
+                        return Ty::error(gcx);
+                    }
+                    (
+                        ty,
+                        LiteralConstructor::Variant(variant.ctor_def_id),
+                        type_span,
+                    )
+                } else {
+                    let node = hir::Type {
+                        id: expression.id,
+                        kind: hir::TypeKind::Nominal(path.clone()),
+                        span: type_span,
+                    };
+                    let ty = self.lower_type(&node);
+                    self.add_type_constraints(ty, type_span, cs);
+                    (ty, LiteralConstructor::Struct, type_span)
+                }
+            }
+            hir::ConstructorPath::Inferred {
+                name,
+                span: path_span,
+            } => {
+                let context = expectation
+                    .map(|ty| cs.structurally_resolve(ty))
+                    .unwrap_or_else(|| cs.infer_cx.next_ty_var(span));
+                if context.is_infer() {
+                    (
+                        context,
+                        LiteralConstructor::InferredVariant {
+                            node_id: expression.id,
+                            name: *name,
+                        },
+                        *path_span,
+                    )
+                } else {
+                    let Some((variant, ty)) = self.resolve_inferred_enum_variant_pattern(
+                        context,
+                        expression.id,
+                        name,
+                        *path_span,
+                        cs,
+                    ) else {
+                        return Ty::error(gcx);
+                    };
+                    if !self.require_struct_variant(variant, *path_span) {
+                        return Ty::error(gcx);
+                    }
+                    (
+                        ty,
+                        LiteralConstructor::Variant(variant.ctor_def_id),
+                        *path_span,
+                    )
+                }
+            }
         };
-        if !is_struct {
+        if lit.base.is_some() && !matches!(constructor, LiteralConstructor::Struct) {
             gcx.dcx().emit_error(
-                format!("expected struct type, found {}", struct_ty.format(gcx)).into(),
-                Some(type_span),
+                "struct updates require a struct type; enum variants cannot use `..base`".into(),
+                Some(span),
             );
             return Ty::error(gcx);
         }
-        self.add_type_constraints(struct_ty, type_span, cs);
-
-        // Synthesize fields
+        struct_ty = cs.structurally_resolve(struct_ty);
+        if struct_ty.is_error() {
+            return struct_ty;
+        }
+        if let Some(expected) = expectation {
+            let expected = cs.infer_cx.resolve_vars_if_possible(expected);
+            if let (TyKind::Adt(actual, _), TyKind::Adt(wanted, _)) =
+                (struct_ty.kind(), expected.kind())
+                && actual.id == wanted.id
+            {
+                cs.equal(struct_ty, expected, span);
+            }
+        }
+        if matches!(constructor, LiteralConstructor::Struct) {
+            let TyKind::Adt(def, _) = struct_ty.kind() else {
+                gcx.dcx().emit_error(
+                    format!("expected struct type, found {}", struct_ty.format(gcx)),
+                    Some(type_span),
+                );
+                return Ty::error(gcx);
+            };
+            if def.kind != crate::sema::models::AdtKind::Struct {
+                gcx.dcx().emit_error(
+                    "braces require a struct type or a named enum variant".into(),
+                    Some(type_span),
+                );
+                return Ty::error(gcx);
+            }
+            if gcx.get_struct_definition(def.id).has_initializer || gcx.is_class_type(struct_ty) {
+                gcx.dcx().emit_error(
+                    if gcx.is_class_type(struct_ty) {
+                        "a class must be constructed by calling its initializer"
+                    } else {
+                        "a struct declaring init must be constructed by calling its initializer"
+                    }
+                    .into(),
+                    Some(span),
+                );
+                return Ty::error(gcx);
+            }
+        }
+        let declared = match constructor {
+            LiteralConstructor::Struct => {
+                crate::sema::tycheck::utils::named_fields::named_fields(gcx, struct_ty, None)
+            }
+            LiteralConstructor::Variant(id) => {
+                crate::sema::tycheck::utils::named_fields::named_fields(gcx, struct_ty, Some(id))
+            }
+            LiteralConstructor::InferredVariant { .. } => None,
+        };
         let mut fields = Vec::with_capacity(lit.fields.len());
         let mut had_error = false;
         for field in &lit.fields {
             let (name, label_span) = if let Some(label) = &field.label {
                 (label.identifier.symbol, label.span)
             } else {
-                // Shorthand: extract name from expression
-                match &field.expression.kind {
-                    hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => {
-                        let seg = path.segments.last().expect("path must have segments");
-                        (seg.identifier.symbol, seg.identifier.span)
-                    }
-                    _ => unreachable!(),
-                }
+                let hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) =
+                    &field.expression.kind
+                else {
+                    unreachable!("validated field shorthand")
+                };
+                let segment = path.segments.last().expect("shorthand identifier");
+                (segment.identifier.symbol, segment.identifier.span)
             };
-
-            // Feed the declared field type in as an expectation. Inferred member
-            // expressions need it to pick a base type: `.some(x)` synthesizes a
-            // constructor variable that is applied to produce the field value, and
-            // only the application's result is constrained by the literal's own
-            // coercion goal, so the base can never be recovered from it.
-            let expectation = self.struct_literal_field_ty(struct_ty, name);
-            let ty = self.synth_with_expectation(&field.expression, expectation, cs);
-            if ty.is_error() {
-                had_error = true;
-            }
-
+            // Context reaches inferred members before their constructor goals
+            // are built, including fields whose generic arguments are pending.
+            let deferred = matches!(constructor, LiteralConstructor::InferredVariant { .. });
+            let field_expectation = if deferred {
+                Some(cs.infer_cx.next_ty_var(field.expression.span))
+            } else {
+                declared.as_ref().and_then(|declared| {
+                    declared
+                        .fields
+                        .iter()
+                        .find(|field| field.name == name)
+                        .map(|field| field.ty)
+                })
+            };
+            let ty = self.synth_with_expectation(&field.expression, field_expectation, cs);
+            had_error |= ty.is_error();
             fields.push(StructLiteralField {
+                expectation: if deferred { field_expectation } else { None },
                 name,
                 node_id: field.expression.id,
                 ty,
@@ -3700,21 +3565,27 @@ impl<'ctx> Checker<'ctx> {
                 label_span,
             });
         }
-
+        if let Some(base) = &lit.base {
+            let base_ty = self.synth_with_expectation(base, Some(struct_ty), cs);
+            had_error |= base_ty.is_error();
+            // Updates require this exact value type, with no implicit reference
+            // reads, Deref calls, interface erasure or other coercion.
+            cs.equal(struct_ty, base_ty, base.span);
+        }
         if had_error {
             return Ty::error(gcx);
         }
-
         cs.add_goal(
             Goal::StructLiteral(StructLiteralGoalData {
                 ty_span: type_span,
                 span,
                 struct_ty,
+                constructor,
                 fields,
+                base_span: lit.base.as_ref().map(|base| base.span),
             }),
             span,
         );
-
         struct_ty
     }
     pub(super) fn synth_tuple_expression(
@@ -3742,7 +3613,22 @@ impl<'ctx> Checker<'ctx> {
             if ty.is_error() {
                 had_error = true;
             }
-            element_types.push(ty);
+            // A contextual tuple element is a value initialization site, just
+            // like a local binding. Preserve its coercion (boxing, reborrowing,
+            // function-pointer conversion) on the element's own expression.
+            if let Some(expected) = elem_expectation {
+                cs.add_goal(
+                    Goal::Coerce {
+                        node_id: element.id,
+                        from: ty,
+                        to: expected,
+                    },
+                    element.span,
+                );
+                element_types.push(expected);
+            } else {
+                element_types.push(ty);
+            }
         }
 
         if had_error {
@@ -3795,7 +3681,22 @@ impl<'ctx> Checker<'ctx> {
                 had_error = true;
                 continue;
             }
-            cs.equal(element_ty, ty, elem.span);
+            if expected_elem.is_some() {
+                // The annotation fixes the element representation, so each
+                // initializer gets ordinary value coercions before storage.
+                cs.add_goal(
+                    Goal::Coerce {
+                        node_id: elem.id,
+                        from: ty,
+                        to: element_ty,
+                    },
+                    elem.span,
+                );
+            } else {
+                // Uncontextual literals infer one exact element type; do not
+                // invent a common erased interface for heterogeneous values.
+                cs.equal(element_ty, ty, elem.span);
+            }
         }
 
         if had_error {
@@ -3818,7 +3719,10 @@ impl<'ctx> Checker<'ctx> {
             ty.is_infer()
                 || matches!(
                     ty.kind(),
-                    TyKind::Alias { kind: AliasKind::Projection, .. }
+                    TyKind::Alias {
+                        kind: AliasKind::Projection,
+                        ..
+                    }
                 )
         }) {
             cs.add_goal(
@@ -3874,6 +3778,17 @@ impl<'ctx> Checker<'ctx> {
         }
 
         let len_const = self.lowerer().lower_array_length(count);
+        if matches!(len_const.kind, ConstKind::Param(_)) {
+            // THIR/MIR repetition currently stores a concrete count. Do not
+            // let a symbolic parameter reach its former debug assertion /
+            // optimized-build zero fallback. Const-generic array types and
+            // named concrete constants remain valid.
+            gcx.dcx().emit_error(
+                "array repetition requires a concrete count; const-generic repeat counts are not supported yet".into(),
+                Some(count.value.span),
+            );
+            return Ty::error(gcx);
+        }
         if !matches!(
             len_const.kind,
             ConstKind::Value(ConstValue::Integer(_)) | ConstKind::Param(_) | ConstKind::Infer(_)
@@ -3935,6 +3850,7 @@ impl<'ctx> Checker<'ctx> {
 
         cs.add_goal(
             Goal::TupleAccess(TupleAccessGoalData {
+                receiver_addressable: self.receiver_is_addressable(receiver, cs),
                 node_id: expression.id,
                 receiver_node_id: receiver.id,
                 receiver: receiver_ty,
@@ -3975,13 +3891,13 @@ fn type_mentions_generic_parameter<'ctx>(ty: Ty<'ctx>, index: usize) -> bool {
             type_mentions_generic_parameter(element, index)
                 || const_mentions_generic_parameter(len, index)
         }
-        TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => {
+        TyKind::Pointer(inner, _) | TyKind::Reference(inner) => {
             type_mentions_generic_parameter(inner, index)
         }
         TyKind::Tuple(items) => items
             .iter()
             .any(|item| type_mentions_generic_parameter(*item, index)),
-        TyKind::FnPointer { inputs, output } => {
+        TyKind::FnPointer { inputs, output, .. } => {
             inputs
                 .iter()
                 .any(|input| type_mentions_generic_parameter(*input, index))
@@ -4019,14 +3935,4 @@ fn type_mentions_generic_parameter<'ctx>(ty: Ty<'ctx>, index: usize) -> bool {
         }),
         _ => false,
     }
-}
-
-/// Whether a parameter type is specific enough to guide inference in an
-/// argument position. Type parameters, inference variables and unresolved
-/// aliases would mislead rather than help.
-fn is_expectation_usable(ty: Ty<'_>) -> bool {
-    !matches!(
-        ty.kind(),
-        TyKind::Parameter(_) | TyKind::Infer(_) | TyKind::Alias { .. } | TyKind::Error
-    )
 }

@@ -1,0 +1,7 @@
+import dep::{Row, make}
+func main() {
+    var source = make("cross-package")
+    var changed = Row { tag: 3, ..source }
+    std::runtime::collect()
+    assert(changed.tag == 3 && changed.value == "cross-package" && changed.count == 2, "imported field slots and generic types survive metadata")
+}

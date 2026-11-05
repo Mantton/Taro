@@ -1,0 +1,34 @@
+// Primitive compound assignment to a class field is one exclusive access per
+// operator, for each primitive kind and nested inline paths.
+struct Range { low: int32; high: int32 }
+class Stats { count: int64 = 10; mask: uint8 = 12; ratio: double = 1.5; ready: bool = true; range: Range }
+extend Stats {
+    init() { self.range = Range { low: -4, high: 9 } }
+}
+func main() {
+    var stats: Stats = Stats()
+    var alias: Stats = stats
+    alias.count += 5
+    alias.count -= 3
+    alias.count *= 4
+    alias.count /= 6
+    alias.count %= 5
+    assert(stats.count == 3, "signed arithmetic compound assignment")
+    alias.mask |= 3
+    alias.mask &= 10
+    alias.mask ^= 1
+    alias.mask <<= 2
+    alias.mask >>= 1
+    assert(stats.mask == 22, "unsigned bitwise compound assignment")
+    alias.ratio *= 3.0
+    alias.ratio -= 0.5
+    assert(stats.ratio == 4.0, "floating compound assignment")
+    alias.ready &= false
+    assert(!stats.ready, "boolean compound assignment")
+    var held: &int32 = &stats.range.high
+    alias.range.low += alias.range.low
+    *held += 1
+    assert(stats.range.low == -8 && stats.range.high == 10, "sibling inline fields stay disjoint")
+    alias.count += stats.count
+    assert(stats.count == 6, "RHS reads before the exclusive access begins")
+}

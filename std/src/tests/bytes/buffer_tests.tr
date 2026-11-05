@@ -1,138 +1,233 @@
-import std.io.{Reader, Writer}
+import std::io::{Reader, Writer}
 
 func assertBufferSpanEquals(
-    _ actual: std.mem.Span[uint8],
+    _ actual: std::mem::Span[uint8],
     _ expected: string,
     _ message: string,
 ) {
-    std.testing.assertEqual(actual.len(), expected.byteLen(), message)
+    std::testing::assertEqual(actual.len(), expected.byteLen(), message)
     var index: usize = 0
     while index < actual.len() {
-        std.testing.assertEqual(*actual.at(index), expected.byteAt(index), message)
+        std::testing::assertEqual(*actual.at(index), expected.byteAt(index), message)
         index += 1
     }
 }
 
 func assertBufferListEquals(
-    _ actual: &std.collections.List[uint8],
+    _ actual: &std::collections::List[uint8],
     _ expected: string,
     _ message: string,
 ) {
-    std.testing.assertEqual(actual.len(), expected.byteLen(), message)
+    std::testing::assertEqual(actual.len(), expected.byteLen(), message)
     var index: usize = 0
     while index < actual.len() {
-        std.testing.assertEqual(*actual.at(index), expected.byteAt(index), message)
+        std::testing::assertEqual(*actual.at(index), expected.byteAt(index), message)
         index += 1
     }
 }
 
 @test
 func byteBufferReadCursorAndAppendPreserveUnreadData() {
-    var buffer = std.bytes.Buffer("abcdef")
+    var buffer = std::bytes::Buffer::new("abcdef")
     var destination: [uint8; 2] = [0_u8; 2]
-    var writable: std.mem.MutableSpan[uint8] = destination.asSpan()
-    let count = buffer.read(writable).unwrap()
+    var writable: std::mem::Span[uint8] = destination.asSpan()
+    count := buffer.read(writable).unwrap()
 
-    std.testing.assertEqual(count, 2 as usize, "read should fill the requested destination")
-    std.testing.assertEqual(*destination.at(0), 'a' as uint8, "read should copy the first byte")
-    std.testing.assertEqual(*destination.at(1), 'b' as uint8, "read should copy the second byte")
-    std.testing.assertEqual(buffer.len(), 4 as usize, "len should count only unread bytes")
+    std::testing::assertEqual(count, 2 as usize, "read should fill the requested destination")
+    std::testing::assertEqual(*destination.at(0), 'a' as uint8, "read should copy the first byte")
+    std::testing::assertEqual(*destination.at(1), 'b' as uint8, "read should copy the second byte")
+    std::testing::assertEqual(buffer.len(), 4 as usize, "len should count only unread bytes")
     assertBufferSpanEquals(buffer.bytes(), "cdef", "bytes should expose only unread data")
 
     buffer.writeString("-tail").unwrap()
-    std.testing.assertEqual(
-        buffer.intoString(),
+    std::testing::assertEqual(
+        buffer.toString(),
         "cdef-tail",
         "writes should append after cursor-aware compaction",
     )
 }
 
 @test
-func byteBufferSupportsAliasedUnreadWrites() {
-    var buffer = std.bytes.Buffer("abcdef")
+func byteBufferCopiesUnreadBytesBeforeWriting() {
+    var buffer = std::bytes::Buffer::new("abcdef")
     var discarded: [uint8; 2] = [0_u8; 2]
-    var discardedSpan: std.mem.MutableSpan[uint8] = discarded.asSpan()
-    let _ = buffer.read(discardedSpan).unwrap()
+    var discardedSpan: std::mem::Span[uint8] = discarded.asSpan()
+    var _ = buffer.read(discardedSpan).unwrap()
 
-    let unread = buffer.bytes()
-    std.testing.assertEqual(
+    // Constructing a second buffer explicitly copies the unread range.
+    snapshot := std::bytes::Buffer::new(buffer.bytes())
+    unread := snapshot.bytes()
+    std::testing::assertEqual(
         buffer.write(unread).unwrap(),
         4 as usize,
-        "an aliased write should consume the full source",
+        "an independent write should consume the full source",
     )
-    std.testing.assertEqual(
-        buffer.intoString(),
+    std::testing::assertEqual(
+        buffer.toString(),
         "cdefcdef",
-        "compaction must rebind an aliased unread span",
+        "compaction must preserve the explicitly copied unread bytes",
     )
 }
 
 @test
 func byteBufferReserveResetAndReuseAreTyped() {
-    var buffer = std.bytes.Buffer()
+    var buffer = std::bytes::Buffer::new()
     buffer.reserve(128 as usize).unwrap()
-    let reserved = buffer.capacity()
-    std.testing.assertTrue(reserved >= (128 as usize), "reserve should establish requested capacity")
+    reserved := buffer.capacity()
+    std::testing::assertTrue(reserved >= (128 as usize), "reserve should establish requested capacity")
 
     buffer.writeString("discarded").unwrap()
-    std.runtime.collect()
     buffer.reset()
-    std.testing.assertTrue(buffer.isEmpty(), "reset should discard all bytes")
-    std.testing.assertEqual(buffer.capacity(), reserved, "reset should retain reusable capacity")
+    std::testing::assertTrue(buffer.isEmpty(), "reset should discard all bytes")
+    std::testing::assertEqual(buffer.capacity(), reserved, "reset should retain reusable capacity")
 
     buffer.writeByte('o' as uint8).unwrap()
     buffer.writeByte('k' as uint8).unwrap()
-    std.testing.assertEqual(buffer.intoString(), "ok", "reset storage should remain writable")
+    std::testing::assertEqual(buffer.toString(), "ok", "reset storage should remain writable")
 
-    var overflowing = std.bytes.Buffer()
-    let tooLarge = std.mem.maxBufferCapacity[uint8]() + (1 as usize)
+    var overflowing = std::bytes::Buffer::new()
+    tooLarge := std::mem::maxBufferCapacity[uint8]() + (1 as usize)
     match overflowing.reserve(tooLarge) {
-        case .ok(_) => std.testing.fail("capacity overflow should not succeed")
+        case .ok(_) => std::testing::fail("capacity overflow should not succeed")
         case .err(error) => {
-            std.testing.assertTrue(error.isKind(.resourceExhausted), "capacity overflow should be typed")
+            std::testing::assertTrue(error.isKind(.resourceExhausted), "capacity overflow should be typed")
         }
     }
 }
 
 @test
 func byteBufferImplementsReaderAndWriter() {
-    var source = std.bytes.Buffer("copy through std.io")
-    var destination = std.bytes.Buffer()
-    let copied = std.io.copy(&mut source, &mut destination).unwrap()
+    var source = std::bytes::Buffer::new("copy through std.io")
+    var destination = std::bytes::Buffer::new()
+    copied := std::io::copy(source, destination).unwrap()
 
-    std.testing.assertEqual(copied, 19 as usize, "io.copy should report the transferred byte count")
-    std.testing.assertTrue(source.isEmpty(), "Reader should advance through all source bytes")
+    std::testing::assertEqual(copied, 19 as usize, "io.copy should report the transferred byte count")
+    std::testing::assertTrue(source.isEmpty(), "Reader should advance through all source bytes")
     destination.flush().unwrap()
-    std.testing.assertEqual(
-        destination.intoString(),
+    std::testing::assertEqual(
+        destination.toString(),
         "copy through std.io",
         "Writer should retain copied bytes and flush as a no-op",
     )
 }
 
 @test
-func byteBufferTransfersUnreadOwnershipToBytes() {
-    var buffer = std.bytes.Buffer("prefix-payload")
+func byteBufferCopiesUnreadBytesIntoIndependentStorage() {
+    var buffer = std::bytes::Buffer::new("prefix-payload")
     var prefix: [uint8; 7] = [0_u8; 7]
-    var prefixSpan: std.mem.MutableSpan[uint8] = prefix.asSpan()
-    let _ = buffer.read(prefixSpan).unwrap()
-    std.runtime.collect()
+    var prefixSpan: std::mem::Span[uint8] = prefix.asSpan()
+    var _ = buffer.read(prefixSpan).unwrap()
 
-    var bytes = buffer.intoBytes()
-    std.runtime.collect()
-    assertBufferListEquals(&bytes, "payload", "intoBytes should transfer only unread bytes")
+    var bytes = buffer.toBytes()
+    assertBufferListEquals(&bytes, "payload", "toBytes should copy only unread bytes")
     bytes.set(0, 'P' as uint8)
-    std.testing.assertEqual(*bytes.at(0), 'P' as uint8, "transferred storage should remain independently usable")
+    std::testing::assertEqual(*bytes.at(0), 'P' as uint8, "copied storage should remain independently usable")
 }
 
 @test
-func byteBufferIntoStringPreservesInvalidUtf8() {
-    let input: [uint8; 2] = [0xff_u8, 'x' as uint8]
-    let buffer = std.bytes.Buffer(input.asSpan())
-    let output = buffer.intoString()
-    std.runtime.collect()
+func byteBufferStringSnapshotPreservesInvalidUtf8() {
+    var input: [uint8; 2] = [0xff_u8, 'x' as uint8]
+    buffer := std::bytes::Buffer::new(input.asSpan())
+    output := buffer.toString()
 
-    std.testing.assertEqual(output.byteLen(), 2 as usize, "intoString should preserve raw byte count")
-    std.testing.assertEqual(output.byteAt(0), 0xff_u8, "intoString should preserve invalid UTF-8 bytes")
-    std.testing.assertEqual(output.byteAt(1), 'x' as uint8, "intoString should preserve following bytes")
+    std::testing::assertEqual(output.byteLen(), 2 as usize, "toString should preserve raw byte count")
+    std::testing::assertEqual(output.byteAt(0), 0xff_u8, "toString should preserve invalid UTF-8 bytes")
+    std::testing::assertEqual(output.byteAt(1), 'x' as uint8, "toString should preserve following bytes")
+}
+
+@test
+func byteBufferCompactionReusesCapacityAndPreservesSnapshots() {
+    buffer := std::bytes::Buffer::new("abcdef")
+    saved := buffer.toString()
+    var prefix: [uint8; 2] = [0_u8; 2]
+    buffer.read(prefix.asSpan()).unwrap()
+    capacity := buffer.capacity()
+    before := std::runtime::gcStats()
+    buffer.writeString("gh").unwrap()
+    after := std::runtime::gcStats()
+    std::testing::assertEqual(buffer.toString(), "cdefgh", "compact unread bytes before appending")
+    std::testing::assertEqual(buffer.capacity(), capacity, "compaction needs no growth")
+    std::testing::assertEqual(after.allocatedBytes, before.allocatedBytes, "compaction uses existing storage")
+    buffer.writeString("ijk").unwrap()
+    std::runtime::collect()
+    std::testing::assertEqual(buffer.toString(), "cdefghijk", "later growth preserves compacted bytes")
+    std::testing::assertEqual(saved, "abcdef", "growth and compaction preserve immutable snapshots")
+}
+
+@test
+func takingAStringLeavesAnEmptyUsableBuffer() {
+    buffer := std::bytes::Buffer::withCapacity(16)
+    buffer.writeString("taken").unwrap()
+    taken := buffer.takeString()
+    std::assert(buffer.isEmpty(), "taking consumes the bytes")
+    std::testing::assertEqual(buffer.capacity(), 0 as usize, "the string owns the allocation")
+
+    // Later writes must never reach the string's bytes.
+    buffer.writeString("later bytes").unwrap()
+    std::assert(taken == "taken", "taken string stays independent of later writes")
+    std::assert(buffer.toString() == "later bytes", "buffer stays usable")
+    std::assert(std::bytes::Buffer::new().takeString() == "", "an empty buffer takes as empty")
+}
+
+@test
+func takingAStringRespectsTheReadCursor() {
+    buffer := std::bytes::Buffer::new("skip this")
+    var discard: [uint8; 5] = [0; 5]
+    span := unsafe { std::mem::Span[uint8]::from((&discard as *mut [uint8; 5]) as *mut uint8, 5) }
+    buffer.read(span).unwrap()
+    std::assert(buffer.takeString() == "this", "only unread bytes are taken")
+}
+
+@test
+func takingFromAMostlyEmptyLargeBufferCopies() {
+    buffer := std::bytes::Buffer::withCapacity(4096)
+    buffer.writeString("small").unwrap()
+    taken := buffer.takeString()
+    std::assert(taken == "small", "bytes survive")
+    // The allocation stays with the buffer instead of being pinned by the string.
+    std::testing::assertEqual(buffer.capacity(), 4096 as usize, "the buffer keeps its large allocation")
+}
+
+@test
+func aTakenStringSurvivesCollection() {
+    var kept = std::collections::List[string]::new()
+    var round: usize = 0
+    while round < 64 {
+        buffer := std::bytes::Buffer::withCapacity(64)
+        buffer.writeString("taken text ").unwrap()
+        std::io::writeString(buffer, std::sprintf("%d", round as uint64)).unwrap()
+        kept.append(buffer.takeString())
+        round += 1
+    }
+    std::runtime::collect()
+    round = 0
+    while round < 64 {
+        std::assert(kept[round] == std::sprintf("taken text %d", round as uint64), "bytes survive a collection")
+        round += 1
+    }
+}
+
+@test
+func spareBytesBecomeContentOnlyOnceCommitted() {
+    buffer := std::bytes::Buffer::new()
+    buffer.writeString("ab").unwrap()
+    span := buffer.spare(4).unwrap()
+    std::testing::assertEqual(span.len(), 4 as usize, "the room asked for")
+    unsafe {
+        span.asMutPtr().write('c' as uint8)
+        span.asMutPtr().add(1).write('d' as uint8)
+    }
+    std::assert(buffer.toString() == "ab", "uncommitted bytes aren't content")
+    buffer.commitSpare(2)
+    std::assert(buffer.toString() == "abcd", "committed bytes follow what was there")
+
+    // Consuming from the front and growing both keep the bytes still unread.
+    buffer.skip(3)
+    grown := buffer.spare(8192).unwrap()
+    std::assert(grown.len() == 8192, "growth gives all the room asked for")
+    unsafe { grown.asMutPtr().write('e' as uint8) }
+    buffer.commitSpare(1)
+    std::assert(buffer.toString() == "de", "unread bytes survive growth")
+    std::runtime::collect()
+    std::assert(buffer.toString() == "de", "and a collection")
 }

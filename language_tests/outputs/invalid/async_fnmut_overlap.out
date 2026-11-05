@@ -1,8 +1,8 @@
-error: async calls must be immediately awaited
- -> language_tests/source_files/invalid/async_fnmut_overlap.tr:7:18
-	    let future1 = f(x)
-	                  ^^^^
-error: async calls must be immediately awaited
- -> language_tests/source_files/invalid/async_fnmut_overlap.tr:8:18
-	    let future2 = f(x)
-	                  ^^^^
+error: async calls require an enclosing `await` expression
+ -> language_tests/source_files/invalid/async_fnmut_overlap.tr:7:15
+	    future1 := f(x)
+	               ^^^^
+error: async calls require an enclosing `await` expression
+ -> language_tests/source_files/invalid/async_fnmut_overlap.tr:8:15
+	    future2 := f(x)
+	               ^^^^

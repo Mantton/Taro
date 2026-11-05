@@ -1,10 +1,10 @@
-import std.hash.{Hashable, Hasher}
-import std.ops.PartialEq
-import std.cmp.{Ordering, PartialOrd}
-import std.optional.Optional
-import std.convert.{Parse, ParseError}
-import std.result.Result
-import std.intrinsic.{
+import std::hash::{Hashable, Hasher}
+import std::ops::PartialEq
+import std::cmp::{Ordering, PartialOrd}
+import std::optional::Optional
+import std::convert::{Parse, ParseError}
+import std::result::Result
+import std::intrinsic::{
     __intrinsic_sqrt_f32,
     __intrinsic_sin_f32,
     __intrinsic_cos_f32,
@@ -86,68 +86,68 @@ func isDecimalDigit(_ byte: uint8) -> bool {
 /// Validate the locale-independent decimal grammar before entering the
 /// runtime's correctly-rounded IEEE conversion routine.
 func validateFloatSyntax(_ input: string) -> Result[(), ParseError] {
-    let len = std.string.stringLen(input)
+    len := std::string::stringLen(input)
     if len == 0 {
-        return .err(ParseError(.empty, 0 as usize))
+        return .err(ParseError::new(.empty, 0 as usize))
     }
 
-    let data = std.string.stringData(input)
+    data := std::string::stringData(input)
     var index: usize = 0
-    if data.read() == ('+' as uint8) || data.read() == ('-' as uint8) {
+    if unsafe { data.read() } == ('+' as uint8) || unsafe { data.read() } == ('-' as uint8) {
         index += 1
         if index == len {
-            return .err(ParseError(.invalidFormat, index))
+            return .err(ParseError::new(.invalidFormat, index))
         }
     }
 
-    let significandStart = index
+    significandStart := index
     var hasDigit = false
-    while index < len && isDecimalDigit(data.add(index).read()) {
+    while index < len && isDecimalDigit(unsafe { data.add(index).read() }) {
         hasDigit = true
         index += 1
     }
 
-    if index < len && data.add(index).read() == ('.' as uint8) {
+    if index < len && unsafe { data.add(index).read() } == ('.' as uint8) {
         index += 1
-        while index < len && isDecimalDigit(data.add(index).read()) {
+        while index < len && isDecimalDigit(unsafe { data.add(index).read() }) {
             hasDigit = true
             index += 1
         }
     }
 
     if !hasDigit {
-        return .err(ParseError(.invalidFormat, significandStart))
+        return .err(ParseError::new(.invalidFormat, significandStart))
     }
 
     if index < len {
-        let byte = data.add(index).read()
+        byte := unsafe { data.add(index).read() }
         if byte == ('e' as uint8) || byte == ('E' as uint8) {
             index += 1
             if index < len {
-                let exponentSign = data.add(index).read()
+                exponentSign := unsafe { data.add(index).read() }
                 if exponentSign == ('+' as uint8) || exponentSign == ('-' as uint8) {
                     index += 1
                 }
             }
 
-            let exponentStart = index
-            while index < len && isDecimalDigit(data.add(index).read()) {
+            exponentStart := index
+            while index < len && isDecimalDigit(unsafe { data.add(index).read() }) {
                 index += 1
             }
             if index == exponentStart {
-                return .err(ParseError(.invalidFormat, exponentStart))
+                return .err(ParseError::new(.invalidFormat, exponentStart))
             }
         }
     }
 
     if index != len {
-        return .err(ParseError(.invalidFormat, index))
+        return .err(ParseError::new(.invalidFormat, index))
     }
     return .ok(())
 }
 
 func floatRangeErrorIndex(_ input: string) -> usize {
-    std.string.stringLen(input) - (1 as usize)
+    std::string::stringLen(input) - (1 as usize)
 }
 
 func parseFloat(_ input: string) -> Result[float, ParseError] {
@@ -157,20 +157,20 @@ func parseFloat(_ input: string) -> Result[float, ParseError] {
     }
 
     var bits: uint32 = 0
-    let status = __rt__parse_f32(input, unsafe { &mut bits as *mut uint32 })
+    status := __rt__parse_f32(input, unsafe { &bits as *mut uint32 })
     if status == FLOAT_PARSE_OK {
         return .ok(floatFromBits(bits))
     }
     if status == FLOAT_PARSE_OVERFLOW {
-        return .err(ParseError(.overflow, floatRangeErrorIndex(input)))
+        return .err(ParseError::new(.overflow, floatRangeErrorIndex(input)))
     }
     if status == FLOAT_PARSE_UNDERFLOW {
-        return .err(ParseError(.underflow, floatRangeErrorIndex(input)))
+        return .err(ParseError::new(.underflow, floatRangeErrorIndex(input)))
     }
     if status == FLOAT_PARSE_INVALID {
-        return .err(ParseError(.invalidFormat, 0 as usize))
+        return .err(ParseError::new(.invalidFormat, 0 as usize))
     }
-    return .err(ParseError(.invalidFormat, 0 as usize))
+    return .err(ParseError::new(.invalidFormat, 0 as usize))
 }
 
 func parseDouble(_ input: string) -> Result[double, ParseError] {
@@ -180,128 +180,104 @@ func parseDouble(_ input: string) -> Result[double, ParseError] {
     }
 
     var bits: uint64 = 0
-    let status = __rt__parse_f64(input, unsafe { &mut bits as *mut uint64 })
+    status := __rt__parse_f64(input, unsafe { &bits as *mut uint64 })
     if status == FLOAT_PARSE_OK {
         return .ok(doubleFromBits(bits))
     }
     if status == FLOAT_PARSE_OVERFLOW {
-        return .err(ParseError(.overflow, floatRangeErrorIndex(input)))
+        return .err(ParseError::new(.overflow, floatRangeErrorIndex(input)))
     }
     if status == FLOAT_PARSE_UNDERFLOW {
-        return .err(ParseError(.underflow, floatRangeErrorIndex(input)))
+        return .err(ParseError::new(.underflow, floatRangeErrorIndex(input)))
     }
     if status == FLOAT_PARSE_INVALID {
-        return .err(ParseError(.invalidFormat, 0 as usize))
+        return .err(ParseError::new(.invalidFormat, 0 as usize))
     }
-    return .err(ParseError(.invalidFormat, 0 as usize))
-}
-
-func hashU32[H: Hasher](_ hasher: &mut H, _ value: uint32) {
-    let bytes: [uint8; 4] = [
-        (value & 0xff_u32) as uint8,
-        ((value >> 8) & 0xff_u32) as uint8,
-        ((value >> 16) & 0xff_u32) as uint8,
-        ((value >> 24) & 0xff_u32) as uint8,
-    ]
-    hasher.write(bytes.asSpan())
-}
-
-func hashU64[H: Hasher](_ hasher: &mut H, _ value: uint64) {
-    let bytes: [uint8; 8] = [
-        (value & 0xff_u64) as uint8,
-        ((value >> 8) & 0xff_u64) as uint8,
-        ((value >> 16) & 0xff_u64) as uint8,
-        ((value >> 24) & 0xff_u64) as uint8,
-        ((value >> 32) & 0xff_u64) as uint8,
-        ((value >> 40) & 0xff_u64) as uint8,
-        ((value >> 48) & 0xff_u64) as uint8,
-        ((value >> 56) & 0xff_u64) as uint8,
-    ]
-    hasher.write(bytes.asSpan())
+    return .err(ParseError::new(.invalidFormat, 0 as usize))
 }
 
 func floatToBits(_ value: float) -> uint32 {
-    let bitsPtr = unsafe { (&value as *const float) as *const uint32 }
-    bitsPtr.read()
+    bitsPtr := unsafe { (&value as *const float) as *const uint32 }
+    unsafe { bitsPtr.read() }
 }
 
 func floatFromBits(_ bits: uint32) -> float {
-    let valuePtr = unsafe { (&bits as *const uint32) as *const float }
-    valuePtr.read()
+    valuePtr := unsafe { (&bits as *const uint32) as *const float }
+    unsafe { valuePtr.read() }
 }
 
 func doubleToBits(_ value: double) -> uint64 {
-    let bitsPtr = unsafe { (&value as *const double) as *const uint64 }
-    bitsPtr.read()
+    bitsPtr := unsafe { (&value as *const double) as *const uint64 }
+    unsafe { bitsPtr.read() }
 }
 
 func doubleFromBits(_ bits: uint64) -> double {
-    let valuePtr = unsafe { (&bits as *const uint64) as *const double }
-    valuePtr.read()
+    valuePtr := unsafe { (&bits as *const uint64) as *const double }
+    unsafe { valuePtr.read() }
 }
 
-impl float {
+extend float {
     /// Parse a finite decimal value using locale-independent IEEE-754 rounding.
-    public func parse(_ input: string) -> Result[float, ParseError] { parseFloat(input) }
+    public static func parse(_ input: string) -> Result[float, ParseError] { parseFloat(input) }
 
-    public func sqrt(self) -> float { unsafe { __intrinsic_sqrt_f32(self) } }
-    public func sin(self) -> float { unsafe { __intrinsic_sin_f32(self) } }
-    public func cos(self) -> float { unsafe { __intrinsic_cos_f32(self) } }
-    public func tan(self) -> float { unsafe { __intrinsic_tan_f32(self) } }
-    public func asin(self) -> float { unsafe { __intrinsic_asin_f32(self) } }
-    public func acos(self) -> float { unsafe { __intrinsic_acos_f32(self) } }
-    public func atan(self) -> float { unsafe { __intrinsic_atan_f32(self) } }
-    public func sinh(self) -> float { unsafe { __intrinsic_sinh_f32(self) } }
-    public func cosh(self) -> float { unsafe { __intrinsic_cosh_f32(self) } }
-    public func tanh(self) -> float { unsafe { __intrinsic_tanh_f32(self) } }
-    public func exp(self) -> float { unsafe { __intrinsic_exp_f32(self) } }
-    public func exp2(self) -> float { unsafe { __intrinsic_exp2_f32(self) } }
-    public func log(self) -> float { unsafe { __intrinsic_log_f32(self) } }
-    public func log2(self) -> float { unsafe { __intrinsic_log2_f32(self) } }
-    public func log10(self) -> float { unsafe { __intrinsic_log10_f32(self) } }
-    public func abs(self) -> float { unsafe { __intrinsic_fabs_f32(self) } }
-    public func floor(self) -> float { unsafe { __intrinsic_floor_f32(self) } }
-    public func ceil(self) -> float { unsafe { __intrinsic_ceil_f32(self) } }
-    public func trunc(self) -> float { unsafe { __intrinsic_trunc_f32(self) } }
-    public func rint(self) -> float { unsafe { __intrinsic_rint_f32(self) } }
-    public func nearbyint(self) -> float { unsafe { __intrinsic_nearbyint_f32(self) } }
-    public func round(self) -> float { unsafe { __intrinsic_round_f32(self) } }
-    public func roundeven(self) -> float { unsafe { __intrinsic_roundeven_f32(self) } }
-    public func pow(self, _ y: float) -> float { unsafe { __intrinsic_pow_f32(self, y) } }
-    public func powi(self, _ y: int32) -> float { unsafe { __intrinsic_powi_f32_i32(self, y) } }
-    public func copysign(self, _ y: float) -> float { unsafe { __intrinsic_copysign_f32(self, y) } }
-    public func fma(self, _ y: float, _ z: float) -> float { unsafe { __intrinsic_fma_f32(self, y, z) } }
-    public func minimum(self, _ y: float) -> float { unsafe { __intrinsic_minimum_f32(self, y) } }
-    public func maximum(self, _ y: float) -> float { unsafe { __intrinsic_maximum_f32(self, y) } }
-    public func minimumnum(self, _ y: float) -> float { unsafe { __intrinsic_minimumnum_f32(self, y) } }
-    public func maximumnum(self, _ y: float) -> float { unsafe { __intrinsic_maximumnum_f32(self, y) } }
+    public func sqrt() -> float { unsafe { __intrinsic_sqrt_f32(self) } }
+    public func sin() -> float { unsafe { __intrinsic_sin_f32(self) } }
+    public func cos() -> float { unsafe { __intrinsic_cos_f32(self) } }
+    public func tan() -> float { unsafe { __intrinsic_tan_f32(self) } }
+    public func asin() -> float { unsafe { __intrinsic_asin_f32(self) } }
+    public func acos() -> float { unsafe { __intrinsic_acos_f32(self) } }
+    public func atan() -> float { unsafe { __intrinsic_atan_f32(self) } }
+    public func sinh() -> float { unsafe { __intrinsic_sinh_f32(self) } }
+    public func cosh() -> float { unsafe { __intrinsic_cosh_f32(self) } }
+    public func tanh() -> float { unsafe { __intrinsic_tanh_f32(self) } }
+    public func exp() -> float { unsafe { __intrinsic_exp_f32(self) } }
+    public func exp2() -> float { unsafe { __intrinsic_exp2_f32(self) } }
+    public func log() -> float { unsafe { __intrinsic_log_f32(self) } }
+    public func log2() -> float { unsafe { __intrinsic_log2_f32(self) } }
+    public func log10() -> float { unsafe { __intrinsic_log10_f32(self) } }
+    public func abs() -> float { unsafe { __intrinsic_fabs_f32(self) } }
+    public func floor() -> float { unsafe { __intrinsic_floor_f32(self) } }
+    public func ceil() -> float { unsafe { __intrinsic_ceil_f32(self) } }
+    public func trunc() -> float { unsafe { __intrinsic_trunc_f32(self) } }
+    public func rint() -> float { unsafe { __intrinsic_rint_f32(self) } }
+    public func nearbyint() -> float { unsafe { __intrinsic_nearbyint_f32(self) } }
+    public func round() -> float { unsafe { __intrinsic_round_f32(self) } }
+    public func roundeven() -> float { unsafe { __intrinsic_roundeven_f32(self) } }
+    public func pow(_ y: float) -> float { unsafe { __intrinsic_pow_f32(self, y) } }
+    public func powi(_ y: int32) -> float { unsafe { __intrinsic_powi_f32_i32(self, y) } }
+    public func copysign(_ y: float) -> float { unsafe { __intrinsic_copysign_f32(self, y) } }
+    public func fma(_ y: float, _ z: float) -> float { unsafe { __intrinsic_fma_f32(self, y, z) } }
+    public func minimum(_ y: float) -> float { unsafe { __intrinsic_minimum_f32(self, y) } }
+    public func maximum(_ y: float) -> float { unsafe { __intrinsic_maximum_f32(self, y) } }
+    public func minimumnum(_ y: float) -> float { unsafe { __intrinsic_minimumnum_f32(self, y) } }
+    public func maximumnum(_ y: float) -> float { unsafe { __intrinsic_maximumnum_f32(self, y) } }
 }
 
-impl Hashable for float {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {
+conform float to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
         // Match equality contract: +0.0 == -0.0, so they must hash equally.
-        let bits: uint32 = if *self == (0.0 as float) {
+        var bits: uint32 = if self == (0.0 as float) {
             0_u32
         } else {
-            floatToBits(*self)
+            floatToBits(self)
         }
         hashU32(hasher, bits)
     }
 }
 
-impl PartialEq for float {
-    public func eq(&self, _ other: &float) -> bool { *self == *other }
+conform float to PartialEq {
+    public func eq(_ other: float) -> bool { self == other }
 }
 
 // Floats only implement PartialOrd, not Ord, because NaN != NaN
-impl PartialOrd for float {
-    public func partialCmp(&self, _ other: &float) -> Optional[Ordering] {
+conform float to PartialOrd {
+    public func partialCmp(_ other: float) -> Optional[Ordering] {
         // NaN comparisons return none
-        if *self < *other {
+        if self < other {
             .some(.less)
-        } else if *self == *other {
+        } else if self == other {
             .some(.equal)
-        } else if *self > *other {
+        } else if self > other {
             .some(.greater)
         } else {
             .none  // One or both are NaN
@@ -309,31 +285,31 @@ impl PartialOrd for float {
     }
 }
 
-impl Hashable for double {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {
+conform double to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
         // Match equality contract: +0.0 == -0.0, so they must hash equally.
-        let bits: uint64 = if *self == (0.0 as double) {
+        var bits: uint64 = if self == (0.0 as double) {
             0_u64
         } else {
-            doubleToBits(*self)
+            doubleToBits(self)
         }
         hashU64(hasher, bits)
     }
 }
 
-impl PartialEq for double {
-    public func eq(&self, _ other: &double) -> bool { *self == *other }
+conform double to PartialEq {
+    public func eq(_ other: double) -> bool { self == other }
 }
 
 // Doubles only implement PartialOrd, not Ord, because NaN != NaN
-impl PartialOrd for double {
-    public func partialCmp(&self, _ other: &double) -> Optional[Ordering] {
+conform double to PartialOrd {
+    public func partialCmp(_ other: double) -> Optional[Ordering] {
         // NaN comparisons return none
-        if *self < *other {
+        if self < other {
             .some(.less)
-        } else if *self == *other {
+        } else if self == other {
             .some(.equal)
-        } else if *self > *other {
+        } else if self > other {
             .some(.greater)
         } else {
             .none  // One or both are NaN
@@ -341,51 +317,51 @@ impl PartialOrd for double {
     }
 }
 
-impl double {
+extend double {
     /// Parse a finite decimal value using locale-independent IEEE-754 rounding.
-    public func parse(_ input: string) -> Result[double, ParseError] { parseDouble(input) }
+    public static func parse(_ input: string) -> Result[double, ParseError] { parseDouble(input) }
 
-    public func sqrt(self) -> double { unsafe { __intrinsic_sqrt_f64(self) } }
-    public func sin(self) -> double { unsafe { __intrinsic_sin_f64(self) } }
-    public func cos(self) -> double { unsafe { __intrinsic_cos_f64(self) } }
-    public func tan(self) -> double { unsafe { __intrinsic_tan_f64(self) } }
-    public func asin(self) -> double { unsafe { __intrinsic_asin_f64(self) } }
-    public func acos(self) -> double { unsafe { __intrinsic_acos_f64(self) } }
-    public func atan(self) -> double { unsafe { __intrinsic_atan_f64(self) } }
-    public func sinh(self) -> double { unsafe { __intrinsic_sinh_f64(self) } }
-    public func cosh(self) -> double { unsafe { __intrinsic_cosh_f64(self) } }
-    public func tanh(self) -> double { unsafe { __intrinsic_tanh_f64(self) } }
-    public func exp(self) -> double { unsafe { __intrinsic_exp_f64(self) } }
-    public func exp2(self) -> double { unsafe { __intrinsic_exp2_f64(self) } }
-    public func log(self) -> double { unsafe { __intrinsic_log_f64(self) } }
-    public func log2(self) -> double { unsafe { __intrinsic_log2_f64(self) } }
-    public func log10(self) -> double { unsafe { __intrinsic_log10_f64(self) } }
-    public func abs(self) -> double { unsafe { __intrinsic_fabs_f64(self) } }
-    public func floor(self) -> double { unsafe { __intrinsic_floor_f64(self) } }
-    public func ceil(self) -> double { unsafe { __intrinsic_ceil_f64(self) } }
-    public func trunc(self) -> double { unsafe { __intrinsic_trunc_f64(self) } }
-    public func rint(self) -> double { unsafe { __intrinsic_rint_f64(self) } }
-    public func nearbyint(self) -> double { unsafe { __intrinsic_nearbyint_f64(self) } }
-    public func round(self) -> double { unsafe { __intrinsic_round_f64(self) } }
-    public func roundeven(self) -> double { unsafe { __intrinsic_roundeven_f64(self) } }
-    public func pow(self, _ y: double) -> double { unsafe { __intrinsic_pow_f64(self, y) } }
-    public func powi(self, _ y: int32) -> double { unsafe { __intrinsic_powi_f64_i32(self, y) } }
-    public func copysign(self, _ y: double) -> double { unsafe { __intrinsic_copysign_f64(self, y) } }
-    public func fma(self, _ y: double, _ z: double) -> double { unsafe { __intrinsic_fma_f64(self, y, z) } }
-    public func minimum(self, _ y: double) -> double { unsafe { __intrinsic_minimum_f64(self, y) } }
-    public func maximum(self, _ y: double) -> double { unsafe { __intrinsic_maximum_f64(self, y) } }
-    public func minimumnum(self, _ y: double) -> double { unsafe { __intrinsic_minimumnum_f64(self, y) } }
-    public func maximumnum(self, _ y: double) -> double { unsafe { __intrinsic_maximumnum_f64(self, y) } }
+    public func sqrt() -> double { unsafe { __intrinsic_sqrt_f64(self) } }
+    public func sin() -> double { unsafe { __intrinsic_sin_f64(self) } }
+    public func cos() -> double { unsafe { __intrinsic_cos_f64(self) } }
+    public func tan() -> double { unsafe { __intrinsic_tan_f64(self) } }
+    public func asin() -> double { unsafe { __intrinsic_asin_f64(self) } }
+    public func acos() -> double { unsafe { __intrinsic_acos_f64(self) } }
+    public func atan() -> double { unsafe { __intrinsic_atan_f64(self) } }
+    public func sinh() -> double { unsafe { __intrinsic_sinh_f64(self) } }
+    public func cosh() -> double { unsafe { __intrinsic_cosh_f64(self) } }
+    public func tanh() -> double { unsafe { __intrinsic_tanh_f64(self) } }
+    public func exp() -> double { unsafe { __intrinsic_exp_f64(self) } }
+    public func exp2() -> double { unsafe { __intrinsic_exp2_f64(self) } }
+    public func log() -> double { unsafe { __intrinsic_log_f64(self) } }
+    public func log2() -> double { unsafe { __intrinsic_log2_f64(self) } }
+    public func log10() -> double { unsafe { __intrinsic_log10_f64(self) } }
+    public func abs() -> double { unsafe { __intrinsic_fabs_f64(self) } }
+    public func floor() -> double { unsafe { __intrinsic_floor_f64(self) } }
+    public func ceil() -> double { unsafe { __intrinsic_ceil_f64(self) } }
+    public func trunc() -> double { unsafe { __intrinsic_trunc_f64(self) } }
+    public func rint() -> double { unsafe { __intrinsic_rint_f64(self) } }
+    public func nearbyint() -> double { unsafe { __intrinsic_nearbyint_f64(self) } }
+    public func round() -> double { unsafe { __intrinsic_round_f64(self) } }
+    public func roundeven() -> double { unsafe { __intrinsic_roundeven_f64(self) } }
+    public func pow(_ y: double) -> double { unsafe { __intrinsic_pow_f64(self, y) } }
+    public func powi(_ y: int32) -> double { unsafe { __intrinsic_powi_f64_i32(self, y) } }
+    public func copysign(_ y: double) -> double { unsafe { __intrinsic_copysign_f64(self, y) } }
+    public func fma(_ y: double, _ z: double) -> double { unsafe { __intrinsic_fma_f64(self, y, z) } }
+    public func minimum(_ y: double) -> double { unsafe { __intrinsic_minimum_f64(self, y) } }
+    public func maximum(_ y: double) -> double { unsafe { __intrinsic_maximum_f64(self, y) } }
+    public func minimumnum(_ y: double) -> double { unsafe { __intrinsic_minimumnum_f64(self, y) } }
+    public func maximumnum(_ y: double) -> double { unsafe { __intrinsic_maximumnum_f64(self, y) } }
 }
 
-impl Parse for float {
-    public func parse(_ input: string) -> Result[float, ParseError] {
+conform float to Parse {
+    public static func parse(_ input: string) -> Result[float, ParseError] {
         parseFloat(input)
     }
 }
 
-impl Parse for double {
-    public func parse(_ input: string) -> Result[double, ParseError] {
+conform double to Parse {
+    public static func parse(_ input: string) -> Result[double, ParseError] {
         parseDouble(input)
     }
 }

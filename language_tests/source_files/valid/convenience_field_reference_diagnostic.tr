@@ -1,0 +1,11 @@
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_CONTAINS: cannot take references to self or its fields during initialization
+// EXPECT_STDERR_NOT_CONTAINS: invalid LLVM
+// EXPECT_STDERR_NOT_CONTAINS: panicked
+static var saved: Optional[&int32] = .none
+class Example { values: [int32; 1] = [1] }
+extend Example {
+    init(_ flag: bool) {};
+    convenience init() { self.init(true); saved = .some(&self.values[0]) };
+}
+func main() { value := Example() }

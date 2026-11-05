@@ -1,0 +1,9 @@
+import dep
+func main() {
+    take := dep::owned(17)
+    assert(take() == 17, "imported owned bound method environment")
+    assert(dep::apply(23_i32) == 23, "imported generic method value")
+    var counter: dep::Counter = dep::Counter { value: 31 }
+    read := counter.read
+    assert(read() == 31, "imported receiver method")
+}

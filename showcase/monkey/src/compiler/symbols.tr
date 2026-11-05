@@ -5,7 +5,7 @@
 /// over scopes needs a default branch that reports "unresolved". Naming the
 /// alternatives makes the load site exhaustive: a scope added later fails to
 /// compile until every place that loads a symbol says what to emit for it.
-public enum SymbolScope: Copy, PartialEq {
+public enum SymbolScope: PartialEq {
     /// A binding at the top level, kept in the machine's globals.
     case global
     /// A binding inside a function, kept in that call's stack slots.
@@ -18,8 +18,8 @@ public enum SymbolScope: Copy, PartialEq {
     case function
 }
 
-impl SymbolScope {
-    public func describe(&self) -> string {
+extend SymbolScope {
+    public func describe() -> string {
         match self {
             case .global => "GLOBAL"
             case .local => "LOCAL"
@@ -31,7 +31,7 @@ impl SymbolScope {
 }
 
 /// A resolved name: where it lives and which slot it occupies.
-public struct Symbol: Copy {
+public struct Symbol {
     public name: string
     public scope: SymbolScope
     public index: usize
@@ -43,42 +43,35 @@ public struct Symbol: Copy {
 /// globals it keeps in the machine.
 public struct SymbolTable {
     store: Dictionary[string, Symbol]
-    outer: Optional[&mut SymbolTable]
+    outer: Optional[&SymbolTable]
     /// Symbols captured from enclosing functions, in the order they are captured.
     /// The compiler emits a load for each before building the closure.
     public free: List[Symbol]
     definitions: usize
 }
 
-/// Moves a symbol table to managed storage so it can be shared.
-public func boxSymbolTable(_ table: SymbolTable) -> &mut SymbolTable {
-    var boxed = table
-    return &mut boxed
+extend SymbolTable {
+    public static func new() -> &Self {
+        table := Self {
+            store: Dictionary[string, Symbol]::new(), outer: .none,
+            free: List[Symbol]::new(), definitions: 0,
+        }
+        return &table
+    }
+
+    public static func enclosedBy(_ outer: &SymbolTable) -> &Self {
+        table := Self {
+            store: Dictionary[string, Symbol]::new(), outer: .some(outer),
+            free: List[Symbol]::new(), definitions: 0,
+        }
+        return &table
+    }
 }
 
-impl SymbolTable {
-    public func new() -> Self {
-        return SymbolTable {
-            store: Dictionary[string, Symbol](),
-            outer: .none,
-            free: List[Symbol](),
-            definitions: 0,
-        }
-    }
-
-    /// A table for a function body, nested inside `outer`.
-    public func enclosedBy(_ outer: &mut SymbolTable) -> Self {
-        return SymbolTable {
-            store: Dictionary[string, Symbol](),
-            outer: .some(outer),
-            free: List[Symbol](),
-            definitions: 0,
-        }
-    }
-
+extend &SymbolTable {
     /// How many names this table binds, which is how many stack slots a call
     /// has to reserve for its locals.
-    public func definitionCount(&self) -> usize {
+    public func definitionCount() -> usize {
         return self.definitions
     }
 
@@ -86,20 +79,20 @@ impl SymbolTable {
     ///
     /// A table with no enclosing one is the top level, so its names are globals;
     /// anything nested belongs to the call being compiled.
-    public func define(&mut self, _ name: string) -> Symbol {
-        let scope = match &self.outer {
-            case .some(_) => SymbolScope.local
-            case .none => SymbolScope.global
+    public func define(_ name: string) -> Symbol {
+        scope := match self.outer {
+            case .some(_) => SymbolScope::local
+            case .none => SymbolScope::global
         }
-        let symbol = Symbol { name: name, scope: scope, index: self.definitions }
+        symbol := Symbol { name: name, scope: scope, index: self.definitions }
         self.store.set(key: name, value: symbol)
         self.definitions += 1
         return symbol
     }
 
     /// Binds a builtin at its fixed index, which every table agrees on.
-    public func defineBuiltin(&mut self, _ index: usize, _ name: string) -> Symbol {
-        let symbol = Symbol { name: name, scope: .builtin, index: index }
+    public func defineBuiltin(_ index: usize, _ name: string) -> Symbol {
+        symbol := Symbol { name: name, scope: .builtin, index: index }
         self.store.set(key: name, value: symbol)
         return symbol
     }
@@ -109,16 +102,16 @@ impl SymbolTable {
     /// A function refers to itself before the binding it is being assigned to
     /// exists, so the name resolves to the closure being called rather than to
     /// a slot that has not been written yet.
-    public func defineFunctionName(&mut self, _ name: string) -> Symbol {
-        let symbol = Symbol { name: name, scope: .function, index: 0 }
+    public func defineFunctionName(_ name: string) -> Symbol {
+        symbol := Symbol { name: name, scope: .function, index: 0 }
         self.store.set(key: name, value: symbol)
         return symbol
     }
 
     /// Records `original` as captured from an enclosing function.
-    func defineFree(&mut self, _ original: Symbol) -> Symbol {
+    func defineFree(_ original: Symbol) -> Symbol {
         self.free.append(original)
-        let symbol = Symbol {
+        symbol := Symbol {
             name: original.name,
             scope: .free,
             index: self.free.len() - 1,
@@ -133,23 +126,23 @@ impl SymbolTable {
     /// A global or a builtin is reachable from anywhere, so it is returned as
     /// it stands. A local of an enclosing function is not on this call's frame,
     /// so it is recorded here as free and will be loaded into the closure.
-    public func resolve(&mut self, _ name: string) -> Optional[Symbol] {
+    public func resolve(_ name: string) -> Optional[Symbol] {
         match self.store.get(&name) {
-            case .some(found) => return .some(*found)
+            case .some(found) => return .some(found)
             case .none => {}
         }
 
-        var outer = match &mut self.outer {
+        var outer = match self.outer {
             case .some(table) => table
             case .none => return .none
         }
 
-        let symbol = match outer.resolve(name) {
+        symbol := match outer.resolve(name) {
             case .some(found) => found
             case .none => return .none
         }
 
-        if symbol.scope == SymbolScope.global || symbol.scope == SymbolScope.builtin {
+        if symbol.scope == SymbolScope::global || symbol.scope == SymbolScope::builtin {
             return .some(symbol)
         }
         return .some(self.defineFree(symbol))

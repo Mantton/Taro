@@ -1,0 +1,10 @@
+/// Expose a referenced target through unary `*` and member lookup.
+///
+/// Inline wrappers can implement this on `&Wrapper` to refer to their actual
+/// fields. Shared handles can implement it by value. Lookup uses ordinary
+/// receiver auto-reference; it does not confer target interfaces on the wrapper.
+@lang("Deref")
+public interface Deref {
+    type Target
+    func deref() -> &Self::Target
+}

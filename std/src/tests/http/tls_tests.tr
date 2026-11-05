@@ -1,0 +1,43 @@
+// Public, test-only localhost credentials, matching runtime/tests/fixtures.
+// This certificate is trusted only by the explicitly configured test client.
+const TLS_TEST_CERT: string = "-----BEGIN CERTIFICATE-----\nMIIDEjCCAfqgAwIBAgIUFNNmGO9Sckzwb23jn2CNsWWQLUkwDQYJKoZIhvcNAQEL\nBQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MTEwMzEzNTUzN1oYDzIxMjYx\nMDEwMTM1NTM3WjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwggEiMA0GCSqGSIb3DQEB\nAQUAA4IBDwAwggEKAoIBAQDY15F/6yBdoK0bs9IcJzJdRsSzbZVHxnrx1PhrYtLp\nlfbyReN2NZl+fDNERuOdw3ZzIkCpmka+oFjL172gJRBWP8Ngki2elQdp7WiiC2R6\n8Yt8dVD7RnTmT4a8y2rhmObp9BnI9y40rO7dGmccDEVokchkBaCOufuAmN5ILRn4\n54L5cecgciDTR1c8QBgQp70vjoi+kwqAPjL58R3rlNoS3uuMDtwKkCRZSZkUt/rS\nYJDlfTbZlGx1UPuqG5qp4F3zC47B+JtdEfOvp2ghqQp66PBTMNpYJ2C7IN1U1fSH\nmkzwxj8ZR48STQgYC8OT8r4DAqxHAFmmyuZlVHoGzAsFAgMBAAGjWjBYMB0GA1Ud\nDgQWBBRtoxMsluIj4qufjsF5xJixG9LBxTAUBgNVHREEDTALgglsb2NhbGhvc3Qw\nDAYDVR0TAQH/BAIwADATBgNVHSUEDDAKBggrBgEFBQcDATANBgkqhkiG9w0BAQsF\nAAOCAQEAAPWeojCBrdkP1lxNSpJ4upytSTGtkmLzNEYt+wIEpV6YYhcYFZY/DYe8\nDgPBHNLHpgKf2NcXaxF4bAx8ehzisUIliT4DEgLxioDSKPBZJ2DItsB27ru5jXeK\nsI+/toxlr//4DWTgO+XMs2tQJ1hYNO9CQ5G2uF6XfQ+nSYTX87MMZxpgChMIhX+8\nzXJtKyWr/bE2AOUY4xPdOyP7dpJusaGYkvmQ9fJW+b/nMlhO+Alo1JlGUowt0dSJ\nZ2PMIn5wIRLsIP4XCwaufr3Ho1RU67PRT2uO7uU676P1t9ni5UiBDG5JYJn6Vlso\nOgH8WIE9pIObd99VRuiMyfmkEMs+6g==\n-----END CERTIFICATE-----\n"
+const TLS_TEST_KEY: string = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDY15F/6yBdoK0b\ns9IcJzJdRsSzbZVHxnrx1PhrYtLplfbyReN2NZl+fDNERuOdw3ZzIkCpmka+oFjL\n172gJRBWP8Ngki2elQdp7WiiC2R68Yt8dVD7RnTmT4a8y2rhmObp9BnI9y40rO7d\nGmccDEVokchkBaCOufuAmN5ILRn454L5cecgciDTR1c8QBgQp70vjoi+kwqAPjL5\n8R3rlNoS3uuMDtwKkCRZSZkUt/rSYJDlfTbZlGx1UPuqG5qp4F3zC47B+JtdEfOv\np2ghqQp66PBTMNpYJ2C7IN1U1fSHmkzwxj8ZR48STQgYC8OT8r4DAqxHAFmmyuZl\nVHoGzAsFAgMBAAECggEACgZ9baKbTnjdSAiaUD7nrzRUZ89LNZRRntiv25coFTCf\nyDe++noj7Jsla6SzZVniIhSVVMITP0D+mf4RgFP2W2Z7S/22KjzNqPIXAlbwgFam\nkkyCP/vT78oBer0U5fVBx9NHVelHs5vDN2m/FqbilqEW2LkB4Vdr71gh/shHCSDl\nMiz7Bn6gEOpFvwJ9IKceIdL1zbe2OEwVOK7uN701BS1BO1APSsAThMz96gPBEXAP\naPyXN3TqZaAJKiiCHNhG0eTWkXKsWyTOqE0FhFy24q+s5FZKBWqbZTV3pjh1GalH\ndXUzNzKy+nMXx+63vdyk6ep+9TS0jGbHkBt2rLylSQKBgQD7did8K4cQEJO+nlgl\ny7yXN8jpddj1zZ1Ulk71F6rPOuMGgvJcm52pOjN5DpgkXPbzGmjkHbFPgVI/cOXe\nWQrvGnU+hZJzRB0t17ZafVM6jCf4wIGfY9qBDWLIIDlgczw5q2EaPkA2P1sTb5FF\nO02FoH3Lqj0SOxZEUVKpaNP/5wKBgQDcwXWTDG9++OoerRgX2sfEDPiEBYPYNAoD\nVJTnNUsj0eCnpiaV1sCcKrPjnTe9r/PEkcvQniLUapSNEAHWOVAjd8rTgb5hDuNi\nj3pHJWn76tHmgVlcGUDOy+qex3GL9Wmj2mCGUlVmPr8S/MF9ylWRDOXL2nfEXsBL\np/GyLy1wMwKBgC+GOxwqldIhb+rcvkgWY0QpFN2amjCKdaug5LdJi8yykmmOogOC\nnZ94EnZUnchxkXKMkTpbqkEebc7zpV4KchiSZYo1cGI8g09Ar4QWn343Mu6+Y0Ee\nfBNb1kmAXZeu77jufOGa1kPqYWog8dGlzZbtqBivye8CH8k1nWvLFhYNAoGBAJEv\ncwI5JYMedeui77uQmd1oonFBp0qkPwmdsSi2tipiuBvKfIoDaT3MH+9M0QIiHHJl\naORVfJazWevEYVDg9MG+4Vhldi4jOozxy/vKsX+LGm09GOYnfaYEGtQ+W4Eu8EFh\nOCZfM+dA0S3Nqfvu/IOfNeryTd6KanHXjHAh8wJdAoGAf5pvUxiMlN7swuskSxVz\n87v+Cqn/fNXGQtHwZO3P3560omnS91meNvumTuHcuhJtdElIZr8oVMDuOyI6jQi/\nrL6aoYbCG29coj/4eBrL+eR6ebbnl/GtG1ZuPcPLo3WDfnX4YxGtMlisMNqPHYDC\nNr/1lABxJojxqgLAi5eAhbM=\n-----END PRIVATE KEY-----\n"
+
+@test
+func httpTLSStreamsWithExplicitTrustAndRejectsUntrustedCertificates() async {
+    config := std::tls::ServerConfig::fromPEM(TLS_TEST_CERT, TLS_TEST_KEY).unwrap()
+    defer { config.close() }
+    server := std::http::Server::bindTLS(std::net::SocketAddress::localhost(0_u16), config).unwrap()
+    running := std::task::spawn(() async => { return await server.serve(StreamingEcho()) })
+    defer { var _ = server.close() }
+    url := std::sprintf("https://localhost:%d/ok", server.localAddress().unwrap().port)
+    ordinary := std::http::Client::new().unwrap()
+    defer { ordinary.close() }
+    std::assert((await ordinary.get(url)).isErr(), "default platform trust rejects the private fixture")
+    trust := std::tls::ClientConfig::withRootPEM(TLS_TEST_CERT).unwrap()
+    defer { trust.close() }
+    client := std::http::Client::withTLSConfig(trust).unwrap()
+    defer { client.close() }
+    var count: int32 = 0
+    while count < 3_i32 {
+        response := (await client.get(url)).unwrap()
+        std::runtime::collect()
+        std::assert((await response.body.readToString()).unwrap() == "/ok", "verified TLS response survives collection and connection reuse")
+        count += 1_i32
+    }
+    builder := std::string::Builder::new()
+    var index: int32 = 0
+    while index < 1100_i32 { builder.writeString("0123456789abcdef"); index += 1_i32 }
+    text := builder.toString()
+    source := TestBodySource(text)
+    var request = std::http::Request::new("POST", url)
+    request.body = std::http::Body::fromSource(source)
+    response := (await client.send(&request)).unwrap()
+    std::assert((await response.body.readToString()).unwrap() == "/ok".concat(text), "multi-record TLS uploads stream through chunk framing")
+    std::assert(source.closes.load() == 1_i32, "outbound producer closes once")
+    wrongName := std::sprintf("https://127.0.0.1:%d/ok", server.localAddress().unwrap().port)
+    std::assert((await client.get(wrongName)).isErr(), "explicit roots still enforce hostname verification")
+    server.close().unwrap(); (await running.result()).unwrap().unwrap()
+    alias := config; config.close()
+    std::assert(std::tls::ServerConfig::fromPEM("invalid", TLS_TEST_KEY).isErr(), "invalid certificate is rejected")
+}

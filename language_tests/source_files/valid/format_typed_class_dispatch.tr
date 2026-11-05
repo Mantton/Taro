@@ -1,0 +1,37 @@
+// Formatting a concrete class, a base-class handle and an erased value must
+// select the same virtual implementation and preserve the shared object.
+import std::fmt::{Display, Formattable, Formatter, FormatState}
+
+class FormattingBase { calls: int32 }
+extend FormattingBase { init() { self.calls = 0 } }
+conform FormattingBase to Display {
+    func display(_ into: &Formatter) { into.writeString("display") }
+}
+conform FormattingBase to Formattable {
+    func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
+        self.calls += 1
+        into.writeString("base")
+    }
+}
+class FormattingDerived: FormattingBase {}
+conform FormattingDerived to Formattable {
+    override func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
+        self.calls += 10
+        into.writeString("derived")
+    }
+}
+func formatGeneric[Value: Formattable](_ value: Value) -> string {
+    std::sprintf("%v", value)
+}
+func main() {
+    derived := FormattingDerived()
+    var base: FormattingBase = derived
+    var erased: any Display = base
+    assert(std::sprintf("%v", derived) == "derived", "concrete class dispatch")
+    assert(std::sprintf("%v", base) == "derived", "base-class handle dispatch")
+    assert(std::sprintf("%v", erased) == "derived", "erased fallback dispatch")
+    assert(formatGeneric(base) == "derived", "generic class dispatch")
+    std::runtime::collect()
+    assert(derived.calls == 40 && base === derived, "formatting retains class identity")
+    println("ok")
+}

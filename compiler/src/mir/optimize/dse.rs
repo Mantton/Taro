@@ -22,7 +22,11 @@ impl<'ctx> MirPass<'ctx> for DeadStoreElimination {
 
         for block in body.basic_blocks.iter() {
             for stmt in &block.statements {
-                if let StatementKind::Assign(_, Rvalue::Ref { place, .. }) = &stmt.kind {
+                if let StatementKind::Assign(
+                    _,
+                    Rvalue::Ref { place, .. } | Rvalue::CleanupAddress { place },
+                ) = &stmt.kind
+                {
                     address_taken[place.local.index()] = true;
                 }
             }
@@ -35,10 +39,12 @@ impl<'ctx> MirPass<'ctx> for DeadStoreElimination {
             }
 
             // Walk retained statements backwards; removed stores must not make
-            // their operands live. Calls are terminators, so rvalues are pure.
+            // their operands live. Owning Copy is an ownership effect even
+            // when its current concrete representation needs only a load.
             data.statements.reverse();
             data.statements.retain(|statement| {
                 let destination = match &statement.kind {
+                    StatementKind::Assign(_, Rvalue::CopyValue { .. }) => None,
                     StatementKind::Assign(destination, _) => Some(destination),
                     StatementKind::SetDiscriminant { place, .. } => Some(place),
                     _ => None,

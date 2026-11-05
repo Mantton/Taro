@@ -1,0 +1,15 @@
+// EXPECT_EXIT: 101
+// OVERFLOW_CHECKS
+// EXPECT_STDERR_CONTAINS: panic: attempt to add with overflow
+
+type Count = uint8
+func increment(_ value: Count) -> Count {
+    defer { print("alias overflow cleanup\n") }
+    value + 1_u8
+}
+
+func main() {
+    var value: Count = 255_u8
+    var _ = increment(value)
+    assert(false, "checked alias arithmetic must panic before wrapping")
+}

@@ -1,0 +1,4 @@
+error: type 'Wrapper[Missing]' does not conform to interface 'Read'
+ -> language_tests/source_files/invalid/conditional_erasure_bound.tr:8:26
+	    var boxed: any Read = Wrapper[Missing] { value: Missing {} }
+	                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

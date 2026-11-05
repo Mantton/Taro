@@ -1,0 +1,6 @@
+struct Point { x: int32; y: int32 }
+func main() {
+    var base = Point { x: 1, y: 2 }
+    var updated = Point { x: 3, ..base }
+    var copied = Point { ..updated, }
+}

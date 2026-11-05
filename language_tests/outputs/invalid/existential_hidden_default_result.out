@@ -1,0 +1,4 @@
+error: cannot call an erased interface method whose arguments or result expose its hidden Self type
+ -> language_tests/source_files/invalid/existential_hidden_default_result.tr:8:20
+	    hidden := boxed.make() // Rhs is hidden, not an independently known type.
+	                    ^^^^

@@ -1,0 +1,7 @@
+// The collector reclaims memory; resources close explicitly (G27f).
+struct File { descriptor: int32 }
+extend File {
+    deinit { closing := self.descriptor }
+    func close() {}
+}
+func main() {}

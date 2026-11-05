@@ -1,0 +1,46 @@
+interface Mixed {
+    type Fixed = Self
+    func fixed() -> Self::Fixed
+    func same() -> Self
+    func fresh() -> Self
+}
+interface Add[Other = Self] { type Output = Self; func add(_ other: Other) -> Self::Output; }
+class Base { value: int32 }
+extend Base { public required init(_ value: int32) { self.value = value }; }
+conform Base to Mixed {
+    func fixed() -> Base { Base(50) }
+    func same() -> Self { self }
+    func fresh() -> Self { Self(self.value + 1) }
+}
+conform Base to Add { func add(_ other: Base) -> Base { Base(self.value + other.value) }; }
+class Child: Base { stamp: int32 = 9 }
+conform Child to Mixed { override func fixed() -> Base { Base(60) }; }
+func same[T: Mixed](_ value: T) -> T { value.same() }
+func fresh[T: Mixed](_ value: T) -> T { value.fresh() }
+func fixed[T: Mixed[Fixed = Base]](_ value: T) -> Base { value.fixed() }
+func add[T: Add[Base, Output = Base]](_ value: T, _ rhs: Base) -> Base { value.add(rhs) }
+func main() {
+    child := Child(7)
+    var base: Base = child
+    var direct: Base = child.fixed()
+    assert(direct.value == 60 && (direct as? Child).isNone(), "associated Self is fixed to the declaring Base")
+    assert(fixed(child).value == 60 && fixed(base).value == 60, "generic associated results retain the base binding")
+    var directSame: Child = child.same()
+    var genericSame: Child = same(child)
+    var genericFresh: Child = fresh(child)
+    assert(directSame === child && genericSame === child, "direct Self preserves subclass and identity")
+    assert(genericFresh !== child && genericFresh.value == 8 && genericFresh.stamp == 9, "fresh Self preserves the runtime subclass")
+    assert(add(child, Base(3)).value == 10 && child.add(Base(4)).value == 11, "inherited Add keeps Other and Output equal to Base")
+    var erasedAdd: any Add[Base, Output = Base] = child
+    assert(erasedAdd.add(Base(5)).value == 12, "erased Add has the fixed known result layout")
+    var erased: any Mixed[Fixed = Base] = child
+    assert(erased.fixed().value == 60, "erased associated output is the explicit Base binding")
+    copy := erased.same()
+    assert((*copy.asRef[Child]().unwrap()) === child, "erased Self preserves its concrete payload")
+    created := erased.fresh()
+    assert(created.asRef[Child]().unwrap().stamp == 9, "erased fresh Self retains the subclass")
+    fixedMethod := child.fixed
+    sameMethod := child.same
+    var boundSame: Child = sameMethod()
+    assert(fixedMethod().value == 60 && boundSame === child, "bound methods distinguish associated and dynamic Self results")
+}

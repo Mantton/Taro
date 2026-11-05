@@ -1,0 +1,5 @@
+func uncheckedTransfer(_ channel: std::sys::sync::RawChannel, _ input: *const uint8, _ output: *mut uint8) {
+    var _ = std::sys::sync::channelTrySend(&channel, input)
+    var _ = std::sys::sync::channelTryRecv(&channel, output)
+}
+func main() {}

@@ -1,0 +1,17 @@
+// An explicit closure result binds the callee's generic output, whether the
+// receiver is a local place or a temporary.
+struct Box { v: int32 }
+extend Box {
+    func apply[U, F: Fn(int32) -> U]( _ f: F) -> U { f(self.v) }
+}
+
+func make() -> std::result::Result[int32, string] { .ok(1) }
+
+func main() {
+    local := Box { v: 2 }
+    doubled := local.apply((x: int32) -> int32 => x * 2)
+    positive := Box { v: 3 }.apply((x: int32) -> bool => x > 0)
+    input := make()
+    next := input.flatMap((x: int32) -> std::result::Result[int32, string] => .ok(x + 1))
+    std::printf("%v %v %v\n", doubled, positive, next.unwrap())
+}

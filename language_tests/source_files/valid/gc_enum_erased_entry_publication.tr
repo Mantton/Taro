@@ -1,0 +1,44 @@
+// ENV: TARO_GC_STRESS=1
+// A later erased-field copy must not collect an earlier dynamic string hidden
+// behind the destination's unpublished enum tag.
+interface Payload {
+    func number() -> int32
+}
+struct Number { value: int32 }
+conform Number to Payload {
+    func number() -> int32 { self.value }
+}
+enum Entry {
+    case empty
+    case live(string, any Payload)
+}
+struct Pair {
+    left: any Payload
+    right: any Payload
+}
+@noinline
+func makePayload() -> any Payload { Number { value: 42 } }
+func main() {
+    values := Dictionary[int32, Entry]::new()
+    var index: int32 = 0
+    while index < 4 {
+        values.set(key: index, value: .live("enum " + "label", makePayload()))
+        index += 1
+    }
+    std::runtime::collect()
+    match values[2] {
+        case .live(text, payload) => {
+            assert(text == "enum label", "earlier enum fields survive later collecting copies")
+            assert(payload.number() == 42, "erased payload remains an independent valid value")
+        }
+        case .empty => assert(false, "stored payload tag remains live")
+    }
+    var source: any Payload = makePayload()
+    var pair = Pair { left: source, right: source }
+    source.asRef[Number]().unwrap().value = 99
+    pair.left.asRef[Number]().unwrap().value = 7
+    std::runtime::collect()
+    assert(pair.left.number() == 7 && pair.right.number() == 42,
+        "construction transfers retain independent erased snapshots")
+    assert(source.number() == 99, "construction must not alias its original operand")
+}

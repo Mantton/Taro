@@ -1,0 +1,30 @@
+// A loop variable over an array literal has its element type, even though the
+// literal's own type is only settled after the loop body has been checked.
+func show(_ value: any std::fmt::Display) -> string {
+    return std::sprintf("<%v>", value)
+}
+
+func main() {
+    // So does a local initialized with one inside the loop.
+    for round in [1] {
+        inner := ["nested"]
+        for word in inner {
+            println(show(word))
+            println(show(word.byteLen()))
+        }
+        println(show(round))
+    }
+    for word in ["one", "two"] {
+        println(show(word))
+        println(std::sprintf("%s has", word))
+        println(show(word.byteLen()))
+    }
+    for number in [1, 2] {
+        println(show(number))
+    }
+    // A value already known to be the existential stays one.
+    var boxed: any std::fmt::Display = "boxed"
+    for item in [boxed] {
+        println(show(item))
+    }
+}

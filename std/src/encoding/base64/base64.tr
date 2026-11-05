@@ -1,11 +1,10 @@
-import std.collections.List
-import std.encoding.{DecodeError, DecodeErrorKind}
-import std.marker.Copy
-import std.mem.Span
-import std.ops.PartialEq
-import std.panic.panic
-import std.result.Result
-import std.string.Builder
+import std::collections::List
+import std::encoding::{DecodeError, DecodeErrorKind}
+import std::mem::Span
+import std::ops::PartialEq
+import std::panic::panic
+import std::result::Result
+import std::string::Builder
 
 const STANDARD_ALPHABET: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 const URL_SAFE_ALPHABET: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
@@ -26,15 +25,15 @@ const ASCII_EQUALS: uint8 = 61_u8
 /// `standard` and `urlSafe` require canonical `=` padding when the final
 /// quantum is short. Their `raw` counterparts omit padding and reject it on
 /// decode, matching Go's standard/raw encoding split.
-public enum Encoding: Copy, PartialEq {
+public enum Encoding: PartialEq {
     case standard
     case rawStandard
     case urlSafe
     case rawUrlSafe
 }
 
-impl Encoding {
-    func isUrlSafe(&self) -> bool {
+extend Encoding {
+    func isUrlSafe() -> bool {
         match self {
             case .standard => false
             case .rawStandard => false
@@ -43,7 +42,7 @@ impl Encoding {
         }
     }
 
-    func usesPadding(&self) -> bool {
+    func usesPadding() -> bool {
         match self {
             case .standard => true
             case .rawStandard => false
@@ -53,14 +52,14 @@ impl Encoding {
     }
 
     /// Return the encoded byte count, or none when it cannot fit in `usize`.
-    public func encodedLen(&self, _ inputLen: usize) -> usize? {
-        let full = inputLen / (3 as usize)
-        let base = match full.checkedMul(4 as usize) {
+    public func encodedLen(_ inputLen: usize) -> usize? {
+        full := inputLen / (3 as usize)
+        base := match full.checkedMul(4 as usize) {
             case .some(value) => value
             case .none => return .none
         }
-        let remainder = inputLen % (3 as usize)
-        let extra: usize = if remainder == 0 {
+        remainder := inputLen % (3 as usize)
+        var extra: usize = if remainder == 0 {
             0
         } else if self.usesPadding() {
             4
@@ -75,8 +74,8 @@ impl Encoding {
     /// Return the maximum decoded size for a structurally possible input.
     ///
     /// Padding bytes can reduce the actual decoded result by one or two.
-    public func maxDecodedLen(&self, _ inputLen: usize) -> usize? {
-        let remainder = inputLen % (4 as usize)
+    public func maxDecodedLen(_ inputLen: usize) -> usize? {
+        remainder := inputLen % (4 as usize)
         if self.usesPadding() {
             if remainder != 0 {
                 return .none
@@ -85,12 +84,12 @@ impl Encoding {
             return .none
         }
 
-        let full = inputLen / (4 as usize)
-        let base = match full.checkedMul(3 as usize) {
+        full := inputLen / (4 as usize)
+        base := match full.checkedMul(3 as usize) {
             case .some(value) => value
             case .none => return .none
         }
-        let extra: usize = if remainder == 2 {
+        var extra: usize = if remainder == 2 {
             1
         } else if remainder == 3 {
             2
@@ -102,8 +101,8 @@ impl Encoding {
 
     /// Encode bytes using this alphabet and padding policy.
     /// Output always owns storage independent of `bytes`.
-    public func encode(&self, _ bytes: Span[uint8]) -> string {
-        let outputLen = match self.encodedLen(bytes.len()) {
+    public func encode(_ bytes: Span[uint8]) -> string {
+        outputLen := match self.encodedLen(bytes.len()) {
             case .some(value) => value
             case .none => panic("base64 encoded length overflow")
         }
@@ -111,14 +110,14 @@ impl Encoding {
             return ""
         }
 
-        var out = Builder()
+        var out = Builder::new()
         out.reserve(outputLen)
         var index: usize = 0
         while bytes.len() - index >= 3 {
-            let first = *bytes.at(index) as uint32
-            let second = *bytes.at(index + (1 as usize)) as uint32
-            let third = *bytes.at(index + (2 as usize)) as uint32
-            let value = (first << 16_u32) | (second << 8_u32) | third
+            first := *bytes.at(index) as uint32
+            second := *bytes.at(index + (1 as usize)) as uint32
+            third := *bytes.at(index + (2 as usize)) as uint32
+            value := (first << 16_u32) | (second << 8_u32) | third
             out.writeByte(alphabetByte(self, ((value >> 18_u32) & 63_u32) as usize))
             out.writeByte(alphabetByte(self, ((value >> 12_u32) & 63_u32) as usize))
             out.writeByte(alphabetByte(self, ((value >> 6_u32) & 63_u32) as usize))
@@ -126,9 +125,9 @@ impl Encoding {
             index += 3
         }
 
-        let remainder = bytes.len() - index
+        remainder := bytes.len() - index
         if remainder == 1 {
-            let first = *bytes.at(index) as uint32
+            first := *bytes.at(index) as uint32
             out.writeByte(alphabetByte(self, (first >> 2_u32) as usize))
             out.writeByte(alphabetByte(self, ((first & 3_u32) << 4_u32) as usize))
             if self.usesPadding() {
@@ -136,8 +135,8 @@ impl Encoding {
                 out.writeByte(ASCII_EQUALS)
             }
         } else if remainder == 2 {
-            let first = *bytes.at(index) as uint32
-            let second = *bytes.at(index + (1 as usize)) as uint32
+            first := *bytes.at(index) as uint32
+            second := *bytes.at(index + (1 as usize)) as uint32
             out.writeByte(alphabetByte(self, (first >> 2_u32) as usize))
             out.writeByte(alphabetByte(
                 self,
@@ -148,7 +147,7 @@ impl Encoding {
                 out.writeByte(ASCII_EQUALS)
             }
         }
-        return out.intoString()
+        return out.toString()
     }
 
     /// Decode strict RFC 4648 text using this alphabet and padding policy.
@@ -156,7 +155,7 @@ impl Encoding {
     /// Whitespace and characters from the other alphabet are rejected instead
     /// of normalized. Unused trailing bits must be zero. Validation completes
     /// before output allocation, so failures never expose partial bytes.
-    public func decode(&self, _ input: string) -> Result[List[uint8], DecodeError] {
+    public func decode(_ input: string) -> Result[List[uint8], DecodeError] {
         if self.usesPadding() {
             return decodePadded(self, input)
         }
@@ -164,14 +163,14 @@ impl Encoding {
     }
 }
 
-func alphabetByte(_ encoding: &Encoding, _ index: usize) -> uint8 {
+func alphabetByte(_ encoding: Encoding, _ index: usize) -> uint8 {
     if encoding.isUrlSafe() {
         return URL_SAFE_ALPHABET.byteAt(index)
     }
     return STANDARD_ALPHABET.byteAt(index)
 }
 
-func decodeValue(_ encoding: &Encoding, _ byte: uint8) -> int32 {
+func decodeValue(_ encoding: Encoding, _ byte: uint8) -> int32 {
     if byte >= ASCII_UPPER_A && byte <= ASCII_UPPER_Z {
         return (byte - ASCII_UPPER_A) as int32
     }
@@ -192,23 +191,23 @@ func decodeValue(_ encoding: &Encoding, _ byte: uint8) -> int32 {
 }
 
 func validateDataByte(
-    _ encoding: &Encoding,
+    _ encoding: Encoding,
     _ input: string,
     _ index: usize,
 ) -> Result[uint8, DecodeError] {
-    let byte = input.byteAt(index)
+    byte := input.byteAt(index)
     if byte == ASCII_EQUALS {
-        return .err(DecodeError(.invalidPadding, index))
+        return .err(DecodeError::new(.invalidPadding, index))
     }
-    let value = decodeValue(encoding, byte)
+    value := decodeValue(encoding, byte)
     if value < 0 {
-        return .err(DecodeError(.invalidByte, index))
+        return .err(DecodeError::new(.invalidByte, index))
     }
     return .ok(value as uint8)
 }
 
 func appendFullQuantum(
-    _ out: &mut List[uint8],
+    _ out: &List[uint8],
     _ first: uint8,
     _ second: uint8,
     _ third: uint8,
@@ -220,12 +219,12 @@ func appendFullQuantum(
 }
 
 func decodePadded(
-    _ encoding: &Encoding,
+    _ encoding: Encoding,
     _ input: string,
 ) -> Result[List[uint8], DecodeError] {
-    let len = input.byteLen()
+    len := input.byteLen()
     if len == 0 {
-        return .ok(List[uint8]())
+        return .ok(List[uint8]::new())
     }
 
     var firstPadding: usize? = .none
@@ -245,28 +244,28 @@ func decodePadded(
     var padding: usize = 0
     match firstPadding {
         case .none => {
-            let remainder = len % (4 as usize)
+            remainder := len % (4 as usize)
             if remainder != 0 {
-                let kind: DecodeErrorKind = if remainder == 2 || remainder == 3 {
+                var kind: DecodeErrorKind = if remainder == 2 || remainder == 3 {
                     .invalidPadding
                 } else {
                     .invalidLength
                 }
-                return .err(DecodeError(kind, len))
+                return .err(DecodeError::new(kind, len))
             }
         }
         case .some(paddingStart) => {
             index = paddingStart
             while index < len {
                 if input.byteAt(index) != ASCII_EQUALS {
-                    return .err(DecodeError(.invalidPadding, index))
+                    return .err(DecodeError::new(.invalidPadding, index))
                 }
                 index += 1
             }
 
             padding = len - paddingStart
-            let position = paddingStart % (4 as usize)
-            let allowed: usize = if position == 2 {
+            position := paddingStart % (4 as usize)
+            var allowed: usize = if position == 2 {
                 2
             } else if position == 3 {
                 1
@@ -274,43 +273,43 @@ func decodePadded(
                 0
             }
             if allowed == 0 {
-                return .err(DecodeError(.invalidPadding, paddingStart))
+                return .err(DecodeError::new(.invalidPadding, paddingStart))
             }
             if padding > allowed {
-                return .err(DecodeError(.invalidPadding, paddingStart + allowed))
+                return .err(DecodeError::new(.invalidPadding, paddingStart + allowed))
             }
             if padding < allowed {
-                return .err(DecodeError(.invalidPadding, len))
+                return .err(DecodeError::new(.invalidPadding, len))
             }
         }
     }
-    let dataEnd = len - padding
+    dataEnd := len - padding
 
     if padding == 2 {
-        let trailingIndex = dataEnd - (1 as usize)
-        let trailing = decodeValue(encoding, input.byteAt(trailingIndex)) as uint8
+        trailingIndex := dataEnd - (1 as usize)
+        trailing := decodeValue(encoding, input.byteAt(trailingIndex)) as uint8
         if trailing & 15_u8 != 0 {
-            return .err(DecodeError(.nonCanonical, trailingIndex))
+            return .err(DecodeError::new(.nonCanonical, trailingIndex))
         }
     } else if padding == 1 {
-        let trailingIndex = dataEnd - (1 as usize)
-        let trailing = decodeValue(encoding, input.byteAt(trailingIndex)) as uint8
+        trailingIndex := dataEnd - (1 as usize)
+        trailing := decodeValue(encoding, input.byteAt(trailingIndex)) as uint8
         if trailing & 3_u8 != 0 {
-            return .err(DecodeError(.nonCanonical, trailingIndex))
+            return .err(DecodeError::new(.nonCanonical, trailingIndex))
         }
     }
 
-    let maximum = match encoding.maxDecodedLen(len) {
+    maximum := match encoding.maxDecodedLen(len) {
         case .some(value) => value
-        case .none => return .err(DecodeError(.invalidLength, len))
+        case .none => return .err(DecodeError::new(.invalidLength, len))
     }
-    let outputLen = maximum - padding
-    var out = List[uint8](withCapacity: outputLen)
-    let fullEnd = if padding == 0 { len } else { len - (4 as usize) }
+    outputLen := maximum - padding
+    var out = List[uint8]::new(withCapacity: outputLen)
+    fullEnd := if padding == 0 { len } else { len - (4 as usize) }
     index = 0
     while index < fullEnd {
         appendFullQuantum(
-            &mut out,
+            &out,
             decodeValue(encoding, input.byteAt(index)) as uint8,
             decodeValue(encoding, input.byteAt(index + (1 as usize))) as uint8,
             decodeValue(encoding, input.byteAt(index + (2 as usize))) as uint8,
@@ -320,11 +319,11 @@ func decodePadded(
     }
 
     if padding > 0 {
-        let first = decodeValue(encoding, input.byteAt(index)) as uint8
-        let second = decodeValue(encoding, input.byteAt(index + (1 as usize))) as uint8
+        first := decodeValue(encoding, input.byteAt(index)) as uint8
+        second := decodeValue(encoding, input.byteAt(index + (1 as usize))) as uint8
         out.append((first << 2_u8) | (second >> 4_u8))
         if padding == 1 {
-            let third = decodeValue(encoding, input.byteAt(index + (2 as usize))) as uint8
+            third := decodeValue(encoding, input.byteAt(index + (2 as usize))) as uint8
             out.append((second << 4_u8) | (third >> 2_u8))
         }
     }
@@ -332,10 +331,10 @@ func decodePadded(
 }
 
 func decodeRaw(
-    _ encoding: &Encoding,
+    _ encoding: Encoding,
     _ input: string,
 ) -> Result[List[uint8], DecodeError] {
-    let len = input.byteLen()
+    len := input.byteLen()
     var index: usize = 0
     while index < len {
         match validateDataByte(encoding, input, index) {
@@ -345,34 +344,34 @@ func decodeRaw(
         index += 1
     }
 
-    let remainder = len % (4 as usize)
+    remainder := len % (4 as usize)
     if remainder == 1 {
-        return .err(DecodeError(.invalidLength, len))
+        return .err(DecodeError::new(.invalidLength, len))
     }
 
     if remainder == 2 {
-        let trailingIndex = len - (1 as usize)
-        let trailing = decodeValue(encoding, input.byteAt(trailingIndex)) as uint8
+        trailingIndex := len - (1 as usize)
+        trailing := decodeValue(encoding, input.byteAt(trailingIndex)) as uint8
         if trailing & 15_u8 != 0 {
-            return .err(DecodeError(.nonCanonical, trailingIndex))
+            return .err(DecodeError::new(.nonCanonical, trailingIndex))
         }
     } else if remainder == 3 {
-        let trailingIndex = len - (1 as usize)
-        let trailing = decodeValue(encoding, input.byteAt(trailingIndex)) as uint8
+        trailingIndex := len - (1 as usize)
+        trailing := decodeValue(encoding, input.byteAt(trailingIndex)) as uint8
         if trailing & 3_u8 != 0 {
-            return .err(DecodeError(.nonCanonical, trailingIndex))
+            return .err(DecodeError::new(.nonCanonical, trailingIndex))
         }
     }
 
-    let outputLen = match encoding.maxDecodedLen(len) {
+    outputLen := match encoding.maxDecodedLen(len) {
         case .some(value) => value
-        case .none => return .err(DecodeError(.invalidLength, len))
+        case .none => return .err(DecodeError::new(.invalidLength, len))
     }
-    var out = List[uint8](withCapacity: outputLen)
+    var out = List[uint8]::new(withCapacity: outputLen)
     index = 0
     while len - index >= 4 {
         appendFullQuantum(
-            &mut out,
+            &out,
             decodeValue(encoding, input.byteAt(index)) as uint8,
             decodeValue(encoding, input.byteAt(index + (1 as usize))) as uint8,
             decodeValue(encoding, input.byteAt(index + (2 as usize))) as uint8,
@@ -382,11 +381,11 @@ func decodeRaw(
     }
 
     if remainder >= 2 {
-        let first = decodeValue(encoding, input.byteAt(index)) as uint8
-        let second = decodeValue(encoding, input.byteAt(index + (1 as usize))) as uint8
+        first := decodeValue(encoding, input.byteAt(index)) as uint8
+        second := decodeValue(encoding, input.byteAt(index + (1 as usize))) as uint8
         out.append((first << 2_u8) | (second >> 4_u8))
         if remainder == 3 {
-            let third = decodeValue(encoding, input.byteAt(index + (2 as usize))) as uint8
+            third := decodeValue(encoding, input.byteAt(index + (2 as usize))) as uint8
             out.append((second << 4_u8) | (third >> 2_u8))
         }
     }
@@ -395,24 +394,24 @@ func decodeRaw(
 
 /// Encode with the padded standard alphabet.
 public func encode(_ bytes: Span[uint8]) -> string {
-    let encoding: Encoding = .standard
+    var encoding: Encoding = .standard
     return encoding.encode(bytes)
 }
 
 /// Decode with the padded standard alphabet.
 public func decode(_ input: string) -> Result[List[uint8], DecodeError] {
-    let encoding: Encoding = .standard
+    var encoding: Encoding = .standard
     return encoding.decode(input)
 }
 
 /// Return the padded-standard encoded byte count.
 public func encodedLen(_ inputLen: usize) -> usize? {
-    let encoding: Encoding = .standard
+    var encoding: Encoding = .standard
     return encoding.encodedLen(inputLen)
 }
 
 /// Return the padded-standard maximum decoded byte count.
 public func maxDecodedLen(_ inputLen: usize) -> usize? {
-    let encoding: Encoding = .standard
+    var encoding: Encoding = .standard
     return encoding.maxDecodedLen(inputLen)
 }

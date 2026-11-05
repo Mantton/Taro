@@ -1,0 +1,24 @@
+interface Access {
+    func readRef() -> &int32
+    func editRef() -> &int32
+}
+class Counter { value: int32; other: int32 = 0 }
+extend Counter { init(_ value: int32) { self.value = value }; }
+conform Counter to Access {
+    func readRef() -> &int32 { &self.value }
+    func editRef() -> &int32 { &self.value }
+}
+func project[T: Access](_ value: &T) -> &int32 { value.readRef() }
+func editProject[T: Access](_ value: &T) -> &int32 { value.editRef() }
+func main() {
+    var object: Counter = Counter(7) // Counter; strong class handle.
+    var boxed: any Access = object // any Access; owns a strong handle in erased storage.
+    var read: &int32 = project(&boxed) // &int32; depends on boxed and carries object.value's shared guard.
+    object.other = 11
+    assert(*read == 7 && object.other == 11, "returned witness guards permit sibling field access")
+    var edit: &int32 = editProject(&boxed) // &mut int32; transferred exclusive guard on object.value.
+    *edit += 2
+    assert(*edit == 9, "known borrowed result edits the actual object field")
+    object.value = 12
+    assert(object.value == 12, "last-use checking releases the returned guard")
+}

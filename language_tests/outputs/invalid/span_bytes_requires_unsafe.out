@@ -1,0 +1,4 @@
+error: call to unsafe function 'asBytes' must be inside an unsafe { ... } block
+ -> language_tests/source_files/invalid/span_bytes_requires_unsafe.tr:2:4
+	    slice.asBytes()
+	    ^^^^^^^^^^^^^^^

@@ -1,0 +1,26 @@
+// ENV: TARO_WORKERS=1
+// A callee reaches a caller's local array only through a raw span. The caller
+// never uses that array again, yet its element must stay rooted for the call.
+import std::bytes::Buffer
+import std::mem::Span
+extern "C" {
+    unsafe func __gc__test_probe_create(_ target: *const uint8) -> *mut uint8
+    unsafe func __gc__test_collect_probe_is_live(_ probe: *mut uint8) -> bool
+}
+@noinline
+func bufferProbe(_ buffer: Buffer) -> *mut uint8 {
+    unsafe { __gc__test_probe_create(buffer.bytes().asPtr()) }
+}
+@noinline
+func collectThenRead(_ span: Span[Buffer], _ probe: *mut uint8) -> string {
+    data := span.asPtr()
+    assert(unsafe { __gc__test_collect_probe_is_live(probe) }, "a caller's local array element must survive collection")
+    return unsafe { data.read() }.toString()
+}
+func main() {
+    var items: [Buffer; 1] = [Buffer::new("local element")]
+    probe := bufferProbe(items[0])
+    span := unsafe { Span[Buffer]::from(&items as *mut Buffer, 1) }
+    assert(collectThenRead(span, probe) == "local element", "element bytes survive")
+    print("PASS: spans keep local storage rooted\n")
+}

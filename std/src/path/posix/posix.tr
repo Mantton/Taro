@@ -1,10 +1,9 @@
-import std.optional.Optional
-import std.string.{stringLen, stringData}
-import std.string.Builder
-import std.collections.List
-import std.marker.Copy
-import std.ops.PartialEq
-import std.result.Result
+import std::optional::Optional
+import std::string::{stringLen, stringData}
+import std::string::Builder
+import std::collections::List
+import std::ops::PartialEq
+import std::result::Result
 
 /// Platform-independent POSIX lexical path helpers.
 ///
@@ -24,15 +23,15 @@ const SEPARATOR_BYTE: uint8 = 47
 public const SEPARATOR: string = "/"
 
 /// Why one path cannot be expressed relative to another lexically.
-public enum RelativeError: Copy, PartialEq {
+public enum RelativeError: PartialEq {
     /// One path is rooted and the other is relative.
     case incompatibleRoots
     /// The unmatched base begins with `..` and therefore requires a working directory.
     case unresolvedBase
 }
 
-impl std.fmt.Display for RelativeError {
-    public func display(&self, _ into: &mut std.fmt.Formatter) {
+conform RelativeError to std::fmt::Display {
+    public func display(_ into: &std::fmt::Formatter) {
         match self {
             case .incompatibleRoots => into.writeString("paths have incompatible roots")
             case .unresolvedBase => into.writeString("relative base begins with an unresolved parent component")
@@ -40,7 +39,7 @@ impl std.fmt.Display for RelativeError {
     }
 }
 
-impl std.error.Error for RelativeError {}
+conform RelativeError to std::error::Error {}
 
 /// Returns true if `byte` is a path separator ('/').
 public func isSeparator(_ byte: uint8) -> bool {
@@ -56,17 +55,17 @@ public func isSeparator(_ byte: uint8) -> bool {
 ///   "//"       -> "/"
 ///   ""         -> ""
 public func normalizeSeparators(_ path: string) -> string {
-    let len = stringLen(path)
+    len := stringLen(path)
     if len == 0 {
         return ""
     }
 
-    let src = stringData(path)
-    var out = Builder()
+    src := stringData(path)
+    var out = Builder::new()
     var i: usize = 0
     var previousWasSeparator = false
     while i < len {
-        let b = src.add(i).read()
+        b := unsafe { src.add(i).read() }
         if isSeparator(b) {
             if !previousWasSeparator {
                 out.writeByte(SEPARATOR_BYTE)
@@ -78,7 +77,7 @@ public func normalizeSeparators(_ path: string) -> string {
         }
         i += 1
     }
-    return out.intoString()
+    return out.toString()
 }
 
 /// Returns true if `path` begins with a '/'.
@@ -91,31 +90,31 @@ public func isAbsolute(_ path: string) -> bool {
 /// Repeated and trailing separators are ignored. A rooted path starts with
 /// the component `"/"`; `.` and `..` components remain unchanged.
 public func components(_ path: string) -> List[string] {
-    var result = List[string]()
-    let len = stringLen(path)
+    var result = List[string]::new()
+    len := stringLen(path)
     if len == 0 {
         return result
     }
 
-    let data = stringData(path)
+    data := stringData(path)
     var index: usize = 0
-    if isSeparator(data.read()) {
+    if isSeparator(unsafe { data.read() }) {
         result.append(SEPARATOR)
-        while index < len && isSeparator(data.add(index).read()) {
+        while index < len && isSeparator(unsafe { data.add(index).read() }) {
             index += 1
         }
     }
 
     while index < len {
-        while index < len && isSeparator(data.add(index).read()) {
+        while index < len && isSeparator(unsafe { data.add(index).read() }) {
             index += 1
         }
         if index == len {
             break
         }
 
-        let start = index
-        while index < len && !isSeparator(data.add(index).read()) {
+        start := index
+        while index < len && !isSeparator(unsafe { data.add(index).read() }) {
             index += 1
         }
         result.append(path.substring(start, index - start))
@@ -141,7 +140,7 @@ func renderComponentRange(
         return emptyValue
     }
 
-    var out = Builder()
+    var out = Builder::new()
     if rooted {
         out.writeByte(SEPARATOR_BYTE)
     }
@@ -155,7 +154,7 @@ func renderComponentRange(
         wroteComponent = true
         index += 1
     }
-    return out.intoString()
+    return out.toString()
 }
 
 /// Return the shortest lexically equivalent path.
@@ -163,20 +162,20 @@ func renderComponentRange(
 /// Empty results become `"."`. Leading `..` components remain on relative
 /// paths, while attempts to walk above a root are clamped at the root.
 public func clean(_ path: string) -> string {
-    let source = components(path)
-    let rooted = componentsAreRooted(&source)
-    var stack = List[string]()
+    source := components(path)
+    rooted := componentsAreRooted(&source)
+    var stack = List[string]::new()
     var index: usize = if rooted { 1 } else { 0 }
 
     while index < source.len() {
-        let component = *source.at(index)
+        component := *source.at(index)
         if component == "." {
             index += 1
             continue
         }
         if component == ".." {
             if stack.len() > 0 && *stack.at(stack.len() - (1 as usize)) != ".." {
-                let _ = stack.pop()
+                var _ = stack.pop()
             } else if !rooted {
                 stack.append(component)
             }
@@ -209,11 +208,11 @@ public func join(_ lhs: string, _ rhs: string) -> string {
 /// Empty segments are ignored. If every segment is empty (including when no
 /// segments are supplied), the result is the empty string.
 public func joinAll(_ paths: string...) -> string {
-    var joined = Builder()
+    var joined = Builder::new()
     var wrotePath = false
     var index: usize = 0
     while index < paths.len() {
-        let path = *paths.at(index)
+        path := *paths.at(index)
         if !path.isEmpty() {
             if wrotePath {
                 joined.writeByte(SEPARATOR_BYTE)
@@ -227,7 +226,7 @@ public func joinAll(_ paths: string...) -> string {
     if !wrotePath {
         return ""
     }
-    return clean(joined.intoString())
+    return clean(joined.toString())
 }
 
 /// Splits `path` immediately after its final separator.
@@ -238,7 +237,7 @@ public func joinAll(_ paths: string...) -> string {
 public func split(_ path: string) -> (string, string) {
     match lastSeparatorIndex(path) {
         case .some(index) => {
-            let boundary = index + (1 as usize)
+            boundary := index + (1 as usize)
             return (
                 path.substring(0 as usize, boundary),
                 path.substring(boundary, stringLen(path) - boundary),
@@ -256,14 +255,14 @@ public func base(_ path: string) -> string {
         return "."
     }
 
-    let trimmed = trimTrailingSeparators(path)
+    trimmed := trimTrailingSeparators(path)
     if trimmed.isEmpty() {
         return SEPARATOR
     }
 
     match lastSeparatorIndex(trimmed) {
         case .some(index) => {
-            let start = index + (1 as usize)
+            start := index + (1 as usize)
             return trimmed.substring(start, stringLen(trimmed) - start)
         }
         case .none => return trimmed
@@ -272,7 +271,7 @@ public func base(_ path: string) -> string {
 
 /// Returns all but the final path component, then cleans the result.
 public func dir(_ path: string) -> string {
-    let (directory, _) = split(path)
+    var (directory, _) = split(path)
     clean(directory)
 }
 
@@ -282,16 +281,16 @@ public func dir(_ path: string) -> string {
 /// A relative base whose unmatched suffix begins with `..` cannot be resolved
 /// without consulting the working directory and returns `.unresolvedBase`.
 public func relative(_ basePath: string, _ targetPath: string) -> Result[string, RelativeError] {
-    let cleanedBase = clean(basePath)
-    let cleanedTarget = clean(targetPath)
+    cleanedBase := clean(basePath)
+    cleanedTarget := clean(targetPath)
     if cleanedBase == cleanedTarget {
         return .ok(".")
     }
 
-    let baseParts = components(cleanedBase)
-    let targetParts = components(cleanedTarget)
-    let baseRooted = componentsAreRooted(&baseParts)
-    let targetRooted = componentsAreRooted(&targetParts)
+    baseParts := components(cleanedBase)
+    targetParts := components(cleanedTarget)
+    baseRooted := componentsAreRooted(&baseParts)
+    targetRooted := componentsAreRooted(&targetParts)
     if baseRooted != targetRooted {
         return .err(.incompatibleRoots)
     }
@@ -316,7 +315,7 @@ public func relative(_ basePath: string, _ targetPath: string) -> Result[string,
         return .err(.unresolvedBase)
     }
 
-    var resultParts = List[string]()
+    var resultParts = List[string]::new()
     var index = baseStart
     while index < baseParts.len() {
         resultParts.append("..")
@@ -337,10 +336,10 @@ public func relative(_ basePath: string, _ targetPath: string) -> Result[string,
 /// The returned suffix uses normalized separators and is empty for an exact
 /// match.
 public func stripPrefix(_ path: string, _ prefix: string) -> string? {
-    let pathParts = components(path)
-    let prefixParts = components(prefix)
-    let pathRooted = componentsAreRooted(&pathParts)
-    let prefixRooted = componentsAreRooted(&prefixParts)
+    pathParts := components(path)
+    prefixParts := components(prefix)
+    pathRooted := componentsAreRooted(&pathParts)
+    prefixRooted := componentsAreRooted(&prefixParts)
     if pathRooted != prefixRooted || prefixParts.len() > pathParts.len() {
         return .none
     }
@@ -365,15 +364,15 @@ public func stripPrefix(_ path: string, _ prefix: string) -> string? {
 ///   fileName("/")             -> .none
 ///   fileName("")              -> .none
 public func fileName(_ path: string) -> string? {
-    let trimmed = trimTrailingSeparators(path)
-    let len = stringLen(trimmed)
+    trimmed := trimTrailingSeparators(path)
+    len := stringLen(trimmed)
     if len == 0 {
         return .none
     }
 
     match lastSeparatorIndex(trimmed) {
         case .some(idx) => {
-            let start = idx + 1
+            start := idx + 1
             return .some(trimmed.substring(start, len - start))
         }
         case .none => return .some(trimmed)
@@ -396,8 +395,8 @@ public func extension(_ path: string) -> string? {
                     if idx == 0 {
                         return .none
                     }
-                    let name_len = stringLen(name)
-                    let start = idx + 1
+                    name_len := stringLen(name)
+                    start := idx + 1
                     return .some(name.substring(start, name_len - start))
                 }
                 case .none => return .none
@@ -439,7 +438,7 @@ public func stem(_ path: string) -> string? {
 ///   parent("/")             -> .none
 ///   parent("file.txt")      -> .none
 public func parent(_ path: string) -> string? {
-    let len = stringLen(path)
+    len := stringLen(path)
     if len == 0 {
         return .none
     }
@@ -447,8 +446,8 @@ public func parent(_ path: string) -> string? {
         return .none
     }
 
-    let trimmed = trimTrailingSeparators(path)
-    let trimmed_len = stringLen(trimmed)
+    trimmed := trimTrailingSeparators(path)
+    trimmed_len := stringLen(trimmed)
     if trimmed_len == 0 {
         return .none
     }
@@ -466,15 +465,15 @@ public func parent(_ path: string) -> string? {
 
 /// Returns the index of the last '/' in `s`, or `.none` if none is present.
 func lastSeparatorIndex(_ s: string) -> usize? {
-    let len = stringLen(s)
+    len := stringLen(s)
     if len == 0 {
         return .none
     }
-    let data = stringData(s)
+    data := stringData(s)
     var i: usize = len
     while i > 0 {
         i -= 1
-        if isSeparator(data.add(i).read()) {
+        if isSeparator(unsafe { data.add(i).read() }) {
             return .some(i)
         }
     }
@@ -483,15 +482,15 @@ func lastSeparatorIndex(_ s: string) -> usize? {
 
 /// Returns the index of the last '.' in `s`, or `.none` if none is present.
 func lastDotIndex(_ s: string) -> usize? {
-    let len = stringLen(s)
+    len := stringLen(s)
     if len == 0 {
         return .none
     }
-    let data = stringData(s)
+    data := stringData(s)
     var i: usize = len
     while i > 0 {
         i -= 1
-        if data.add(i).read() == 46 { // '.'
+        if unsafe { data.add(i).read() } == 46 { // '.'
             return .some(i)
         }
     }
@@ -501,13 +500,13 @@ func lastDotIndex(_ s: string) -> usize? {
 /// Removes any trailing '/' bytes from `s`. A string consisting only of
 /// separators is reduced to the empty string.
 func trimTrailingSeparators(_ s: string) -> string {
-    let len = stringLen(s)
+    len := stringLen(s)
     if len == 0 {
         return s
     }
-    let data = stringData(s)
+    data := stringData(s)
     var end = len
-    while end > 0 && isSeparator(data.add(end - 1).read()) {
+    while end > 0 && isSeparator(unsafe { data.add(end - 1).read() }) {
         end -= 1
     }
     if end == len {

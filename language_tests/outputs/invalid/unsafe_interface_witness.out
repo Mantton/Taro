@@ -1,0 +1,8 @@
+error: type 'Counter' does not satisfy requirements for interface 'Inspect'
+ -> language_tests/source_files/invalid/unsafe_interface_witness.tr:3:19
+	conform Counter to Inspect {
+	                   ^^^^^^^
+info: missing required method 'inspect' with signature '(Self) -> int32'
+ -> language_tests/source_files/invalid/unsafe_interface_witness.tr:3:19
+	conform Counter to Inspect {
+	                   ^^^^^^^

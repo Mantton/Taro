@@ -1,0 +1,16 @@
+import std::marker::Clone
+public struct Component { value: int32 }
+conform Component to Clone {
+    public func clone() -> Component { Component { value: self.value + 10 } }
+}
+public struct Container: Clone { component: Component }
+public enum Payload: Clone { case item(Container) }
+public struct Wrapper[T: Clone]: Clone { value: T }
+public func make() -> Payload { .item(Container { component: Component { value: 7 } }) }
+public func read(_ value: &Payload) -> int32 {
+    match *value {
+        case .item(container) => container.component.value
+    }
+}
+public func wrap() -> Wrapper[Component] { Wrapper[Component] { value: Component { value: 9 } } }
+public func readWrapped(_ value: &Wrapper[Component]) -> int32 { value.value.value }

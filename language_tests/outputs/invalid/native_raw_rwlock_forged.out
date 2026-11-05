@@ -1,0 +1,4 @@
+error: field 'owner' of RawRwLock is not visible here
+ -> language_tests/source_files/invalid/native_raw_rwlock_forged.tr:2:32
+	    std::sys::sync::RawRwLock { owner: pointer }
+	                                ^^^^^^

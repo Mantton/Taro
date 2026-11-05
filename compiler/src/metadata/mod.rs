@@ -19,11 +19,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod declarations;
 pub mod wire;
 
 const META_MAGIC: [u8; 8] = *b"TAROMETA";
-// Reject cached MIR/artifacts from invalid receiver or generic inlining.
-const META_FORMAT_VERSION: u32 = 33;
+// Format131 removes unused MIR devirtualization hints and static initializer cache entries.
+const META_FORMAT_VERSION: u32 = 136;
 
 #[derive(Debug, Clone)]
 pub struct DependencyFingerprint {
@@ -734,7 +735,15 @@ pub fn hydrate_loaded_metadata<'ctx>(
         wire::resolution_output_from_wire(gcx, &semantic.resolution, remap, symbol_table).map_err(
             |e| HydrationError::new(format!("failed to decode resolution payload: {e}")),
         )?;
+    declarations::validate_wire_entries(&semantic.type_db).map_err(HydrationError::new)?;
     let type_db = wire::type_database_from_wire(gcx, &semantic.type_db, remap, symbol_table);
+    let std_registry = loaded
+        .payload
+        .std_items
+        .as_ref()
+        .map(|std_items| wire::std_registry_from_wire(std_items, remap));
+    declarations::validate_class_defaults(gcx, &type_db, &resolution_output)
+        .map_err(HydrationError::new)?;
     let (decoded_mir, decoded_inline_mir) = if matches!(mode, ReuseMode::CodegenDependency) {
         let Some(mir_payload) = loaded.payload.mir_payload.as_deref() else {
             return Err(HydrationError::new("metadata missing MIR payload"));
@@ -775,17 +784,82 @@ pub fn hydrate_loaded_metadata<'ctx>(
         None
     };
 
-    let std_registry = loaded
-        .payload
-        .std_items
-        .as_ref()
-        .map(|std_items| wire::std_registry_from_wire(std_items, remap));
     let decoded_synthetic_defs: Vec<_> = loaded
         .payload
         .synthetic_definitions
         .iter()
         .map(|synthetic| wire::synthetic_definition_from_wire(gcx, synthetic, remap))
         .collect();
+    let opening_types = loaded
+        .payload
+        .erased_opening_types
+        .iter()
+        .map(|ty| wire::ty_from_wire(gcx, ty))
+        .collect();
+    let opening_calls = loaded
+        .payload
+        .erased_opening_calls
+        .iter()
+        .map(|instance| wire::instance_from_wire(gcx, instance))
+        .collect();
+    declarations::validate_opening_facts(
+        gcx,
+        &type_db,
+        &decoded_synthetic_defs,
+        &opening_types,
+        &opening_calls,
+    )
+    .map_err(HydrationError::new)?;
+    declarations::validate_erased_access(
+        gcx,
+        &type_db,
+        &decoded_synthetic_defs,
+        std_registry.as_ref(),
+    )
+    .map_err(HydrationError::new)?;
+    declarations::validate_async_self(gcx, &type_db, &decoded_synthetic_defs)
+        .map_err(HydrationError::new)?;
+    declarations::validate_statics(gcx, &type_db, &decoded_synthetic_defs)
+        .map_err(HydrationError::new)?;
+    declarations::validate_opened_defaults(gcx, &type_db, &decoded_synthetic_defs)
+        .map_err(HydrationError::new)?;
+    declarations::validate_class_payloads_with_result(
+        gcx,
+        &type_db,
+        &decoded_synthetic_defs,
+        std_registry
+            .as_ref()
+            .and_then(|registry| registry.get(crate::hir::StdItem::Result))
+            .map(|entry| entry.def_id)
+            .or_else(|| gcx.std_item_def(crate::hir::StdItem::Result)),
+    )
+    .map_err(HydrationError::new)?;
+    declarations::validate_required_initializers(
+        gcx,
+        &type_db,
+        &resolution_output,
+        &decoded_synthetic_defs,
+    )
+    .map_err(HydrationError::new)?;
+    for (id, definition) in &decoded_synthetic_defs {
+        crate::mir::optimize::async_transform::validate_poll_declaration(gcx, definition)
+            .map_err(HydrationError::new)?;
+        crate::mir::copy_clone::validate_declaration(definition).map_err(HydrationError::new)?;
+        crate::mir::function_pointer_call::validate_declaration(definition)
+            .map_err(HydrationError::new)?;
+        crate::mir::primitive_operators::validate_declaration(gcx, definition)
+            .map_err(HydrationError::new)?;
+        if definition.kind.is_instance_generated()
+            && [decoded_mir.as_ref(), decoded_inline_mir.as_ref()]
+                .into_iter()
+                .flatten()
+                .any(|package| package.functions.contains_key(id))
+        {
+            return Err(HydrationError::new(
+                "instance-generated glue metadata must not publish a shared MIR implementation",
+            ));
+        }
+    }
     let emitted_instances: FxHashSet<_> = loaded
         .payload
         .emitted_instances
@@ -822,13 +896,48 @@ pub fn hydrate_loaded_metadata<'ctx>(
         gcx.store.std_provider_index.set(Some(gcx.package_index()));
     }
     for (id, def) in decoded_synthetic_defs {
-        gcx.store.synthetic_definitions.borrow_mut().insert(id, def);
+        gcx.register_synthetic_definition(id, def);
     }
 
     for instance in emitted_instances.iter().copied() {
         gcx.mark_instance_compiled(instance);
     }
     gcx.cache_emitted_instances(gcx.package_index(), emitted_instances);
+    gcx.store.class_super_calls.borrow_mut().insert(
+        gcx.package_index(),
+        loaded
+            .payload
+            .class_super_calls
+            .iter()
+            .map(|span| wire::span_from_wire(span, remap))
+            .collect(),
+    );
+    gcx.store.class_dispatch_types.borrow_mut().insert(
+        gcx.package_index(),
+        loaded
+            .payload
+            .class_dispatch_types
+            .iter()
+            .map(|ty| wire::ty_from_wire(gcx, ty))
+            .collect(),
+    );
+    gcx.store.class_dispatch_calls.borrow_mut().insert(
+        gcx.package_index(),
+        loaded
+            .payload
+            .class_dispatch_calls
+            .iter()
+            .map(|instance| wire::instance_from_wire(gcx, instance))
+            .collect(),
+    );
+    gcx.store
+        .erased_opening_types
+        .borrow_mut()
+        .insert(gcx.package_index(), opening_types);
+    gcx.store
+        .erased_opening_calls
+        .borrow_mut()
+        .insert(gcx.package_index(), opening_calls);
 
     if let Some(artifact) = cached_artifact {
         gcx.cache_module_artifact(artifact);
@@ -963,6 +1072,56 @@ fn build_payload_wire<'ctx>(
         std_items,
         synthetic_definitions,
         emitted_instances,
+        class_dispatch_types: gcx
+            .store
+            .class_dispatch_types
+            .borrow()
+            .get(&pkg)
+            .into_iter()
+            .flatten()
+            .copied()
+            .map(wire::ty_to_wire)
+            .collect(),
+        class_dispatch_calls: gcx
+            .store
+            .class_dispatch_calls
+            .borrow()
+            .get(&pkg)
+            .into_iter()
+            .flatten()
+            .copied()
+            .map(wire::instance_to_wire)
+            .collect(),
+        erased_opening_types: gcx
+            .store
+            .erased_opening_types
+            .borrow()
+            .get(&pkg)
+            .into_iter()
+            .flatten()
+            .copied()
+            .map(wire::ty_to_wire)
+            .collect(),
+        erased_opening_calls: gcx
+            .store
+            .erased_opening_calls
+            .borrow()
+            .get(&pkg)
+            .into_iter()
+            .flatten()
+            .copied()
+            .map(wire::instance_to_wire)
+            .collect(),
+        class_super_calls: gcx
+            .store
+            .class_super_calls
+            .borrow()
+            .get(&pkg)
+            .into_iter()
+            .flatten()
+            .copied()
+            .map(wire::span_to_wire)
+            .collect(),
     })
 }
 
@@ -1331,6 +1490,11 @@ mod tests {
             std_items: None,
             synthetic_definitions: vec![],
             emitted_instances: vec![],
+            class_dispatch_types: vec![],
+            class_dispatch_calls: vec![],
+            erased_opening_types: vec![],
+            erased_opening_calls: vec![],
+            class_super_calls: vec![],
         }
     }
 

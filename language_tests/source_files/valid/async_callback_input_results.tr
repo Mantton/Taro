@@ -1,0 +1,57 @@
+struct Record { left: int32; right: int32 }
+struct Selection { value: &int32 }
+func tick() async { await std::testing::yieldNow() }
+extend &Record {
+    func project[F: AsyncFn[&Record, &int32]](_ callback: F) async -> &int32 {
+        await callback(self)
+    }
+    func edit[F: AsyncFn[&Record, &int32]]( _ callback: &F) async -> &int32 {
+        await callback(self)
+    }
+    func select[F: AsyncFn[&Record, Selection]](_ callback: F) async -> Selection {
+        await callback(self)
+    }
+}
+struct Choice { left: bool }
+func main() async {
+    var record: Record = Record { left: 7, right: 9 }
+    var chooseLeft: bool = true
+    project := (input: &Record) => {
+        await tick()
+        if chooseLeft { &input.left } else { &input.right }
+    }
+    var direct: &int32 = await project(&record)
+    chooseLeft = false // Ready result depends on record, not the environment.
+    assert(*direct == 7, "direct async result")
+    record.left = 11
+    var generic: &int32 = await record.project((input: &Record) => { await tick(); &input.left })
+    assert(*generic == 11, "generic async result")
+
+    var calls: int32 = 0
+    var edit = (input: &Record) => { await tick(); calls += 1; &input.right }
+    var first: &int32 = await record.edit(&edit)
+    *first = 13
+    var second: &int32 = await record.edit(&edit)
+    *second = 17
+    assert(calls == 2, "mutable callback remains reusable")
+    assert(record.right == 17, "exclusive result ends at last use")
+
+    var choice: Choice = Choice { left: true }
+    once := (input: &Record) => {
+        var owned: Choice = choice
+        await tick()
+        if owned.left { &input.left } else { &input.right }
+    }
+    var consumed: &int32 = await once(&record)
+    assert(*consumed == 11, "consuming async callback forwards argument debt")
+    var view: Selection = await record.select((input: &Record) => {
+        await tick()
+        Selection { value: &input.right }
+    })
+    assert(*view.value == 17, "generic view result")
+    relay := (input: Selection) => { await tick(); input }
+    var forwarded: Selection = await relay(Selection { value: &record.left })
+    assert(*forwarded.value == 11, "by-value view forwards existing dependencies")
+    record.left = 19
+    assert(record.left == 19, "all result loans ended")
+}

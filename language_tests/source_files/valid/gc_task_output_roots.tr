@@ -1,0 +1,34 @@
+// ENV: TARO_WORKERS=1
+// A finished task's output is a root until its observer takes it, even after
+// the task frame is gone (invariant 6).
+extern "C" {
+    unsafe func __gc__test_probe_create(_ target: *const uint8) -> *mut uint8
+    unsafe func __gc__test_collect_probe_is_live(_ probe: *mut uint8) -> bool
+}
+
+struct Payload { label: string; parts: [string] }
+
+static var PROBE: *mut uint8 = unsafe { 0 as *mut uint8 }
+static var FINISHED: bool = false
+
+func produce() async -> Payload {
+    label := "finished " + "task"
+    PROBE = unsafe { __gc__test_probe_create(std::string::stringData(label)) }
+    var parts: [string] = []
+    parts.append("nested " + "part")
+    FINISHED = true
+    return Payload { label, parts }
+}
+
+func main() async {
+    task := std::task::spawn(() async => { await produce() })
+    while !FINISHED {
+        await std::testing::yieldNow()
+    }
+    await std::testing::yieldNow()
+    assert(unsafe { __gc__test_collect_probe_is_live(PROBE) }, "a finished task output stays live")
+    payload := (await task.result()).unwrap()
+    std::testing::assertEqual(payload.label, "finished task", "the output label survives collection")
+    std::testing::assertEqual(*payload.parts.at(0), "nested part", "nested output storage survives collection")
+    print("PASS: finished task outputs stay rooted\n")
+}

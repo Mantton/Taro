@@ -1,0 +1,6 @@
+func main() {
+    assert(dep::callCount() == 0, "dependency static remains lazy")
+    assert(dep::value == 7 && dep::callCount() == 1, "client initializes imported static once")
+    dep::value = 9
+    assert(dep::read() == 9 && dep::callCount() == 1, "owner and client share the same publication state and storage")
+}

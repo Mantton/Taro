@@ -1,0 +1,5 @@
+// EXPECT_STDERR_CONTAINS: Expected exactly 0 arguments
+class Base { value: int32 }
+extend Base { private init(_ value: int32) { self.value = value }; convenience init() { self.init(7) } }
+class Child: Base {}
+func main() { var child: Child = Child(9) }

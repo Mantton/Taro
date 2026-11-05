@@ -1,0 +1,4 @@
+error: enum variant 'flags' does not take tuple fields
+ -> language_tests/source_files/invalid/named_pattern_positional_struct_variant.tr:4:23
+	    match state { case .flags(ready) => {}; }
+	                       ^^^^^^^^^^^^^

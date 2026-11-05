@@ -1,13 +1,13 @@
 // Test: Optional syntax, coercions, matching, chaining, and defaults.
 
-import std.prelude.Optional
+import std::prelude::Optional
 
 struct Address {
     city: string
 }
 
-impl Address {
-    func cityLen(&self) -> int32 {
+extend Address {
+    func cityLen() -> int32 {
         5
     }
 }
@@ -21,61 +21,61 @@ struct User {
 }
 
 func testOptionalChaining() {
-    let addr = Address { city: "Paris" }
-    let profile = Profile { address: Optional.some(addr) }
-    let user = User { profile: Optional.some(profile) }
-    let opt_user: User? = Optional.some(user)
+    addr := Address { city: "Paris" }
+    profile := Profile { address: Optional::some(addr) }
+    user := User { profile: Optional::some(profile) }
+    var opt_user: User? = Optional::some(user)
 
-    let city = opt_user?.profile?.address?.city ?? "none"
+    city := opt_user?.profile?.address?.city ?? "none"
     assert(city == "Paris", "Deep chain value failed")
 
-    let none_user: User? = Optional.none
-    let city2 = none_user?.profile?.address?.city ?? "none"
+    var none_user: User? = Optional::none
+    city2 := none_user?.profile?.address?.city ?? "none"
     assert(city2 == "none", "Deep chain none failed")
 
-    let length = opt_user?.profile?.address?.cityLen() ?? 0
+    length := opt_user?.profile?.address?.cityLen() ?? 0
     assert(length == 5, "Optional call failed")
 
-    let missing_profile: User? = Optional.some(User { profile: Optional.none })
-    let city3 = missing_profile?.profile?.address?.city ?? "none"
+    var missing_profile: User? = Optional::some(User { profile: Optional::none })
+    city3 := missing_profile?.profile?.address?.city ?? "none"
     assert(city3 == "none", "Missing profile failed")
 
-    let city_opt = opt_user?.profile?.address?.city
+    city_opt := opt_user?.profile?.address?.city
     match city_opt {
-        case Optional.some(value) => {
+        case Optional::some(value) => {
             assert(value == "Paris", "Optional chain result failed")
         }
-        case Optional.none => {
+        case Optional::none => {
             assert(false, "Optional chain result missing")
         }
     }
 
-    let city_none = none_user?.profile?.address?.city
+    city_none := none_user?.profile?.address?.city
     match city_none {
-        case Optional.none => {
+        case Optional::none => {
             assert(true, "Optional chain none mismatch")
         }
-        case Optional.some(_) => {
+        case Optional::some(_) => {
             assert(false, "Optional chain should be none")
         }
     }
 
-    let length_opt = opt_user?.profile?.address?.cityLen()
+    length_opt := opt_user?.profile?.address?.cityLen()
     match length_opt {
-        case Optional.some(value) => {
+        case Optional::some(value) => {
             assert(value == 5, "Optional chain call result failed")
         }
-        case Optional.none => {
+        case Optional::none => {
             assert(false, "Optional chain call missing")
         }
     }
 
-    let length_none = none_user?.profile?.address?.cityLen()
+    length_none := none_user?.profile?.address?.cityLen()
     match length_none {
-        case Optional.none => {
+        case Optional::none => {
             assert(true, "Optional chain call none mismatch")
         }
-        case Optional.some(_) => {
+        case Optional::some(_) => {
             assert(false, "Optional chain call should be none")
         }
     }
@@ -87,71 +87,71 @@ func takesOpt(_ o: int32?) {}
 func takesOptBox(_ o: BoxValue?) {}
 
 func testOptionalCoercion() {
-    let x: int32 = 42
+    var x: int32 = 42
     takesOpt(x)
 
-    let b = BoxValue { val: 42 }
+    b := BoxValue { val: 42 }
     takesOptBox(b)
 }
 
 func testOptionalDefaults() {
-    let a: int32? = Optional.some(10)
-    let result1 = a ?? 0
+    var a: int32? = Optional::some(10)
+    result1 := a ?? 0
     assert(result1 == 10, "Basic ?? on .some failed")
 
-    let b: int32? = Optional.none
-    let result2 = b ?? 42
+    var b: int32? = Optional::none
+    result2 := b ?? 42
     assert(result2 == 42, "Basic ?? on .none failed")
 
-    let c: int32? = Optional.some(5)
-    let result3 = c ?? 999
+    var c: int32? = Optional::some(5)
+    result3 := c ?? 999
     assert(result3 == 5, "Short circuit failed")
 
-    let d: int32? = Optional.none
-    let e: int32? = Optional.none
-    let result4 = d ?? e ?? 77
+    var d: int32? = Optional::none
+    var e: int32? = Optional::none
+    result4 := d ?? e ?? 77
     assert(result4 == 77, "Chained ?? all none failed")
 
-    let f: int32? = Optional.none
-    let g: int32? = Optional.some(100)
-    let result5 = f ?? g ?? 999
+    var f: int32? = Optional::none
+    var g: int32? = Optional::some(100)
+    result5 := f ?? g ?? 999
     assert(result5 == 100, "Chained ?? with middle some failed")
 
-    let h: int32? = Optional.some(1)
-    let i: int32? = Optional.some(2)
-    let result6 = h ?? i ?? 3
+    var h: int32? = Optional::some(1)
+    var i: int32? = Optional::some(2)
+    result6 := h ?? i ?? 3
     assert(result6 == 1, "Chained ?? first some failed")
 
-    let j: int32? = Optional.none
-    let k: int32? = Optional.none
-    let l: int32? = Optional.none
-    let result7 = j ?? k ?? l ?? 42
+    var j: int32? = Optional::none
+    var k: int32? = Optional::none
+    var l: int32? = Optional::none
+    result7 := j ?? k ?? l ?? 42
     assert(result7 == 42, "Three-level chain all none failed")
 
-    let n1: int32? = Optional.none
-    let n2: int32? = Optional.none
-    let n3: int32? = Optional.none
-    let n4: int32? = Optional.none
-    let n5: int32? = Optional.none
-    let n6: int32? = Optional.none
-    let result8 = n1 ?? n2 ?? n3 ?? n4 ?? n5 ?? n6 ?? 123
+    var n1: int32? = Optional::none
+    var n2: int32? = Optional::none
+    var n3: int32? = Optional::none
+    var n4: int32? = Optional::none
+    var n5: int32? = Optional::none
+    var n6: int32? = Optional::none
+    result8 := n1 ?? n2 ?? n3 ?? n4 ?? n5 ?? n6 ?? 123
     assert(result8 == 123, "Deep chaining (6 levels) all none failed")
 
-    let v6: int32? = Optional.some(88)
-    let result9 = n1 ?? n2 ?? n3 ?? n4 ?? n5 ?? v6 ?? 999
+    var v6: int32? = Optional::some(88)
+    result9 := n1 ?? n2 ?? n3 ?? n4 ?? n5 ?? v6 ?? 999
     assert(result9 == 88, "Deep chaining (6 levels) with value at end failed")
 
-    let s: string? = Optional.none
-    let result10 = s ?? "default"
+    var s: string? = Optional::none
+    result10 := s ?? "default"
     assert(result10 == "default", "String ?? failed")
 
-    let t: string? = Optional.some("hello")
-    let result11 = t ?? "default"
+    var t: string? = Optional::some("hello")
+    result11 := t ?? "default"
     assert(result11 == "hello", "String ?? with value failed")
 }
 
 func testOptionalMatchInferred() {
-    let a: Optional[string] = Optional.some("Hello, World")
+    var a: Optional[string] = Optional::some("Hello, World")
 
     match a {
         case .none => {
@@ -171,45 +171,45 @@ struct MyData {
 }
 
 func testOptionalMatchVerbose() {
-    let a = Optional.some("Hello, World.\n")
+    a := Optional::some("Hello, World.\n")
 
     match a {
-        case Optional.none => {
+        case Optional::none => {
             assert(false, "Should not be none")
         }
-        case Optional.some(_) => {
+        case Optional::some(_) => {
             assert(true, "Matched some")
         }
     }
 
-    let data = make(MyData {
+    data := MyData {
         id: 10,
         name: "Jackson",
         isRegistered: true,
         flag: 'A',
-    })
+    }
 
-    let optional_data = Optional.some(data)
+    optional_data := Optional::some(data)
 
     match optional_data {
-        case Optional.some(x) => {
+        case Optional::some(x) => {
             assert(x.name == "Jackson", "Struct field access in match")
             assert(x.isRegistered, "Boolean field check")
         }
-        case Optional.none => {
+        case Optional::none => {
             assert(false, "Should have data")
         }
     }
 }
 
 func testOptionalTypeAnnotation() {
-    let a: Optional[bool] = Optional.none
+    var a: Optional[bool] = Optional::none
     match a {
         case .none => assert(true, "a is none")
         case .some(_) => assert(false, "a should be none")
     }
 
-    let b = Optional[bool].none
+    b := Optional[bool]::none
     match b {
         case .none => assert(true, "b is none")
         case .some(_) => assert(false, "b should be none")
@@ -224,15 +224,15 @@ func acceptOptional(_ x: int32?) {
 }
 
 interface Printable {
-    func print(&self)
+    func print()
 }
 
-struct MyValue: Copy {
+struct MyValue {
     value: int32
 }
 
-impl Printable for MyValue {
-    func print(&self) {}
+conform MyValue to Printable {
+    func print() {}
 }
 
 func acceptOptionalPrintable(_ x: (any Printable)?) {}
@@ -250,26 +250,26 @@ func testCoercionsOptional() {
         case .some(_) => assert(false, "Nil coercion fail")
     }
 
-    var c: bool? = Optional.none
-    var d: bool? = Optional.some(false)
-    let _ = c
-    let _ = d
+    var c: bool? = Optional::none
+    var d: bool? = Optional::some(false)
+    var _ = c
+    var _ = d
 
     var e: int32? = 42
     var f: int32? = nil
-    let _ = e
-    let _ = f
+    var _ = e
+    var _ = f
 
     acceptOptional(100)
     acceptOptional(nil)
-    acceptOptional(Optional.some(200))
+    acceptOptional(Optional::some(200))
 
     var container1 = Container { value: 42 }
     var container2 = Container { value: nil }
-    var container3 = Container { value: Optional.some(99) }
-    let _ = container1
-    let _ = container2
-    let _ = container3
+    var container3 = Container { value: Optional::some(99) }
+    var _ = container1
+    var _ = container2
+    var _ = container3
 
     var myVal = MyValue { value: 10 }
     acceptOptionalPrintable(myVal)
@@ -277,8 +277,8 @@ func testCoercionsOptional() {
 
     var optPrint: (any Printable)? = myVal
     var optPrint2: (any Printable)? = nil
-    let _ = optPrint
-    let _ = optPrint2
+    var _ = optPrint
+    var _ = optPrint2
 }
 
 enum Token {
@@ -341,7 +341,7 @@ func testOptionalInferredMemberWrap() {
         case .none => assert(false, "expected some(.ready)")
     }
 
-    let direct: Token? = .comma
+    var direct: Token? = .comma
     match direct {
         case .some(t) => {
             match t {
@@ -363,5 +363,5 @@ func main() {
     testCoercionsOptional()
     testOptionalInferredMemberWrap()
 
-    std.print("PASS: optionals\n")
+    std::print("PASS: optionals\n")
 }

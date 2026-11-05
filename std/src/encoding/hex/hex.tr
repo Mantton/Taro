@@ -1,9 +1,9 @@
-import std.collections.List
-import std.encoding.{DecodeError, DecodeErrorKind}
-import std.mem.Span
-import std.panic.panic
-import std.result.Result
-import std.string.Builder
+import std::collections::List
+import std::encoding::{DecodeError, DecodeErrorKind}
+import std::mem::Span
+import std::panic::panic
+import std::result::Result
+import std::string::Builder
 
 const ASCII_ZERO: uint8 = 48_u8
 const ASCII_NINE: uint8 = 57_u8
@@ -51,7 +51,7 @@ public func decodedLen(_ inputLen: usize) -> usize? {
 /// overflow can occur only for an impossible-to-materialize input span and is
 /// treated consistently with other standard-library allocation primitives.
 public func encode(_ bytes: Span[uint8]) -> string {
-    let outputLen = match encodedLen(bytes.len()) {
+    outputLen := match encodedLen(bytes.len()) {
         case .some(value) => value
         case .none => panic("hex encoded length overflow")
     }
@@ -59,16 +59,16 @@ public func encode(_ bytes: Span[uint8]) -> string {
         return ""
     }
 
-    var out = Builder()
+    var out = Builder::new()
     out.reserve(outputLen)
     var index: usize = 0
     while index < bytes.len() {
-        let value = *bytes.at(index)
+        value := *bytes.at(index)
         out.writeByte(encodeNibble(value >> 4_u8))
         out.writeByte(encodeNibble(value & 15_u8))
         index += 1
     }
-    return out.intoString()
+    return out.toString()
 }
 
 /// Decode strict hexadecimal text.
@@ -77,26 +77,26 @@ public func encode(_ bytes: Span[uint8]) -> string {
 /// dangling half-byte are rejected. Failure is atomic: no partial output is
 /// returned when an invalid byte is found.
 public func decode(_ input: string) -> Result[List[uint8], DecodeError] {
-    let len = input.byteLen()
+    len := input.byteLen()
     // Validate bytes before length so an earlier malformed character is not
     // hidden by a later dangling half-byte.
     var validationIndex: usize = 0
     while validationIndex < len {
         if decodeNibble(input.byteAt(validationIndex)) < 0 {
-            return .err(DecodeError(.invalidByte, validationIndex))
+            return .err(DecodeError::new(.invalidByte, validationIndex))
         }
         validationIndex += 1
     }
-    let outputLen = match decodedLen(len) {
+    outputLen := match decodedLen(len) {
         case .some(value) => value
-        case .none => return .err(DecodeError(.invalidLength, len - (1 as usize)))
+        case .none => return .err(DecodeError::new(.invalidLength, len - (1 as usize)))
     }
 
-    var out = List[uint8](withCapacity: outputLen)
+    var out = List[uint8]::new(withCapacity: outputLen)
     var index: usize = 0
     while index < len {
-        let high = decodeNibble(input.byteAt(index))
-        let low = decodeNibble(input.byteAt(index + (1 as usize)))
+        high := decodeNibble(input.byteAt(index))
+        low := decodeNibble(input.byteAt(index + (1 as usize)))
         out.append(((high as uint8) << 4_u8) | (low as uint8))
         index += 2
     }

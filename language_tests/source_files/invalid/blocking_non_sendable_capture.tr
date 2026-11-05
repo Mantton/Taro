@@ -1,5 +1,0 @@
-func main() async {
-    var value: int32 = 7
-    let borrowed = &value
-    let _ = await std.task.blocking(move || -> int32 { return *borrowed })
-}

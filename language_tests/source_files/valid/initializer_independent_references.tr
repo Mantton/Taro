@@ -1,0 +1,17 @@
+class Example { value: &int32; alias: &int32; copied: &int32 }
+extend Example {
+    init(_ source: &int32) {
+        self.value = source
+        self.alias = &*self.value
+        copy := *self.value
+        self.copied = &copy
+        std::runtime::collect()
+    }
+}
+func main() {
+    var source: int32 = 7
+    value := Example(&source)
+    source = 9
+    std::runtime::collect()
+    assert(*value.value == 9 && *value.alias == 9 && *value.copied == 7, "external pointees and independent copies remain valid through construction")
+}

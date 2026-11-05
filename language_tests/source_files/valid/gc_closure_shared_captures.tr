@@ -1,0 +1,150 @@
+// ENV: TARO_WORKERS=1
+// GC closures capture variables by reference even when they escape: the
+// variable moves to the heap and every closure copy shares it (G17).
+extern "C" {
+    unsafe func __gc__test_probe_create(_ target: *const uint8) -> *mut uint8
+    unsafe func __gc__test_collect_probe_is_live(_ probe: *mut uint8) -> bool
+}
+func collect() {
+    probe := unsafe { __gc__test_probe_create(0 as *const uint8) }
+    var _ = unsafe { __gc__test_collect_probe_is_live(probe) }
+}
+
+func makeCounter() -> any Fn() -> int64 {
+    var count: int64 = 0
+    return () => {
+        count += 1
+        count
+    }
+}
+
+func escapingCapturesShareTheVariable() {
+    var shared: int64 = 1
+    var readers: [any Fn() -> int64] = []
+    readers.append(() => shared)
+    shared = 6
+    collect()
+    std::testing::assertEqual((*readers.at(0))(), 6, "escaped reader sees later outer writes")
+
+    var total: int64 = 0
+    var writers: [any Fn(int64) -> ()] = []
+    writers.append((n: int64) => { total += n })
+    var writer = *writers.at(0)
+    writer(4)
+    std::testing::assertEqual(total, 4, "outer scope sees writes from an escaped closure")
+}
+
+func copiedClosuresShareState() {
+    var counter = makeCounter()
+    collect()
+    var _ = counter()
+    var copy = counter
+    var _ = copy()
+    std::testing::assertEqual(counter(), 3, "closure copies share one captured variable")
+}
+
+func loopBindingsAreFresh() {
+    var fns: [any Fn() -> int64] = []
+    var i: int64 = 0
+    while i < 3 {
+        v := i * 10
+        fns.append(() => v)
+        i += 1
+    }
+    for item in [100 as int64, 200] {
+        fns.append(() => item)
+    }
+    collect()
+    var seen: int64 = 0
+    for f in fns {
+        seen = seen * 1000 + f()
+    }
+    std::testing::assertEqual(seen, 10020100200, "each iteration captures its own binding")
+}
+
+final class Box { value: int64 }
+extend Box { init(_ value: int64) { self.value = value } }
+
+func capturedClassVariablesRebind() {
+    var node = Box(1)
+    read := () => node.value
+    node = Box(7)
+    std::testing::assertEqual(read(), 7, "a captured class variable sees rebinding")
+}
+
+func applyText[F: Fn() -> string](_ f: F) -> string {
+    collect()
+    f()
+}
+
+func genericCapturesAreRooted() {
+    text := "generic" + " capture"
+    std::testing::assertEqual(applyText(() => text), "generic capture", "generic captures survive collection")
+}
+
+final class Holder {
+    callback: (any Fn() -> string)?
+    label: string
+}
+extend Holder {
+    init(_ label: string) {
+        self.callback = .none
+        self.label = label
+    }
+}
+
+func makeCycle() -> *mut uint8 {
+    var holder = Holder("cycle" + " label")
+    probe := unsafe { __gc__test_probe_create(std::string::stringData(holder.label)) }
+    holder.callback = .some(() => holder.label)
+    std::testing::assertEqual(holder.callback.unwrap()(), "cycle label", "cycle callback reads its holder")
+    return probe
+}
+
+func closureObjectCyclesAreReclaimed() {
+    probe := makeCycle()
+    assert(!unsafe { __gc__test_collect_probe_is_live(probe) }, "dead closure/object cycles are reclaimed")
+}
+
+func asyncCapturesShareTheVariable() async {
+    var hits: int64 = 0
+    var bump = () async => { hits += 1 }
+    await bump()
+    collect()
+    await bump()
+    std::testing::assertEqual(hits, 2, "async closure writes are visible to the caller")
+}
+
+func asyncLoopBindingsAreFresh() async {
+    var fns: [any Fn() -> int64] = []
+    var tasks: [std::task::Task[int64]] = []
+    var i: int64 = 0
+    while i < 3 {
+        seed := i
+        fns.append(() => seed * 10)
+        tasks.append(std::task::spawn(() async => { seed * 10 }))
+        i += 1
+    }
+    await std::testing::yieldNow()
+    collect()
+    var seen: int64 = 0
+    for f in fns {
+        seen = seen * 100 + f()
+    }
+    for task in tasks {
+        seen = seen * 100 + (await task.result()).unwrap()
+    }
+    std::testing::assertEqual(seen, 1020001020, "async bodies capture a fresh binding per iteration")
+}
+
+func main() async {
+    escapingCapturesShareTheVariable()
+    copiedClosuresShareState()
+    loopBindingsAreFresh()
+    capturedClassVariablesRebind()
+    genericCapturesAreRooted()
+    closureObjectCyclesAreReclaimed()
+    await asyncCapturesShareTheVariable()
+    await asyncLoopBindingsAreFresh()
+    print("PASS: closures share captured variables\n")
+}

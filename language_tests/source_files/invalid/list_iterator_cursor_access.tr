@@ -1,0 +1,8 @@
+import std::collections::ListIterator
+import std::task::Task
+
+func rewind(_ iterator: &ListIterator[Task[int32]]) {
+    var _ = iterator.cursor
+}
+
+func main() {}

@@ -1,0 +1,8 @@
+error: non-exhaustive match, missing 'flags { ready: false }' case
+ -> language_tests/source_files/invalid/named_pattern_nonexhaustive.tr:4:4
+    match state {
+    ^^^^^^^^^^^^^
+        case .flags { ready: true } => {}
+        case .empty {} => {}
+    }
+     ^

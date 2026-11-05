@@ -1,15 +1,15 @@
 func invalidConstCopyToDestination() {
-    let s = "abc"
-    let src: *const uint8 = std.string.stringData(s)
-    let dst: *const uint8 = std.string.stringData(s)
+    s := "abc"
+    var src: *const uint8 = std::string::stringData(s)
+    var dst: *const uint8 = std::string::stringData(s)
 
     // ERROR: destination pointer must be mutable for copyTo.
-    src.copyTo(dst, 1)
+    unsafe { src.copyTo(dst, 1) }
 }
 
 func invalidConstWrite() {
-    let s = "abc"
-    let p: *const uint8 = std.string.stringData(s)
+    s := "abc"
+    var p: *const uint8 = std::string::stringData(s)
 
     // ERROR: write is forbidden through const pointer.
     p.write(65)

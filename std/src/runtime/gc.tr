@@ -1,0 +1,54 @@
+extern "taro_rt" {
+    func __rt__gc_collect()
+    unsafe func __rt__gc_stats(_ out: *mut uint8)
+}
+
+/// A snapshot of collector counters, as returned by `gcStats()`.
+///
+/// Counters only grow, except `heapBytes`, which falls when a collection frees
+/// objects, and `heapGoalBytes`, which pacing recomputes after each collection.
+/// `heapBytes` always equals `allocatedBytes - freedBytes`.
+public struct GcStats {
+    /// Completed collections.
+    public collections: uint64
+    /// Bytes in allocated objects not yet freed: live data plus garbage the
+    /// next collection will find.
+    public heapBytes: uint64
+    /// Bytes of address space mapped for the heap.
+    public reservedBytes: uint64
+    /// The heap size that triggers the next collection under `TARO_GC_PERCENT`.
+    public heapGoalBytes: uint64
+    /// Bytes allocated since the program started.
+    public allocatedBytes: uint64
+    /// Bytes freed by collections since the program started.
+    public freedBytes: uint64
+    /// Stop-the-world time across all collections.
+    public totalPauseNanos: uint64
+    /// Stop-the-world time of the most recent collection, or 0 before the first.
+    public lastPauseNanos: uint64
+}
+
+/// Read the collector's counters. Allocations still cached by other running
+/// threads are counted once those threads refill or park.
+public func gcStats() -> GcStats {
+    var stats = GcStats {
+        collections: 0,
+        heapBytes: 0,
+        reservedBytes: 0,
+        heapGoalBytes: 0,
+        allocatedBytes: 0,
+        freedBytes: 0,
+        totalPauseNanos: 0,
+        lastPauseNanos: 0,
+    }
+    unsafe { __rt__gc_stats((&stats as *mut GcStats) as *mut uint8) }
+    return stats
+}
+
+/// Run a full stop-the-world collection now.
+///
+/// Programs never need this for correctness or memory reclamation; it exists
+/// for tests, benchmarks and diagnostics that need a known collection point.
+public func collect() {
+    __rt__gc_collect()
+}

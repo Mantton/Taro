@@ -1,0 +1,31 @@
+// Recursive wrappers can inline, but recursion still crosses a real managed
+// call. Stack references and ordinary value results must survive that boundary.
+@inline
+func step(_ depth: int32, _ value: &int32) -> int32 {
+    descend(depth - 1, value) + 1
+}
+
+@inline
+func descend(_ depth: int32, _ value: &int32) -> int32 {
+    if depth == 0 {
+        std::runtime::collect()
+        return *value
+    }
+    step(depth, value)
+}
+
+@noinline
+func exercise(_ depth: int32) {
+    var value: int32 = 37
+    result := descend(depth, &value)
+    std::runtime::collect()
+    assert(result == 37 + depth, "recursive inline results survive collection")
+    value = 41
+    assert(descend(depth, &value) == 41 + depth, "recursive inline references remain writable")
+}
+
+func main() {
+    exercise(0)
+    exercise(1)
+    exercise(128)
+}

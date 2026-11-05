@@ -1,0 +1,36 @@
+// Spawning allocates a task's result storage, and stress mode makes every
+// allocation collect. A thread collecting inside spawn must not hold the lock
+// another spawner is blocked on: that thread cannot reach a safepoint, so the
+// collection would wait for it forever.
+// ENV: TARO_GC_STRESS=1
+// ENV: TARO_WORKERS=4
+
+const SPAWNERS: int64 = 8
+const SPAWNS: int64 = 150
+
+func spawner(_ seed: int64) async -> int64 {
+    var total: int64 = 0
+    var index: int64 = 0
+    while index < SPAWNS {
+        value := seed + index
+        task := std::task::spawn(() async => { return value })
+        total += (await task.result()).unwrap()
+        index += 1
+    }
+    return total
+}
+
+func main() async {
+    var spawners: List[std::task::Task[int64]] = []
+    var seed: int64 = 0
+    while seed < SPAWNERS {
+        current := seed
+        spawners.append(std::task::spawn(() async => { return await spawner(current) }))
+        seed += 1
+    }
+    var total: int64 = 0
+    for task in spawners {
+        total += (await task.result()).unwrap()
+    }
+    std::printf("total: %d\n", total)
+}

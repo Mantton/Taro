@@ -22,6 +22,26 @@ impl<'ctx> Actor<'ctx> {
         self.context.cache_attributes(id, attributes.clone());
     }
 
+    fn validate_no_copy_usage(&self, attributes: &hir::AttributeList, nominal: bool) {
+        for attribute in attributes {
+            if attribute.as_known(self.context) != Some(hir::KnownAttribute::NoCopy) {
+                continue;
+            }
+            if !nominal {
+                self.context.dcx().emit_error(
+                    "@NoCopy is only allowed on structs, classes, and enums".into(),
+                    Some(attribute.span),
+                );
+            }
+            if attribute.args.is_some() {
+                self.context.dcx().emit_error(
+                    "@NoCopy does not take arguments".into(),
+                    Some(attribute.span),
+                );
+            }
+        }
+    }
+
     fn validate_repr_usage(
         &self,
         attributes: &hir::AttributeList,
@@ -43,6 +63,13 @@ impl<'ctx> Actor<'ctx> {
 
 impl<'ctx> HirVisitor for Actor<'ctx> {
     fn visit_declaration(&mut self, node: &hir::Declaration) -> Self::Result {
+        self.validate_no_copy_usage(
+            &node.attributes,
+            matches!(
+                node.kind,
+                hir::DeclarationKind::Struct(_) | hir::DeclarationKind::Enum(_)
+            ),
+        );
         self.validate_repr_usage(
             &node.attributes,
             matches!(node.kind, hir::DeclarationKind::Struct(_)),
@@ -56,6 +83,7 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
         node: &hir::AssociatedDeclaration,
         context: hir::AssocContext,
     ) -> Self::Result {
+        self.validate_no_copy_usage(&node.attributes, false);
         self.validate_repr_usage(&node.attributes, false);
         self.cache_attributes(node.id, &node.attributes);
         hir::walk_assoc_declaration(self, node, context)

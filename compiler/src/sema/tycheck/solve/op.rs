@@ -1,13 +1,16 @@
 use crate::sema::tycheck::utils::literal::integer_expression_literal_fits;
+#[cfg(test)]
+mod g38_tests;
+#[cfg(test)]
+mod tests;
 use crate::{
-    hir::{BinaryOperator, Mutability, NodeID, OperatorKind, UnaryOperator},
+    hir::{BinaryOperator, NodeID, OperatorKind, UnaryOperator},
     sema::{
         error::TypeError,
         models::{InferTy, Ty, TyKind},
         tycheck::solve::{
-            Adjustment, ApplyArgument, ApplyGoalData, AssignOpGoalData, BinOpGoalData,
-            BindOverloadGoalData, ConstraintSolver, DisjunctionBranch, Goal, Obligation,
-            SolverResult, UnOpGoalData,
+            ApplyArgument, AssignOpGoalData, BinOpGoalData, ConstraintSolver, Goal, MethodCallData,
+            Obligation, SolverResult, UnOpGoalData,
         },
     },
     span::Spanned,
@@ -33,7 +36,10 @@ fn binary_op_to_operator_kind(op: BinaryOperator) -> Option<OperatorKind> {
         BinaryOperator::Leq => Some(OperatorKind::Leq),
         BinaryOperator::Geq => Some(OperatorKind::Geq),
         // Not overloadable
-        BinaryOperator::BoolAnd | BinaryOperator::BoolOr => None,
+        BinaryOperator::BoolAnd
+        | BinaryOperator::BoolOr
+        | BinaryOperator::IdentityEql
+        | BinaryOperator::IdentityNeq => None,
     }
 }
 
@@ -60,7 +66,9 @@ fn binary_op_to_assign_operator_kind(op: BinaryOperator) -> Option<OperatorKind>
         BinaryOperator::BitShl => Some(OperatorKind::BitShlAssign),
         BinaryOperator::BitShr => Some(OperatorKind::BitShrAssign),
         // Comparison and boolean operators don't have assign variants
-        BinaryOperator::Eql
+        BinaryOperator::IdentityEql
+        | BinaryOperator::IdentityNeq
+        | BinaryOperator::Eql
         | BinaryOperator::Neq
         | BinaryOperator::Lt
         | BinaryOperator::Gt
@@ -72,6 +80,41 @@ fn binary_op_to_assign_operator_kind(op: BinaryOperator) -> Option<OperatorKind>
 }
 
 impl<'ctx> ConstraintSolver<'ctx> {
+    fn operator_method_name_for_kind(kind: OperatorKind) -> Option<&'static str> {
+        match kind {
+            OperatorKind::Add => Some("add"),
+            OperatorKind::AddAssign => Some("addAssign"),
+            OperatorKind::Sub => Some("sub"),
+            OperatorKind::SubAssign => Some("subAssign"),
+            OperatorKind::Mul => Some("mul"),
+            OperatorKind::MulAssign => Some("mulAssign"),
+            OperatorKind::Div => Some("div"),
+            OperatorKind::DivAssign => Some("divAssign"),
+            OperatorKind::Rem => Some("rem"),
+            OperatorKind::RemAssign => Some("remAssign"),
+            OperatorKind::BitAnd => Some("bitand"),
+            OperatorKind::BitAndAssign => Some("bitandAssign"),
+            OperatorKind::BitOr => Some("bitor"),
+            OperatorKind::BitOrAssign => Some("bitorAssign"),
+            OperatorKind::BitXor => Some("bitxor"),
+            OperatorKind::BitXorAssign => Some("bitxorAssign"),
+            OperatorKind::BitShl => Some("shl"),
+            OperatorKind::BitShlAssign => Some("shlAssign"),
+            OperatorKind::BitShr => Some("shr"),
+            OperatorKind::BitShrAssign => Some("shrAssign"),
+            OperatorKind::Neg => Some("neg"),
+            OperatorKind::Not => Some("not"),
+            OperatorKind::BitwiseNot => Some("bitnot"),
+            OperatorKind::Eq => Some("eq"),
+            OperatorKind::Neq => Some("neq"),
+            OperatorKind::Lt => Some("lt"),
+            OperatorKind::Gt => Some("gt"),
+            OperatorKind::Leq => Some("le"),
+            OperatorKind::Geq => Some("ge"),
+            OperatorKind::BoolAnd | OperatorKind::BoolOr => None,
+        }
+    }
+
     fn check_integer_literal_fit(&self, node_id: NodeID, ty: Ty<'ctx>, span: crate::span::Span) {
         let Some(value) = self.integer_literal_value(node_id) else {
             return;
@@ -143,64 +186,58 @@ impl<'ctx> ConstraintSolver<'ctx> {
         data: &UnOpGoalData<'ctx>,
         operand_ty: Ty<'ctx>,
     ) -> Option<SolverResult<'ctx>> {
-        let op_kind = unary_op_to_operator_kind(data.operator)?;
+        self.solve_operator_method(
+            unary_op_to_operator_kind(data.operator)?,
+            data.node_id,
+            ApplyArgument {
+                id: data.rhs_id,
+                label: None,
+                ty: operand_ty,
+                span: data.span,
+            },
+            data.receiver_addressable,
+            vec![],
+            data.rho,
+        )
+    }
 
-        // Look up operator candidates on the operand type
-        let candidates = self.lookup_operator_candidates(operand_ty, op_kind, None);
-        if candidates.is_empty() {
-            return None;
-        }
-
-        // Create a type variable for the method type
-        let method_ty = self.icx.next_ty_var(data.span);
-
-        // Build disjunction branches for each candidate
-        let mut branches = Vec::with_capacity(candidates.len());
-        for candidate in candidates {
-            let candidate_ty = self.gcx().get_type(candidate);
-            branches.push(DisjunctionBranch {
-                goal: Goal::BindOverload(BindOverloadGoalData {
-                    node_id: data.node_id,
-                    var_ty: method_ty,
-                    candidate_ty,
-                    source: candidate,
-                    instantiation_args: None,
-                }),
-                source: Some(candidate),
-                autoref_cost: 0,
-                matches_expectation: false,
-                matches_async_preference: false,
-                deref_steps: 0,
-            });
-        }
-
-        let disjunction_goal = Obligation {
-            location: data.span,
-            goal: Goal::Disjunction(branches),
-        };
-
-        // Build the Apply goal: call the operator method with `self` as the only argument
-        let apply_goal = Obligation {
-            location: data.span,
-            goal: Goal::Apply(ApplyGoalData {
-                call_node_id: data.node_id,
-                call_span: data.span,
-                callee_ty: method_ty,
-                callee_source: None,
+    /// Operator syntax selects its language interface, then uses ordinary
+    /// receiver discovery and argument passing. The RHS is a value argument;
+    /// only the receiver can acquire an address through normal autoref.
+    fn solve_operator_method(
+        &mut self,
+        kind: OperatorKind,
+        node_id: NodeID,
+        receiver: ApplyArgument<'ctx>,
+        receiver_addressable: bool,
+        arguments: Vec<ApplyArgument<'ctx>>,
+        result: Ty<'ctx>,
+    ) -> Option<SolverResult<'ctx>> {
+        let item = crate::hir::StdItem::from_operator_kind(kind)?;
+        self.gcx().std_item_def(item)?;
+        let name = Self::operator_method_name_for_kind(kind)?;
+        let method_ty = self.icx.next_ty_var(receiver.span);
+        Some(self.solve_method_call_with_interface(
+            MethodCallData {
+                receiver_addressable,
+                selected: None,
+                node_id,
+                receiver: receiver.ty,
+                reciever_span: receiver.span,
+                reciever_node: receiver.id,
                 is_unsafe_context: false,
-                result_ty: data.rho,
-                _expect_ty: data.expectation,
-                arguments: vec![ApplyArgument {
-                    id: data.rhs_id,
-                    label: None,
-                    ty: operand_ty,
-                    span: data.span,
-                }],
-                skip_labels: true,
-            }),
-        };
-
-        Some(SolverResult::Solved(vec![disjunction_goal, apply_goal]))
+                name: crate::span::Identifier {
+                    symbol: self.gcx().intern_symbol(name),
+                    span: receiver.span,
+                },
+                arguments,
+                result,
+                method_ty,
+                prefer_async: false,
+                span: receiver.span,
+            },
+            Some(item),
+        ))
     }
 
     fn solve_unary_intrinsic(
@@ -290,6 +327,17 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return SolverResult::Deferred;
         }
 
+        if matches!(
+            data.operator,
+            BinaryOperator::IdentityEql | BinaryOperator::IdentityNeq
+        ) && self.gcx().is_class_type(lhs)
+            && self.gcx().is_class_type(rhs)
+        {
+            return SolverResult::Solved(vec![Obligation {
+                location: data.span,
+                goal: Goal::Equal(data.rho, self.gcx().types.bool),
+            }]);
+        }
         // Try intrinsic resolution first (e.g., u8 + u8, bool && bool)
         if let Some(obligations) = self.solve_binary_intrinsic(&data, lhs, rhs) {
             return SolverResult::Solved(obligations);
@@ -311,330 +359,30 @@ impl<'ctx> ConstraintSolver<'ctx> {
         )])
     }
 
-    /// Determines if a binary operator is a comparison operator that should use autoref.
-    /// Comparison operators implicitly borrow their operands, matching Rust's semantics:
-    /// `a == b` is equivalent to `PartialEq::eq(&a, &b)`
-    fn is_comparison_operator(op: BinaryOperator) -> bool {
-        matches!(
-            op,
-            BinaryOperator::Eql
-                | BinaryOperator::Neq
-                | BinaryOperator::Lt
-                | BinaryOperator::Gt
-                | BinaryOperator::Leq
-                | BinaryOperator::Geq
-        )
-    }
-
-    /// Count leading shared-reference layers for a type.
-    fn ref_depth(mut ty: Ty<'ctx>) -> usize {
-        let mut depth = 0usize;
-        while let TyKind::Reference(inner, _) = ty.kind() {
-            ty = inner;
-            depth += 1;
-        }
-        depth
-    }
-
-    /// Dereference up to `steps` shared-reference layers from a type.
-    fn deref_ref_layers(mut ty: Ty<'ctx>, steps: usize) -> Ty<'ctx> {
-        let mut i = 0usize;
-        while i < steps {
-            match ty.kind() {
-                TyKind::Reference(inner, _) => {
-                    ty = inner;
-                    i += 1;
-                }
-                _ => break,
-            }
-        }
-        ty
-    }
-
     fn solve_binary_method(
         &mut self,
         data: &BinOpGoalData<'ctx>,
         lhs: Ty<'ctx>,
         rhs: Ty<'ctx>,
     ) -> Option<SolverResult<'ctx>> {
-        let op_kind = binary_op_to_operator_kind(data.operator)?;
-        let needs_autoref = Self::is_comparison_operator(data.operator);
-
-        // For comparison operators, try all shared-reference deref combinations first,
-        // then autoref both sides. This matches Rust-like behavior for `&T`, `&&T`, etc.
-        if needs_autoref {
-            let lhs_ref_depth = Self::ref_depth(lhs);
-            let rhs_ref_depth = Self::ref_depth(rhs);
-            for lhs_deref_steps in (0..=lhs_ref_depth).rev() {
-                let lhs_try = Self::deref_ref_layers(lhs, lhs_deref_steps);
-                for rhs_deref_steps in (0..=rhs_ref_depth).rev() {
-                    let rhs_try = Self::deref_ref_layers(rhs, rhs_deref_steps);
-                    if let Some(result) = self.solve_binary_method_with_autoref(
-                        data,
-                        lhs_try,
-                        rhs_try,
-                        op_kind,
-                        lhs_deref_steps,
-                        rhs_deref_steps,
-                    ) {
-                        return Some(result);
-                    }
-                }
-            }
-
-            // Comparisons are always by-reference; do not fall back to by-value method calls.
-            return None;
-        }
-
-        // Fall back to value types (no autoref)
-        self.solve_binary_method_value(data, lhs, rhs, op_kind)
-    }
-
-    /// Try to resolve binary operator with autoref (implicit borrowing of operands).
-    /// This is used for comparison operators where the trait methods take references.
-    fn solve_binary_method_with_autoref(
-        &mut self,
-        data: &BinOpGoalData<'ctx>,
-        lhs: Ty<'ctx>,
-        rhs: Ty<'ctx>,
-        op_kind: OperatorKind,
-        lhs_deref_steps: usize,
-        rhs_deref_steps: usize,
-    ) -> Option<SolverResult<'ctx>> {
-        // Create borrowed types for operands
-        let lhs_ref = Ty::new(TyKind::Reference(lhs, Mutability::Immutable), self.gcx());
-        let rhs_ref = Ty::new(TyKind::Reference(rhs, Mutability::Immutable), self.gcx());
-
-        // Look up operator candidates on the original LHS type (not the reference)
-        // because that's where the impl is defined (e.g., `impl PartialEq for string`)
-        let candidates = self.lookup_operator_candidates(lhs, op_kind, Some(rhs));
-        if candidates.is_empty() {
-            return None;
-        }
-
-        // Filter candidates to those whose parameters expect references
-        let mut matching_candidates = Vec::new();
-        for candidate in candidates {
-            let sig = self.gcx().get_signature(candidate);
-            if sig.inputs.len() >= 2 {
-                let self_param_ty = sig.inputs[0].ty;
-                let rhs_param_ty = sig.inputs[1].ty;
-
-                // Check if the method expects references
-                let self_expects_ref = matches!(self_param_ty.kind(), TyKind::Reference(_, _))
-                    || matches!(self_param_ty.kind(), TyKind::Parameter(_));
-                let rhs_expects_ref = matches!(rhs_param_ty.kind(), TyKind::Reference(_, _))
-                    || matches!(rhs_param_ty.kind(), TyKind::Parameter(_));
-
-                // For autoref, we need methods that expect references for both operands
-                if self_expects_ref && rhs_expects_ref {
-                    // Verify the reference types are compatible
-                    let self_compatible = match self_param_ty.kind() {
-                        TyKind::Reference(inner, Mutability::Immutable) => {
-                            inner == lhs
-                                || inner.is_infer()
-                                || inner.needs_instantiation()
-                                || matches!(inner.kind(), TyKind::Parameter(_))
-                        }
-                        TyKind::Parameter(_) => true,
-                        _ => false,
-                    };
-
-                    let rhs_compatible = match rhs_param_ty.kind() {
-                        TyKind::Reference(inner, Mutability::Immutable) => {
-                            inner == rhs
-                                || inner.is_infer()
-                                || inner.needs_instantiation()
-                                || matches!(inner.kind(), TyKind::Parameter(_))
-                        }
-                        TyKind::Parameter(_) => true,
-                        _ => false,
-                    };
-
-                    if self_compatible && rhs_compatible {
-                        matching_candidates.push(candidate);
-                    }
-                }
-            }
-        }
-
-        if matching_candidates.is_empty() {
-            return None;
-        }
-
-        // Record deref+borrow adjustments for both operands.
-        let mut lhs_adjustments = Vec::with_capacity(lhs_deref_steps + 1);
-        let mut rhs_adjustments = Vec::with_capacity(rhs_deref_steps + 1);
-        for _ in 0..lhs_deref_steps {
-            lhs_adjustments.push(Adjustment::Dereference);
-        }
-        for _ in 0..rhs_deref_steps {
-            rhs_adjustments.push(Adjustment::Dereference);
-        }
-        lhs_adjustments.push(Adjustment::BorrowImmutable);
-        rhs_adjustments.push(Adjustment::BorrowImmutable);
-        self.record_adjustments(data.lhs_id, lhs_adjustments);
-        self.record_adjustments(data.rhs_id, rhs_adjustments);
-
-        // Create a type variable for the method type
-        let method_ty = self.icx.next_ty_var(data.span);
-
-        // Build disjunction branches for each candidate
-        let mut branches = Vec::with_capacity(matching_candidates.len());
-        for candidate in matching_candidates {
-            let candidate_ty = self.gcx().get_type(candidate);
-            branches.push(DisjunctionBranch {
-                goal: Goal::BindOverload(BindOverloadGoalData {
-                    node_id: data.node_id,
-                    var_ty: method_ty,
-                    candidate_ty,
-                    source: candidate,
-                    instantiation_args: None,
-                }),
-                source: Some(candidate),
-                autoref_cost: 0,
-                matches_expectation: false,
-                matches_async_preference: false,
-                deref_steps: 0,
-            });
-        }
-
-        let disjunction_goal = Obligation {
-            location: data.span,
-            goal: Goal::Disjunction(branches),
-        };
-
-        // Build the Apply goal with borrowed types
-        let apply_goal = Obligation {
-            location: data.span,
-            goal: Goal::Apply(ApplyGoalData {
-                call_node_id: data.node_id,
-                call_span: data.span,
-                callee_ty: method_ty,
-                callee_source: None,
-                is_unsafe_context: false,
-                result_ty: data.rho,
-                _expect_ty: data.expectation,
-                arguments: vec![
-                    ApplyArgument {
-                        id: data.lhs_id,
-                        label: None,
-                        ty: lhs_ref, // Use borrowed type
-                        span: data.span,
-                    },
-                    ApplyArgument {
-                        id: data.rhs_id,
-                        label: None,
-                        ty: rhs_ref, // Use borrowed type
-                        span: data.span,
-                    },
-                ],
-                skip_labels: true,
-            }),
-        };
-
-        Some(SolverResult::Solved(vec![disjunction_goal, apply_goal]))
-    }
-
-    /// Try to resolve binary operator with value types (no autoref).
-    /// This is the original behavior, used for arithmetic operators and as fallback.
-    fn solve_binary_method_value(
-        &mut self,
-        data: &BinOpGoalData<'ctx>,
-        lhs: Ty<'ctx>,
-        rhs: Ty<'ctx>,
-        op_kind: OperatorKind,
-    ) -> Option<SolverResult<'ctx>> {
-        // Look up operator candidates on the LHS type
-        let candidates = self.lookup_operator_candidates(lhs, op_kind, Some(rhs));
-        if candidates.is_empty() {
-            return None;
-        }
-
-        // Filter candidates to those whose RHS parameter matches
-        let mut matching_candidates = Vec::new();
-        for candidate in candidates {
-            let sig = self.gcx().get_signature(candidate);
-            // Operator methods have signature: (self, rhs: Rhs) -> Result
-            // Check if the second parameter type is compatible with rhs
-            if sig.inputs.len() >= 2 {
-                let rhs_param_ty = sig.inputs[1].ty;
-                // Check if RHS can unify with the parameter type
-                // For now, just check if they're the same or if RHS is an inference var
-                // Also allow if the parameter type is generic (e.g. Self or Rhs in interface)
-                // because we can't easily check equality without instantiation.
-                if rhs == rhs_param_ty
-                    || rhs.is_infer()
-                    || rhs_param_ty.needs_instantiation()
-                    || matches!(rhs_param_ty.kind(), TyKind::Parameter(_))
-                {
-                    matching_candidates.push(candidate);
-                }
-            }
-        }
-
-        if matching_candidates.is_empty() {
-            return None;
-        }
-
-        // Create a type variable for the method type
-        let method_ty = self.icx.next_ty_var(data.span);
-
-        // Build disjunction branches for each candidate
-        let mut branches = Vec::with_capacity(matching_candidates.len());
-        for candidate in matching_candidates {
-            let candidate_ty = self.gcx().get_type(candidate);
-            branches.push(DisjunctionBranch {
-                goal: Goal::BindOverload(BindOverloadGoalData {
-                    node_id: data.node_id,
-                    var_ty: method_ty,
-                    candidate_ty,
-                    source: candidate,
-                    instantiation_args: None,
-                }),
-                source: Some(candidate),
-                autoref_cost: 0,
-                matches_expectation: false,
-                matches_async_preference: false,
-                deref_steps: 0,
-            });
-        }
-
-        let disjunction_goal = Obligation {
-            location: data.span,
-            goal: Goal::Disjunction(branches),
-        };
-
-        // Build the Apply goal: call the operator method with `self` and `rhs` as arguments
-        let apply_goal = Obligation {
-            location: data.span,
-            goal: Goal::Apply(ApplyGoalData {
-                call_node_id: data.node_id,
-                call_span: data.span,
-                callee_ty: method_ty,
-                callee_source: None,
-                is_unsafe_context: false,
-                result_ty: data.rho,
-                _expect_ty: data.expectation,
-                arguments: vec![
-                    ApplyArgument {
-                        id: data.lhs_id,
-                        label: None,
-                        ty: lhs,
-                        span: data.span,
-                    },
-                    ApplyArgument {
-                        id: data.rhs_id,
-                        label: None,
-                        ty: rhs,
-                        span: data.span,
-                    },
-                ],
-                skip_labels: true,
-            }),
-        };
-
-        Some(SolverResult::Solved(vec![disjunction_goal, apply_goal]))
+        self.solve_operator_method(
+            binary_op_to_operator_kind(data.operator)?,
+            data.node_id,
+            ApplyArgument {
+                id: data.lhs_id,
+                label: None,
+                ty: lhs,
+                span: data.span,
+            },
+            data.receiver_addressable,
+            vec![ApplyArgument {
+                id: data.rhs_id,
+                label: None,
+                ty: rhs,
+                span: data.span,
+            }],
+            data.rho,
+        )
     }
 }
 
@@ -786,35 +534,16 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let mut obligations = vec![];
 
         match data.operator {
+            IdentityEql | IdentityNeq => return None,
             Add | Sub | Mul | Div | Rem => {
                 // Fast path: both sides already same concrete numeric type
                 if is_same_int(lhs, rhs) || is_same_float(lhs, rhs) {
                     push_rho_eq(&mut obligations, lhs);
-                    if let Some(exp) = data.expectation {
-                        obligations.push(Obligation {
-                            location: data.span,
-                            goal: Goal::Coerce {
-                                node_id: data.node_id,
-                                from: data.rho,
-                                to: exp,
-                            },
-                        });
-                    }
                     return Some(obligations);
                 }
 
                 // Eagerly unify inference vars with the concrete side (or with each other)
                 if unify_numeric_binop(&mut obligations, lhs, rhs).is_some() {
-                    if let Some(exp) = data.expectation {
-                        obligations.push(Obligation {
-                            location: data.span,
-                            goal: Goal::Coerce {
-                                node_id: data.node_id,
-                                from: data.rho,
-                                to: exp,
-                            },
-                        });
-                    }
                     return Some(obligations);
                 }
 
@@ -986,104 +715,24 @@ impl<'ctx> ConstraintSolver<'ctx> {
         lhs: Ty<'ctx>,
         rhs: Ty<'ctx>,
     ) -> Option<SolverResult<'ctx>> {
-        let op_kind = binary_op_to_assign_operator_kind(data.operator)?;
-
-        // Look up assign operator candidates on the LHS type
-        let candidates = self.lookup_operator_candidates(lhs, op_kind, Some(rhs));
-        if candidates.is_empty() {
-            return None;
-        }
-
-        // Compound assignment operators take &self (mutable reference)
-        // Create the reference type for matching
-        let lhs_ref_ty = Ty::new(TyKind::Reference(lhs, Mutability::Mutable), self.gcx());
-
-        // Filter candidates to those whose first parameter is &mut T and RHS matches
-        let mut matching_candidates = Vec::new();
-        for candidate in candidates {
-            let sig = self.gcx().get_signature(candidate);
-            // Assign operator methods have signature: (&self, rhs: Rhs) -> void
-            if sig.inputs.len() >= 2 {
-                let self_param_ty = sig.inputs[0].ty;
-                let rhs_param_ty = sig.inputs[1].ty;
-
-                // Check if self parameter is &mut T
-                let self_matches = self_param_ty == lhs_ref_ty;
-                // Check if RHS parameter matches
-                let rhs_matches = rhs == rhs_param_ty || rhs.is_infer();
-
-                if self_matches && rhs_matches {
-                    matching_candidates.push(candidate);
-                }
-            }
-        }
-
-        if matching_candidates.is_empty() {
-            return None;
-        }
-
-        // Record that we need to take a mutable reference of the LHS
-        self.record_adjustments(data.lhs_id, vec![Adjustment::BorrowMutable]);
-
-        // Create a type variable for the method type
-        let method_ty = self.icx.next_ty_var(data.span);
-
-        // Build disjunction branches for each candidate
-        let mut branches = Vec::with_capacity(matching_candidates.len());
-        for candidate in matching_candidates {
-            let candidate_ty = self.gcx().get_type(candidate);
-            branches.push(DisjunctionBranch {
-                goal: Goal::BindOverload(BindOverloadGoalData {
-                    node_id: data.node_id,
-                    var_ty: method_ty,
-                    candidate_ty,
-                    source: candidate,
-                    instantiation_args: None,
-                }),
-                source: Some(candidate),
-                autoref_cost: 0,
-                matches_expectation: false,
-                matches_async_preference: false,
-                deref_steps: 0,
-            });
-        }
-
-        let disjunction_goal = Obligation {
-            location: data.span,
-            goal: Goal::Disjunction(branches),
-        };
-
-        // Build the Apply goal: call the assign operator method with `&self` and `rhs`
-        // Assign ops return void
-        let apply_goal = Obligation {
-            location: data.span,
-            goal: Goal::Apply(ApplyGoalData {
-                call_node_id: data.node_id,
-                call_span: data.span,
-                callee_ty: method_ty,
-                callee_source: None,
-                is_unsafe_context: false,
-                result_ty: self.gcx().types.void,
-                _expect_ty: None,
-                arguments: vec![
-                    ApplyArgument {
-                        id: data.lhs_id,
-                        label: None,
-                        ty: lhs_ref_ty, // Pass &mut T instead of T
-                        span: data.span,
-                    },
-                    ApplyArgument {
-                        id: data.rhs_id,
-                        label: None,
-                        ty: rhs,
-                        span: data.span,
-                    },
-                ],
-                skip_labels: true,
-            }),
-        };
-
-        Some(SolverResult::Solved(vec![disjunction_goal, apply_goal]))
+        self.solve_operator_method(
+            binary_op_to_assign_operator_kind(data.operator)?,
+            data.node_id,
+            ApplyArgument {
+                id: data.lhs_id,
+                label: None,
+                ty: lhs,
+                span: data.span,
+            },
+            data.receiver_addressable,
+            vec![ApplyArgument {
+                id: data.rhs_id,
+                label: None,
+                ty: rhs,
+                span: data.span,
+            }],
+            self.gcx().types.void,
+        )
     }
 
     /// Try to resolve intrinsic compound assignment operations on primitives.
@@ -1112,6 +761,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let mut obligations = vec![];
 
         match data.operator {
+            IdentityEql | IdentityNeq => return None,
             // Arithmetic compound assignment: +=, -=, *=, /=, %=
             Add | Sub | Mul | Div | Rem => {
                 // Same concrete numeric types
@@ -1150,10 +800,14 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 }
             }
 
-            // Bitwise compound assignment: &=, |=, ^=, <<=, >>=
-            BitAnd | BitOr | BitXor => {
+            // Bitwise compound assignment: &=, |=, ^=, <<=, >>=. As with the
+            // binary operators, shifts take an amount of the operand's own
+            // integer type, so `x <<= 1` infers `1` as the type of `x`.
+            BitAnd | BitOr | BitXor | BitShl | BitShr => {
                 // Boolean bitwise
-                if matches!((lhs.kind(), rhs.kind()), (Bool, Bool)) {
+                if matches!(data.operator, BitAnd | BitOr | BitXor)
+                    && matches!((lhs.kind(), rhs.kind()), (Bool, Bool))
+                {
                     return Some(obligations);
                 }
 
@@ -1182,20 +836,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
                             location: data.span,
                             goal: Goal::Equal(lhs, rhs),
                         });
-                        return Some(obligations);
-                    }
-                    _ => {}
-                }
-            }
-
-            // Shift compound assignment: <<=, >>=
-            BitShl | BitShr => {
-                match (lhs.kind(), rhs.kind()) {
-                    // LHS must be integer; RHS can be any integer
-                    (Int(_) | UInt(_), Int(_) | UInt(_) | Infer(IntVar(_))) => {
-                        return Some(obligations);
-                    }
-                    (Infer(IntVar(_)), Int(_) | UInt(_) | Infer(IntVar(_))) => {
                         return Some(obligations);
                     }
                     _ => {}

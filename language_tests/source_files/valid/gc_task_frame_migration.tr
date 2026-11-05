@@ -1,0 +1,68 @@
+// ENV: TARO_WORKERS=4
+// Frames of movable tasks resume on whichever worker picks them up. Their
+// lists, erased values and shared class handles survive collections that
+// other workers request while they are suspended (G20 migration).
+extern "C" {
+    unsafe func __gc__test_request_collection() -> usize
+    unsafe func __gc__test_collection_count() -> usize
+}
+
+interface Labelled {
+    func label() -> string
+}
+
+struct Tag {
+    text: string
+}
+
+conform Tag to Labelled {
+    public func label() -> string { self.text }
+}
+
+final class Shared {
+    prefix: string
+}
+
+extend Shared {
+    init(_ prefix: string) { self.prefix = prefix }
+}
+
+func churn(_ id: int64, _ shared: Shared) async -> int64 {
+    text := shared.prefix + std::sprintf("%d", id)
+    var parts: [string] = []
+    var erased: any Labelled = Tag { text: text + " erased" }
+    var total: int64 = 0
+    var round: int64 = 0
+    while round < 50 {
+        parts.append(text + " part")
+        if round % 10 == 0 {
+            var _ = unsafe { __gc__test_request_collection() }
+        }
+        await std::testing::yieldNow()
+        first := parts.at(0)
+        assert(*first == text + " part", "list storage survives migration")
+        assert(erased.label() == text + " erased", "erased value survives migration")
+        total += parts.len() as int64
+        round += 1
+    }
+    return total
+}
+
+func main() async {
+    shared := Shared("task " + "#")
+    before := unsafe { __gc__test_collection_count() }
+    var tasks: [std::task::Task[int64]] = []
+    var id: int64 = 0
+    while id < 8 {
+        current := id
+        tasks.append(std::task::spawn(() async => { await churn(current, shared) }))
+        id += 1
+    }
+    var sum: int64 = 0
+    for task in tasks {
+        sum += (await task.result()).unwrap()
+    }
+    std::testing::assertEqual(sum, 8 * 1275, "every task finished all rounds")
+    assert(unsafe { __gc__test_collection_count() } > before, "collections ran during the test")
+    print("PASS: migrated frames survive collection\n")
+}

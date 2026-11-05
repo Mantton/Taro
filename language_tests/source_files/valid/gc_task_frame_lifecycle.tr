@@ -1,0 +1,104 @@
+// ENV: TARO_WORKERS=1
+// Task frames are reclaimed once their task finishes, whether it completes,
+// panics, is cancelled while suspended, or is cancelled before it starts.
+// A suspended frame keeps its live values (G20 frame lifecycle).
+// EXPECT_STDERR_NOT_CONTAINS: unobserved task panic
+// EXPECT_STDERR_COUNT: 1 task panic: frame lifecycle panic
+extern "C" {
+    unsafe func __gc__test_probe_create(_ target: *const uint8) -> *mut uint8
+    unsafe func __gc__test_collect_probe_is_live(_ probe: *mut uint8) -> bool
+}
+
+static var PROBE: *mut uint8 = unsafe { 0 as *mut uint8 }
+static var SUSPENDED: bool = false
+
+@noinline
+func record(_ buffer: std::bytes::Buffer) {
+    PROBE = unsafe { __gc__test_probe_create(buffer.bytes().asPtr()) }
+}
+
+func isLive() -> bool {
+    unsafe { __gc__test_collect_probe_is_live(PROBE) }
+}
+
+func waitUntilSuspended() async {
+    while !SUSPENDED {
+        await std::testing::yieldNow()
+    }
+    SUSPENDED = false
+}
+
+func completes() async -> usize {
+    held := std::bytes::Buffer::new("completed frame")
+    record(held)
+    SUSPENDED = true
+    await std::testing::yieldNow()
+    return held.len()
+}
+
+func panics() async -> usize {
+    held := std::bytes::Buffer::new("panicked frame")
+    record(held)
+    SUSPENDED = true
+    await std::testing::yieldNow()
+    if held.len() > 0 {
+        std::panic::panic("frame lifecycle panic")
+    }
+    return held.len()
+}
+
+func suspendsForever() async -> usize {
+    held := std::bytes::Buffer::new("cancelled frame")
+    record(held)
+    SUSPENDED = true
+    while true {
+        await std::testing::yieldNow()
+        if held.len() == 0 {
+            break
+        }
+    }
+    return held.len()
+}
+
+@noinline
+func spawnUnstarted() -> std::task::Task[usize] {
+    held := std::bytes::Buffer::new("never started frame")
+    record(held)
+    task := std::task::spawn(() async => { held.len() })
+    task.cancel()
+    return task
+}
+
+func main() async {
+    completed := std::task::spawn(() async => { await completes() })
+    await waitUntilSuspended()
+    assert(isLive(), "a suspended task frame keeps its live value")
+    std::testing::assertEqual((await completed.result()).unwrap(), 15 as usize, "completed result")
+    assert(!isLive(), "a completed task frame is reclaimed")
+
+    panicked := std::task::spawn(() async => { await panics() })
+    await waitUntilSuspended()
+    match await panicked.result() {
+        case .err(.panicked(payload)) => std::testing::assertEqual(payload.message(), "frame lifecycle panic", "panic payload")
+        case _ => std::panic::panic("expected a panicked task")
+    }
+    assert(!isLive(), "a panicked task frame is reclaimed")
+
+    cancelled := std::task::spawn(() async => { await suspendsForever() })
+    await waitUntilSuspended()
+    assert(isLive(), "a suspended frame stays live until cancelled")
+    cancelled.cancel()
+    match await cancelled.result() {
+        case .err(.cancelled) => {}
+        case _ => std::panic::panic("expected a cancelled task")
+    }
+    assert(!isLive(), "a cancelled suspended task frame is reclaimed")
+
+    unstarted := spawnUnstarted()
+    match await unstarted.result() {
+        case .err(.cancelled) => {}
+        case _ => std::panic::panic("expected a task cancelled before starting")
+    }
+    assert(!isLive(), "a task cancelled before starting releases its captures")
+    print("PASS: task frames are reclaimed in every terminal state\n")
+}

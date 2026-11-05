@@ -1,0 +1,8 @@
+class Record { value: int32 }
+extend Record {
+    public init(_ value: int32) { self.value = value }
+    public convenience init() -> Result[Self, string] {
+        return .ok(Record(7))
+    }
+}
+func main() { var _ = Record().unwrap() }

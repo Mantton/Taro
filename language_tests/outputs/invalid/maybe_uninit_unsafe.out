@@ -4,6 +4,6 @@ error: call to unsafe function 'assumeInit' must be inside an unsafe { ... } blo
 	    return slot.assumeInit()
 	           ^^^^^^^^^^^^^^^^^
 error: unsafe function 'assumeInitRead' cannot be used as a value; call it directly inside unsafe { ... }
- -> language_tests/source_files/invalid/maybe_uninit_unsafe.tr:10:17
-	    let reader = slot.assumeInitRead
-	                 ^^^^^^^^^^^^^^^^^^^
+ -> language_tests/source_files/invalid/maybe_uninit_unsafe.tr:10:14
+	    reader := slot.assumeInitRead
+	              ^^^^^^^^^^^^^^^^^^^

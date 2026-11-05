@@ -1,0 +1,14 @@
+import std::task::TaskGroup
+
+func main() async {
+    var total: int32 = await TaskGroup[int32]::scope((group: &TaskGroup[int32]) => {
+        group.spawn(() => 17_i32)
+        group.spawn(() => 25_i32)
+        var sum: int32 = 0_i32 // int32
+        for await value in group {
+            sum += value
+        }
+        sum
+    }) // int32; the raw group identity never escapes
+    assert(total == 42_i32, "scoped group results")
+}

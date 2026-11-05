@@ -1,0 +1,8 @@
+error: @NoCopy is only allowed on structs, classes, and enums
+ -> language_tests/source_files/invalid/nocopy_attribute_usage.tr:1:0
+	@NoCopy
+	^^^^^^^
+error: @NoCopy does not take arguments
+ -> language_tests/source_files/invalid/nocopy_attribute_usage.tr:3:0
+	@NoCopy("reason")
+	^^^^^^^^^^^^^^^^^

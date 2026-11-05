@@ -14,7 +14,7 @@ func applyFnPtr(_ f: (int32) -> int32, _ x: int32) -> int32 {
     f(x)
 }
 
-func applyOnceHierarchy[F: FnOnce(int32) -> int32](_ f: F, _ x: int32) -> int32 {
+func applyOnceHierarchy[F: Fn(int32) -> int32](_ f: F, _ x: int32) -> int32 {
     f(x)
 }
 
@@ -26,18 +26,18 @@ func applyZeroHigher[F: Fn() -> int32](_ f: F) -> int32 {
     f()
 }
 
-func applyZeroOnce[F: FnOnce() -> int32](_ f: F) -> int32 {
+func applyZeroOnce[F: Fn() -> int32](_ f: F) -> int32 {
     f()
 }
 
-func apply2MutHierarchy[F: FnMut(int32, int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
+func apply2MutHierarchy[F: Fn(int32, int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
     var f = f
-    let first = f(a, b)
-    let second = f(b, a)
+    first := f(a, b)
+    second := f(b, a)
     first * 100 + second
 }
 
-func apply2OnceHierarchy[F: FnOnce(int32, int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
+func apply2OnceHierarchy[F: Fn(int32, int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
     f(a, b)
 }
 
@@ -49,33 +49,33 @@ func applyOutFn[T, Out, F: Fn(T) -> Out](_ x: T, _ f: F) -> Out {
     f(x)
 }
 
-func applyOutMut[T, Out, F: FnMut(T) -> Out](_ x: T, _ f: F) -> Out {
+func applyOutMut[T, Out, F: Fn(T) -> Out](_ x: T, _ f: F) -> Out {
     var f = f
     f(x)
 }
 
-func applyOutOnce[T, Out, F: FnOnce(T) -> Out](_ x: T, _ f: F) -> Out {
+func applyOutOnce[T, Out, F: Fn(T) -> Out](_ x: T, _ f: F) -> Out {
     f(x)
 }
 
-// --- FnMut helpers ---
+// --- Fn helpers ---
 
-func applyMut[F: FnMut(int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
+func applyMut[F: Fn(int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
     var f = f
-    let first = f(a)
-    let second = f(b)
+    first := f(a)
+    second := f(b)
     return first + second
 }
 
-func applyZeroMut[F: FnMut() -> int32](_ f: F) -> int32 {
+func applyZeroMut[F: Fn() -> int32](_ f: F) -> int32 {
     var f = f
-    let a = f()
-    let b = f()
-    let c = f()
+    a := f()
+    b := f()
+    c := f()
     return a + b + c
 }
 
-// --- FnOnce helpers ---
+// --- Fn helpers ---
 
 func callTwice[F: Fn() -> int32](_ f: F) -> int32 {
     f() + f()
@@ -87,16 +87,16 @@ struct ClosureBox {
     value: int32
 }
 
-impl ClosureBox {
-    func map[F: Fn(int32) -> int32](&self, _ f: F) -> int32 {
+extend ClosureBox {
+    func map[F: Fn(int32) -> int32]( _ f: F) -> int32 {
         f(self.value)
     }
 
-    func map_once[F: FnOnce(int32) -> int32](&self, _ f: F) -> int32 {
+    func map_once[F: Fn(int32) -> int32]( _ f: F) -> int32 {
         f(self.value)
     }
 
-    func transform[F: Fn(int32) -> int32, G: Fn(int32) -> int32](&self, _ f: F, _ g: G) -> int32 {
+    func transform[F: Fn(int32) -> int32, G: Fn(int32) -> int32]( _ f: F, _ g: G) -> int32 {
         g(f(self.value))
     }
 }
@@ -106,8 +106,8 @@ struct PairMethod {
     b: int32
 }
 
-impl PairMethod {
-    func combine[F: Fn(int32, int32) -> int32](&self, _ f: F) -> int32 {
+extend PairMethod {
+    func combine[F: Fn(int32, int32) -> int32]( _ f: F) -> int32 {
         f(self.a, self.b)
     }
 }
@@ -116,12 +116,12 @@ struct ContainerMethodGeneric[T] {
     value: T
 }
 
-impl[T] ContainerMethodGeneric[T] {
-    func map[F: Fn(T) -> T](self, _ f: F) -> T {
+extend[T] ContainerMethodGeneric[T] {
+    func map[F: Fn(T) -> T]( _ f: F) -> T {
         f(self.value)
     }
 
-    func map_once[F: FnOnce(T) -> T](self, _ f: F) -> T {
+    func map_once[F: Fn(T) -> T]( _ f: F) -> T {
         f(self.value)
     }
 }
@@ -131,12 +131,12 @@ struct PairMethodGeneric[T] {
     second: T
 }
 
-impl[T] PairMethodGeneric[T] {
-    func combine[F: Fn(T, T) -> T](self, _ f: F) -> T {
+extend[T] PairMethodGeneric[T] {
+    func combine[F: Fn(T, T) -> T]( _ f: F) -> T {
         f(self.first, self.second)
     }
 
-    func map_both[F: Fn(T) -> T](self, _ f: F) -> PairMethodGeneric[T] {
+    func map_both[F: Fn(T) -> T]( _ f: F) -> PairMethodGeneric[T] {
         PairMethodGeneric[T] { first: f(self.first), second: f(self.second) }
     }
 }
@@ -145,8 +145,8 @@ struct CallableField[F: Fn(int32) -> int32] {
     f: F
 }
 
-impl[F: Fn(int32) -> int32] CallableField[F] {
-    func apply(&mut self, _ x: int32) -> int32 {
+extend[F: Fn(int32) -> int32] CallableField[F] {
+    func apply( _ x: int32) -> int32 {
         self.f(x)
     }
 }
@@ -156,7 +156,7 @@ func applyGenericMethod[T, F: Fn(T) -> T](_ f: F, _ x: T) -> T {
 }
 
 func composeGenericMethod[T, F: Fn(T) -> T, G: Fn(T) -> T](_ f: F, _ g: G, _ x: T) -> T {
-    let intermediate = f(x)
+    intermediate := f(x)
     g(intermediate)
 }
 
@@ -166,367 +166,368 @@ func consumeListMove(_ list: List[int32]) {
 // --- Generic capture helpers ---
 
 func wrapAndConsume[T](_ value: T, _ check: (T) -> int32) -> int32 {
-    let closure = || { check(value) }
+    closure := () => { check(value) }
     return applyZeroOnce(closure)
 }
 
-func wrapCopyable[T: Copy](_ value: T, _ check: (T) -> int32) -> int32 {
-    let closure = || { check(value) }
+func wrapCopyable[T](_ value: T, _ check: (T) -> int32) -> int32 {
+    closure := () => { check(value) }
     return callTwice(closure)
 }
 
 // === Tests ===
 
 func testClosureBasic() {
-    let add = |a: int32, b: int32| -> int32 { a + b }
-    let result = add(2, 3)
-    std.assert(result == 5, "add(2, 3) should be 5")
+    add := (a: int32, b: int32) -> int32 => { a + b }
+    result := add(2, 3)
+    std::assert(result == 5, "add(2, 3) should be 5")
 
-    let square = |x: int32| -> int32 { x * x }
-    std.assert(square(4) == 16, "square(4) should be 16")
+    square := (x: int32) -> int32 => { x * x }
+    std::assert(square(4) == 16, "square(4) should be 16")
 
-    let get_five = || -> int32 { 5 }
-    std.assert(get_five() == 5, "get_five() should be 5")
+    get_five := () -> int32 => { 5 }
+    std::assert(get_five() == 5, "get_five() should be 5")
 
-    let x: int32 = 10
-    let add_x = |y: int32| -> int32 { x + y }
-    std.assert(add_x(5) == 15, "add_x(5) should be 15")
+    var x: int32 = 10
+    add_x := (y: int32) -> int32 => { x + y }
+    std::assert(add_x(5) == 15, "add_x(5) should be 15")
 
-    let a: int32 = 3
-    let b: int32 = 4
-    let sum_ab = || -> int32 { a + b }
-    std.assert(sum_ab() == 7, "sum_ab() should be 7")
+    var a: int32 = 3
+    var b: int32 = 4
+    sum_ab := () -> int32 => { a + b }
+    std::assert(sum_ab() == 7, "sum_ab() should be 7")
 }
 
 func testClosureByRef() {
-    var list = List[int32]()
+    var list = List[int32]::new()
     list.append(1)
     list.append(2)
 
-    let get_len = || -> int32 { list.len() as int32 }
-    std.assert(get_len() == 2, "list length should be 2")
+    get_len := () -> int32 => { list.len() as int32 }
+    std::assert(get_len() == 2, "list length should be 2")
 }
 
 func testClosureDeep() {
-    let a: int32 = 1
-    let deep = || -> int32 {
-        let b: int32 = 2
-        let mid = || -> int32 {
-            let c: int32 = 3
-            let inner = || -> int32 { a + b + c }
+    var a: int32 = 1
+    deep := () -> int32 => {
+        var b: int32 = 2
+        mid := () -> int32 => {
+            var c: int32 = 3
+            inner := () -> int32 => { a + b + c }
             inner()
         }
         mid()
     }
-    std.assert(deep() == 6, "deeply nested should compute 1+2+3 = 6")
+    std::assert(deep() == 6, "deeply nested should compute 1+2+3 = 6")
 }
 
 func testClosureExplicitParams() {
-    let result1 = applyFn(|x: int32| -> int32 { x * 2 }, 5)
-    std.assert(result1 == 10, "apply_int should work")
+    result1 := applyFn((x: int32) -> int32 => { x * 2 }, 5)
+    std::assert(result1 == 10, "apply_int should work")
 
-    let result2 = mapValue(10, |x: int32| -> int32 { x + 5 })
-    std.assert(result2 == 15, "map_value should work")
+    result2 := mapValue(10, (x: int32) -> int32 => { x + 5 })
+    std::assert(result2 == 15, "map_value should work")
 
-    let box = ClosureBox { value: 20 }
-    let result3 = box.map(|x: int32| -> int32 { x / 2 })
-    std.assert(result3 == 10, "IntBox.map should work")
+    box := ClosureBox { value: 20 }
+    result3 := box.map((x: int32) -> int32 => { x / 2 })
+    std::assert(result3 == 10, "IntBox.map should work")
 
-    let outer = |a: int32| -> int32 {
-        let inner = |b: int32| -> int32 { b * 2 }
+    outer := (a: int32) -> int32 => {
+        inner := (b: int32) -> int32 => { b * 2 }
         inner(a) + 1
     }
-    let result4 = outer(5)
-    std.assert(result4 == 11, "nested closure should work")
+    result4 := outer(5)
+    std::assert(result4 == 11, "nested closure should work")
 
-    let base: int32 = 100
-    let add_base = |x: int32| -> int32 { x + base }
-    let result5 = applyFn(add_base, 50)
-    std.assert(result5 == 150, "capturing closure inference")
+    var base: int32 = 100
+    add_base := (x: int32) -> int32 => { x + base }
+    result5 := applyFn(add_base, 50)
+    std::assert(result5 == 150, "capturing closure inference")
 
-    let double = |x: int32| -> int32 { x * 2 }
-    let triple = |x: int32| -> int32 { x * 3 }
-    let r6a = applyFn(double, 5)
-    let r6b = applyFn(triple, 5)
-    std.assert(r6a == 10, "double should work")
-    std.assert(r6b == 15, "triple should work")
+    double := (x: int32) -> int32 => { x * 2 }
+    triple := (x: int32) -> int32 => { x * 3 }
+    r6a := applyFn(double, 5)
+    r6b := applyFn(triple, 5)
+    std::assert(r6a == 10, "double should work")
+    std::assert(r6b == 15, "triple should work")
 }
 
 func testClosureFnPtr() {
-    let double: (int32) -> int32 = |x: int32| -> int32 { x * 2 }
+    var double: (int32) -> int32 = (x: int32) -> int32 => { x * 2 }
 
-    let result = applyFnPtr(double, 5)
-    std.assert(result == 10, "double(5) should be 10")
+    result := applyFnPtr(double, 5)
+    std::assert(result == 10, "double(5) should be 10")
 
-    let result2 = applyFnPtr(|x: int32| -> int32 { x + 100 }, 7)
-    std.assert(result2 == 107, "closure(7) should be 107")
+    result2 := applyFnPtr((x: int32) -> int32 => { x + 100 }, 7)
+    std::assert(result2 == 107, "closure(7) should be 107")
 
-    let get_42: () -> int32 = || -> int32 { 42 }
-    std.assert(get_42() == 42, "get_42() should be 42")
+    var get_42: () -> int32 = () -> int32 => { 42 }
+    std::assert(get_42() == 42, "get_42() should be 42")
 }
 
-func testClosureFnCopyCaptureSemantics() {
+func testClosureSharedReadCapture() {
     var counter: int32 = 0
-    let inc = || -> int32 { counter + 1 }
-    let first = inc()
-    let second = inc()
-    std.assert(first == 1, "first call should use copied capture")
-    std.assert(second == 1, "second call should use copied capture")
-    std.assert(counter == 0, "outer counter should remain unchanged under by-copy capture")
+    inc := () -> int32 => { counter + 1 }
+    first := inc()
+    counter = 5
+    second := inc()
+    std::assert(first == 1, "first call reads the captured variable")
+    std::assert(second == 6, "later calls observe outer writes")
+    std::assert(counter == 5, "read-only closure calls preserve the variable")
 }
 
 func testClosureHierarchy() {
-    let multiplier: int32 = 2
+    var multiplier: int32 = 2
 
-    let r1 = applyFn(|x: int32| -> int32 { x * multiplier }, 5)
-    std.assert(r1 == 10, "apply_fn should work with Fn closure")
+    r1 := applyFn((x: int32) -> int32 => { x * multiplier }, 5)
+    std::assert(r1 == 10, "apply_fn should work with Fn closure")
 
-    let r2 = applyMut(|x: int32| -> int32 { x * multiplier }, 5, 5)
-    std.assert(r2 == 20, "apply_mut should accept Fn closure via hierarchy")
+    r2 := applyMut((x: int32) -> int32 => { x * multiplier }, 5, 5)
+    std::assert(r2 == 20, "apply_mut should accept Fn closure via hierarchy")
 
-    let r3 = applyOnceHierarchy(|x: int32| -> int32 { x * multiplier }, 5)
-    std.assert(r3 == 10, "apply_once should accept Fn closure via hierarchy")
+    r3 := applyOnceHierarchy((x: int32) -> int32 => { x * multiplier }, 5)
+    std::assert(r3 == 10, "apply_once should accept Fn closure via hierarchy")
 
-    let r4 = applyOnceHierarchy(|x: int32| -> int32 { x + 1 }, 5)
-    std.assert(r4 == 6, "non-capturing Fn closure in apply_once")
+    r4 := applyOnceHierarchy((x: int32) -> int32 => { x + 1 }, 5)
+    std::assert(r4 == 6, "non-capturing Fn closure in apply_once")
 
-    let r5 = applyMut(|x: int32| -> int32 { x * 3 }, 4, 4)
-    std.assert(r5 == 24, "non-capturing Fn closure in apply_mut")
+    r5 := applyMut((x: int32) -> int32 => { x * 3 }, 4, 4)
+    std::assert(r5 == 24, "non-capturing Fn closure in apply_mut")
 }
 
 func testClosureHigherOrder() {
-    let sum = apply2(|a: int32, b: int32| -> int32 { a + b }, 10, 20)
-    std.assert(sum == 30, "apply2 sum(10, 20) should be 30")
+    sum := apply2((a: int32, b: int32) -> int32 => { a + b }, 10, 20)
+    std::assert(sum == 30, "apply2 sum(10, 20) should be 30")
 
-    let result = mapValHigher(5, |x: int32| -> int32 { x + 10 })
-    let result2 = mapValHigher(result, |x: int32| -> int32 { x * 2 })
-    std.assert(result2 == 30, "chained map should be 30")
+    result := mapValHigher(5, (x: int32) -> int32 => { x + 10 })
+    result2 := mapValHigher(result, (x: int32) -> int32 => { x * 2 })
+    std::assert(result2 == 30, "chained map should be 30")
 }
 
 func testClosureInferred() {
-    let doubled = applyFn(|x| { x * 2 }, 5)
-    std.assert(doubled == 10, "apply with inferred param should work")
+    doubled := applyFn((x) => { x * 2 }, 5)
+    std::assert(doubled == 10, "apply with inferred param should work")
 
-    let multiplier: int32 = 3
-    let tripled = applyFn(|x| { x * multiplier }, 4)
-    std.assert(tripled == 12, "capturing closure with inferred param")
+    var multiplier: int32 = 3
+    tripled := applyFn((x) => { x * multiplier }, 4)
+    std::assert(tripled == 12, "capturing closure with inferred param")
 
-    let sum = apply2(|a, b| { a + b }, 10, 20)
-    std.assert(sum == 30, "two-arg closure with inferred params")
+    sum := apply2((a, b) => { a + b }, 10, 20)
+    std::assert(sum == 30, "two-arg closure with inferred params")
 
-    let container = ClosureBox { value: 10 }
-    let result = container.map(|x| { x + 5 })
-    std.assert(result == 15, "method with inferred closure param")
+    container := ClosureBox { value: 10 }
+    result := container.map((x) => { x + 5 })
+    std::assert(result == 15, "method with inferred closure param")
 
-    let chained = container.transform(|x| { x * 2 }, |x| { x + 1 })
-    std.assert(chained == 21, "chained closures with inferred params")
+    chained := container.transform((x) => { x * 2 }, (x) => { x + 1 })
+    std::assert(chained == 21, "chained closures with inferred params")
 
-    let mixed = applyFn(|x| -> int32 { x * 10 }, 5)
-    std.assert(mixed == 50, "explicit return type, inferred param")
+    mixed := applyFn((x) -> int32 => { x * 10 }, 5)
+    std::assert(mixed == 50, "explicit return type, inferred param")
 
-    let outer_val: int32 = 100
-    let nested = applyFn(|x| {
-        let inner = applyFn(|y| { y + outer_val }, x)
+    var outer_val: int32 = 100
+    nested := applyFn((x) => {
+        inner := applyFn((y) => { y + outer_val }, x)
         inner * 2
     }, 5)
-    std.assert(nested == 210, "nested closures with inferred params")
+    std::assert(nested == 210, "nested closures with inferred params")
 }
 
 func testClosureGenericOutInference() {
-    let doubled = applyOutFn(5 as int32, |x: int32| { x * 2 })
-    std.assert(doubled == 10, "Out should infer to int32")
+    doubled := applyOutFn(5 as int32, (x: int32) => { x * 2 })
+    std::assert(doubled == 10, "Out should infer to int32")
 
-    let is_even = applyOutFn(6 as int32, |x: int32| { x % 2 == 0 })
-    std.assert(is_even, "Out should infer to bool")
+    is_even := applyOutFn(6 as int32, (x: int32) => { x % 2 == 0 })
+    std::assert(is_even, "Out should infer to bool")
 
     var total: int32 = 0
-    let running = applyOutMut(3 as int32, |x: int32| {
+    running := applyOutMut(3 as int32, (x: int32) => {
         total += x
         total > 0
     })
-    std.assert(running && total == 3, "FnMut Out inference and shared mutable capture should work")
+    std::assert(running && total == 3, "Fn Out inference and shared mutable capture should work")
 
-    let once_result = applyOutOnce(9 as int32, |x: int32| { x + 1 })
-    std.assert(once_result == 10, "FnOnce Out inference should work")
+    once_result := applyOutOnce(9 as int32, (x: int32) => { x + 1 })
+    std::assert(once_result == 10, "Fn Out inference should work")
 }
 
 func testClosureMethod() {
-    let container = ClosureBox { value: 10 }
+    container := ClosureBox { value: 10 }
 
-    let doubled = container.map(|x: int32| -> int32 { x * 2 })
-    std.assert(doubled == 20, "map double should be 20")
+    doubled := container.map((x: int32) -> int32 => { x * 2 })
+    std::assert(doubled == 20, "map double should be 20")
 
-    let multiplier: int32 = 3
-    let tripled = container.map(|x: int32| -> int32 { x * multiplier })
-    std.assert(tripled == 30, "map triple should be 30")
+    var multiplier: int32 = 3
+    tripled := container.map((x: int32) -> int32 => { x * multiplier })
+    std::assert(tripled == 30, "map triple should be 30")
 
-    let offset: int32 = 5
-    let result_once = container.map_once(|x: int32| -> int32 { x + offset })
-    std.assert(result_once == 15, "map_once should be 15")
+    var offset: int32 = 5
+    result_once := container.map_once((x: int32) -> int32 => { x + offset })
+    std::assert(result_once == 15, "map_once should be 15")
 
-    let chained = container.transform(
-        |x: int32| -> int32 { x + 5 },
-        |x: int32| -> int32 { x * 2 },
+    chained := container.transform(
+        (x: int32) -> int32 => { x + 5 },
+        (x: int32) -> int32 => { x * 2 },
     )
-    std.assert(chained == 30, "transform (10+5)*2 should be 30")
+    std::assert(chained == 30, "transform (10+5)*2 should be 30")
 
-    let pair = PairMethod { a: 10, b: 20 }
-    let sum = pair.combine(|a: int32, b: int32| -> int32 { a + b })
-    std.assert(sum == 30, "combine sum should be 30")
+    pair := PairMethod { a: 10, b: 20 }
+    sum := pair.combine((a: int32, b: int32) -> int32 => { a + b })
+    std::assert(sum == 30, "combine sum should be 30")
 }
 
 func testClosureMethodGeneric() {
-    let int_container = ContainerMethodGeneric[int32] { value: 10 }
+    int_container := ContainerMethodGeneric[int32] { value: 10 }
 
-    let doubled = int_container.map(|x: int32| -> int32 { x * 2 })
-    std.assert(doubled == 20, "int map should work")
+    doubled := int_container.map((x: int32) -> int32 => { x * 2 })
+    std::assert(doubled == 20, "int map should work")
 
-    let container2 = ContainerMethodGeneric[int32] { value: 10 }
-    let incremented = container2.map_once(|x: int32| -> int32 { x + 1 })
-    std.assert(incremented == 11, "map_once should work")
+    container2 := ContainerMethodGeneric[int32] { value: 10 }
+    incremented := container2.map_once((x: int32) -> int32 => { x + 1 })
+    std::assert(incremented == 11, "map_once should work")
 
-    let container3 = ContainerMethodGeneric[int32] { value: 10 }
-    let multiplier: int32 = 5
-    let result = container3.map(|x: int32| -> int32 { x * multiplier })
-    std.assert(result == 50, "capturing closure with generic method")
+    container3 := ContainerMethodGeneric[int32] { value: 10 }
+    var multiplier: int32 = 5
+    result := container3.map((x: int32) -> int32 => { x * multiplier })
+    std::assert(result == 50, "capturing closure with generic method")
 
-    let int_pair = PairMethodGeneric[int32] { first: 3, second: 7 }
+    int_pair := PairMethodGeneric[int32] { first: 3, second: 7 }
 
-    let sum = int_pair.combine(|a: int32, b: int32| -> int32 { a + b })
-    std.assert(sum == 10, "pair combine should work")
+    sum := int_pair.combine((a: int32, b: int32) -> int32 => { a + b })
+    std::assert(sum == 10, "pair combine should work")
 
-    let pair2 = PairMethodGeneric[int32] { first: 3, second: 7 }
-    let product = pair2.combine(|a: int32, b: int32| -> int32 { a * b })
-    std.assert(product == 21, "pair combine product")
+    pair2 := PairMethodGeneric[int32] { first: 3, second: 7 }
+    product := pair2.combine((a: int32, b: int32) -> int32 => { a * b })
+    std::assert(product == 21, "pair combine product")
 
-    let pair3 = PairMethodGeneric[int32] { first: 3, second: 7 }
-    let doubled_pair = pair3.map_both(|x: int32| -> int32 { x * 2 })
-    std.assert(doubled_pair.first == 6, "map_both first")
-    std.assert(doubled_pair.second == 14, "map_both second")
+    pair3 := PairMethodGeneric[int32] { first: 3, second: 7 }
+    doubled_pair := pair3.map_both((x: int32) -> int32 => { x * 2 })
+    std::assert(doubled_pair.first == 6, "map_both first")
+    std::assert(doubled_pair.second == 14, "map_both second")
 
-    let applied = applyGenericMethod(|x: int32| -> int32 { x + 100 }, 5)
-    std.assert(applied == 105, "apply_generic should work")
+    applied := applyGenericMethod((x: int32) -> int32 => { x + 100 }, 5)
+    std::assert(applied == 105, "apply_generic should work")
 
-    let composed = composeGenericMethod(
-        |x: int32| -> int32 { x * 2 },
-        |x: int32| -> int32 { x + 1 },
+    composed := composeGenericMethod(
+        (x: int32) -> int32 => { x * 2 },
+        (x: int32) -> int32 => { x + 1 },
         5,
     )
-    std.assert(composed == 11, "compose (5*2)+1 = 11")
+    std::assert(composed == 11, "compose (5*2)+1 = 11")
 }
 
 func testCallableFieldDispatch() {
-    var add_one = CallableField { f: |x: int32| -> int32 { x + 1 } }
-    std.assert(add_one.apply(10) == 11, "self.f(x) should dispatch callable field")
+    var add_one = CallableField { f: (x: int32) -> int32 => { x + 1 } }
+    std::assert(add_one.apply(10) == 11, "self.f(x) should dispatch callable field")
 
     var accumulator = CallableField {
-        f: |x: int32| -> int32 { x * 2 },
+        f: (x: int32) -> int32 => { x * 2 },
     }
 
-    let first = accumulator.apply(3)
-    let second = accumulator.apply(4)
-    std.assert(first == 6, "first call should return doubled value")
-    std.assert(second == 8, "second call should return doubled value")
+    first := accumulator.apply(3)
+    second := accumulator.apply(4)
+    std::assert(first == 6, "first call should return doubled value")
+    std::assert(second == 8, "second call should return doubled value")
 }
 
 func testClosureMove() {
-    var list = List[int32]()
+    var list = List[int32]::new()
     list.append(1)
 
-    let consume = || { consumeListMove(list) }
+    consume := () => { consumeListMove(list) }
     consume()
 }
 
 func testClosureNested() {
-    let x: int32 = 10
+    var x: int32 = 10
 
-    let outer = || -> int32 {
-        let inner = || -> int32 { x }
+    outer := () -> int32 => {
+        inner := () -> int32 => { x }
         inner()
     }
-    std.assert(outer() == 10, "simple nested should return 10")
+    std::assert(outer() == 10, "simple nested should return 10")
 
-    let y: int32 = 20
-    let outer2 = || -> int32 {
-        let inner = || -> int32 { x + y }
+    var y: int32 = 20
+    outer2 := () -> int32 => {
+        inner := () -> int32 => { x + y }
         inner() + 5
     }
-    std.assert(outer2() == 35, "nested with computation should return 35")
+    std::assert(outer2() == 35, "nested with computation should return 35")
 
-    let result = (|| -> int32 {
-        (|| -> int32 { x * 2 })()
+    result := (() -> int32 => {
+        (() -> int32 => { x * 2 })()
     })()
-    std.assert(result == 20, "immediate call nested should return 20")
+    std::assert(result == 20, "immediate call nested should return 20")
 }
 
 func testClosureShorthandStress() {
-    let zero = applyZeroHigher(|| -> int32 { 99 })
-    std.assert(zero == 99, "zero-arg Fn shorthand should dispatch through generic helper")
+    zero := applyZeroHigher(() -> int32 => { 99 })
+    std::assert(zero == 99, "zero-arg Fn shorthand should dispatch through generic helper")
 
-    let immediate_zero = applyZeroHigher((|| -> int32 { 123 }))
-    std.assert(immediate_zero == 123, "immediate zero-arg closure should materialize a self place")
+    immediate_zero := applyZeroHigher((() -> int32 => { 123 }))
+    std::assert(immediate_zero == 123, "immediate zero-arg closure should materialize a self place")
 
-    let zero_mut_sum = applyZeroMut(|| -> int32 { 1 })
-    std.assert(zero_mut_sum == 3, "zero-arg FnMut helper should call closure three times")
+    zero_mut_sum := applyZeroMut(() -> int32 => { 1 })
+    std::assert(zero_mut_sum == 3, "zero-arg Fn helper should call closure three times")
 
-    let mut_sum = applyMut(|x: int32| -> int32 { x + 1 }, 3, 4)
-    std.assert(mut_sum == 9, "FnMut helper should apply closure to each argument")
+    mut_sum := applyMut((x: int32) -> int32 => { x + 1 }, 3, 4)
+    std::assert(mut_sum == 9, "Fn helper should apply closure to each argument")
 
-    var list = List[int32]()
+    var list = List[int32]::new()
     list.append(4)
     list.append(5)
-    let once_len = applyZeroOnce(|| -> int32 {
-        let len = list.len() as int32
+    once_len := applyZeroOnce(() -> int32 => {
+        len := list.len() as int32
         consumeListMove(list)
         len
     })
-    std.assert(once_len == 2, "FnOnce helper should accept non-Copy captured values by move")
+    std::assert(once_len == 2, "Fn helper should accept non-Copy captured values by value")
 
-    let pair_mut_result = apply2MutHierarchy(|a: int32, b: int32| -> int32 { a * 10 + b }, 1, 2)
-    std.assert(pair_mut_result == 1221, "two-arg FnMut shorthand should preserve argument order on each call")
+    pair_mut_result := apply2MutHierarchy((a: int32, b: int32) -> int32 => { a * 10 + b }, 1, 2)
+    std::assert(pair_mut_result == 1221, "two-arg Fn shorthand should preserve argument order on each call")
 
-    var pair_list = List[int32]()
+    var pair_list = List[int32]::new()
     pair_list.append(10)
-    let pair_once = apply2OnceHierarchy(|a: int32, b: int32| -> int32 {
-        let len = pair_list.len() as int32
+    pair_once := apply2OnceHierarchy((a: int32, b: int32) -> int32 => {
+        len := pair_list.len() as int32
         consumeListMove(pair_list)
         a + b + len
     }, 3, 4)
-    std.assert(pair_once == 8, "two-arg FnOnce shorthand should consume captured values correctly")
+    std::assert(pair_once == 8, "two-arg Fn shorthand should consume captured values correctly")
 }
 
-// --- FnMut dispatch tests ---
+// --- Fn dispatch tests ---
 
-func testFnMutNonCapturing() {
-    let result = applyMut(|x: int32| -> int32 { x * 2 }, 3, 5)
-    assert(result == 16, "non-capturing closure through FnMut(int32)->int32 should work")
+func testStatefulFnNonCapturing() {
+    result := applyMut((x: int32) -> int32 => { x * 2 }, 3, 5)
+    assert(result == 16, "non-capturing closure through Fn(int32)->int32 should work")
 }
 
-func testFnMutListCapture() {
-    var items: std.collections.List[int32] = std.collections.List()
-    let acc = |val: int32| -> int32 {
+func testStatefulFnListCapture() {
+    var items: std::collections::List[int32] = std::collections::List::new()
+    acc := (val: int32) -> int32 => {
         items.append(val)
         return items.len() as int32
     }
-    let result = applyMut(acc, 10, 20)
-    assert(result == 3, "mutating List closure through FnMut(int32)->int32: 1+2=3")
+    result := applyMut(acc, 10, 20)
+    assert(result == 3, "mutating List closure through Fn(int32)->int32: 1+2=3")
     assert(items.len() == 2 as usize, "List should have two items after applyMut")
 }
 
-func testFnMutZeroArgListCapture() {
-    var growing: std.collections.List[int32] = std.collections.List()
-    let inc = || -> int32 {
+func testStatefulFnZeroArgListCapture() {
+    var growing: std::collections::List[int32] = std::collections::List::new()
+    inc := () -> int32 => {
         growing.append(1)
         return growing.len() as int32
     }
-    let sum = applyZeroMut(inc)
-    assert(sum == 6, "mutating List closure through FnMut()->int32: 1+2+3=6")
+    sum := applyZeroMut(inc)
+    assert(sum == 6, "mutating List closure through Fn()->int32: 1+2+3=6")
     assert(growing.len() == 3 as usize, "List should have three items after applyZeroMut")
 }
 
-func testFnMutListCaptureWithArg() {
-    var items: std.collections.List[int32] = std.collections.List()
-    var push = |val: int32| {
+func testStatefulFnListCaptureWithArg() {
+    var items: std::collections::List[int32] = std::collections::List::new()
+    var push = (val: int32) => {
         items.append(val)
     }
     push(10)
@@ -535,100 +536,100 @@ func testFnMutListCaptureWithArg() {
     assert(items.len() == 3, "closure should mutate captured list")
 }
 
-// --- FnMut scalar mutable capture tests ---
+// --- Fn scalar mutable capture tests ---
 
-func testFnMutScalarCaptureThroughHelper() {
+func testStatefulFnScalarCaptureThroughHelper() {
     var counter: int32 = 0
-    let inc = || -> int32 {
+    inc := () -> int32 => {
         counter = counter + 1
         return counter
     }
-    let sum = applyZeroMut(inc)
-    assert(sum == 6, "scalar mutable capture through FnMut should accumulate: 1+2+3=6")
+    sum := applyZeroMut(inc)
+    assert(sum == 6, "scalar mutable capture through Fn should accumulate: 1+2+3=6")
     assert(counter == 3, "outer counter should reflect mutations after applyZeroMut")
 }
 
-func testFnMutScalarCaptureDirectCalls() {
+func testStatefulFnScalarCaptureDirectCalls() {
     var counter: int32 = 0
-    var inc = || -> int32 {
+    var inc = () -> int32 => {
         counter = counter + 1
         return counter
     }
-    let a = inc()
-    let b = inc()
-    let c = inc()
+    a := inc()
+    b := inc()
+    c := inc()
     assert(a == 1, "first direct call should return 1")
     assert(b == 2, "second direct call should return 2")
     assert(c == 3, "third direct call should return 3")
     assert(counter == 3, "outer counter should be 3 after three direct calls")
 }
 
-func testFnMutScalarCaptureWithArg() {
+func testStatefulFnScalarCaptureWithArg() {
     var total: int32 = 0
-    let acc = |val: int32| -> int32 {
+    acc := (val: int32) -> int32 => {
         total = total + val
         return total
     }
-    let result = applyMut(acc, 10, 20)
-    assert(result == 40, "scalar accumulator through FnMut(int32)->int32: 10+30=40")
+    result := applyMut(acc, 10, 20)
+    assert(result == 40, "scalar accumulator through Fn(int32)->int32: 10+30=40")
     assert(total == 30, "outer total should be 30 after accumulating 10 and 20")
 }
 
 // --- Generic closure move semantics tests ---
 
 func testGenericClosureNonCopyCapture() {
-    let result = wrapAndConsume(42 as int32, |x| { x })
-    assert(result == 42, "non-copy generic capture via FnOnce")
+    result := wrapAndConsume(42 as int32, (x) => { x })
+    assert(result == 42, "non-copy generic capture via Fn")
 }
 
 func testGenericClosureCopyCapture() {
-    let result = wrapCopyable(10 as int32, |x| { x })
+    result := wrapCopyable(10 as int32, (x) => { x })
     assert(result == 20, "copy generic capture via Fn called twice")
 }
 
-func testMoveClosureCopyCaptureByValue() {
+func testClosureCapturesSharedVariable() {
     var counter: int32 = 0
-    let captured = move || -> int32 { counter + 1 }
+    captured := () -> int32 => { counter + 1 }
     counter = 10
-    let sum = callTwice(captured)
-    assert(sum == 2, "move closure should copy copyable captures by value")
-    assert(counter == 10, "outer copyable variable should remain usable after move closure capture")
+    sum := callTwice(captured)
+    assert(sum == 22, "literal closure observes later writes to captured variables")
+    assert(counter == 10, "outer copyable variable should remain usable after literal closure capture")
 }
 
-func testMoveClosureNonCopyReadIsReusable() {
-    var list = List[int32]()
+func testClosureHandleReadIsReusable() {
+    var list = List[int32]::new()
     list.append(1)
 
-    let captured = move || -> int32 { list.len() as int32 }
-    let sum = callTwice(captured)
-    assert(sum == 2, "move closure that only reads an owned non-copy capture should remain Fn")
+    captured := () -> int32 => { list.len() as int32 }
+    sum := callTwice(captured)
+    assert(sum == 2, "literal closure that only reads an shared handle capture should remain Fn")
 }
 
-func testMoveClosureMutatesOwnedCopy() {
+func testClosureMutatesSharedVariable() {
     var counter: int32 = 0
-    let inc = move || -> int32 {
+    inc := () -> int32 => {
         counter = counter + 1
         return counter
     }
 
-    let sum = applyZeroMut(inc)
-    assert(sum == 6, "move closure should mutate its owned copy across calls")
-    assert(counter == 0, "move closure should not mutate the outer copyable variable")
+    sum := applyZeroMut(inc)
+    assert(sum == 6, "literal closure should mutate shared captured storage across calls")
+    assert(counter == 3, "closure edits are visible through the captured variable")
 }
 
-func testMoveClosureMoveOutIsFnOnce() {
-    var list = List[int32]()
+func testClosurePassesHandleToFunction() {
+    var list = List[int32]::new()
     list.append(1)
     list.append(2)
 
-    let consume = move || -> int32 {
-        let len = list.len() as int32
+    consume := () -> int32 => {
+        len := list.len() as int32
         consumeListMove(list)
         return len
     }
 
-    let len = applyZeroOnce(consume)
-    assert(len == 2, "move closure that moves out of a capture should be FnOnce")
+    len := applyZeroOnce(consume)
+    assert(len == 2, "literal closure that moves out of a capture should be Fn")
 }
 
 // === Main ===
@@ -639,7 +640,7 @@ func main() {
     testClosureDeep()
     testClosureExplicitParams()
     testClosureFnPtr()
-    testClosureFnCopyCaptureSemantics()
+    testClosureSharedReadCapture()
     testClosureHierarchy()
     testClosureHigherOrder()
     testClosureInferred()
@@ -650,19 +651,19 @@ func main() {
     testClosureMove()
     testClosureNested()
     testClosureShorthandStress()
-    testFnMutNonCapturing()
-    testFnMutListCapture()
-    testFnMutZeroArgListCapture()
-    testFnMutListCaptureWithArg()
-    testFnMutScalarCaptureThroughHelper()
-    testFnMutScalarCaptureDirectCalls()
-    testFnMutScalarCaptureWithArg()
+    testStatefulFnNonCapturing()
+    testStatefulFnListCapture()
+    testStatefulFnZeroArgListCapture()
+    testStatefulFnListCaptureWithArg()
+    testStatefulFnScalarCaptureThroughHelper()
+    testStatefulFnScalarCaptureDirectCalls()
+    testStatefulFnScalarCaptureWithArg()
     testGenericClosureNonCopyCapture()
     testGenericClosureCopyCapture()
-    testMoveClosureCopyCaptureByValue()
-    testMoveClosureNonCopyReadIsReusable()
-    testMoveClosureMutatesOwnedCopy()
-    testMoveClosureMoveOutIsFnOnce()
+    testClosureCapturesSharedVariable()
+    testClosureHandleReadIsReusable()
+    testClosureMutatesSharedVariable()
+    testClosurePassesHandleToFunction()
 
-    std.print("PASS: closures\n")
+    std::print("PASS: closures\n")
 }

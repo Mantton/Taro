@@ -1,26 +1,25 @@
-import std.io.Error
-import std.mem.GcDesc
-import std.result.Result
-import std.sys.sync.{RawChannel, RawMutex, RawRwLock, ChannelTryRecvStatus}
+import std::io::Error
+import std::result::Result
+import std::sys::sync::{RawChannel, RawMutex, RawRwLock, ChannelTryRecvStatus, NativeSyncOwner}
 
 extern "taro_rt" {
-    func __rt__sync_channel_create(_ elem_size: usize, _ capacity: usize, _ bounded: uint8, _ elem_desc: *const GcDesc) -> *mut uint8
-    func __rt__sync_channel_destroy(_ handle: *mut uint8) -> int32
-    func __rt__sync_channel_close(_ handle: *mut uint8) -> int32
+    unsafe func __gc__sync_channel_create(_ capacity: usize, _ bounded: uint8, _ element: *const uint8) -> *mut uint8
+    unsafe func __rt__sync_channel_destroy(_ handle: *mut uint8) -> int32
+    unsafe func __rt__sync_channel_close(_ handle: *mut uint8) -> int32
     func __rt__sync_channel_try_send(_ handle: *mut uint8, _ value_ptr: *const uint8) -> int32
     func __rt__sync_channel_try_recv(_ handle: *mut uint8, _ out_ptr: *mut uint8) -> int32
 
-    func __rt__sync_mutex_create() -> *mut uint8
-    func __rt__sync_mutex_destroy(_ handle: *mut uint8) -> int32
-    func __rt__sync_mutex_try_lock(_ handle: *mut uint8) -> int32
-    func __rt__sync_mutex_unlock(_ handle: *mut uint8) -> int32
+    unsafe func __rt__sync_mutex_create() -> *mut uint8
+    unsafe func __rt__sync_mutex_destroy(_ handle: *mut uint8) -> int32
+    unsafe func __rt__sync_mutex_try_lock(_ handle: *mut uint8) -> int32
+    unsafe func __rt__sync_mutex_unlock(_ handle: *mut uint8) -> int32
 
-    func __rt__sync_rwlock_create() -> *mut uint8
-    func __rt__sync_rwlock_destroy(_ handle: *mut uint8) -> int32
-    func __rt__sync_rwlock_try_read(_ handle: *mut uint8) -> int32
-    func __rt__sync_rwlock_try_write(_ handle: *mut uint8) -> int32
-    func __rt__sync_rwlock_unlock_read(_ handle: *mut uint8) -> int32
-    func __rt__sync_rwlock_unlock_write(_ handle: *mut uint8) -> int32
+    unsafe func __rt__sync_rwlock_create() -> *mut uint8
+    unsafe func __rt__sync_rwlock_destroy(_ handle: *mut uint8) -> int32
+    unsafe func __rt__sync_rwlock_try_read(_ handle: *mut uint8) -> int32
+    unsafe func __rt__sync_rwlock_try_write(_ handle: *mut uint8) -> int32
+    unsafe func __rt__sync_rwlock_unlock_read(_ handle: *mut uint8) -> int32
+    unsafe func __rt__sync_rwlock_unlock_write(_ handle: *mut uint8) -> int32
 }
 
 @cfg(os("linux"))
@@ -41,7 +40,7 @@ public func mapStatus(_ code: int32) -> Result[(), Error] {
     if code == 0 {
         return .ok(())
     }
-    return .err(std.sys.io.unix.mapErrno(code))
+    return .err(std::sys::io::unix::mapErrno(code))
 }
 
 func mapOperationStatus(_ code: int32, _ operation: string) -> Result[(), Error] {
@@ -51,44 +50,44 @@ func mapOperationStatus(_ code: int32, _ operation: string) -> Result[(), Error]
     }
 }
 
-public func channelCreate(
-    _ elemSize: usize,
-    _ elemDesc: *const GcDesc,
+/// Safety: element is the GC value descriptor of the channel's exact element
+/// type; queued messages are collected copies rooted until received.
+public unsafe func channelCreate(
+    _ element: *const uint8,
     _ capacity: usize,
     _ bounded: bool,
 ) -> Result[RawChannel, Error] {
     if bounded && capacity == 0 {
-        return .err(Error(.invalidInput).withOperation("create channel"))
+        return .err(Error::new(.invalidInput).withOperation("create channel"))
     }
 
-    let boundedByte: uint8 = if bounded { 1_u8 } else { 0_u8 }
-    let handle = __rt__sync_channel_create(
-        elemSize,
-        capacity,
-        boundedByte,
-        elemDesc,
-    )
+    var boundedByte: uint8 = if bounded { 1_u8 } else { 0_u8 }
+    handle := unsafe { __gc__sync_channel_create(capacity, boundedByte, element) }
     if unsafe { handle as usize } == 0 {
-        return .err(Error(.invalidInput).withOperation("create channel"))
+        return .err(Error::new(.invalidInput).withOperation("create channel"))
     }
 
-    return .ok(RawChannel { handle })
+    return .ok(RawChannel { owner: NativeSyncOwner(handle) })
 }
 
 public func channelDestroy(_ channel: RawChannel) -> Result[(), Error] {
-    mapOperationStatus(__rt__sync_channel_destroy(channel.handle), "destroy channel")
+    mapOperationStatus(unsafe { __rt__sync_channel_destroy(channel.owner.handle()) }, "destroy channel")
 }
 
 public func channelClose(_ channel: &RawChannel) -> Result[(), Error] {
-    mapOperationStatus(__rt__sync_channel_close(channel.handle), "close channel")
+    mapOperationStatus(unsafe { __rt__sync_channel_close(channel.owner.handle()) }, "close channel")
 }
 
-public func channelTrySend(_ channel: &RawChannel, _ value_ptr: *const uint8) -> Result[(), Error] {
-    mapOperationStatus(__rt__sync_channel_try_send(channel.handle, value_ptr), "send channel value")
+/// Safety: value_ptr names one initialized value of the channel's exact
+/// element type. Success transfers ownership; failure leaves it with the caller.
+public unsafe func channelTrySend(_ channel: &RawChannel, _ value_ptr: *const uint8) -> Result[(), Error] {
+    mapOperationStatus(__rt__sync_channel_try_send(channel.owner.handle(), value_ptr), "send channel value")
 }
 
-public func channelTryRecv(_ channel: &RawChannel, _ out_ptr: *mut uint8) -> Result[ChannelTryRecvStatus, Error] {
-    let code = __rt__sync_channel_try_recv(channel.handle, out_ptr)
+/// Safety: out_ptr is aligned, writable uninitialized storage for the channel's
+/// exact element type. A successful value result transfers ownership there.
+public unsafe func channelTryRecv(_ channel: &RawChannel, _ out_ptr: *mut uint8) -> Result[ChannelTryRecvStatus, Error] {
+    code := __rt__sync_channel_try_recv(channel.owner.handle(), out_ptr)
     if code == 0 {
         return .ok(.value)
     }
@@ -98,74 +97,74 @@ public func channelTryRecv(_ channel: &RawChannel, _ out_ptr: *mut uint8) -> Res
     if code == errnoBrokenPipe() {
         return .ok(.closed)
     }
-    return .err(std.sys.io.unix.mapErrno(code).withOperation("receive channel value"))
+    return .err(std::sys::io::unix::mapErrno(code).withOperation("receive channel value"))
 }
 
 public func mutexCreate() -> Result[RawMutex, Error] {
-    let handle = __rt__sync_mutex_create()
+    handle := unsafe { __rt__sync_mutex_create() }
     if unsafe { handle as usize } == 0 {
-        return .err(Error(.invalidInput).withOperation("create mutex"))
+        return .err(Error::new(.invalidInput).withOperation("create mutex"))
     }
-    return .ok(RawMutex { handle })
+    return .ok(RawMutex { owner: NativeSyncOwner(handle) })
 }
 
 public func mutexDestroy(_ mutex: RawMutex) -> Result[(), Error] {
-    mapOperationStatus(__rt__sync_mutex_destroy(mutex.handle), "destroy mutex")
+    mapOperationStatus(unsafe { __rt__sync_mutex_destroy(mutex.owner.handle()) }, "destroy mutex")
 }
 
 public func mutexTryLock(_ mutex: &RawMutex) -> Result[bool, Error] {
-    let code = __rt__sync_mutex_try_lock(mutex.handle)
+    code := unsafe { __rt__sync_mutex_try_lock(mutex.owner.handle()) }
     if code == 0 {
         return .ok(true)
     }
     if code == errnoWouldBlock() {
         return .ok(false)
     }
-    return .err(std.sys.io.unix.mapErrno(code).withOperation("try mutex lock"))
+    return .err(std::sys::io::unix::mapErrno(code).withOperation("try mutex lock"))
 }
 
 public func mutexUnlock(_ mutex: &RawMutex) -> Result[(), Error] {
-    mapOperationStatus(__rt__sync_mutex_unlock(mutex.handle), "unlock mutex")
+    mapOperationStatus(unsafe { __rt__sync_mutex_unlock(mutex.owner.handle()) }, "unlock mutex")
 }
 
 public func rwlockCreate() -> Result[RawRwLock, Error] {
-    let handle = __rt__sync_rwlock_create()
+    handle := unsafe { __rt__sync_rwlock_create() }
     if unsafe { handle as usize } == 0 {
-        return .err(Error(.invalidInput).withOperation("create rwlock"))
+        return .err(Error::new(.invalidInput).withOperation("create rwlock"))
     }
-    return .ok(RawRwLock { handle })
+    return .ok(RawRwLock { owner: NativeSyncOwner(handle) })
 }
 
 public func rwlockDestroy(_ lock: RawRwLock) -> Result[(), Error] {
-    mapOperationStatus(__rt__sync_rwlock_destroy(lock.handle), "destroy rwlock")
+    mapOperationStatus(unsafe { __rt__sync_rwlock_destroy(lock.owner.handle()) }, "destroy rwlock")
 }
 
 public func rwlockTryRead(_ lock: &RawRwLock) -> Result[bool, Error] {
-    let code = __rt__sync_rwlock_try_read(lock.handle)
+    code := unsafe { __rt__sync_rwlock_try_read(lock.owner.handle()) }
     if code == 0 {
         return .ok(true)
     }
     if code == errnoWouldBlock() {
         return .ok(false)
     }
-    return .err(std.sys.io.unix.mapErrno(code).withOperation("try rwlock read"))
+    return .err(std::sys::io::unix::mapErrno(code).withOperation("try rwlock read"))
 }
 
 public func rwlockTryWrite(_ lock: &RawRwLock) -> Result[bool, Error] {
-    let code = __rt__sync_rwlock_try_write(lock.handle)
+    code := unsafe { __rt__sync_rwlock_try_write(lock.owner.handle()) }
     if code == 0 {
         return .ok(true)
     }
     if code == errnoWouldBlock() {
         return .ok(false)
     }
-    return .err(std.sys.io.unix.mapErrno(code).withOperation("try rwlock write"))
+    return .err(std::sys::io::unix::mapErrno(code).withOperation("try rwlock write"))
 }
 
 public func rwlockUnlockRead(_ lock: &RawRwLock) -> Result[(), Error] {
-    mapOperationStatus(__rt__sync_rwlock_unlock_read(lock.handle), "unlock rwlock read")
+    mapOperationStatus(unsafe { __rt__sync_rwlock_unlock_read(lock.owner.handle()) }, "unlock rwlock read")
 }
 
 public func rwlockUnlockWrite(_ lock: &RawRwLock) -> Result[(), Error] {
-    mapOperationStatus(__rt__sync_rwlock_unlock_write(lock.handle), "unlock rwlock write")
+    mapOperationStatus(unsafe { __rt__sync_rwlock_unlock_write(lock.owner.handle()) }, "unlock rwlock write")
 }

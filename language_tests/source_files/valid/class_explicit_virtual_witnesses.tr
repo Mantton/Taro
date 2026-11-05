@@ -1,0 +1,30 @@
+interface Readable {
+    func read() -> int32
+    func step()
+    func identity() -> Self
+}
+class Base { value: int32; events: List[int32] }
+extend Base { init(_ value: int32) { self.value = value; self.events = [] } }
+conform Base to Readable {
+    func read() -> int32 { self.value }
+    func step() { self.value += 1; self.events.append(self.value) }
+    func identity() -> Self { self }
+}
+class Derived: Base {}
+conform Derived to Readable {
+    override func read() -> int32 { super.read() + 10 }
+    override func step() { super.step(); self.value += 1 }
+}
+func evaluate[T: Readable](_ value: &T) -> int32 { value.read() }
+func step[T: Readable](_ value: &T) { value.step() }
+func duplicate[T: Readable](_ value: &T) -> T { value.identity() }
+func main() {
+    var derived: Derived = Derived(1) // Derived; strong handle owning a NoCopy events list.
+    var base: Base = derived // Base; another handle to the same Derived object.
+    step(&base)
+    assert(base.value == 3 && derived.events[0] == 2, "generic mutable witness dispatches to the subclass")
+    assert(base.read() == 13 && derived.read() == 13 && evaluate(&base) == 13 && evaluate(&derived) == 13, "direct, base and inherited generic calls agree")
+    var same: Derived = duplicate(&derived) // Derived; subclass-preserving owned Self result.
+    var direct: Derived = derived.identity() // Derived; inherited static result refinement.
+    assert(same === derived && direct === derived, "owned Self preserves the actual subclass and identity")
+}

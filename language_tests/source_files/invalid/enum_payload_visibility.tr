@@ -1,0 +1,5 @@
+enum Event {
+    case structPayload { private value: int32 }
+    case tuplePayload(public int32)
+}
+func main() {}

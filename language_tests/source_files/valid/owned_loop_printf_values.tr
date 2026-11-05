@@ -1,0 +1,66 @@
+// Formatting through `&mut self` keeps the receiver rooted across loop collections.
+
+struct Counter {
+    count: usize
+    total: usize
+}
+
+extend Counter {
+    static func new(_ total: usize) -> Self {
+        Counter { count: 0, total }
+    }
+}
+
+extend Counter {
+    var hasNext: bool {
+        get {
+            self.count < self.total
+        }
+    }
+}
+
+
+
+extend Counter {
+    func run() -> usize {
+        var self = self
+        var lengths: usize = 0
+        while self.hasNext {
+            v := self.step()
+            guard var v else { break }
+            // Allocate and grow a formatter buffer without flooding stdout.
+            rendered := std::sprintf("iter %v", v)
+            lengths = lengths + std::string::stringLen(rendered)
+        }
+        return lengths
+    }
+}
+
+func main() {
+    // 50k iterations comfortably exceeds the 1 MiB GC_MIN_TRIGGER, forcing
+    // multiple collections mid-loop.
+    counter := Counter::new(50000)
+    total := counter.run()
+
+    // Expected length sum: "iter " (5) for every iteration plus the width of
+    // the decimal representation of each index.
+    //   0..10        -> 10 runs * 1 digit
+    //   10..100      -> 90 runs * 2 digits
+    //   100..1000    -> 900 * 3
+    //   1000..10000  -> 9000 * 4
+    //   10000..50000 -> 40000 * 5
+    var digits: usize = 10 * 1 + 90 * 2 + 900 * 3 + 9000 * 4 + 40000 * 5
+    var expected: usize = 50000 * 5 + digits
+    assert(total == expected, "sprintf length sum mismatch")
+
+    print("PASS: GC loop printf roots\n")
+}
+
+
+extend &Counter {
+    func step() -> usize? {
+        v := self.count
+        self.count += 1
+        return v
+    }
+}

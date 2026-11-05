@@ -1,0 +1,4 @@
+error: Expected exactly 0 arguments, but 1 was provided
+ -> language_tests/source_files/invalid/class_inherited_private_designated_access.tr:5:33
+	func main() { var child: Child = Child(9) }
+	                                 ^^^^^^^^

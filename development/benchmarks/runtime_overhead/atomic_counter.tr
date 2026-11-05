@@ -1,0 +1,21 @@
+import std::sync::atomic::Int64
+func increment(_ counter: &Int64, _ count: int32) async {
+    var i = 0_i32
+    while i < count { counter.add(1); i += 1 }
+}
+func main() async {
+    args := std::env::args()
+    count := int32::parse(args.at(1)).unwrap()
+    workers := int32::parse(args.at(2)).unwrap()
+    counter := Int64::new()
+    shared := &counter
+    tasks := List[std::task::Task[()]]::new()
+    var i = 0_i32
+    while i < workers {
+        tasks.append(std::task::spawn(() async => { await increment(shared, count) }))
+        i += 1
+    }
+    for task in tasks { (await task.result()).unwrap() }
+    assert(counter.load() == (count as int64) * (workers as int64), "atomic increments")
+    std::printf("%v\n", counter.load())
+}

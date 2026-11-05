@@ -1,0 +1,7 @@
+struct Loop { next: &Loop }
+conform Loop to Deref {
+    type Target = Loop
+    func deref() -> &Loop { self.next }
+}
+func read(_ value: Loop) -> int32 { value.missing }
+func main() {}

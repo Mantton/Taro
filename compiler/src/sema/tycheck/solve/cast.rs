@@ -32,6 +32,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return SolverResult::Deferred;
         }
 
+        if self.gcx().is_class_subtype(from, to) {
+            return SolverResult::Solved(vec![]);
+        }
+
         // Helper for numeric integer casts (excludes rune to keep cast rules explicit).
         let is_numeric_int_like = |ty: Ty<'ctx>| {
             matches!(

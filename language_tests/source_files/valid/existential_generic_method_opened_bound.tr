@@ -1,0 +1,21 @@
+// Owned generic opening discovers Identity before specializing its generic method.
+interface Mapper {
+    func map[T]( v: T) -> T
+}
+
+struct Identity {}
+
+conform Identity to Mapper {
+    func map[T]( v: T) -> T {
+        v
+    }
+}
+
+func callMap[M: Mapper](m: M) -> int32 {
+    m.map(v: 3)
+}
+
+func main() {
+    var m: any Mapper = Identity {}
+    assert(callMap(m: m) == 3, "generic interface method is callable after concrete opening")
+}

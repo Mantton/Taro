@@ -1,0 +1,4 @@
+struct Point { x: int32; y: int32 }
+extend Point { init() { self.x = 1; self.y = 2 }; }
+func update(_ base: Point) -> Point { Point { x: 3, ..base } }
+func main() {}

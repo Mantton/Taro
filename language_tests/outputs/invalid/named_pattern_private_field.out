@@ -1,0 +1,4 @@
+error: field 'value' of Secret is not visible here
+ -> language_tests/source_files/invalid/named_pattern_private_field.tr:3:33
+	    match secret { case Secret { value } => {}; }
+	                                 ^^^^^

@@ -1,0 +1,4 @@
+error: initializer result must be Self or Result[Self, Error]
+ -> language_tests/source_files/invalid/fallible_initializer_result.tr:3:4
+	    init() -> Result[int32, string] { return .ok(7) }
+	    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

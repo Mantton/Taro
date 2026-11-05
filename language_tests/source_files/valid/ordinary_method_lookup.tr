@@ -1,0 +1,87 @@
+// G30: static overload selection and ordinary receiver lookup.
+interface Pick { func pick(_ number: int32) -> int32; }
+struct Preferred {}
+extend Preferred {
+    func pick[T](_ number: T) -> int32 { 10 }
+}
+conform Preferred to Pick {
+    func pick(_ number: int32) -> int32 { 20 }
+}
+interface DefaultPick {
+    func pick(_ flag: bool) -> int32 { if flag { 30 } else { 31 } }
+}
+struct Fallback {}
+extend Fallback { func pick(_ number: int32) -> int32 { 40 }; }
+conform Fallback to DefaultPick {}
+
+struct Counter { value: int32 }
+extend Counter { func pick[T](_ number: T) -> int32 { self.value += 10; self.value }; }
+extend &Counter { func pick(_ number: int32) -> int32 { self.value += 1; self.value }; }
+
+class Base {}
+extend Base {
+    init() {}
+    func choose(_ value: Base) -> int32 { 50 }
+    func choose(_ value: int32) -> int32 { 51 }
+    static func build(_ flag: bool) -> int32 { 60 }
+    static func label(_ number: int32) -> int32 { 61 }
+}
+class Derived: Base {}
+extend Derived {
+    override func choose(_ value: Base) -> int32 { 70 }
+    func choose(_ value: Derived) -> int32 { 71 }
+    func choose(_ flag: bool) -> int32 { 72 }
+    static func build(_ number: int32) -> int32 { 80 }
+    static func label(_ number: int32) -> int32 { 81 }
+}
+func choose(_ value: Base) -> int32 { 90 }
+func choose(_ value: Derived) -> int32 { 91 }
+func throughBase(_ receiver: Base, _ value: Base) -> int32 { receiver.choose(value) }
+func throughInterface[T: Pick](_ value: T) -> int32 { value.pick(1) }
+
+class GenericBase[T] {}
+extend[T] GenericBase[T] { static func identity(_ value: T) -> T { value }; }
+class BooleanDerived: GenericBase[bool] {}
+extend BooleanDerived { static func identity(_ value: int32) -> int32 { value + 1 }; }
+
+interface Tag { func tag() -> int32; }
+interface Other {}
+struct Marked {}
+conform Marked to Tag { func tag() -> int32 { 1 }; }
+conform Marked to Other {}
+func exactChoice(_ value: Marked) -> int32 { 1 }
+func exactChoice(_ value: any Tag) -> int32 { 2 }
+func optionalChoice(_ value: int32) -> int32 { 3 }
+func optionalChoice(_ value: int32?) -> int32 { 4 }
+func erasedChoice(_ value: any Tag) -> int32 { 5 }
+func erasedChoice(_ value: any Tag & Other) -> int32 { 6 }
+func genericChoice[T](_ value: T) -> int32 { 7 }
+func genericChoice(_ value: Base) -> int32 { 8 }
+
+func main() {
+    marked := Marked {}
+    var erased: any Tag & Other = marked
+    assert(exactChoice(marked) == 1 && optionalChoice(1) == 3 && erasedChoice(erased) == 6, "exact arguments precede boxing, wrapping and existential upcasts")
+    preferred := Preferred {}
+    assert(preferred.pick(1) == 10, "an applicable generic inherent method wins before a concrete interface method")
+    var callback: any Fn(int32) -> int32 = preferred.pick
+    assert(callback(1) == 10, "method values use the same inherent priority")
+    assert(throughInterface(preferred) == 20, "generic bounds keep their declared interface dispatch")
+    fallback := Fallback {}
+    assert(fallback.pick(1) == 40 && fallback.pick(true) == 30, "interface defaults remain available when inherent inputs do not apply")
+    var booleanCallback: any Fn(bool) -> int32 = fallback.pick
+    assert(booleanCallback(false) == 31, "a bound method's context selects applicable input types")
+    var counter = Counter { value: 1 }
+    assert(counter.pick(1) == 11 && counter.value == 1, "value receivers precede automatic references even for generic methods")
+    assert((&counter).pick(1) == 2 && counter.value == 2, "an explicit reference selects storage methods")
+    assert(BooleanDerived::identity(true) && BooleanDerived::identity(1) == 2, "static overloads retain instantiated ancestor arguments")
+    var staticCallback: (bool) -> bool = BooleanDerived::identity
+    assert(staticCallback(true), "static method values preserve the ancestor specialization")
+    derived := Derived()
+    assert(genericChoice(derived) == 7 && genericChoice(Base()) == 8, "exact arguments precede generic preference; concrete declarations break exact ties")
+    assert(derived.choose(true) == 72 && derived.choose(1) == 51, "new overloads do not hide inherited instance overloads")
+    assert(derived.choose(derived) == 71 && choose(derived) == 91, "exact static argument types precede class conversions")
+    assert(throughBase(derived, derived) == 70, "virtual dispatch overrides the statically selected overload")
+    assert(Derived::build(true) == 60 && Derived::build(1) == 80, "inherited static overloads stay visible")
+    assert(Derived::label(1) == 81 && Base::label(1) == 61, "static hiding replaces only the same input signature")
+}

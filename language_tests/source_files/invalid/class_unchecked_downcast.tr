@@ -1,0 +1,4 @@
+class Base {}
+class Derived: Base {}
+func invalid(_ value: Base) -> Derived { value as Derived }
+func main() {}

@@ -1,40 +1,26 @@
 func badAwait() async {
-    let f = || async { 1 as int32 }
+    f := () async => { 1 as int32 }
 
-    let _ = f()
+    var _ = f()
 }
 
 func badAwaitTask() async {
-    let task = std.task.spawn(|| async { 1 as int32 })
+    task := std::task::spawn(() async => { 1 as int32 })
 
-    let _ = await task
+    var _ = await task
 }
 
 func badSpawnLocalFirst() async {
-    let thunk = || { return 1 as int32 }
-    let _ = std.task.spawn(thunk)
+    thunk := () => { return 1 as int32 }
+    var _ = std::task::spawn(thunk)
 }
 
 func badSpawnArg() async {
-    let _ = std.task.spawn(|x: int32| async { x })
+    var _ = std::task::spawn((x: int32) async => { x })
 }
 
 func badSyncTaskValue() {
-    let task = std.task.spawn(|| async { 1 as int32 })
+    task := std::task::spawn(() async => { 1 as int32 })
 
-    let _ = task.result()
-}
-
-func applyReusableAsync[F: AsyncFn(int32) -> int32](_ f: F, _ x: int32) async -> int32 {
-    return await f(x)
-}
-
-func badMovedNonCopyAsyncFnBound() async {
-    var values: std.collections.List[int32] = std.collections.List()
-    values.append(7)
-    let closure = move |x: int32| async {
-        return x + (values.len() as int32)
-    }
-
-    let _ = await applyReusableAsync(closure, 1)
+    var _ = task.result()
 }

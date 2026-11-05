@@ -1,0 +1,63 @@
+import std::io::{AsyncReader, AsyncWriter}
+import std::mem::Span
+import std::result::Result
+
+// The HTTP wire engine is identical for plain/TLS sockets. TLS handshakes are
+// driven inside each connection worker, never in the listener's accept loop.
+final class WireStream {
+    socket: std::net::TcpStream
+    tls: std::sync::atomic::Reference[std::tls::Stream]
+    closed: std::sync::atomic::Bool
+    prepared: bool
+    serverTLS: std::tls::ServerConfig?
+    // Private HTTP exchanges serialize writes, including cancellation draining.
+    // Exists only during a general-path write, so idle connections don't pay for it.
+    writeChunk: std::string::Builder?
+}
+extend WireStream {
+    init(_ socket: std::net::TcpStream) {
+        self.socket = socket; self.tls = std::sync::atomic::Reference[std::tls::Stream]::new(); self.serverTLS = .none
+        self.closed = std::sync::atomic::Bool::new(false); self.prepared = false
+        self.writeChunk = .none
+    }
+    func prepare() async -> Result[(), std::io::Error] {
+        if self.prepared { return .ok(()) }
+        self.prepared = true
+        match self.serverTLS {
+            case .some(config) => {
+                stream := (await config.accept(self.socket))!
+                self.installTLS(stream)!
+            }
+            case .none => {}
+        }
+        return .ok(())
+    }
+    func installTLS(_ stream: std::tls::Stream) -> Result[(), std::io::Error] {
+        self.tls.store(.some(&stream))
+        if self.closed.load() { var _ = stream.close(); return .err(std::io::Error::new(.closed)) }
+        return .ok(())
+    }
+    func close() -> Result[(), std::io::Error] {
+        self.closed.store(true)
+        match self.tls.load() {
+            case .some(stream) => return stream.close()
+            case .none => return self.socket.close()
+        }
+    }
+    /// A plain socket: its operations can complete without suspending, and bound
+    /// their own waits. TLS has its own waits, so it stays under withTimeout.
+    @inline
+    func isPlain() -> bool { self.serverTLS.isNone() && self.tls.load().isNone() }
+    func read(_ into: Span[uint8]) async -> Result[usize, std::io::Error] {
+        match self.tls.load() {
+            case .some(stream) => return await stream.read(into)
+            case .none => return await self.socket.read(into)
+        }
+    }
+    func writeAll(_ bytes: Span[uint8]) async -> Result[(), std::io::Error] {
+        match self.tls.load() {
+            case .some(stream) => return await stream.writeAll(bytes)
+            case .none => return await self.socket.writeAll(bytes)
+        }
+    }
+}

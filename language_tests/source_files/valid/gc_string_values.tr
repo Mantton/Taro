@@ -1,0 +1,60 @@
+// TEST
+extern "C" {
+    unsafe func __gc__test_probe_create(_ target: *const uint8) -> *mut uint8
+    unsafe func __gc__test_collect_probe_is_live(_ probe: *mut uint8) -> bool
+}
+
+@noinline
+func producedSlice() -> string {
+    var bytes: [uint8; 6] = [97_u8, 98_u8, 99_u8, 100_u8, 101_u8, 102_u8]
+    text := std::string::stringFromBytes(bytes.asSpan())
+    return text.substring(2, 2)
+}
+
+@noinline
+func largeProducedSlice() -> string {
+    var bytes: [uint8; 8192] = [97_u8; 8192]
+    return std::string::stringFromBytes(bytes.asSpan()).substring(8191, 1)
+}
+
+@test
+func largeProducedStringsAreTracedAndReclaimed() {
+    value := largeProducedSlice()
+    probe := unsafe { __gc__test_probe_create(std::string::stringData(value)) }
+    assert(unsafe { __gc__test_collect_probe_is_live(probe) }, "the end interior pointer roots a large allocation")
+    assert(value == "a", "the interior slice stays readable")
+    assert(!unsafe { __gc__test_collect_probe_is_live(probe) }, "dead large produced bytes are reclaimed")
+}
+
+@test
+func stringsHaveTwoWordCopyableHeaders() {
+    assert(std::mem::sizeOf[string]() == 2 * std::mem::sizeOf[usize](), "GC strings have only data and length")
+    value := producedSlice()
+    copied := value
+    assert(value == "cd" && copied == value, "copies preserve the source")
+    data := std::string::stringData(value)
+    wrapped := unsafe { std::string::stringFromParts(data, value.byteLen()) }
+    assert(unsafe { std::string::stringData(wrapped) as usize } == unsafe { data as usize }, "raw wrapping shares main's bytes without copying")
+    assert(wrapped == value, "raw wrapping preserves the string value")
+}
+
+@test
+func interiorSlicesKeepManagedBytesAlive() {
+    slice := producedSlice()
+    probe := unsafe { __gc__test_probe_create(std::string::stringData(slice)) }
+    assert(unsafe { __gc__test_collect_probe_is_live(probe) }, "an interior string pointer roots its allocation")
+    assert(slice == "cd", "slice outlives its source header and source array")
+    assert(!unsafe { __gc__test_collect_probe_is_live(probe) }, "dead produced string bytes are reclaimed")
+}
+
+@test
+func constructionCopiesBytesAndPreservesEmptyAndInvalidUnits() {
+    var bytes: [uint8; 3] = [0xff_u8, 0_u8, 98_u8]
+    value := std::string::stringFromBytes(bytes.asSpan())
+    *bytes.at(0) = 1_u8
+    assert(value.byteLen() == 3 && value.byteAt(0) == 0xff_u8 && value.byteAt(1) == 0_u8, "construction is independent and byte preserving")
+    assert(value.substring(3, 0) == "", "empty end slices are valid")
+    empty := unsafe { std::string::stringFromParts(0 as *const uint8, 0) }
+    assert(empty == "", "empty null input is never dereferenced")
+    assert(std::ffi::CString::tryNew(value).isNone(), "C strings reject embedded NUL")
+}

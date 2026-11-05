@@ -1,101 +1,319 @@
-import std.hash.{Hashable, Hasher}
-import std.iter.{Iterator, Iterable}
-import std.marker.Clone
+import std::collections::Dictionary
+import std::hash::{Hashable, Hasher}
+import std::iter::{Iterator, Iterable}
+import std::marker::Clone
 
-func consumeDictionaryMoveSemantics(_ values: [int32: string]) -> usize {
+interface DictionaryPayload {
+    func read() -> int32
+    func label() -> string
+}
+
+struct DictionaryPayloadValue {
+    target: &int32
+    text: string
+}
+
+conform DictionaryPayloadValue to DictionaryPayload {
+    func read() -> int32 { *self.target }
+    func label() -> string { self.text }
+}
+
+@noinline
+func makeDictionaryPayload(_ number: int32) -> any DictionaryPayload {
+    var target = number
+    DictionaryPayloadValue { target: &target, text: "dictionary " + "payload" }
+}
+
+@test
+func testDictionaryErasedEntryCopiesSurviveCollection() {
+    table := Dictionary[int32, any DictionaryPayload]::new()
+    table.set(key: 1, value: makeDictionaryPayload(7))
+    previous := table.insert(key: 1, value: makeDictionaryPayload(9)).unwrap()
+    independent := table.copy()
+    table.clear()
+    std::runtime::collect()
+    std::testing::assertEqual(previous.read(), 7, "replacement retains the old erased payload")
+    std::testing::assertEqual(independent[1].read(), 9, "copy retains the initialized erased destination")
+    std::testing::assertEqual(independent[1].label(), "dictionary payload", "erased copies retain nested managed fields")
+}
+
+struct DictionaryManagedKey {
+    id: int32
+    text: string
+}
+
+conform DictionaryManagedKey to std::ops::PartialEq {
+    func eq(_ other: DictionaryManagedKey) -> bool {
+        std::runtime::collect()
+        self.id == other.id && self.text == other.text
+    }
+}
+
+conform DictionaryManagedKey to Hashable {
+    func hash[H: Hasher](into hasher: H) {
+        std::runtime::collect()
+        var marker: [uint8; 1] = [1]
+        hasher.write(marker.asSpan())
+    }
+}
+
+enum DictionaryNestedPayload {
+    case empty
+    case live(string, any DictionaryPayload)
+}
+
+@test
+func testDictionaryNestedEntriesSurviveCollectingRehashAndCopy() {
+    table := Dictionary[DictionaryManagedKey, DictionaryNestedPayload]::new()
+    var index: int32 = 0
+    while index < 18 {
+        key := DictionaryManagedKey { id: index, text: "key " + "payload" }
+        table.set(key: key, value: .live("value " + "payload", makeDictionaryPayload(index)))
+        index += 1
+    }
+    independent := table.copy()
+    index = 0
+    while index < 9 {
+        key := DictionaryManagedKey { id: index, text: "key payload" }
+        var _ = table.remove(&key)
+        index += 1
+    }
+    table.clear()
+    std::runtime::collect()
+    index = 0
+    while index < 18 {
+        key := DictionaryManagedKey { id: index, text: "key payload" }
+        match independent.get(&key).unwrap() {
+            case .live(text, payload) => {
+                std::testing::assertEqual(text, "value payload", "copy keeps variant strings")
+                std::testing::assertEqual(payload.read(), index, "copy keeps nested erased references")
+            }
+            case .empty => std::testing::assertTrue(false, "stored variant must remain live")
+        }
+        index += 1
+    }
+}
+
+struct DictionaryWeakTarget { number: int32 }
+
+@noinline
+func storeDictionaryWeakTarget(_ table: Dictionary[int32, &DictionaryWeakTarget]) -> std::weak::Weak[DictionaryWeakTarget] {
+    target := DictionaryWeakTarget { number: 42 }
+    table.set(key: 1, value: &target)
+    std::weak::Weak[DictionaryWeakTarget]::new(&target)
+}
+
+@noinline
+func removeDictionaryWeakTarget(_ table: Dictionary[int32, &DictionaryWeakTarget]) {
+    var _ = table.remove(&1)
+}
+
+@test
+func testDictionaryDeletedBytesDoNotRetainManagedValues() {
+    table := Dictionary[int32, &DictionaryWeakTarget]::new()
+    weak := storeDictionaryWeakTarget(table)
+    std::runtime::collect()
+    std::testing::assertTrue(weak.value().isSome(), "full entries retain their payload")
+    removeDictionaryWeakTarget(table)
+    std::runtime::collect()
+    std::testing::assertTrue(weak.value().isNone(), "deleted raw bytes must not be traced")
+    std::testing::assertEqual(table.len(), 0 as usize, "keep dictionary storage live across collection")
+}
+
+struct DictionaryEmptyKey {}
+
+conform DictionaryEmptyKey to std::ops::PartialEq {
+    func eq(_ other: DictionaryEmptyKey) -> bool { true }
+}
+
+conform DictionaryEmptyKey to Hashable {
+    func hash[H: Hasher](into hasher: H) {
+        var marker: [uint8; 1] = [0]
+        hasher.write(marker.asSpan())
+    }
+}
+
+@test
+func testDictionaryZeroSizedEntriesSurviveCollection() {
+    table := Dictionary[DictionaryEmptyKey, ()]::new()
+    key := DictionaryEmptyKey {}
+    table.set(key: key, value: ())
+    std::runtime::collect()
+    std::testing::assertTrue(table.get(&key).isSome(), "zero-sized entries remain addressable")
+    var _ = table.remove(&key)
+    std::runtime::collect()
+    std::testing::assertTrue(table.isEmpty(), "zero-sized entries can be removed")
+}
+
+func dictionaryHandleLength(_ values: [int32: string]) -> usize {
     values.len()
 }
 
 @test
 func testDictionaryLiteralAndConstructorInference() {
-    let values: [int32: string] = [1: "one", 2: "two"]
-    std.testing.assertEqual(values.len(), 2 as usize, "non-empty literal should infer destination type")
-    std.testing.assertTrue(values.contains(&1), "literal-inferred dictionary should contain inserted key")
+    var values: [int32: string] = [1: "one", 2: "two"]
+    std::testing::assertEqual(values.len(), 2 as usize, "non-empty literal should infer destination type")
+    std::testing::assertTrue(values.contains(&1), "literal-inferred dictionary should contain inserted key")
 
     var fromLiteral: [int32: string] = [:]
-    let _ = fromLiteral.insert(key: 10, value: "Hello, World")
-    std.testing.assertTrue(fromLiteral.contains(&10), "literal dictionary should support insert/contains")
+    var _ = fromLiteral.insert(key: 10, value: "Hello, World")
+    std::testing::assertTrue(fromLiteral.contains(&10), "literal dictionary should support insert/contains")
 
     var fromTypedLiteral: [uint32: string] = [:]
-    let _ = fromTypedLiteral.insert(key: 10, value: "Hello, World")
-    std.testing.assertTrue(fromTypedLiteral.contains(&10), "typed literal dictionary should support insert/contains")
+    var _ = fromTypedLiteral.insert(key: 10, value: "Hello, World")
+    std::testing::assertTrue(fromTypedLiteral.contains(&10), "typed literal dictionary should support insert/contains")
 }
 
 struct CollisionKey {
     id: int32
 }
 
-impl std.ops.PartialEq for CollisionKey {
-    public func eq(&self, _ other: &CollisionKey) -> bool {
+conform CollisionKey to std::ops::PartialEq {
+    public func eq(_ other: CollisionKey) -> bool {
         self.id == other.id
     }
 }
 
-impl Hashable for CollisionKey {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {
+conform CollisionKey to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
         // Constant marker forces all keys into the same hash stream.
-        let marker: [uint8; 1] = [1]
+        var marker: [uint8; 1] = [1]
         hasher.write(marker.asSpan())
     }
+}
+
+struct CollectingKey { id: int32 }
+
+conform CollectingKey to std::ops::PartialEq {
+    public func eq(_ other: CollectingKey) -> bool {
+        std::runtime::collect()
+        self.id == other.id
+    }
+}
+
+conform CollectingKey to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
+        var marker: [uint8; 1] = [self.id as uint8]
+        hasher.write(marker.asSpan())
+    }
+}
+
+@noinline
+func dictionaryWithCollectingKey() -> Dictionary[CollectingKey, &int32] {
+    var payload: int32 = 42
+    table := Dictionary[CollectingKey, &int32]::new()
+    table.set(key: CollectingKey { id: 1 }, value: &payload)
+    table
+}
+
+@test
+func testDictionarySingletonEqualityCanCollect() {
+    table := dictionaryWithCollectingKey()
+    key := CollectingKey { id: 1 }
+    std::testing::assertEqual(
+        *table.get(&key).unwrap(), 42,
+        "collection during equality keeps the dictionary's value rooted",
+    )
+}
+
+@test
+func testDictionarySingletonLookupSurvivesDeletionAndGrowth() {
+    table := Dictionary[CollisionKey, int32]::new()
+    first := CollisionKey { id: 1 }
+    survivor := CollisionKey { id: 3 }
+    std::testing::assertTrue(table.get(&first).isNone(), "an empty table has no key")
+    table.set(key: first, value: 10)
+    table.set(key: CollisionKey { id: 2 }, value: 20)
+    table.set(key: survivor, value: 30)
+    var _ = table.remove(&first)
+    var _ = table.remove(&CollisionKey { id: 2 })
+
+    std::testing::assertEqual(table.len(), 1 as usize, "one collision survivor remains")
+    std::testing::assertEqual(
+        table.get(&survivor).unwrap(), 30,
+        "lookup finds the survivor past removed slots",
+    )
+    std::testing::assertTrue(table.contains(&survivor), "contains finds the same survivor")
+    std::testing::assertTrue(table.get(&first).isNone(), "a removed key stays absent")
+    std::testing::assertEqual(table[survivor], 30, "subscript reads the singleton")
+
+    var id: int32 = 4
+    while id < 20 {
+        table.set(key: CollisionKey { id }, value: id * 10)
+        id += 1
+    }
+    std::testing::assertEqual(
+        table[survivor], 30, "growth preserves the singleton's entry",
+    )
+    id = 4
+    while id < 20 {
+        var _ = table.remove(&CollisionKey { id })
+        id += 1
+    }
+    std::testing::assertEqual(
+        table.len(), 1 as usize,
+        "removing added keys leaves a singleton in a grown table",
+    )
+    std::testing::assertEqual(table[survivor], 30, "grown tables still find the surviving entry")
 }
 
 @test
 func testCollisionInsertLookupOverwrite() {
     var dict: [CollisionKey: int32] = [:]
 
-    let _ = dict.insert(key: CollisionKey { id: 1 }, value: 100)
-    let _ = dict.insert(key: CollisionKey { id: 2 }, value: 200)
+    var _ = dict.insert(key: CollisionKey { id: 1 }, value: 100)
+    var _ = dict.insert(key: CollisionKey { id: 2 }, value: 200)
 
-    let hit1 = dict.get(&CollisionKey { id: 1 })
-    let hit2 = dict.get(&CollisionKey { id: 2 })
-    std.testing.assertTrue(hit1.isSome(), "collision lookup should find key 1")
-    std.testing.assertTrue(hit2.isSome(), "collision lookup should find key 2")
-    std.testing.assertEqual(*hit1.unwrap(), 100, "collision key 1 value mismatch")
-    std.testing.assertEqual(*hit2.unwrap(), 200, "collision key 2 value mismatch")
+    hit1 := dict.get(&CollisionKey { id: 1 })
+    hit2 := dict.get(&CollisionKey { id: 2 })
+    std::testing::assertTrue(hit1.isSome(), "collision lookup should find key 1")
+    std::testing::assertTrue(hit2.isSome(), "collision lookup should find key 2")
+    std::testing::assertEqual(hit1.unwrap(), 100, "collision key 1 value mismatch")
+    std::testing::assertEqual(hit2.unwrap(), 200, "collision key 2 value mismatch")
 
-    let old2 = dict.insert(key: CollisionKey { id: 2 }, value: 201)
-    std.testing.assertTrue(old2.isSome(), "collision overwrite should return previous value")
-    std.testing.assertEqual(old2.unwrap(), 200, "collision overwrite previous value mismatch")
+    old2 := dict.insert(key: CollisionKey { id: 2 }, value: 201)
+    std::testing::assertTrue(old2.isSome(), "collision overwrite should return previous value")
+    std::testing::assertEqual(old2.unwrap(), 200, "collision overwrite previous value mismatch")
 }
 
 @test
 func testRemoveTombstoneKeepsProbeChain() {
     var dict: [CollisionKey: int32] = [:]
 
-    let _ = dict.insert(key: CollisionKey { id: 1 }, value: 100)
-    let _ = dict.insert(key: CollisionKey { id: 2 }, value: 200)
-    let _ = dict.insert(key: CollisionKey { id: 3 }, value: 300)
+    var _ = dict.insert(key: CollisionKey { id: 1 }, value: 100)
+    var _ = dict.insert(key: CollisionKey { id: 2 }, value: 200)
+    var _ = dict.insert(key: CollisionKey { id: 3 }, value: 300)
 
-    let removed = dict.remove(&CollisionKey { id: 2 })
-    std.testing.assertTrue(removed.isSome(), "remove should return value for present collision key")
-    std.testing.assertEqual(removed.unwrap(), 200, "removed value mismatch for collision key")
+    removed := dict.remove(&CollisionKey { id: 2 })
+    std::testing::assertTrue(removed.isSome(), "remove should return value for present collision key")
+    std::testing::assertEqual(removed.unwrap(), 200, "removed value mismatch for collision key")
 
-    let hit1 = dict.get(&CollisionKey { id: 1 })
-    let hit2 = dict.get(&CollisionKey { id: 2 })
-    let hit3 = dict.get(&CollisionKey { id: 3 })
-    std.testing.assertTrue(hit1.isSome(), "key 1 should still be reachable after tombstone creation")
-    std.testing.assertTrue(hit2.isNone(), "removed key should not be reachable")
-    std.testing.assertTrue(hit3.isSome(), "key 3 should remain reachable through tombstone")
+    hit1 := dict.get(&CollisionKey { id: 1 })
+    hit2 := dict.get(&CollisionKey { id: 2 })
+    hit3 := dict.get(&CollisionKey { id: 3 })
+    std::testing::assertTrue(hit1.isSome(), "key 1 should still be reachable after tombstone creation")
+    std::testing::assertTrue(hit2.isNone(), "removed key should not be reachable")
+    std::testing::assertTrue(hit3.isSome(), "key 3 should remain reachable through tombstone")
 }
 
 @test
 func testDeletedSlotCanBeReused() {
     var dict: [CollisionKey: int32] = [:]
 
-    let _ = dict.insert(key: CollisionKey { id: 10 }, value: 1000)
-    let _ = dict.insert(key: CollisionKey { id: 11 }, value: 1100)
-    let _ = dict.remove(&CollisionKey { id: 10 })
+    var _ = dict.insert(key: CollisionKey { id: 10 }, value: 1000)
+    var _ = dict.insert(key: CollisionKey { id: 11 }, value: 1100)
+    var _ = dict.remove(&CollisionKey { id: 10 })
 
-    let added = dict.insert(key: CollisionKey { id: 12 }, value: 1200)
-    std.testing.assertTrue(added.isNone(), "insert into table with tombstone should behave as new insert")
-    std.testing.assertEqual(dict.len(), 2 as usize, "len should account for tombstone reuse correctly")
+    added := dict.insert(key: CollisionKey { id: 12 }, value: 1200)
+    std::testing::assertTrue(added.isNone(), "insert into table with tombstone should behave as new insert")
+    std::testing::assertEqual(dict.len(), 2 as usize, "len should account for tombstone reuse correctly")
 
-    let hit11 = dict.get(&CollisionKey { id: 11 })
-    let hit12 = dict.get(&CollisionKey { id: 12 })
-    std.testing.assertTrue(hit11.isSome(), "existing key should survive tombstone reuse")
-    std.testing.assertTrue(hit12.isSome(), "new key should be reachable after tombstone reuse")
-    std.testing.assertEqual(*hit11.unwrap(), 1100, "key 11 value mismatch after tombstone reuse")
-    std.testing.assertEqual(*hit12.unwrap(), 1200, "key 12 value mismatch after tombstone reuse")
+    hit11 := dict.get(&CollisionKey { id: 11 })
+    hit12 := dict.get(&CollisionKey { id: 12 })
+    std::testing::assertTrue(hit11.isSome(), "existing key should survive tombstone reuse")
+    std::testing::assertTrue(hit12.isSome(), "new key should be reachable after tombstone reuse")
+    std::testing::assertEqual(hit11.unwrap(), 1100, "key 11 value mismatch after tombstone reuse")
+    std::testing::assertEqual(hit12.unwrap(), 1200, "key 12 value mismatch after tombstone reuse")
 }
 
 @test
@@ -103,29 +321,29 @@ func testSmallCollisionTableGrowsAfterTombstoneReuse() {
     var dict: [CollisionKey: int32] = [:]
     var id: int32 = 0
     while id < 6 {
-        let _ = dict.insert(key: CollisionKey { id }, value: id + 100)
+        var _ = dict.insert(key: CollisionKey { id }, value: id + 100)
         id += 1
     }
-    let _ = dict.remove(&CollisionKey { id: 1 })
-    let _ = dict.remove(&CollisionKey { id: 4 })
+    var _ = dict.remove(&CollisionKey { id: 1 })
+    var _ = dict.remove(&CollisionKey { id: 4 })
     while id < 13 {
-        let _ = dict.insert(key: CollisionKey { id }, value: id + 100)
+        var _ = dict.insert(key: CollisionKey { id }, value: id + 100)
         id += 1
     }
-    std.testing.assertEqual(dict.len(), 11 as usize, "growth must preserve live entries after tombstone reuse")
+    std::testing::assertEqual(dict.len(), 11 as usize, "growth must preserve live entries after tombstone reuse")
     id = 0
     while id < 13 {
-        let found = dict.get(&CollisionKey { id })
+        found := dict.get(&CollisionKey { id })
         if id == 1 || id == 4 {
-            std.testing.assertTrue(found.isNone(), "removed collision key must stay absent after growth")
+            std::testing::assertTrue(found.isNone(), "removed collision key must stay absent after growth")
         } else {
-            std.testing.assertEqual(*found.unwrap(), id + 100, "collision key must survive growth")
+            std::testing::assertEqual(found.unwrap(), id + 100, "collision key must survive growth")
         }
         id += 1
     }
-    let previous = dict.insert(key: CollisionKey { id: 3 }, value: 999)
-    std.testing.assertEqual(previous.unwrap(), 103, "overwrite must return the previous value")
-    std.testing.assertEqual(dict.len(), 11 as usize, "overwrite must not change length")
+    previous := dict.insert(key: CollisionKey { id: 3 }, value: 999)
+    std::testing::assertEqual(previous.unwrap(), 103, "overwrite must return the previous value")
+    std::testing::assertEqual(dict.len(), 11 as usize, "overwrite must not change length")
 }
 
 @test
@@ -134,17 +352,17 @@ func testGrowthThresholdAndOverwrite() {
 
     var i: int32 = 0
     while i < 13 {
-        let previous = dict.insert(key: i, value: i + 100)
-        std.testing.assertTrue(previous.isNone(), "new insert should return none before/at threshold")
+        previous := dict.insert(key: i, value: i + 100)
+        std::testing::assertTrue(previous.isNone(), "new insert should return none before/at threshold")
         i += 1
     }
 
-    std.testing.assertEqual(dict.len(), 13 as usize, "len should reflect threshold-crossing inserts")
+    std::testing::assertEqual(dict.len(), 13 as usize, "len should reflect threshold-crossing inserts")
 
-    let overwrite = dict.insert(key: 5, value: 999)
-    std.testing.assertTrue(overwrite.isSome(), "overwrite should return previous value after threshold growth")
-    std.testing.assertEqual(overwrite.unwrap(), 105, "overwrite previous value mismatch after threshold growth")
-    std.testing.assertEqual(dict.len(), 13 as usize, "overwrite should not change len")
+    overwrite := dict.insert(key: 5, value: 999)
+    std::testing::assertTrue(overwrite.isSome(), "overwrite should return previous value after threshold growth")
+    std::testing::assertEqual(overwrite.unwrap(), 105, "overwrite previous value mismatch after threshold growth")
+    std::testing::assertEqual(dict.len(), 13 as usize, "overwrite should not change len")
 }
 
 @test
@@ -152,124 +370,64 @@ func testDictionarySetAndGetOrHelpers() {
     var dict: [int32: string] = [:]
 
     dict.set(key: 1, value: "one")
-    std.testing.assertEqual(dict.len(), 1 as usize, "set should insert new key")
-    std.testing.assertEqual(*dict.get(&1).unwrap(), "one", "set should write value")
+    std::testing::assertEqual(dict.len(), 1 as usize, "set should insert new key")
+    std::testing::assertEqual(dict.get(&1).unwrap(), "one", "set should write value")
 
     dict.set(key: 1, value: "ONE")
-    std.testing.assertEqual(dict.len(), 1 as usize, "set overwrite should not change len")
-    std.testing.assertEqual(*dict.get(&1).unwrap(), "ONE", "set should overwrite value")
+    std::testing::assertEqual(dict.len(), 1 as usize, "set overwrite should not change len")
+    std::testing::assertEqual(dict.get(&1).unwrap(), "ONE", "set should overwrite value")
 
-    let hit = dict.getOr(&1, default: "missing")
-    let miss = dict.getOr(&2, default: "missing")
-    std.testing.assertEqual(hit, "ONE", "getOr should clone stored value")
-    std.testing.assertEqual(miss, "missing", "getOr should return provided default")
+    hit := dict.getOr(&1, default: "missing")
+    miss := dict.getOr(&2, default: "missing")
+    std::testing::assertEqual(hit, "ONE", "getOr should clone stored value")
+    std::testing::assertEqual(miss, "missing", "getOr should return provided default")
 }
 
 @test
-func testDictionaryEntryVacantAndOccupiedOperations() {
+func testDictionaryNativeValueAccessAndHandleSharing() {
     var dict: [int32: int32] = [:]
-
-    match dict.entry(7) {
-        case .vacant(entry) => {
-            std.testing.assertEqual(*entry.key(), 7, "vacant entry should expose key")
-            let value = entry.insert(70)
-            *value += 1
-        }
-        case .occupied(_) => std.testing.fail("new key should create vacant entry")
-    }
-
-    std.testing.assertEqual(*dict.get(&7).unwrap(), 71, "vacant insert should write mutable value")
-
-    match dict.entry(7) {
-        case .occupied(entry) => {
-            var occupied = entry
-            std.testing.assertEqual(*occupied.key(), 7, "occupied entry should expose key")
-            std.testing.assertEqual(*occupied.get(), 71, "occupied get should read value")
-            *occupied.get() += 4
-            let previous = occupied.insert(99)
-            std.testing.assertEqual(previous, 75, "occupied insert should return previous value")
-            let removed = occupied.remove()
-            std.testing.assertEqual(removed, 99, "occupied remove should return current value")
-        }
-        case .vacant(_) => std.testing.fail("existing key should create occupied entry")
-    }
-
-    std.testing.assertFalse(dict.contains(&7), "occupied remove should delete key")
+    dict[7] = 70
+    var snapshot = dict.get(&7).unwrap()
+    snapshot += 1
+    std::testing::assertEqual(dict[7], 70, "get returns an independent inline value")
+    dict[7] += 5
+    std::testing::assertEqual(dict[7], 75, "numeric indexed assignment gets and sets")
+    std::testing::assertEqual(dict.insert(key: 7, value: 99).unwrap(), 75, "replacement returns the prior value")
+    std::testing::assertEqual(dict.remove(&7).unwrap(), 99, "remove returns a value")
+    std::testing::assertTrue(dict.get(&7).isNone(), "absent get returns none")
+    var handles: [int32: [int32]] = [7: [10]]
+    handles[7].append(20)
+    stored := handles.get(&7).unwrap()
+    std::testing::assertEqual(stored.len(), 2 as usize, "copied list handles share their target")
 }
 
 @test
-func testDictionaryEntryOrInsertAndModify() {
-    var dict: [int32: int32] = [:]
-
-    let inserted = dict.entry(1).orInsert(10)
-    *inserted += 5
-    std.testing.assertEqual(*dict.get(&1).unwrap(), 15, "orInsert should insert and return mutable value")
-
-    let existing = dict.entry(1).orInsert(99)
-    *existing += 1
-    std.testing.assertEqual(*dict.get(&1).unwrap(), 16, "orInsert should reuse occupied value")
-
-    let generated = dict.entry(2).orInsertWith(|| -> int32 { 40 + 2 })
-    std.testing.assertEqual(*generated, 42, "orInsertWith should call provider for vacant entry")
-
-    let _ = dict.entry(1).andModify(|value: &mut int32| {
-        *value += 10
-    }).orInsert(0)
-    let _ = dict.entry(3).andModify(|value: &mut int32| {
-        *value += 10
-    }).orInsert(30)
-
-    std.testing.assertEqual(*dict.get(&1).unwrap(), 26, "andModify should mutate occupied entry")
-    std.testing.assertEqual(*dict.get(&3).unwrap(), 30, "andModify should preserve vacant entry for orInsert")
-}
-
-@test
-func testDictionaryEntryCollisionAndGrowthBehavior() {
+func testDictionaryNativeCollisionAndGrowthBehavior() {
     var dict: [CollisionKey: int32] = [:]
-
-    let entryKey1 = CollisionKey { id: 1 }
-    let entryKey2 = CollisionKey { id: 2 }
-    let entryKey3 = CollisionKey { id: 3 }
-    let _ = dict.entry(entryKey1).orInsert(10)
-    let _ = dict.entry(entryKey2).orInsert(20)
-    let _ = dict.entry(entryKey3).orInsert(30)
-
-    let mutateKey = CollisionKey { id: 2 }
-    match dict.entry(mutateKey) {
-        case .occupied(entry) => {
-            var occupied = entry
-            *occupied.get() += 1
-        }
-        case .vacant(_) => std.testing.fail("collision key should be occupied")
-    }
-
-    std.testing.assertEqual(*dict.get(&CollisionKey { id: 1 }).unwrap(), 10, "collision entry should keep key 1 reachable")
-    std.testing.assertEqual(*dict.get(&CollisionKey { id: 2 }).unwrap(), 21, "collision entry should mutate key 2")
-    std.testing.assertEqual(*dict.get(&CollisionKey { id: 3 }).unwrap(), 30, "collision entry should keep key 3 reachable")
-
-    let removed = dict.remove(&CollisionKey { id: 1 })
-    std.testing.assertTrue(removed.isSome(), "remove should create reusable tombstone")
-    let entryKey4 = CollisionKey { id: 4 }
-    let _ = dict.entry(entryKey4).orInsert(40)
-    std.testing.assertEqual(dict.len(), 3 as usize, "vacant entry should reuse tombstone without losing len")
-    std.testing.assertEqual(*dict.get(&CollisionKey { id: 4 }).unwrap(), 40, "vacant collision entry should insert after tombstone")
-
+    dict[CollisionKey { id: 1 }] = 10
+    dict[CollisionKey { id: 2 }] = 20
+    dict[CollisionKey { id: 3 }] = 30
+    dict[CollisionKey { id: 2 }] += 1
+    std::testing::assertEqual(dict[CollisionKey { id: 1 }], 10, "collision keeps key 1")
+    std::testing::assertEqual(dict[CollisionKey { id: 2 }], 21, "collision updates key 2")
+    std::testing::assertEqual(dict[CollisionKey { id: 3 }], 30, "collision keeps key 3")
+    var _ = dict.remove(&CollisionKey { id: 1 })
+    dict[CollisionKey { id: 4 }] = 40
+    std::testing::assertEqual(dict.len(), 3 as usize, "new insertion reuses the tombstone")
+    std::testing::assertEqual(dict[CollisionKey { id: 4 }], 40, "tombstone replacement keeps the new key")
     var growing: [int32: int32] = [:]
     var i: int32 = 0
-    while i < 13 {
-        let _ = growing.entry(i).orInsert(i + 100)
-        i += 1
-    }
-    std.testing.assertEqual(growing.len(), 13 as usize, "entry vacant insertion should grow at threshold")
-    std.testing.assertEqual(*growing.get(&12).unwrap(), 112, "entry insertion should survive growth")
+    while i < 13 { growing[i] = i + 100; i += 1 }
+    std::testing::assertEqual(growing.len(), 13 as usize, "native assignment grows the table")
+    std::testing::assertEqual(growing[12], 112, "native assignment survives growth")
 }
 
 @test
 func testDictionaryIterators() {
     var dict: [int32: string] = [:]
-    let _ = dict.insert(key: 1, value: "one")
-    let _ = dict.insert(key: 2, value: "two")
-    let _ = dict.insert(key: 3, value: "three")
+    var _ = dict.insert(key: 1, value: "one")
+    var _ = dict.insert(key: 2, value: "two")
+    var _ = dict.insert(key: 3, value: "three")
 
     // keys()
     var keysIter = dict.keys()
@@ -277,13 +435,13 @@ func testDictionaryIterators() {
     loop {
         match keysIter.next() {
             case .some(k) => {
-                std.testing.assertTrue(*k == 1 || *k == 2 || *k == 3, "keys() yields invalid key")
+                std::testing::assertTrue(k == 1 || k == 2 || k == 3, "keys() yields invalid key")
                 keyCount += 1
             }
             case .none => break
         }
     }
-    std.testing.assertEqual(keyCount, 3 as usize, "keys() yields wrong number of elements")
+    std::testing::assertEqual(keyCount, 3 as usize, "keys() yields wrong number of elements")
 
     // values()
     var valuesIter = dict.values()
@@ -291,56 +449,51 @@ func testDictionaryIterators() {
     loop {
         match valuesIter.next() {
             case .some(v) => {
-                std.testing.assertTrue(*v == "one" || *v == "two" || *v == "three", "values() yields invalid value")
+                std::testing::assertTrue(v == "one" || v == "two" || v == "three", "values() yields invalid value")
                 valCount += 1
             }
             case .none => break
         }
     }
-    std.testing.assertEqual(valCount, 3 as usize, "values() yields wrong number of elements")
+    std::testing::assertEqual(valCount, 3 as usize, "values() yields wrong number of elements")
 
-    // entries() via Iterable implementation (&dict)
+    // entries() via the Iterable implementation; iteration yields copies (D9).
     var entryCount: usize = 0
-    for entry in &dict {
-        let (k, v) = entry
-        std.testing.assertTrue(*k == 1 || *k == 2 || *k == 3, "entries() yields invalid key")
-        std.testing.assertTrue(*v == "one" || *v == "two" || *v == "three", "entries() yields invalid value")
+    for entry in dict {
+        var (k, v) = entry
+        std::testing::assertTrue(k == 1 || k == 2 || k == 3, "entries() yields invalid key")
+        std::testing::assertTrue(v == "one" || v == "two" || v == "three", "entries() yields invalid value")
         entryCount += 1
     }
-    std.testing.assertEqual(entryCount, 3 as usize, "entries() yields wrong number of elements")
+    std::testing::assertEqual(entryCount, 3 as usize, "entries() yields wrong number of elements")
 
-    // &mut dict iteration
-    var mutEntryCount: usize = 0
-    for entry in &mut dict {
-        let (k, v) = entry
-        std.testing.assertTrue(*k == 1 || *k == 2 || *k == 3, "mut entries() yields invalid key")
-        *v = "visited"
-        mutEntryCount += 1
+    // Values are updated through their slots, not through iteration.
+    for key in dict.keys() {
+        dict[key] = "visited"
     }
-    std.testing.assertEqual(mutEntryCount, 3 as usize, "mut entries() yields wrong number of elements")
-    std.testing.assertEqual(*dict.get(&1).unwrap(), "visited", "mut iteration should yield mutable values")
+    std::testing::assertEqual(dict.get(&1).unwrap(), "visited", "native assignment updates existing slots")
 }
 
 @test
 func testDictionaryClear() {
     var dict: [int32: string] = [:]
-    let _ = dict.insert(key: 1, value: "one")
-    let _ = dict.insert(key: 2, value: "two")
+    var _ = dict.insert(key: 1, value: "one")
+    var _ = dict.insert(key: 2, value: "two")
 
-    std.testing.assertEqual(dict.len(), 2 as usize, "dictionary should have 2 elements")
-    std.testing.assertTrue(dict.contains(&1), "should contain key 1")
+    std::testing::assertEqual(dict.len(), 2 as usize, "dictionary should have 2 elements")
+    std::testing::assertTrue(dict.contains(&1), "should contain key 1")
 
     dict.clear()
 
-    std.testing.assertEqual(dict.len(), 0 as usize, "dictionary should be empty after clear")
-    std.testing.assertTrue(dict.isEmpty(), "isEmpty should be true")
-    std.testing.assertTrue(dict.get(&1).isNone(), "cleared dict shouldn't contain previous keys")
-    std.testing.assertTrue(dict.get(&2).isNone(), "cleared dict shouldn't contain previous keys")
+    std::testing::assertEqual(dict.len(), 0 as usize, "dictionary should be empty after clear")
+    std::testing::assertTrue(dict.isEmpty(), "isEmpty should be true")
+    std::testing::assertTrue(dict.get(&1).isNone(), "cleared dict shouldn't contain previous keys")
+    std::testing::assertTrue(dict.get(&2).isNone(), "cleared dict shouldn't contain previous keys")
 
     // Should be able to insert again
-    let _ = dict.insert(key: 3, value: "three")
-    std.testing.assertEqual(dict.len(), 1 as usize, "dictionary should have 1 element after insert")
-    std.testing.assertTrue(dict.contains(&3), "should contain new key")
+    var _ = dict.insert(key: 3, value: "three")
+    std::testing::assertEqual(dict.len(), 1 as usize, "dictionary should have 1 element after insert")
+    std::testing::assertTrue(dict.contains(&3), "should contain new key")
 }
 
 @test
@@ -348,19 +501,20 @@ func testDictionaryCloneProducesIndependentStorage() {
     var original: [int32: string] = [1: "one", 2: "two"]
     var copy = original.clone()
 
-    let _ = copy.insert(key: 3, value: "three")
-    let old = copy.insert(key: 1, value: "ONE")
+    var _ = copy.insert(key: 3, value: "three")
+    old := copy.insert(key: 1, value: "ONE")
 
-    std.testing.assertTrue(old.isSome(), "clone overwrite should return the previous value")
-    std.testing.assertEqual(old.unwrap(), "one", "clone overwrite should report the original value")
-    std.testing.assertEqual(original.len(), 2 as usize, "clone should not change original length")
-    std.testing.assertTrue(original.contains(&1), "clone should preserve original keys")
-    std.testing.assertFalse(original.contains(&3), "clone insert should not affect original keys")
-    std.testing.assertEqual(copy.len(), 3 as usize, "clone should allow independent inserts")
-    std.testing.assertEqual(*copy.get(&1).unwrap(), "ONE", "clone overwrite should update only copied storage")
+    std::testing::assertTrue(old.isSome(), "clone overwrite should return the previous value")
+    std::testing::assertEqual(old.unwrap(), "one", "clone overwrite should report the original value")
+    std::testing::assertEqual(original.len(), 2 as usize, "clone should not change original length")
+    std::testing::assertTrue(original.contains(&1), "clone should preserve original keys")
+    std::testing::assertFalse(original.contains(&3), "clone insert should not affect original keys")
+    std::testing::assertEqual(copy.len(), 3 as usize, "clone should allow independent inserts")
+    std::testing::assertEqual(copy.get(&1).unwrap(), "ONE", "clone overwrite should update only copied storage")
 
-    let movedLen = consumeDictionaryMoveSemantics(copy)
-    std.testing.assertEqual(movedLen, 3 as usize, "cloned dictionary should still move by value")
+    copiedLen := dictionaryHandleLength(copy)
+    std::testing::assertEqual(copiedLen, 3 as usize, "passing a dictionary copies its handle")
+    std::testing::assertEqual(copy.len(), copiedLen, "passing the handle preserves the source")
 }
 
 @test
@@ -368,14 +522,14 @@ func testDictionaryCloneSupportsIndependentRemoval() {
     var original: [int32: string] = [1: "one", 2: "two", 3: "three"]
     var copy = original.clone()
 
-    let removed = copy.remove(&2)
-    std.testing.assertTrue(removed.isSome(), "clone remove should return the removed value")
-    std.testing.assertEqual(removed.unwrap(), "two", "clone remove should remove the requested key")
+    removed := copy.remove(&2)
+    std::testing::assertTrue(removed.isSome(), "clone remove should return the removed value")
+    std::testing::assertEqual(removed.unwrap(), "two", "clone remove should remove the requested key")
 
-    std.testing.assertEqual(original.len(), 3 as usize, "original should remain unchanged after clone removal")
-    std.testing.assertTrue(original.contains(&2), "original should still contain removed clone key")
-    std.testing.assertEqual(copy.len(), 2 as usize, "clone remove should update copied storage")
-    std.testing.assertFalse(copy.contains(&2), "clone remove should only affect the copy")
+    std::testing::assertEqual(original.len(), 3 as usize, "original should remain unchanged after clone removal")
+    std::testing::assertTrue(original.contains(&2), "original should still contain removed clone key")
+    std::testing::assertEqual(copy.len(), 2 as usize, "clone remove should update copied storage")
+    std::testing::assertFalse(copy.contains(&2), "clone remove should only affect the copy")
 }
 
 @test
@@ -384,12 +538,126 @@ func testDictionaryCloneSupportsMultipleCopies() {
     var copy1 = original.clone()
     var copy2 = original.clone()
 
-    let _ = copy1.insert(key: 3, value: 300)
-    let _ = copy2.remove(&1)
+    var _ = copy1.insert(key: 3, value: 300)
+    var _ = copy2.remove(&1)
 
-    std.testing.assertEqual(original.len(), 2 as usize, "original should stay intact across multiple clones")
-    std.testing.assertEqual(copy1.len(), 3 as usize, "first clone should track its own insert")
-    std.testing.assertTrue(copy1.contains(&3), "first clone should contain its inserted key")
-    std.testing.assertEqual(copy2.len(), 1 as usize, "second clone should track its own removal")
-    std.testing.assertFalse(copy2.contains(&1), "second clone should remove its own key only")
+    std::testing::assertEqual(original.len(), 2 as usize, "original should stay intact across multiple clones")
+    std::testing::assertEqual(copy1.len(), 3 as usize, "first clone should track its own insert")
+    std::testing::assertTrue(copy1.contains(&3), "first clone should contain its inserted key")
+    std::testing::assertEqual(copy2.len(), 1 as usize, "second clone should track its own removal")
+    std::testing::assertFalse(copy2.contains(&1), "second clone should remove its own key only")
+}
+
+@test
+func testSwissCollisionGroupsDeletionAndCopy() {
+    var table: [CollisionKey: int32] = [:]
+    var index: int32 = 0
+    while index < 96 {
+        table[CollisionKey { id: index }] = index
+        index += 1
+    }
+    // Remove a full leading group: lookups must still reach later groups.
+    index = 0
+    while index < 8 {
+        std::testing::assertEqual(
+            table.remove(&CollisionKey { id: index }).unwrap(),
+            index,
+            "removal returns the collided entry",
+        )
+        index += 1
+    }
+    std::testing::assertEqual(
+        table.insert(key: CollisionKey { id: 95 }, value: 195).unwrap(),
+        95,
+        "overwrite finds a key beyond tombstones",
+    )
+    std::testing::assertEqual(table.len(), 88 as usize, "overwrite past tombstones cannot duplicate a key")
+    copy := table.copy()
+    alias := table
+    index = 96
+    while index < 192 {
+        alias[CollisionKey { id: index }] = index
+        index += 1
+    }
+    index = 8
+    while index < 192 {
+        expected := if index == 95 { 195 } else { index }
+        std::testing::assertEqual(
+            table[CollisionKey { id: index }],
+            expected,
+            "growth preserves collided entries",
+        )
+        if index < 96 {
+            std::testing::assertEqual(
+                copy[CollisionKey { id: index }],
+                expected,
+                "copy preserves collided entries",
+            )
+        }
+        index += 1
+    }
+    std::testing::assertEqual(copy.len(), 88 as usize, "copy preserves independent outer storage")
+}
+
+@test
+func testSwissChurnAgainstLinearModel() {
+    var table: [int32: int32] = [:]
+    var expected: [int32?] = []
+    var index: usize = 0
+    while index < (128 as usize) {
+        expected.append(.none)
+        index += 1
+    }
+    var state: uint64 = 0x12345678
+    var count: usize = 0
+    var step: usize = 0
+    while step < (4096 as usize) {
+        // Bounded arithmetic keeps this test valid with overflow checks enabled.
+        state = (state * 1664525_u64 + 1013904223_u64) & 0xffffffff_u64
+        slot := ((state >> 8) & 127_u64) as usize
+        key := slot as int32
+        old := expected[slot]
+        if (state & 3_u64) == 0_u64 {
+            removed := table.remove(&key)
+            std::testing::assertEqual(removed.isSome(), old.isSome(), "removal presence agrees with model")
+            if old.isSome() {
+                std::testing::assertEqual(removed.unwrap(), old.unwrap(), "removed value agrees with model")
+                count -= 1
+            }
+            expected[slot] = .none
+        } else {
+            value := step as int32
+            replaced := table.insert(key: key, value: value)
+            std::testing::assertEqual(
+                replaced.isSome(),
+                old.isSome(),
+                "replacement presence agrees with model",
+            )
+            if old.isSome() {
+                std::testing::assertEqual(replaced.unwrap(), old.unwrap(), "replaced value agrees with model")
+            } else {
+                count += 1
+            }
+            expected[slot] = .some(value)
+        }
+        std::testing::assertEqual(table.len(), count, "length agrees with model")
+        if step % (64 as usize) == (0 as usize) {
+            index = 0
+            while index < (128 as usize) {
+                key := index as int32
+                actual := table.get(&key)
+                wanted := expected[index]
+                std::testing::assertEqual(
+                    actual.isSome(),
+                    wanted.isSome(),
+                    "lookup presence agrees with model",
+                )
+                if wanted.isSome() {
+                    std::testing::assertEqual(actual.unwrap(), wanted.unwrap(), "lookup agrees with model")
+                }
+                index += 1
+            }
+        }
+        step += 1
+    }
 }

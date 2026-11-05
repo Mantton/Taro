@@ -1,0 +1,3 @@
+class Document { readonly revision: int32 = 1 }
+extend Document { init() { self.revision = 2 } }
+func main() { var document: Document = Document() }

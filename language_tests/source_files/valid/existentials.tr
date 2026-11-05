@@ -1,15 +1,15 @@
 // Test: existential boxing, existential returns, and intersection existential types.
 
 interface Printable {
-    func print(&self)
+    func print()
 }
 
 struct PrintableValue {
     value: int32
 }
 
-impl Printable for PrintableValue {
-    func print(&self) {
+conform PrintableValue to Printable {
+    func print() {
     }
 }
 
@@ -18,21 +18,21 @@ func makePrintable() -> any Printable {
 }
 
 interface Entity {
-    func name(&self) -> string
+    func name() -> string
 }
 
 interface Identifiable {
-    func identifier(&self) -> usize
+    func identifier() -> usize
 }
 
 interface ReaderEx[T] {
-    func read(&self) -> T
+    func read() -> T
 }
 
 interface FancyReaderEx[T]: ReaderEx[T] {}
 
 interface Moveable {
-    func move(&self) -> int32
+    func move() -> int32
 }
 
 struct User {
@@ -40,27 +40,27 @@ struct User {
     name: string
 }
 
-impl Entity for User {
-    func name(&self) -> string {
+conform User to Entity {
+    func name() -> string {
         self.name
     }
 }
 
-impl Identifiable for User {
-    func identifier(&self) -> usize {
+conform User to Identifiable {
+    func identifier() -> usize {
         self.id
     }
 }
 
 struct IntReaderEx {}
 
-impl ReaderEx[int32] for IntReaderEx {
-    func read(&self) -> int32 {
+conform IntReaderEx to ReaderEx[int32] {
+    func read() -> int32 {
         7
     }
 }
 
-impl FancyReaderEx[int32] for IntReaderEx {}
+conform IntReaderEx to FancyReaderEx[int32] {}
 
 struct FooMover {
     id: int32
@@ -70,19 +70,19 @@ struct BarMover {
     id: int32
 }
 
-impl Moveable for FooMover {
-    func move(&self) -> int32 {
+conform FooMover to Moveable {
+    func move() -> int32 {
         self.id
     }
 }
 
-impl Printable for FooMover {
-    func print(&self) {
+conform FooMover to Printable {
+    func print() {
     }
 }
 
-impl Moveable for BarMover {
-    func move(&self) -> int32 {
+conform BarMover to Moveable {
+    func move() -> int32 {
         self.id
     }
 }
@@ -90,69 +90,71 @@ impl Moveable for BarMover {
 type IdentifiableEntity = any Identifiable & Entity
 
 func printEntity(_ value: IdentifiableEntity) {
-    let _ = value.name()
-    let id = value.identifier()
+    var _ = value.name()
+    id := value.identifier()
 
     match id {
-        case 0 => std.print("PASS: Root User!\n")
-        case _ => std.print("PASS: Regular User!\n")
+        case 0 => std::print("PASS: Root User!\n")
+        case _ => std::print("PASS: Regular User!\n")
     }
 }
 
 func testExistentialBoxing() {
-    let v = PrintableValue { value: 10 }
-    let p: any Printable = v
+    v := PrintableValue { value: 10 }
+    var p: any Printable = v
     p.print()
 }
 
 func testExistentialReturn() {
-    let p = makePrintable()
+    p := makePrintable()
     p.print()
 }
 
 func testExistentialIntersection() {
-    let user = User { id: 1, name: "John Appleseed" }
+    user := User { id: 1, name: "John Appleseed" }
     printEntity(user)
 
-    let root = User { id: 0, name: "Root" }
+    root := User { id: 0, name: "Root" }
     printEntity(root)
 }
 
 func consumeReaderEx[T](_ reader: any ReaderEx[T]) {
-    let _ = reader
+    var _ = reader
 }
 
 func testExistentialSuperfaceCastAndInference() {
-    let fancy_for_upcast: any FancyReaderEx[int32] = IntReaderEx {}
-    let _upcast: any ReaderEx[int32] = fancy_for_upcast
+    var fancy_for_upcast: any FancyReaderEx[int32] = IntReaderEx {}
+    var _upcast: any ReaderEx[int32] = fancy_for_upcast
 
-    let fancy_for_cast: any FancyReaderEx[int32] = IntReaderEx {}
-    let _by_cast = fancy_for_cast as any ReaderEx[int32]
+    var fancy_for_cast: any FancyReaderEx[int32] = IntReaderEx {}
+    _by_cast := fancy_for_cast as any ReaderEx[int32]
 
-    let fancy_for_infer: any FancyReaderEx[int32] = IntReaderEx {}
+    var fancy_for_infer: any FancyReaderEx[int32] = IntReaderEx {}
     consumeReaderEx(fancy_for_infer)
 }
 
 func testExistentialTypeAssertions() {
-    let user = User { id: 7, name: "Ada Lovelace" }
-    let both: any Entity & Identifiable = user
+    user := User { id: 7, name: "Ada Lovelace" }
+    var both: any Entity & Identifiable = user
 
     assert(both is any Entity, "`is` should succeed for contained existential interface")
     assert(!(both is any Printable), "`is` should fail for missing existential interface")
 
-    let maybe_entity = both as? any Entity
+    maybe_entity := both as? any Entity
     match maybe_entity {
         case .some(entity) => assert(entity.name() == "Ada Lovelace", "`as?` successful cast value")
         case .none => assert(false, "`as?` should succeed when interface is present")
     }
 
-    let maybe_printable = both as? any Printable
+    // Checked conversions consume their move-only source, including mismatches.
+    var missingPrintable: any Entity & Identifiable = User { id: 7, name: "Ada Lovelace" }
+    maybe_printable := missingPrintable as? any Printable
     match maybe_printable {
         case .some(_) => assert(false, "`as?` should fail when interface is missing")
         case .none => {}
     }
 
-    let fancy: any FancyReaderEx[int32] = IntReaderEx {}
+    var fancy: any FancyReaderEx[int32] = IntReaderEx {}
     assert(
         fancy is any ReaderEx[int32],
         "`is` should succeed for superface projection from witness table",
@@ -162,70 +164,73 @@ func testExistentialTypeAssertions() {
         "`is` should fail for mismatched superface generic arguments",
     )
 
-    let maybe_reader = fancy as? any ReaderEx[int32]
+    maybe_reader := fancy as? any ReaderEx[int32]
     match maybe_reader {
         case .some(reader) => assert(reader.read() == 7, "`as?` superface cast should preserve dispatch")
         case .none => assert(false, "`as?` should succeed for superface projection")
     }
 
-    let maybe_wrong_reader = fancy as? any ReaderEx[uint32]
+    var wrongReader: any FancyReaderEx[int32] = IntReaderEx {}
+    maybe_wrong_reader := wrongReader as? any ReaderEx[uint32]
     match maybe_wrong_reader {
         case .some(_) => assert(false, "`as?` should fail for mismatched generic arguments")
         case .none => {}
     }
 
     // Existential-to-existential cross-interface cast (unrelated roots).
-    let moveable: any Moveable = FooMover { id: 41 }
+    var moveable: any Moveable = FooMover { id: 41 }
     assert(
         moveable is any Printable,
         "`is` should succeed via runtime metadata lookup for unrelated interface roots",
     )
-    let maybe_printable_from_moveable = moveable as? any Printable
+    maybe_printable_from_moveable := moveable as? any Printable
     match maybe_printable_from_moveable {
         case .some(value) => value.print()
         case .none => assert(false, "`as?` should succeed via runtime metadata lookup")
     }
 
     // Existential-to-concrete downcast.
-    let boxed_moveable: any Moveable = FooMover { id: 42 }
+    var boxed_moveable: any Moveable = FooMover { id: 42 }
     assert(boxed_moveable is FooMover, "`is` should succeed for existential -> concrete downcast")
     assert(
         !(boxed_moveable is BarMover),
         "`is` should fail for mismatched existential -> concrete downcast",
     )
 
-    let maybe_foo = boxed_moveable as? FooMover
+    maybe_foo := boxed_moveable as? FooMover
     match maybe_foo {
         case .some(foo) => assert(foo.id == 42, "`as?` existential -> concrete should preserve value")
         case .none => assert(false, "`as?` existential -> concrete should succeed")
     }
 
-    let boxed_bar: any Moveable = BarMover { id: 13 }
-    let maybe_wrong_concrete = boxed_bar as? FooMover
+    var boxed_bar: any Moveable = BarMover { id: 13 }
+    maybe_wrong_concrete := boxed_bar as? FooMover
     match maybe_wrong_concrete {
         case .some(_) => assert(false, "`as?` existential -> concrete should fail on metadata mismatch")
         case .none => {}
     }
 
     // Concrete source assertions.
-    let concrete_foo = FooMover { id: 99 }
+    concrete_foo := FooMover { id: 99 }
     assert(concrete_foo is any Moveable, "`is` should support concrete -> existential checks")
     assert(concrete_foo is FooMover, "`is` should support concrete -> concrete identity checks")
     assert(!(concrete_foo is User), "`is` should fail for unrelated concrete targets")
 
-    let maybe_moveable = concrete_foo as? any Moveable
+    maybe_moveable := concrete_foo as? any Moveable
     match maybe_moveable {
         case .some(value) => assert(value.move() == 99, "`as?` concrete -> existential should succeed")
         case .none => assert(false, "`as?` concrete -> existential should not fail")
     }
 
-    let maybe_concrete_identity = concrete_foo as? FooMover
+    identitySource := FooMover { id: 99 }
+    maybe_concrete_identity := identitySource as? FooMover
     match maybe_concrete_identity {
         case .some(value) => assert(value.id == 99, "`as?` concrete -> concrete identity should succeed")
         case .none => assert(false, "`as?` concrete -> concrete identity should not fail")
     }
 
-    let maybe_unrelated_concrete = concrete_foo as? User
+    unrelatedSource := FooMover { id: 99 }
+    maybe_unrelated_concrete := unrelatedSource as? User
     match maybe_unrelated_concrete {
         case .some(_) => assert(false, "`as?` concrete -> unrelated concrete should fail")
         case .none => {}
@@ -238,5 +243,5 @@ func main() {
     testExistentialIntersection()
     testExistentialSuperfaceCastAndInference()
     testExistentialTypeAssertions()
-    std.print("PASS: Existential tests\n")
+    std::print("PASS: Existential tests\n")
 }

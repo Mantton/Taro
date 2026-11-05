@@ -1,0 +1,5 @@
+func main() {
+    var mutex: std::sync::MutexGuard[int32]
+    var reader: std::sync::RwLockReadGuard[int32]
+    var writer: std::sync::RwLockWriteGuard[int32]
+}

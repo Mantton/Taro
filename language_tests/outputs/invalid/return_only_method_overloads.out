@@ -1,0 +1,24 @@
+error: invalid redeclaration of 'pick'
+ -> language_tests/source_files/invalid/return_only_method_overloads.tr:4:9
+	    func pick() -> bool { true }
+	         ^^^^
+info: 'pick' is initially defined here
+ -> language_tests/source_files/invalid/return_only_method_overloads.tr:3:9
+	    func pick() -> int32 { 1 }
+	         ^^^^
+error: invalid redeclaration of 'build'
+ -> language_tests/source_files/invalid/return_only_method_overloads.tr:6:16
+	    static func build() -> bool { true }
+	                ^^^^^
+info: 'build' is initially defined here
+ -> language_tests/source_files/invalid/return_only_method_overloads.tr:5:16
+	    static func build() -> int32 { 1 }
+	                ^^^^^
+error: invalid redeclaration of 'generic'
+ -> language_tests/source_files/invalid/return_only_method_overloads.tr:8:9
+	    func generic[U](_ value: U) -> bool { true }
+	         ^^^^^^^
+info: 'generic' is initially defined here
+ -> language_tests/source_files/invalid/return_only_method_overloads.tr:7:9
+	    func generic[T](_ value: T) -> int32 { 1 }
+	         ^^^^^^^

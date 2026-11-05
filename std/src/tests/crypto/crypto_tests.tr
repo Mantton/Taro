@@ -1,0 +1,131 @@
+import std::crypto::{aesgcm, hmac, random, sha256, sha512, subtle}
+import std::encoding::hex
+import std::mem::Span
+
+@test
+func cryptoHashesAndHmacMatchPublishedKnownAnswers() {
+    sha256Value := sha256::sum("abc")
+    std::assert(hex::encode(sha256Value.asSpan()) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "SHA-256 known answer")
+    sha512Value := sha512::sum("abc")
+    std::assert(hex::encode(sha512Value.asSpan()) == "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f", "SHA-512 known answer")
+    var key: [uint8; 20] = [11_u8; 20]
+    data := "Hi There"
+    tag := hmac::sha256(key.asSpan(), Span[uint8]::fromString(&data))
+    std::assert(hex::encode(tag.asSpan()) == "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7", "RFC 4231 HMAC")
+    std::assert(hmac::verifySha256(key.asSpan(), Span[uint8]::fromString(&data), tag.asSpan()), "full tag verifies")
+    changed := "Hi There!"
+    std::assert(!hmac::verifySha256(key.asSpan(), Span[uint8]::fromString(&changed), tag.asSpan()), "modified data fails")
+    std::assert(!hmac::verifySha256(key.asSpan(), Span[uint8]::fromString(&data), tag.asSpan().slice(0, 16)), "truncated tags are rejected")
+    tag512 := hmac::sha512(key.asSpan(), Span[uint8]::fromString(&data))
+    std::assert(hmac::verifySha512(key.asSpan(), Span[uint8]::fromString(&data), tag512.asSpan()), "SHA-512 tag verifies")
+}
+@test
+func cryptoRandomStorageSurvivesCollectionAndHasIndependentOwnership() {
+    bytes := random::bytes(4096).unwrap()
+    alias := bytes
+    std::runtime::collect()
+    std::assert(bytes.len() == 4096, "random bytes are fully published before collection")
+    digest := sha256::sum(bytes.asSpan())
+    alias[0] ^= 1_u8
+    changed := sha256::sum(bytes.asSpan())
+    std::assert(!subtle::equal(digest.asSpan(), changed.asSpan()), "random result is ordinary mutable storage")
+    std::assert(random::bytes(0).unwrap().isEmpty(), "empty random request")
+    std::assert(subtle::equal(digest.asSpan(), digest.asSpan()), "equal content")
+    std::assert(!subtle::equal(digest.asSpan(), digest.asSpan().slice(0, 31)), "different lengths")
+}
+@test
+func cryptoAesGcmAuthenticatesBeforePublishingAndSharesCloseState() {
+    var material: [uint8; 32] = [0_u8; 32]
+    key := aesgcm::Key::new(material.asSpan()).unwrap()
+    material[0] = 1_u8 // Import snapshots key bytes; later mutation must not change it.
+    defer { key.close() }
+    message := "authenticated bytes"
+    metadata := "header"
+    first := key.seal(Span[uint8]::fromString(&message), additionalData: Span[uint8]::fromString(&metadata)).unwrap()
+    second := key.seal(Span[uint8]::fromString(&message), additionalData: Span[uint8]::fromString(&metadata)).unwrap()
+    std::assert(first.len() == message.byteLen() + aesgcm::OVERHEAD && !subtle::equal(first.asSpan().slice(0, 12), second.asSpan().slice(0, 12)), "fresh nonce prefixes")
+    std::runtime::collect()
+    opened := key.open(first.asSpan(), additionalData: Span[uint8]::fromString(&metadata)).unwrap()
+    std::assert(std::string::stringFromBytes(opened.asSpan()) == message, "authenticated roundtrip")
+    std::assert(key.open(first.asSpan()).isErr(), "wrong associated data fails")
+    first[first.len() - 1] ^= 1_u8
+    match key.open(first.asSpan(), additionalData: Span[uint8]::fromString(&metadata)) {
+        case .err(.authentication) => {}
+        case _ => std::testing::fail("forged tag was accepted")
+    }
+    // NIST AES-256-GCM empty-message vector, key/nonce all zero.
+    vector := hex::decode("000000000000000000000000530f8afbc74536b9a963b4f1c4cb738b").unwrap()
+    std::assert(key.open(vector.asSpan()).unwrap().isEmpty(), "standard combined format interoperability")
+    alias := key; key.close(); alias.close()
+    match alias.open(vector.asSpan()) {
+        case .err(.closed) => {}
+        case _ => std::testing::fail("key copies must share close state")
+    }
+    std::assert(aesgcm::Key::new(material.asSpan().slice(0, 31)).isErr(), "invalid key length")
+    generated := aesgcm::Key::generate().unwrap()
+    defer { generated.close() }
+    empty := random::bytes(0).unwrap()
+    std::assert(generated.open(generated.seal(empty.asSpan()).unwrap().asSpan()).unwrap().isEmpty(), "generated key and empty plaintext")
+}
+@test
+func cryptoParallelCallsRemainRootedAcrossNativeBlockingBoundaries() async {
+    await std::task::withTaskGroup[(), ()]((group: &std::task::TaskGroup[()]) async => {
+        var index: int32 = 0
+        while index < 8_i32 {
+            group.spawn(() async => {
+                bytes := random::bytes(32768).unwrap()
+                key := aesgcm::Key::generate().unwrap()
+                defer { key.close() }
+                digest := sha256::sum(bytes.asSpan())
+                sealed := key.seal(bytes.asSpan()).unwrap()
+                std::runtime::collect()
+                opened := key.open(sealed.asSpan()).unwrap()
+                actual := sha256::sum(opened.asSpan())
+                std::assert(subtle::equal(digest.asSpan(), actual.asSpan()), "native borrowed inputs remain rooted under concurrent GC")
+            })
+            index += 1_i32
+        }
+    })
+}
+
+
+extern "taro_rt" {
+    unsafe func __rt__crypto_test_live_keys() -> usize
+}
+@noinline
+func createDiscardedCryptoKey() {
+    key := aesgcm::Key::generate().unwrap()
+    var _ = std::hint::blackBox(key)
+}
+@test
+func cryptoUnreachableKeysReleaseNativeStorageWithoutClose() {
+    std::runtime::collect()
+    before := unsafe { __rt__crypto_test_live_keys() }
+    createDiscardedCryptoKey()
+    std::runtime::collect()
+    std::assert(unsafe { __rt__crypto_test_live_keys() } == before, "GC reclaims native key memory without explicit close")
+}
+
+
+@test
+func cryptoStringHashesBorrowHeapBytesAcrossConcurrentCollection() async {
+    builder := std::string::Builder::new()
+    var index: int32 = 0
+    while index < 8192_i32 { builder.writeString("0123456789abcdef"); index += 1_i32 }
+    text := builder.toString()
+    snapshot := Span[uint8]::fromString(&text)
+    expected256 := sha256::sum(snapshot)
+    expected512 := sha512::sum(snapshot)
+    await std::task::withTaskGroup[(), ()]((group: &std::task::TaskGroup[()]) async => {
+        var count: int32 = 0
+        while count < 8_i32 {
+            group.spawn(() async => {
+                actual256 := sha256::sum(text)
+                std::runtime::collect()
+                actual512 := sha512::sum(text)
+                std::assert(subtle::equal(expected256.asSpan(), actual256.asSpan()) && subtle::equal(expected512.asSpan(), actual512.asSpan()), "immutable string data stays rooted during native hashing")
+            })
+            count += 1_i32
+        }
+    })
+}

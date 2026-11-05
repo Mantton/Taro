@@ -1,89 +1,137 @@
-import std.io.Error
-import std.mem.{MutableSpan, Span}
-import std.panic.todo
-import std.result.Result
+import std::io::Error
+import std::mem::{Span}
+import std::panic::todo
+import std::result::Result
+import std::time::Instant
 
+@cfg(family("unix"))
+extern "taro_rt" {
+    unsafe func __rt__task_wake_after(_ secs: uint64, _ nanos: uint32)
+    unsafe func __rt__task_clear_wake()
+}
+
+/// A socket registered with the async reactor. Socket calls reach the
+/// descriptor only through the source's lease, one native call at a time.
 public struct RawAsyncSocket {
-    inner: std.sys.net.RawSocket
-    stream: std.sys.io.RawAsyncStream
+    internal stream: std::sys::io::RawAsyncStream
 }
 
 public func isValid(_ socket: &RawAsyncSocket) -> bool {
-    std.sys.io.sourceId(&socket.stream) != 0
+    std::sys::io::sourceId(&socket.stream) != 0
 }
 
-/// Move both views of the descriptor out, leaving `socket` invalid.
-public func take(_ socket: &mut RawAsyncSocket) -> RawAsyncSocket {
-    let stream = std.sys.io.take(&mut socket.stream)
-    let fd = std.sys.net.takeFd(&mut socket.inner)
-    return RawAsyncSocket {
-        inner: std.sys.net.fromFd(fd),
-        stream,
+/// Move the descriptor out, leaving `socket` invalid.
+public func take(_ socket: &RawAsyncSocket) -> RawAsyncSocket {
+    return RawAsyncSocket { stream: std::sys::io::take(&socket.stream) }
+}
+
+// Lease the descriptor for one native call; never hold it across an await.
+@cfg(family("unix"))
+func acquire(_ socket: &RawAsyncSocket, _ operation: string) -> Result[std::sys::net::RawSocket, Error] {
+    lease := std::sys::io::sourceId(&socket.stream) as uint64
+    match std::sys::io::unix::leaseAcquire(lease, operation) {
+        case .ok(fd) => return .ok(std::sys::net::fromFd(fd))
+        case .err(err) => return .err(err)
     }
 }
 
 @cfg(family("unix"))
+func release(_ socket: &RawAsyncSocket) {
+    std::sys::io::unix::leaseRelease(std::sys::io::sourceId(&socket.stream) as uint64)
+}
+
+@cfg(family("windows"))
+func acquire(_ socket: &RawAsyncSocket, _ operation: string) -> Result[std::sys::net::RawSocket, Error] {
+    todo("std.sys.net.task socket leases not implemented on windows yet")
+}
+
+@cfg(family("windows"))
+func release(_ socket: &RawAsyncSocket) {
+    todo("std.sys.net.task socket leases not implemented on windows yet")
+}
+
+@cfg(family("unix"))
 public func socket(
-    _ domain: std.sys.net.SocketDomain,
-    _ type_: std.sys.net.SocketType,
+    _ domain: std::sys::net::SocketDomain,
+    _ type_: std::sys::net::SocketType,
 ) -> Result[RawAsyncSocket, Error] {
-    let socketRes = std.sys.net.socket(domain, type_)
+    socketRes := std::sys::net::socket(domain, type_)
     var raw = match socketRes {
         case .ok(value) => value
         case .err(err) => return .err(err)
     }
 
-    let fd = std.sys.net.takeFd(&mut raw)
-    let streamRes = std.sys.io.adoptFd(fd)
-    let stream = match streamRes {
+    fd := std::sys::net::takeFd(&raw)
+    streamRes := std::sys::io::adoptFd(fd)
+    stream := match streamRes {
         case .ok(value) => value
         case .err(err) => return .err(err)
     }
 
-    return .ok(RawAsyncSocket {
-        inner: std.sys.net.fromFd(fd),
-        stream,
-    })
+    return .ok(RawAsyncSocket { stream })
 }
 
 @cfg(family("windows"))
 public func socket(
-    _ domain: std.sys.net.SocketDomain,
-    _ type_: std.sys.net.SocketType,
+    _ domain: std::sys::net::SocketDomain,
+    _ type_: std::sys::net::SocketType,
 ) -> Result[RawAsyncSocket, Error] {
     todo("std.sys.net.task.socket not implemented on windows yet")
 }
 
-public func bind(_ socket: &RawAsyncSocket, _ address: std.sys.net.SocketAddress) -> Result[(), Error] {
-    std.sys.net.bind(&socket.inner, address)
+public func bind(_ socket: &RawAsyncSocket, _ address: std::sys::net::SocketAddress) -> Result[(), Error] {
+    raw := match acquire(socket, "bind") {
+        case .ok(value) => value
+        case .err(err) => return .err(err)
+    }
+    result := std::sys::net::bind(&raw, address)
+    release(socket)
+    return result
 }
 
 public func listen(_ socket: &RawAsyncSocket, _ backlog: int32) -> Result[(), Error] {
-    std.sys.net.listen(&socket.inner, backlog)
+    raw := match acquire(socket, "listen") {
+        case .ok(value) => value
+        case .err(err) => return .err(err)
+    }
+    result := std::sys::net::listen(&raw, backlog)
+    release(socket)
+    return result
 }
 
 public func setReuseAddr(_ socket: &RawAsyncSocket, _ enabled: bool) -> Result[(), Error] {
-    std.sys.net.setReuseAddr(&socket.inner, enabled)
+    raw := match acquire(socket, "set reuse address") {
+        case .ok(value) => value
+        case .err(err) => return .err(err)
+    }
+    result := std::sys::net::setReuseAddr(&raw, enabled)
+    release(socket)
+    return result
 }
 
-public func localAddress(_ socket: &RawAsyncSocket) -> Result[std.sys.net.SocketAddress, Error] {
-    std.sys.net.localAddress(&socket.inner)
+public func localAddress(_ socket: &RawAsyncSocket) -> Result[std::sys::net::SocketAddress, Error] {
+    raw := match acquire(socket, "local address") {
+        case .ok(value) => value
+        case .err(err) => return .err(err)
+    }
+    result := std::sys::net::localAddress(&raw)
+    release(socket)
+    return result
 }
 
-public func peerAddress(_ socket: &RawAsyncSocket) -> Result[std.sys.net.SocketAddress, Error] {
-    std.sys.net.peerAddress(&socket.inner)
+public func peerAddress(_ socket: &RawAsyncSocket) -> Result[std::sys::net::SocketAddress, Error] {
+    raw := match acquire(socket, "peer address") {
+        case .ok(value) => value
+        case .err(err) => return .err(err)
+    }
+    result := std::sys::net::peerAddress(&raw)
+    release(socket)
+    return result
 }
 
 @cfg(family("unix"))
 public func close(_ socket: RawAsyncSocket) -> Result[(), Error] {
-    var s = socket
-    if std.sys.io.sourceId(&s.stream) != 0 {
-        let stream = std.sys.io.take(&mut s.stream)
-        let _ = std.sys.net.takeFd(&mut s.inner)
-        return std.sys.io.close(stream)
-    }
-
-    return std.sys.net.close(&mut s.inner)
+    return std::sys::io::close(socket.stream)
 }
 
 @cfg(family("windows"))
@@ -91,25 +139,46 @@ public func close(_ socket: RawAsyncSocket) -> Result[(), Error] {
     todo("std.sys.net.task.close not implemented on windows yet")
 }
 
-
+// Bound the wait that follows by also waking at `deadline`. Every wake retries
+// the socket first, so an operation that is ready always beats its deadline.
+@cfg(family("unix"))
+func armDeadline(_ deadline: Instant?, _ operation: string) -> Result[(), Error] {
+    match deadline {
+        case .none => return .ok(())
+        case .some(instant) => match instant.checkedDurationSince(Instant::now()) {
+            case .none => return .err(Error::new(.timedOut).withOperation(operation))
+            case .some(remaining) => {
+                unsafe { __rt__task_wake_after(remaining.seconds(), remaining.subsecNanos()) }
+                return .ok(())
+            }
+        }
+    }
+}
 
 @cfg(family("unix"))
-public func read(_ socket: &RawAsyncSocket, _ buf: MutableSpan[uint8]) async -> Result[usize, Error] {
-    let len = buf.len()
+func disarmDeadline(_ deadline: Instant?) {
+    if deadline.isSome() { unsafe { __rt__task_clear_wake() } }
+}
+
+@cfg(family("unix"))
+public func read(_ socket: &RawAsyncSocket, _ buf: Span[uint8], deadline: Instant? = .none) async -> Result[usize, Error] {
+    len := buf.len()
     if len == 0 {
         return .ok(0)
     }
 
-    let stream = &socket.stream
+    stream := &socket.stream
     var writable = buf
-    let ptr = unsafe { writable.at(0) as *mut uint8 }
+    ptr := unsafe { writable.at(0) as *mut uint8 }
     loop {
-        let readRes = std.sys.io.read(stream, ptr, len)
+        readRes := std::sys::io::read(stream, ptr, len)
         match readRes {
             case .ok(count) => return .ok(count)
             case .err(err) if err.isKind(.interrupted) => {}
             case .err(err) if err.isKind(.wouldBlock) => {
-                let waitRes = await std.sys.io.waitReadable(stream)
+                armDeadline(deadline, "read")!
+                waitRes := await std::sys::io::waitReadable(stream)
+                disarmDeadline(deadline)
                 match waitRes {
                     case .ok(_) => {}
                     case .err(err) => return .err(err)
@@ -121,26 +190,95 @@ public func read(_ socket: &RawAsyncSocket, _ buf: MutableSpan[uint8]) async -> 
 }
 
 @cfg(family("windows"))
-public func read(_ socket: &RawAsyncSocket, _ buf: MutableSpan[uint8]) async -> Result[usize, Error] {
+public func read(_ socket: &RawAsyncSocket, _ buf: Span[uint8], deadline: Instant? = .none) async -> Result[usize, Error] {
     todo("std.sys.net.task.read not implemented on windows yet")
 }
 
+/// Read without suspending, failing with `.wouldBlock` if nothing is available.
+/// `buf` is not empty.
 @cfg(family("unix"))
-public func write(_ socket: &RawAsyncSocket, _ buf: Span[uint8]) async -> Result[usize, Error] {
-    let len = buf.len()
+public func tryRead(_ socket: &RawAsyncSocket, _ buf: Span[uint8]) -> Result[usize, Error] {
+    var writable = buf
+    ptr := unsafe { writable.at(0) as *mut uint8 }
+    loop {
+        match std::sys::io::read(&socket.stream, ptr, buf.len()) {
+            case .err(err) if err.isKind(.interrupted) => {}
+            case result => return result
+        }
+    }
+}
+
+@cfg(family("windows"))
+public func tryRead(_ socket: &RawAsyncSocket, _ buf: Span[uint8]) -> Result[usize, Error] {
+    todo("std.sys.net.task.tryRead not implemented on windows yet")
+}
+
+/// Write without suspending, failing with `.wouldBlock` if nothing was accepted.
+/// `buf` is not empty.
+@cfg(family("unix"))
+public func tryWrite(_ socket: &RawAsyncSocket, _ buf: Span[uint8]) -> Result[usize, Error] {
+    ptr := unsafe { buf.at(0) as *const uint8 }
+    loop {
+        match std::sys::io::write(&socket.stream, ptr, buf.len()) {
+            case .err(err) if err.isKind(.interrupted) => {}
+            case result => return result
+        }
+    }
+}
+
+@cfg(family("windows"))
+public func tryWrite(_ socket: &RawAsyncSocket, _ buf: Span[uint8]) -> Result[usize, Error] {
+    todo("std.sys.net.task.tryWrite not implemented on windows yet")
+}
+
+/// Wait once for the socket to become readable, failing with `.timedOut` if
+/// `deadline` has passed. Wakes are advisory, so callers retry their read.
+@cfg(family("unix"))
+public func waitReadable(_ socket: &RawAsyncSocket, deadline: Instant) async -> Result[(), Error] {
+    armDeadline(.some(deadline), "read")!
+    result := await std::sys::io::waitReadable(&socket.stream)
+    disarmDeadline(.some(deadline))
+    return result
+}
+
+@cfg(family("windows"))
+public func waitReadable(_ socket: &RawAsyncSocket, deadline: Instant) async -> Result[(), Error] {
+    todo("std.sys.net.task.waitReadable not implemented on windows yet")
+}
+
+/// Wait once for the socket to become writable, failing with `.timedOut` if
+/// `deadline` has passed. Wakes are advisory, so callers retry their write.
+@cfg(family("unix"))
+public func waitWritable(_ socket: &RawAsyncSocket, deadline: Instant) async -> Result[(), Error] {
+    armDeadline(.some(deadline), "write")!
+    result := await std::sys::io::waitWritable(&socket.stream)
+    disarmDeadline(.some(deadline))
+    return result
+}
+
+@cfg(family("windows"))
+public func waitWritable(_ socket: &RawAsyncSocket, deadline: Instant) async -> Result[(), Error] {
+    todo("std.sys.net.task.waitWritable not implemented on windows yet")
+}
+
+@cfg(family("unix"))
+public func write(_ socket: &RawAsyncSocket, _ buf: Span[uint8], deadline: Instant? = .none) async -> Result[usize, Error] {
+    len := buf.len()
     if len == 0 {
         return .ok(0)
     }
 
-    let stream = &socket.stream
-    let ptr = unsafe { buf.at(0) as *const uint8 }
+    stream := &socket.stream
+    ptr := unsafe { buf.at(0) as *const uint8 }
     loop {
-        let writeRes = std.sys.io.write(stream, ptr, len)
+        writeRes := std::sys::io::write(stream, ptr, len)
         match writeRes {
             case .ok(count) => return .ok(count)
             case .err(err) if err.isKind(.interrupted) => {}
             case .err(err) if err.isKind(.wouldBlock) => {
-                let waitRes = await std.sys.io.waitWritable(stream)
+                armDeadline(deadline, "write")!
+                waitRes := await std::sys::io::waitWritable(stream)
+                disarmDeadline(deadline)
                 match waitRes {
                     case .ok(_) => {}
                     case .err(err) => return .err(err)
@@ -152,26 +290,36 @@ public func write(_ socket: &RawAsyncSocket, _ buf: Span[uint8]) async -> Result
 }
 
 @cfg(family("windows"))
-public func write(_ socket: &RawAsyncSocket, _ buf: Span[uint8]) async -> Result[usize, Error] {
+public func write(_ socket: &RawAsyncSocket, _ buf: Span[uint8], deadline: Instant? = .none) async -> Result[usize, Error] {
     todo("std.sys.net.task.write not implemented on windows yet")
 }
 
 @cfg(family("unix"))
-public func connect(_ socket: &RawAsyncSocket, _ address: std.sys.net.SocketAddress) async -> Result[(), Error] {
+public func connect(_ socket: &RawAsyncSocket, _ address: std::sys::net::SocketAddress) async -> Result[(), Error] {
     loop {
-        let connectRes = std.sys.net.connect(&socket.inner, address)
+        raw := match acquire(socket, "connect") {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
+        connectRes := std::sys::net::connect(&raw, address)
+        release(socket)
         match connectRes {
             case .ok(_) => return .ok(())
             case .err(err) if err.isKind(.interrupted) => {}
             case .err(err) if err.isKind(.wouldBlock) => {
-                let waitRes = await std.sys.io.waitWritable(&socket.stream)
+                waitRes := await std::sys::io::waitWritable(&socket.stream)
                 match waitRes {
                     case .ok(_) => {}
                     case .err(err) => return .err(err)
                 }
 
-                let socketErrorRes = std.sys.net.socketError(&socket.inner)
-                let code = match socketErrorRes {
+                checked := match acquire(socket, "connect") {
+                    case .ok(value) => value
+                    case .err(err) => return .err(err)
+                }
+                socketErrorRes := std::sys::net::socketError(&checked)
+                release(socket)
+                code := match socketErrorRes {
                     case .ok(value) => value
                     case .err(err) => return .err(err)
                 }
@@ -179,7 +327,7 @@ public func connect(_ socket: &RawAsyncSocket, _ address: std.sys.net.SocketAddr
                 if code == 0 {
                     return .ok(())
                 }
-                return .err(std.sys.io.unix.mapErrno(code).withOperation("connect"))
+                return .err(std::sys::io::unix::mapErrno(code).withOperation("connect"))
             }
             case .err(err) => return .err(err)
         }
@@ -187,35 +335,34 @@ public func connect(_ socket: &RawAsyncSocket, _ address: std.sys.net.SocketAddr
 }
 
 @cfg(family("windows"))
-public func connect(_ socket: &RawAsyncSocket, _ address: std.sys.net.SocketAddress) async -> Result[(), Error] {
+public func connect(_ socket: &RawAsyncSocket, _ address: std::sys::net::SocketAddress) async -> Result[(), Error] {
     todo("std.sys.net.task.connect not implemented on windows yet")
 }
 
 @cfg(family("unix"))
-public func accept(_ socket: &RawAsyncSocket) async -> Result[(RawAsyncSocket, std.sys.net.SocketAddress), Error] {
+public func accept(_ socket: &RawAsyncSocket) async -> Result[(RawAsyncSocket, std::sys::net::SocketAddress), Error] {
     loop {
-        let acceptRes = std.sys.net.accept(&socket.inner)
+        raw := match acquire(socket, "accept") {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
+        acceptRes := std::sys::net::accept(&raw)
+        release(socket)
         match acceptRes {
             case .ok((accepted, address)) => {
                 var raw = accepted
-                let fd = std.sys.net.takeFd(&mut raw)
-                let streamRes = std.sys.io.adoptFd(fd)
-                let stream = match streamRes {
+                fd := std::sys::net::takeFd(&raw)
+                streamRes := std::sys::io::adoptFd(fd)
+                stream := match streamRes {
                     case .ok(value) => value
                     case .err(err) => return .err(err)
                 }
 
-                return .ok((
-                    RawAsyncSocket {
-                        inner: std.sys.net.fromFd(fd),
-                        stream,
-                    },
-                    address,
-                ))
+                return .ok((RawAsyncSocket { stream }, address))
             }
             case .err(err) if err.isKind(.interrupted) => {}
             case .err(err) if err.isKind(.wouldBlock) => {
-                let waitRes = await std.sys.io.waitReadable(&socket.stream)
+                waitRes := await std::sys::io::waitReadable(&socket.stream)
                 match waitRes {
                     case .ok(_) => {}
                     case .err(err) => return .err(err)
@@ -227,7 +374,7 @@ public func accept(_ socket: &RawAsyncSocket) async -> Result[(RawAsyncSocket, s
 }
 
 @cfg(family("windows"))
-public func accept(_ socket: &RawAsyncSocket) async -> Result[(RawAsyncSocket, std.sys.net.SocketAddress), Error] {
+public func accept(_ socket: &RawAsyncSocket) async -> Result[(RawAsyncSocket, std::sys::net::SocketAddress), Error] {
     todo("std.sys.net.task.accept not implemented on windows yet")
 }
 
@@ -235,21 +382,26 @@ public func accept(_ socket: &RawAsyncSocket) async -> Result[(RawAsyncSocket, s
 public func sendTo(
     _ socket: &RawAsyncSocket,
     _ buf: Span[uint8],
-    _ address: std.sys.net.SocketAddress,
+    _ address: std::sys::net::SocketAddress,
 ) async -> Result[usize, Error] {
-    let len = buf.len()
+    len := buf.len()
     if len == 0 {
         return .ok(0)
     }
 
-    let ptr = unsafe { buf.at(0) as *const uint8 }
+    ptr := unsafe { buf.at(0) as *const uint8 }
     loop {
-        let sendRes = std.sys.net.sendTo(&socket.inner, ptr, len, address)
+        raw := match acquire(socket, "send datagram") {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
+        sendRes := std::sys::net::sendTo(&raw, ptr, len, address)
+        release(socket)
         match sendRes {
             case .ok(count) => return .ok(count)
             case .err(err) if err.isKind(.interrupted) => {}
             case .err(err) if err.isKind(.wouldBlock) => {
-                let waitRes = await std.sys.io.waitWritable(&socket.stream)
+                waitRes := await std::sys::io::waitWritable(&socket.stream)
                 match waitRes {
                     case .ok(_) => {}
                     case .err(err) => return .err(err)
@@ -264,7 +416,7 @@ public func sendTo(
 public func sendTo(
     _ socket: &RawAsyncSocket,
     _ buf: Span[uint8],
-    _ address: std.sys.net.SocketAddress,
+    _ address: std::sys::net::SocketAddress,
 ) async -> Result[usize, Error] {
     todo("std.sys.net.task.sendTo not implemented on windows yet")
 }
@@ -272,22 +424,27 @@ public func sendTo(
 @cfg(family("unix"))
 public func recvFrom(
     _ socket: &RawAsyncSocket,
-    _ buf: MutableSpan[uint8],
-) async -> Result[(usize, std.sys.net.SocketAddress), Error] {
-    let len = buf.len()
+    _ buf: Span[uint8],
+) async -> Result[(usize, std::sys::net::SocketAddress), Error] {
+    len := buf.len()
     if len == 0 {
-        return .err(Error(.invalidInput).withOperation("receive datagram"))
+        return .err(Error::new(.invalidInput).withOperation("receive datagram"))
     }
 
     var writable = buf
-    let ptr = unsafe { writable.at(0) as *mut uint8 }
+    ptr := unsafe { writable.at(0) as *mut uint8 }
     loop {
-        let recvRes = std.sys.net.recvFrom(&socket.inner, ptr, len)
+        raw := match acquire(socket, "receive datagram") {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
+        recvRes := std::sys::net::recvFrom(&raw, ptr, len)
+        release(socket)
         match recvRes {
             case .ok(value) => return .ok(value)
             case .err(err) if err.isKind(.interrupted) => {}
             case .err(err) if err.isKind(.wouldBlock) => {
-                let waitRes = await std.sys.io.waitReadable(&socket.stream)
+                waitRes := await std::sys::io::waitReadable(&socket.stream)
                 match waitRes {
                     case .ok(_) => {}
                     case .err(err) => return .err(err)
@@ -301,23 +458,22 @@ public func recvFrom(
 @cfg(family("windows"))
 public func recvFrom(
     _ socket: &RawAsyncSocket,
-    _ buf: MutableSpan[uint8],
-) async -> Result[(usize, std.sys.net.SocketAddress), Error] {
+    _ buf: Span[uint8],
+) async -> Result[(usize, std::sys::net::SocketAddress), Error] {
     todo("std.sys.net.task.recvFrom not implemented on windows yet")
 }
 
 @cfg(family("unix"))
-public func intoStream(_ socket: &mut RawAsyncSocket) -> Result[std.io.task.AsyncStream, Error] {
-    if std.sys.io.sourceId(&socket.stream) == 0 {
-        return .err(Error(.invalidInput).withOperation("convert socket to stream"))
+public func intoStream(_ socket: &RawAsyncSocket) -> Result[std::io::task::AsyncStream, Error] {
+    if std::sys::io::sourceId(&socket.stream) == 0 {
+        return .err(Error::new(.invalidInput).withOperation("convert socket to stream"))
     }
 
-    let stream = std.sys.io.take(&mut socket.stream)
-    let _ = std.sys.net.takeFd(&mut socket.inner)
-    return std.io.task.fromRaw(stream)
+    stream := std::sys::io::take(&socket.stream)
+    return std::io::task::fromRaw(stream)
 }
 
 @cfg(family("windows"))
-public func intoStream(_ socket: &mut RawAsyncSocket) -> Result[std.io.task.AsyncStream, Error] {
+public func intoStream(_ socket: &RawAsyncSocket) -> Result[std::io::task::AsyncStream, Error] {
     todo("std.sys.net.task.intoStream not implemented on windows yet")
 }

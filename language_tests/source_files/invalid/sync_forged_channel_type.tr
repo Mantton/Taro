@@ -1,0 +1,5 @@
+func main() {
+    var (sender, receiver) = std::sync::bounded[int64](1).unwrap()
+    var forged: std::sync::Sender[bool] = std::sync::Sender[bool] { raw: sender.raw }
+    var _ = forged.trySend(true)
+}

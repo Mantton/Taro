@@ -3,5 +3,7 @@ mod as_operand;
 mod as_place;
 mod as_rvalue;
 mod as_temp;
+mod call_arguments;
+mod checked_casts;
 mod into_dest;
 mod statement;

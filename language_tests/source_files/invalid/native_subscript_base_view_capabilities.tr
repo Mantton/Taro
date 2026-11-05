@@ -1,0 +1,6 @@
+class Base { value: int32 }
+extend Base { subscript(index: usize) -> int32 { get { self.value } } }
+class Child: Base {}
+extend Child { override subscript(index: usize) -> int32 { address { &self.value } } }
+func use(_ value: Base) { reference := &value[0 as usize]; value[0 as usize] = 7 }
+func main() {}

@@ -24,7 +24,7 @@ impl<'ctx> Checker<'ctx> {
     pub(super) fn resolve_callee(
         &self,
         node: &hir::Expression,
-        cs: &Cs<'ctx>,
+        cs: &mut Cs<'ctx>,
     ) -> Option<DefinitionID> {
         match &node.kind {
             hir::ExpressionKind::Path(path) => {
@@ -34,36 +34,6 @@ impl<'ctx> Checker<'ctx> {
                 let resolution = self.resolve_value_path_resolution(path, node.span, false, cs);
                 self.resolve_resolution_callee(&resolution)
             }
-            _ => None,
-        }
-    }
-
-    /// Nominal type a callee path names, for the initializer shorthand
-    /// `Type(...)`.
-    ///
-    /// [`resolve_callee`] intentionally returns `None` here because the callee
-    /// is a type rather than a function; the call is served by an overload set
-    /// over that type's `new` methods.
-    pub(super) fn resolve_callee_nominal(
-        &self,
-        node: &hir::Expression,
-        cs: &Cs<'ctx>,
-    ) -> Option<DefinitionID> {
-        let hir::ExpressionKind::Path(path) = &node.kind else {
-            return None;
-        };
-        let resolution = match self.results.borrow().value_resolution(node.id) {
-            Some(resolution) => resolution,
-            None => self.resolve_value_path_resolution(path, node.span, false, cs),
-        };
-        let def_id = match resolution {
-            hir::Resolution::Definition(id, DefinitionKind::Struct)
-            | hir::Resolution::Definition(id, DefinitionKind::Enum) => id,
-            hir::Resolution::StdItem(item) => self.gcx().std_item_def(item)?,
-            _ => return None,
-        };
-        match self.gcx().definition_kind(def_id) {
-            DefinitionKind::Struct | DefinitionKind::Enum => Some(def_id),
             _ => None,
         }
     }
@@ -82,7 +52,7 @@ impl<'ctx> Checker<'ctx> {
         path: &hir::ResolvedPath,
         span: Span,
         emit_errors: bool,
-        cs: &Cs<'ctx>,
+        cs: &mut Cs<'ctx>,
     ) -> hir::Resolution {
         self.resolve_value_path_resolution_with_args(path, span, emit_errors, cs)
             .0
@@ -93,10 +63,11 @@ impl<'ctx> Checker<'ctx> {
         path: &hir::ResolvedPath,
         span: Span,
         emit_errors: bool,
-        cs: &Cs<'ctx>,
+        cs: &mut Cs<'ctx>,
     ) -> (
         hir::Resolution,
         Option<crate::sema::models::GenericArguments<'ctx>>,
+        Option<Ty<'ctx>>,
     ) {
         match path {
             hir::ResolvedPath::Resolved(path) => {
@@ -110,16 +81,37 @@ impl<'ctx> Checker<'ctx> {
                         .iter()
                         .find(|property| property.id == property_id)
                 {
-                    let mut accessors = vec![property.getter_id];
-                    if let Some(setter_id) = property.setter_id {
-                        accessors.push(setter_id);
-                    }
-                    (hir::Resolution::FunctionSet(accessors), None)
+                    let accessors = vec![property.getter_id];
+                    (hir::Resolution::FunctionSet(accessors), None, None)
                 } else {
-                    (path.resolution.clone(), None)
+                    (path.resolution.clone(), None, None)
                 }
             }
             hir::ResolvedPath::Relative(base_ty, segment) => {
+                // Language-generated interface calls can precede collection of
+                // the current package's requirements (notably std's for loops).
+                if matches!(segment.resolution, hir::Resolution::Error)
+                    && let hir::TypeKind::Nominal(hir::ResolvedPath::Resolved(path)) = &base_ty.kind
+                    && let Some(interface) = self.value_path_def_id(&path.resolution)
+                    && self.gcx().definition_kind(interface) == DefinitionKind::Interface
+                    && let Some(requirements) = self.gcx().get_interface_requirements(interface)
+                {
+                    let methods: Vec<_> = requirements
+                        .methods
+                        .iter()
+                        .filter(|method| method.name == segment.identifier.symbol)
+                        .map(|method| method.id)
+                        .collect();
+                    let resolution = match methods.as_slice() {
+                        [method] => hir::Resolution::Definition(
+                            *method,
+                            self.gcx().definition_kind(*method),
+                        ),
+                        [] => hir::Resolution::Error,
+                        _ => hir::Resolution::FunctionSet(methods),
+                    };
+                    return (resolution, None, None);
+                }
                 // Attempt to reuse generic arguments from the base type for inherent
                 // static members (e.g., `List[Int].new`). Avoid lowering interface
                 // types without a provided `Self`, which would panic.
@@ -136,7 +128,8 @@ impl<'ctx> Checker<'ctx> {
                 let mut base_args = None;
                 if !base_is_interface {
                     let ty = self.lower_type(base_ty);
-                    let ty = cs.infer_cx.resolve_vars_if_possible(ty);
+                    self.add_type_constraints(ty, base_ty.span, cs);
+                    let ty = cs.structurally_resolve(ty);
                     if let TyKind::Adt(_, args) = ty.kind() {
                         if !args.is_empty() {
                             base_args = Some(args);
@@ -159,13 +152,14 @@ impl<'ctx> Checker<'ctx> {
                             .iter()
                             .find(|property| property.id == property_id)
                     {
-                        let mut accessors = vec![property.getter_id];
-                        if let Some(setter_id) = property.setter_id {
-                            accessors.push(setter_id);
-                        }
-                        return (hir::Resolution::FunctionSet(accessors), base_args);
+                        let accessors = vec![property.getter_id];
+                        return (
+                            hir::Resolution::FunctionSet(accessors),
+                            base_args,
+                            lowered_base_ty,
+                        );
                     }
-                    return (segment.resolution.clone(), base_args);
+                    return (segment.resolution.clone(), base_args, lowered_base_ty);
                 }
 
                 let base_ty = match lowered_base_ty {
@@ -177,7 +171,7 @@ impl<'ctx> Checker<'ctx> {
                                 Some(span),
                             );
                         }
-                        return (hir::Resolution::Error, None);
+                        return (hir::Resolution::Error, None, None);
                     }
                 };
 
@@ -188,7 +182,7 @@ impl<'ctx> Checker<'ctx> {
                         segment.identifier.span,
                         emit_errors,
                     );
-                    return (resolution, base_args);
+                    return (resolution, base_args, Some(base_ty));
                 };
 
                 let resolution = self.resolve_static_member_resolution(
@@ -198,7 +192,7 @@ impl<'ctx> Checker<'ctx> {
                     segment.identifier.span,
                     emit_errors,
                 );
-                (resolution, base_args)
+                (resolution, base_args, Some(base_ty))
             }
         }
     }
@@ -208,8 +202,12 @@ impl<'ctx> Checker<'ctx> {
         node_id: NodeID,
         resolution: &hir::Resolution,
     ) {
+        // Cache overload sets too. Re-resolving a generic type-relative callee
+        // lowers its base again and creates unrelated inference variables.
+        // Overload solving will replace this with the selected definition.
         match resolution {
             hir::Resolution::Definition(..)
+            | hir::Resolution::FunctionSet(..)
             | hir::Resolution::LocalVariable(..)
             | hir::Resolution::StdItem(..) => {
                 self.results
@@ -248,7 +246,12 @@ impl<'ctx> Checker<'ctx> {
             }
         }
 
-        let candidates = self.collect_static_member_candidates(head, name.symbol);
+        let candidates = crate::sema::tycheck::utils::members::static_candidates(
+            self.gcx(),
+            base_ty,
+            name.symbol,
+            self.current_def,
+        );
 
         if candidates.is_empty() {
             if emit_errors {
@@ -289,40 +292,6 @@ impl<'ctx> Checker<'ctx> {
         }
 
         hir::Resolution::FunctionSet(visible)
-    }
-
-    pub(super) fn collect_static_member_candidates(
-        &self,
-        head: TypeHead,
-        name: Symbol,
-    ) -> Vec<DefinitionID> {
-        let gcx = self.gcx();
-        let databases = gcx.store.type_databases.borrow();
-        let mut members = Vec::new();
-
-        for db in databases.values() {
-            if let Some(index) = db.type_head_to_members.get(&head) {
-                if let Some(set) = index.inherent_static.get(&name) {
-                    members.extend(set.members.iter().cloned());
-                }
-            }
-        }
-
-        if let TypeHead::Nominal(interface_id) = head
-            && gcx.definition_kind(interface_id) == DefinitionKind::Interface
-            && let Some(requirements) = gcx.get_interface_requirements(interface_id)
-            && let Some(property) = requirements
-                .properties
-                .iter()
-                .find(|property| property.name == name)
-        {
-            members.push(property.getter_id);
-            if let Some(setter_id) = property.setter_id {
-                members.push(setter_id);
-            }
-        }
-
-        members
     }
 
     pub(super) fn resolve_bounded_static_member_resolution(
@@ -453,6 +422,8 @@ impl<'ctx> Checker<'ctx> {
         resolution: &hir::Resolution,
         segment: &hir::PathSegment,
         base_args: Option<GenericArguments<'ctx>>,
+        static_owner: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
     ) -> Option<GenericArguments<'ctx>> {
         let gcx = self.gcx();
         let explicit_args = segment
@@ -526,6 +497,23 @@ impl<'ctx> Checker<'ctx> {
             return None;
         };
 
+        let base_args = if let Some(owner) = static_owner
+            && let Some((target, ancestor)) =
+                crate::sema::tycheck::utils::members::static_target(gcx, owner, def_id)
+            && let Some(parent) = gcx.definition_parent(def_id)
+        {
+            let arguments = cs.infer_cx.fresh_args_for_def(parent, segment.span);
+            let target = instantiate_ty_with_args(gcx, target, arguments);
+            if let Err(error) =
+                crate::sema::tycheck::utils::unify::TypeUnifier::new(cs.infer_cx.clone())
+                    .unify(target, ancestor)
+            {
+                gcx.dcx().emit_error(error.format(gcx), Some(segment.span));
+            }
+            Some(cs.infer_cx.resolve_args_if_possible(arguments))
+        } else {
+            base_args
+        };
         let generics = gcx.generics_of(def_id);
         if generics.is_empty() && base_args.is_none() {
             if has_explicit && (!has_associated_type_binding || !positional_args.is_empty()) {
@@ -551,7 +539,6 @@ impl<'ctx> Checker<'ctx> {
             def_kind,
             DefinitionKind::Function
                 | DefinitionKind::AssociatedFunction
-                | DefinitionKind::AssociatedOperator
                 | DefinitionKind::VariantConstructor(VariantCtorKind::Function)
         );
 
@@ -579,11 +566,9 @@ impl<'ctx> Checker<'ctx> {
         }
 
         let base_args = base_args.unwrap_or(GenericArguments::empty());
-        let parent_count = if base_args.is_empty() {
-            generics.parent_count
-        } else {
-            base_args.len()
-        };
+        // Hidden constructor-parent parameters are inferred, not consumed by
+        // explicit init-own arguments after the nominal class arguments.
+        let parent_count = generics.parent_count.max(base_args.len());
         let span = segment
             .arguments
             .as_ref()
@@ -674,7 +659,7 @@ impl<'ctx> Checker<'ctx> {
     ) -> GenericArgument<'ctx> {
         let gcx = self.gcx();
         match &param.kind {
-            GenericParameterDefinitionKind::Type { default } => {
+            GenericParameterDefinitionKind::Type { default, .. } => {
                 if let Some(default) = default {
                     if self.can_infer() {
                         let infer_ty = self.ty_infer(Some(param), span);
@@ -746,6 +731,7 @@ impl<'ctx> Checker<'ctx> {
         span: Span,
         resolution: &hir::Resolution,
         instantiation_args: Option<GenericArguments<'ctx>>,
+        static_owner: Option<Ty<'ctx>>,
         expectation: Option<Ty<'ctx>>,
         allow_unsafe_callable_values: bool,
         prefer_async: Option<bool>,
@@ -761,11 +747,13 @@ impl<'ctx> Checker<'ctx> {
             resolution,
             expectation,
             instantiation_args,
+            static_owner,
             allow_unsafe_callable_values,
             prefer_async,
             cs,
         );
 
+        let mut ty = ty;
         if let Some(def_id) = self.value_path_def_id(resolution) {
             let generics = self.gcx().generics_of(def_id);
             if !generics.is_empty() {
@@ -773,21 +761,34 @@ impl<'ctx> Checker<'ctx> {
                     cs.record_instantiation(node_id, args);
                     cs.add_constraints_for_def_at_call(def_id, Some(args), span, node_id);
                     if ty.needs_instantiation() {
-                        return instantiate_ty_with_args(self.gcx(), ty, args);
+                        ty = instantiate_ty_with_args(self.gcx(), ty, args);
                     }
-                    return ty;
-                }
-
-                if ty.needs_instantiation() {
+                } else if ty.needs_instantiation() {
                     let args = cs.infer_cx.fresh_args_for_def(def_id, span);
                     let instantiated = instantiate_ty_with_args(self.gcx(), ty, args);
                     cs.record_instantiation(node_id, args);
                     cs.add_constraints_for_def_at_call(def_id, Some(args), span, node_id);
-                    return instantiated;
+                    ty = instantiated;
                 }
             }
         }
 
+        // A named function does not check a closure body against this context.
+        // Connect its instantiated signature explicitly so speculative callable
+        // output variables (and generic function arguments) do not remain free.
+        if let Some(expected) = expectation
+            && matches!(expected.kind(), TyKind::FnPointer { .. })
+            && matches!(ty.kind(), TyKind::FnPointer { .. } | TyKind::Infer(_))
+        {
+            cs.add_goal(
+                Goal::Coerce {
+                    node_id,
+                    from: ty,
+                    to: expected,
+                },
+                span,
+            );
+        }
         ty
     }
 }

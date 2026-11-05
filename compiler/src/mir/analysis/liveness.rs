@@ -2,7 +2,7 @@ use crate::mir::{BasicBlockId, Body, CallUnwindAction, LocalId, StatementKind, T
 use index_vec::IndexVec;
 use rustc_hash::FxHashSet;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MirLocation {
     Statement { block: BasicBlockId, index: usize },
     Terminator { block: BasicBlockId },
@@ -20,8 +20,9 @@ pub struct LivenessResult {
     /// Live sets immediately before and after each block terminator.
     terminator_live: IndexVec<BasicBlockId, LocationLiveness>,
     /// Whole locals known to contain a fully initialized value at each
-    /// statement. GC root selection intersects these sets with liveness so a
-    /// future aggregate temporary or a moved-from local is never scanned.
+    /// statement. These facts never publish a partially constructed source
+    /// value. Managed GC rooting additionally recognizes sanitized scanner
+    /// storage, independently of source-language definite initialization.
     statement_initialized: IndexVec<BasicBlockId, Vec<LocationInitialization>>,
     /// Initialization state at each terminator. `after` is the suspended-call
     /// state after operand moves and before edge-specific destinations become
@@ -217,11 +218,18 @@ pub(crate) fn transfer_terminator(
                 use_operand(arg, live);
             }
         }
+
         TerminatorKind::SwitchInt { discr, .. } => use_operand(discr, live),
         TerminatorKind::Yield {
-            value, resume_arg, ..
+            value,
+            resume_arg,
+            no_result,
+            ..
         } => {
-            if resume_arg.projection.is_empty() {
+            // No-output completion does not define the destination. Preserve
+            // any old value needed on that edge; initialization analysis still
+            // keeps a fresh, absent result out of GC roots.
+            if resume_arg.projection.is_empty() && no_result.is_none() {
                 live.remove(&resume_arg.local);
             } else {
                 use_place(resume_arg, live);
@@ -237,7 +245,7 @@ pub(crate) fn transfer_terminator(
 
 pub(crate) fn transfer_statement(statement: &StatementKind<'_>, live: &mut FxHashSet<LocalId>) {
     match statement {
-        StatementKind::StorageLive(local) => {
+        StatementKind::StorageLive(local) | StatementKind::StorageDead(local) => {
             live.remove(local);
         }
         StatementKind::SetInitialized(_) => {}
@@ -249,6 +257,7 @@ pub(crate) fn transfer_statement(statement: &StatementKind<'_>, live: &mut FxHas
             }
             use_rvalue(rvalue, live);
         }
+
         StatementKind::KeepAlive(operand) => use_operand(operand, live),
         StatementKind::SetDiscriminant { place, .. } => {
             if !place.projection.is_empty() {
@@ -256,6 +265,50 @@ pub(crate) fn transfer_statement(statement: &StatementKind<'_>, live: &mut FxHas
             }
         }
         StatementKind::SourceScope(_) | StatementKind::GcSafepoint(_) | StatementKind::Nop => {}
+    }
+}
+
+/// Physical storage observations include writes and address formation as well
+/// as value reads. A lifetime start must precede all of them, including partial
+/// aggregate stores and destinations initialized by a call or resumed yield.
+pub(crate) fn for_each_storage_observation(
+    body: &Body<'_>,
+    mut observe: impl FnMut(LocalId, MirLocation),
+) {
+    let mut locals = FxHashSet::default();
+    for (block, data) in body.basic_blocks.iter_enumerated() {
+        for (index, statement) in data.statements.iter().enumerate() {
+            locals.clear();
+            transfer_statement(&statement.kind, &mut locals);
+            match &statement.kind {
+                StatementKind::Assign(place, _) | StatementKind::SetDiscriminant { place, .. } => {
+                    locals.insert(place.local);
+                }
+                StatementKind::SetInitialized(local) => {
+                    locals.insert(*local);
+                }
+                _ => {}
+            }
+            for &local in &locals {
+                observe(local, MirLocation::Statement { block, index });
+            }
+        }
+        if let Some(terminator) = &data.terminator {
+            locals.clear();
+            transfer_terminator(body.return_local, &terminator.kind, &mut locals);
+            match &terminator.kind {
+                TerminatorKind::Call { destination, .. } => {
+                    locals.insert(destination.local);
+                }
+                TerminatorKind::Yield { resume_arg, .. } => {
+                    locals.insert(resume_arg.local);
+                }
+                _ => {}
+            }
+            for &local in &locals {
+                observe(local, MirLocation::Terminator { block });
+            }
+        }
     }
 }
 
@@ -354,18 +407,18 @@ fn transfer_statement_initialization(
     initialized: &mut FxHashSet<LocalId>,
 ) {
     match statement {
-        StatementKind::StorageLive(local) => {
+        StatementKind::StorageLive(local) | StatementKind::StorageDead(local) => {
             initialized.remove(local);
         }
         StatementKind::SetInitialized(local) => {
             initialized.insert(*local);
         }
-        StatementKind::Assign(destination, rvalue) => {
-            apply_rvalue_moves(rvalue, initialized);
+        StatementKind::Assign(destination, _) => {
             if destination.projection.is_empty() {
                 initialized.insert(destination.local);
             }
         }
+
         StatementKind::SetDiscriminant { place, .. } => {
             if place.projection.is_empty() {
                 // Enum construction writes the payload first and publishes the
@@ -392,11 +445,10 @@ fn terminator_initialization_edges(
             (suspended, vec![(*target, initialized)])
         }
         TerminatorKind::SwitchInt {
-            discr,
+            discr: _,
             targets,
             otherwise,
         } => {
-            apply_operand_move(discr, &mut initialized);
             let suspended = initialized.clone();
             let mut edges = targets
                 .iter()
@@ -406,17 +458,13 @@ fn terminator_initialization_edges(
             (suspended, edges)
         }
         TerminatorKind::Call {
-            func,
-            args,
+            func: _,
+            args: _,
             destination,
             target,
             unwind,
             ..
         } => {
-            apply_operand_move(func, &mut initialized);
-            for argument in args {
-                apply_operand_move(argument, &mut initialized);
-            }
             if destination.projection.is_empty() {
                 initialized.remove(&destination.local);
             }
@@ -431,15 +479,16 @@ fn terminator_initialization_edges(
             }
             (suspended, edges)
         }
+
         TerminatorKind::Yield {
-            value,
+            value: _,
             resume,
             resume_arg,
             cancel,
+            no_result,
             unwind,
             ..
         } => {
-            apply_operand_move(value, &mut initialized);
             if resume_arg.projection.is_empty() {
                 initialized.remove(&resume_arg.local);
             }
@@ -450,7 +499,10 @@ fn terminator_initialization_edges(
             }
             let mut edges = vec![(*resume, resumed), (*cancel, initialized.clone())];
             if let CallUnwindAction::Cleanup(cleanup) = unwind {
-                edges.push((*cleanup, initialized));
+                edges.push((*cleanup, initialized.clone()));
+            }
+            if let Some(failed) = no_result {
+                edges.push((*failed, initialized));
             }
             (suspended, edges)
         }
@@ -458,22 +510,6 @@ fn terminator_initialization_edges(
         | TerminatorKind::ResumeUnwind
         | TerminatorKind::Unreachable
         | TerminatorKind::UnresolvedGoto => (initialized, Vec::new()),
-    }
-}
-
-fn apply_rvalue_moves(rvalue: &Rvalue<'_>, initialized: &mut FxHashSet<LocalId>) {
-    rvalue.for_each_operand(|operand| apply_operand_move(operand, initialized));
-}
-
-fn apply_operand_move(operand: &Operand<'_>, initialized: &mut FxHashSet<LocalId>) {
-    match operand {
-        Operand::Move(place) if place.projection.is_empty() => {
-            initialized.remove(&place.local);
-        }
-        Operand::CopyWith(place, modifiers) if modifiers.take && place.projection.is_empty() => {
-            initialized.remove(&place.local);
-        }
-        Operand::Copy(_) | Operand::Move(_) | Operand::CopyWith(_, _) | Operand::Constant(_) => {}
     }
 }
 
@@ -485,7 +521,7 @@ fn use_place(place: &Place, live: &mut FxHashSet<LocalId>) {
 
 fn use_operand(op: &Operand, live: &mut FxHashSet<LocalId>) {
     match op {
-        Operand::Copy(p) | Operand::Move(p) | Operand::CopyWith(p, _) => use_place(p, live),
+        Operand::Copy(p) | Operand::CopyWith(p, _) => use_place(p, live),
         Operand::Constant(_) => {}
     }
 }
@@ -498,8 +534,8 @@ fn use_rvalue(rv: &Rvalue, live: &mut FxHashSet<LocalId>) {
 mod tests {
     use super::{MirLocation, compute_liveness};
     use crate::mir::{
-        BasicBlockData, CallUnwindAction, GcSafepointKind, LocalKind, Operand, Place, PlaceElem,
-        Rvalue, Statement, StatementKind, Terminator, TerminatorKind,
+        BasicBlockData, CallUnwindAction, LocalKind, Operand, Place, PlaceElem, Rvalue, Statement,
+        StatementKind, Terminator, TerminatorKind,
         test_support::{minimal_body, push_temp, with_test_gcx},
     };
     use crate::thir::{FieldIndex, VariantIndex};
@@ -523,7 +559,7 @@ mod tests {
                 Statement {
                     kind: StatementKind::Assign(
                         Place::from_local(sink),
-                        Rvalue::Use(Operand::Move(Place::from_local(value))),
+                        Rvalue::Use(Operand::Copy(Place::from_local(value))),
                     ),
                     span,
                 },
@@ -650,8 +686,7 @@ mod tests {
             body.basic_blocks[body.start_block].terminator = Some(Terminator {
                 kind: TerminatorKind::Call {
                     func: Operand::Copy(Place::from_local(function)),
-                    args: vec![Operand::Move(Place::from_local(argument))],
-                    devirt_hint: None,
+                    args: vec![Operand::Copy(Place::from_local(argument))],
                     destination: Place::from_local(destination),
                     target: normal,
                     unwind: CallUnwindAction::Cleanup(cleanup),
@@ -699,7 +734,6 @@ mod tests {
                 kind: TerminatorKind::Call {
                     func: Operand::Copy(Place::from_local(function)),
                     args: vec![Operand::Copy(Place::from_local(probe))],
-                    devirt_hint: None,
                     destination: Place::from_local(destination),
                     target: continuation,
                     unwind: CallUnwindAction::Terminate,
@@ -711,7 +745,7 @@ mod tests {
             let before = result.live_before_terminator(body.start_block);
             let after = result.live_after_terminator(body.start_block);
 
-            // A RuntimeSafepoint call adds the argument-only `probe` root in
+            // A Callback call adds the argument-only `probe` root in
             // codegen. Temporal liveness supplies only `live_owner` to the
             // live-across set; `dead_owner` must remain absent.
             assert!(before.contains(&function));
@@ -744,7 +778,6 @@ mod tests {
                 kind: TerminatorKind::Call {
                     func: Operand::Copy(Place::from_local(function)),
                     args: Vec::new(),
-                    devirt_hint: None,
                     destination: Place {
                         local: destination_base,
                         projection: vec![PlaceElem::Deref],
@@ -765,7 +798,7 @@ mod tests {
     }
 
     #[test]
-    fn projected_move_keeps_whole_local_conservatively_initialized() {
+    fn projected_copy_preserves_whole_local_initialization() {
         with_test_gcx(|gcx| {
             let mut body = minimal_body(gcx);
             let span = body.locals[body.return_local].span;
@@ -783,12 +816,12 @@ mod tests {
                 Statement {
                     kind: StatementKind::Assign(
                         Place::from_local(moved_field),
-                        Rvalue::Use(Operand::Move(field(0))),
+                        Rvalue::Use(Operand::Copy(field(0))),
                     ),
                     span,
                 },
                 Statement {
-                    kind: StatementKind::GcSafepoint(GcSafepointKind::Loop),
+                    kind: StatementKind::Nop,
                     span,
                 },
                 Statement {
@@ -847,7 +880,7 @@ mod tests {
                     span,
                 },
                 Statement {
-                    kind: StatementKind::GcSafepoint(GcSafepointKind::Loop),
+                    kind: StatementKind::Nop,
                     span,
                 },
                 Statement {
@@ -874,7 +907,7 @@ mod tests {
     }
 
     #[test]
-    fn initialization_excludes_future_partial_aggregates_and_moved_values() {
+    fn initialization_excludes_partial_aggregates_and_preserves_copied_values() {
         with_test_gcx(|gcx| {
             let mut body = minimal_body(gcx);
             let span = body.locals[body.return_local].span;
@@ -884,7 +917,7 @@ mod tests {
             body.locals[field_value].kind = LocalKind::Param;
             body.basic_blocks[body.start_block].statements = vec![
                 Statement {
-                    kind: StatementKind::GcSafepoint(GcSafepointKind::Entry),
+                    kind: StatementKind::Nop,
                     span,
                 },
                 Statement {
@@ -910,7 +943,7 @@ mod tests {
                 Statement {
                     kind: StatementKind::Assign(
                         Place::from_local(sink),
-                        Rvalue::Use(Operand::Move(Place::from_local(aggregate))),
+                        Rvalue::Use(Operand::Copy(Place::from_local(aggregate))),
                     ),
                     span,
                 },
@@ -928,7 +961,7 @@ mod tests {
             assert!(!result.initialized_before(location(0)).contains(&aggregate));
             assert!(!result.initialized_after(location(1)).contains(&aggregate));
             assert!(result.initialized_after(location(2)).contains(&aggregate));
-            assert!(!result.initialized_after(location(3)).contains(&aggregate));
+            assert!(result.initialized_after(location(3)).contains(&aggregate));
             assert!(result.initialized_after(location(3)).contains(&sink));
         });
     }
@@ -968,8 +1001,7 @@ mod tests {
             body.basic_blocks[body.start_block].terminator = Some(Terminator {
                 kind: TerminatorKind::Call {
                     func: Operand::Copy(Place::from_local(function)),
-                    args: vec![Operand::Move(Place::from_local(argument))],
-                    devirt_hint: None,
+                    args: vec![Operand::Copy(Place::from_local(argument))],
                     destination: Place::from_local(destination),
                     target: normal,
                     unwind: CallUnwindAction::Cleanup(cleanup),
@@ -986,7 +1018,7 @@ mod tests {
                     .contains(&argument)
             );
             assert!(
-                !result
+                result
                     .initialized_after(MirLocation::Terminator {
                         block: body.start_block
                     })

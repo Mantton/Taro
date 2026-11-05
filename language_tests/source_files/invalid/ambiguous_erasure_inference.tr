@@ -1,0 +1,8 @@
+interface Produce[T] {}
+struct Source {}
+conform Source to Produce[int32] {}
+conform Source to Produce[bool] {}
+func inspect[T](_ value: any Produce[T]) {}
+func main() {
+    inspect(Source {}) // Two distinct proven conformances cannot choose T automatically.
+}

@@ -1,0 +1,9 @@
+import dep::{Cell, Hidden, create, internalValue}
+func main() {
+    var cell: Cell = create()
+    var observed: int32 = cell.value
+    cell.value = observed
+    var forged: Cell = Cell { value: 1_i32 }
+    var secret: int32 = internalValue()
+    var hidden: Hidden = Hidden { value: secret }
+}

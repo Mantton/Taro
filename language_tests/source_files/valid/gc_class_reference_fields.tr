@@ -1,0 +1,22 @@
+extern "C" {
+    unsafe func __gc__test_request_collection() -> usize
+    unsafe func __gc__test_collection_count() -> usize
+}
+final class Holder { value: &int32 }
+extend Holder { init(_ value: &int32) { self.value = value } }
+func makeHolder() -> Holder {
+    var value: int32 = 42
+    Holder(&value)
+}
+final class Noise { value: int32 }
+extend Noise { init() { self.value = 1 } }
+@noinline
+func allocate() -> int32 { Noise().value }
+func main() {
+    holder := makeHolder()
+    copy := holder
+    before := unsafe { __gc__test_request_collection() }
+    assert(allocate() == 1, "execute an allocating safepoint")
+    assert(unsafe { __gc__test_collection_count() } > before, "collection actually runs")
+    assert(*holder.value == 42 && *copy.value == 42, "class fields retain GC references")
+}

@@ -1,0 +1,13 @@
+interface Left { func read() -> int32 { 1 }; }
+interface Right { func read() -> int32 { 2 }; }
+class Base: Left, Right {}
+extend Base { init() {}; func read() -> int32 { 7 }; }
+class Derived: Base {}
+extend Derived { override func read() -> int32 { super.read() + 10 }; }
+func left[T: Left](_ value: &T) -> int32 { value.read() }
+func right[T: Right](_ value: &T) -> int32 { value.read() }
+func main() {
+    var child: Derived = Derived() // Derived; strong handle.
+    var base: Base = child // Base; same object.
+    assert(base.read() == 17 && child.read() == 17 && left(&base) == 1 && right(&base) == 2 && left(&child) == 1 && right(&child) == 2, "interface defaults retain independent families alongside the inherent override")
+}

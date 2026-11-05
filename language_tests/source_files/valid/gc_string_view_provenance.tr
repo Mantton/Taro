@@ -1,0 +1,43 @@
+// String views retain backing storage without retaining a local header slot.
+extern "C" {
+    unsafe func __gc__test_probe_create(_ target: *const uint8) -> *mut uint8
+    unsafe func __gc__test_collect_probe_is_live(_ probe: *mut uint8) -> bool
+}
+extern "taro_intrinsic" {
+    func __intrinsic_ref_to_ptr[T](_ value: &T) -> *const T
+}
+
+@noinline
+func producedData() -> *const uint8 {
+    var bytes: [uint8; 3] = [97_u8, 98_u8, 99_u8]
+    text := std::string::stringFromBytes(bytes.asSpan())
+    return std::string::stringData(text)
+}
+
+@noinline
+func localByteView() -> string {
+    var byte: uint8 = 120
+    // This byte is never mutated after publication. The returned string must
+    // make its storage escape even when these wrappers are not inlined.
+    return unsafe {
+        std::string::stringFromParts(__intrinsic_ref_to_ptr(&byte), 1)
+    }
+}
+
+@noinline
+func producedSlice() -> string {
+    return localByteView().substring(0, 1)
+}
+
+func main() {
+    data := producedData()
+    dataProbe := unsafe { __gc__test_probe_create(data) }
+    assert(unsafe { __gc__test_collect_probe_is_live(dataProbe) }, "a raw byte pointer retains produced bytes")
+    assert(unsafe { data.read() } == 97_u8, "the pointer survives its source header")
+
+    text := producedSlice()
+    textProbe := unsafe { __gc__test_probe_create(std::string::stringData(text)) }
+    assert(unsafe { __gc__test_collect_probe_is_live(textProbe) }, "wrapped local bytes escape through a returned slice")
+    assert(text == "x", "the view survives both producer frames")
+    print("PASS: string views retain their backing storage\n")
+}

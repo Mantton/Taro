@@ -1,0 +1,33 @@
+import dep
+class Child[Value]: dep::Base[int32, Value] {}
+extend[Value] Child[Value] { public override subscript(index: usize) -> Value { get { self.read() } } }
+interface ExternalRead { subscript(index: bool) -> int32 { get } }
+conform dep::External to ExternalRead { subscript(index: bool) -> int32 { get { 67 } } }
+func main() {
+    var number = dep::buffer(7_i32)
+    number[0 as usize] = 9
+    number[0 as usize] += 2
+    reference := &number[0 as usize]
+    *reference = 12
+    assert(dep::read(&number) == 12 && number.element == 12, "imported generic accessors preserve their native capabilities and receiver")
+    var text = dep::buffer("before")
+    snapshot := text[0 as usize]
+    text[0 as usize] = "after"
+    assert(snapshot == "before" && text.element == "after", "generic getter results are ordinary values")
+    escaped := &text[0 as usize]
+    std::runtime::collect()
+    *escaped = "last"
+    assert(text[0 as usize] == "last" && *reference == 12, "imported addresses retain storage across collection")
+    assert(dep::genericRead(&number) == 12, "imported native witness")
+    var erased: any dep::Readable[usize, Element = int32] = &number
+    assert(erased[0 as usize] == 12, "imported erased native requirement")
+    child := Child[string](1, "before")
+    child[0 as usize] = "after"
+    childReference := &child[0 as usize]
+    std::runtime::collect()
+    *childReference = "last"
+    assert(child[0 as usize] == "last", "imported partial override accessor arguments")
+    external := dep::External()
+    assert(external[true] == 67, "downstream extension of an imported class")
+
+}

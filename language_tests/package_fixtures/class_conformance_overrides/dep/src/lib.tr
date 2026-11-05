@@ -1,0 +1,17 @@
+public interface Reader[A] {
+    func read() -> int32;
+    func echo[T](_ value: T) -> T;
+    func element() -> &A;
+}
+public interface Other { func read() -> int32 { 2 }; }
+public class Base[A, B]: Other { first: A; second: B }
+extend[A, B] Base[A, B] {
+    public init(_ first: A, _ second: B) { self.first = first; self.second = second }
+    public func read() -> int32 { 3 }
+}
+conform[B, A] Base[A, B] to Reader[B] {
+    public func read() -> int32 { 1 }
+    public func echo[T](_ value: T) -> T { value }
+    public func element() -> &B { &self.second }
+}
+public func libraryRead[A, B](_ value: Base[A, B]) -> int32 { Reader[B]::read(value) }

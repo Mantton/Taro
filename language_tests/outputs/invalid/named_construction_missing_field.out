@@ -1,0 +1,4 @@
+error: missing field 'height' in Shape literal
+ -> language_tests/source_files/invalid/named_construction_missing_field.tr:2:26
+	func main() { var shape = Shape::rect { width: 1 } }
+	                          ^^^^^^^^^^^^^^^^^^^^^^^^

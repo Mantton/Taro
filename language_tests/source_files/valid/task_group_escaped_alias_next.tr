@@ -1,0 +1,25 @@
+// G23: awaiting next() through a group reference that escaped its scope is
+// rejected rather than reporting an exhausted group.
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: panic: task group used after its scope ended
+final class Stash {
+    group: Optional[&std::task::TaskGroup[int32]]
+}
+extend Stash { init() { self.group = .none } }
+
+func nextThrough(_ stash: Stash) async -> int32? {
+    match stash.group {
+        case .some(group) => return await group.next()
+        case .none => return .none
+    }
+}
+
+func main() async {
+    stash := Stash()
+    await std::task::withTaskGroup[int32, (), _]((group: &std::task::TaskGroup[int32]) async => {
+        stash.group = .some(group)
+    })
+    print("scope ended\n")
+    var _ = await nextThrough(stash)
+    print("unreachable\n")
+}

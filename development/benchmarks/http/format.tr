@@ -1,0 +1,28 @@
+// Isolate the ordinary record-label formatting used by the /app handler.
+import std::convert::Parse
+
+func main() {
+    args := std::env::args()
+    std::assert(args.len() == 2, "usage: format <iterations>")
+    count := int32::parse(args.at(1)).unwrap()
+    std::assert(count > 0, "iterations must be positive")
+    var checksum: uint64 = 0
+    before := std::runtime::gcStats()
+    start := std::time::Instant::now()
+    var index: int32 = 0
+    while index < count {
+        label := std::sprintf("record %d", index % 20)
+        checksum += label.byteLen() as uint64
+        index += 1
+    }
+    elapsed := start.elapsed()
+    after := std::runtime::gcStats()
+    nanos := elapsed.seconds() * 1000000000_u64 + elapsed.subsecNanos() as uint64
+    std::println(std::sprintf(
+        "checksum=%d bytes=%d collections=%d nanos=%d",
+        checksum,
+        after.allocatedBytes - before.allocatedBytes,
+        after.collections - before.collections,
+        nanos,
+    ))
+}

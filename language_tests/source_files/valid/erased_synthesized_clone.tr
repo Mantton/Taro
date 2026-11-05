@@ -1,0 +1,11 @@
+// Native ownership regression.
+struct Buffer: Clone { items: [int32] }
+func main() {
+    var erased: any Clone = Buffer { items: [1_i32, 2_i32] }
+    var copied: any Clone = erased.clone()
+    var snapshot: Buffer = (copied as? Buffer).unwrap()
+    snapshot.items.set(0, 99_i32)
+    var original: Buffer = (erased as? Buffer).unwrap()
+    assert(*snapshot.items.at(0) == 99_i32, "explicit erased Clone returns independently mutable storage")
+    assert(*original.items.at(0) == 1_i32, "cloning through an interface preserves the source owner")
+}

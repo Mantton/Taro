@@ -1,0 +1,64 @@
+import std::collections::{List, __list_copy_bytes}
+import std::crypto::{Error, cryptoError, __rt__crypto_aead_new, __rt__crypto_aead_crypt, __rt__crypto_aead_close, __rt__crypto_output, __rt__crypto_output_close}
+import std::mem::Span
+import std::result::Result
+
+public const KEY_BYTES: usize = 32
+public const NONCE_BYTES: usize = 12
+public const TAG_BYTES: usize = 16
+public const OVERHEAD: usize = NONCE_BYTES + TAG_BYTES
+func emptyBytes() -> Span[uint8] {
+    unsafe { Span[uint8]::from((0 as usize) as *const uint8, 0) }
+}
+final class KeyState {
+    owner: *mut uint8
+    closed: std::sync::atomic::Bool
+}
+extend KeyState {
+    init(_ owner: *mut uint8) { self.owner = owner; self.closed = std::sync::atomic::Bool::new(false) }
+}
+/// AES-256-GCM with automatic random nonces, following Go's
+/// NewGCMWithRandomNonce format. Copies share key, use count and close state.
+/// Native key storage is reclaimed by GC; close optionally invalidates aliases
+/// early. Re-importing key material does not reset its lifetime
+/// encryption budget: at most 2^32 messages across every use of that material.
+public struct Key { state: KeyState }
+extend Key {
+    /// Snapshot a 32-byte key into the native provider.
+    public static func new(_ bytes: Span[uint8]) -> Result[Self, Error] {
+        if bytes.len() != KEY_BYTES { return .err(.invalidKey) }
+        return Key::create(bytes.asPtr(), bytes.len())
+    }
+    /// Generate directly in native storage without returning managed key bytes.
+    public static func generate() -> Result[Self, Error] {
+        return Key::create(unsafe { (0 as usize) as *const uint8 }, 0)
+    }
+    static func create(_ bytes: *const uint8, _ length: usize) -> Result[Self, Error] {
+        var code: uint8 = 0_u8
+        handle := unsafe { __rt__crypto_aead_new(bytes, length, &code as *mut uint8) }
+        if code != 0_u8 { return .err(cryptoError(code)) }
+        return .ok(Key { state: KeyState(handle) })
+    }
+    public func close() {
+        if !self.state.closed.swap(true) { unsafe { __rt__crypto_aead_close(self.state.owner) } }
+    }
+    /// Fresh random nonce | ciphertext | 16-byte authentication tag. Additional
+    /// data is authenticated without being encrypted and must match at open.
+    public func seal(_ plaintext: Span[uint8], additionalData: Span[uint8] = emptyBytes()) -> Result[List[uint8], Error] {
+        return self.crypt(true, plaintext, additionalData)
+    }
+    /// Authentication succeeds before plaintext is copied into managed storage.
+    public func open(_ sealed: Span[uint8], additionalData: Span[uint8] = emptyBytes()) -> Result[List[uint8], Error] {
+        return self.crypt(false, sealed, additionalData)
+    }
+    func crypt(_ seal: bool, _ input: Span[uint8], _ additional: Span[uint8]) -> Result[List[uint8], Error] {
+        if self.state.closed.load() { return .err(.closed) }
+        output := unsafe { __rt__crypto_aead_crypt(self.state.owner, seal, input.asPtr(), input.len(), additional.asPtr(), additional.len()) }
+        defer { unsafe { __rt__crypto_output_close(output) } }
+        var length: usize = 0
+        var code: uint8 = 0_u8
+        bytes := unsafe { __rt__crypto_output(output, &length as *mut usize, &code as *mut uint8) }
+        if code != 0_u8 { return .err(cryptoError(code)) }
+        return .ok(unsafe { __list_copy_bytes(bytes, length) })
+    }
+}

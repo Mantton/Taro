@@ -1,0 +1,7 @@
+import std::ops::Add
+func require[T: Add](_ value: T) {}
+func main() {
+    var value: int32 = 1
+    // Borrowed receivers are not automatic reference conformances.
+    require[&int32](&value)
+}

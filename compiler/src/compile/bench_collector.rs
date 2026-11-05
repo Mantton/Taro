@@ -3,7 +3,7 @@ use crate::{
         context::GlobalContext,
         harness::{HarnessSelection, collect_decl_tags, merge_unique_tags_case_insensitive},
     },
-    hir::{self, DeclarationKind, KnownAttribute, Mutability, StdItem},
+    hir::{self, DeclarationKind, KnownAttribute, StdItem},
     sema::models::TyKind,
 };
 
@@ -128,7 +128,11 @@ fn collect_from_declaration(
                 );
                 return Err(crate::error::ReportedError);
             }
-            if gcx.get_signature(decl.id).output != gcx.types.void {
+            if crate::sema::tycheck::utils::normalize_aliases(
+                gcx,
+                gcx.get_signature(decl.id).output,
+            ) != gcx.types.void
+            {
                 gcx.dcx().emit_error(
                     "@bench functions must return unit (`()`)".into(),
                     Some(decl.span),
@@ -155,7 +159,7 @@ fn collect_from_declaration(
             let signature = gcx.get_signature(decl.id);
             let benchmark_id = gcx.std_item_def(StdItem::Benchmark);
             let correct_parameter = signature.inputs.first().is_some_and(|parameter| {
-                let TyKind::Reference(inner, Mutability::Mutable) = parameter.ty.kind() else {
+                let TyKind::Reference(inner) = parameter.ty.kind() else {
                     return false;
                 };
                 matches!(inner.kind(), TyKind::Adt(definition, args)

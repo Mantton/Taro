@@ -1,59 +1,98 @@
 @test
 func testArrayValueIteration() {
-    let arr: [int32; 4] = [10, 20, 30, 40]
+    var arr: [int32; 4] = [10, 20, 30, 40]
     var sum: int32 = 0
     for x in arr {
         sum += x
     }
-    std.testing.assertEqual(sum, 100, "array value iteration sum mismatch")
+    std::testing::assertEqual(sum, 100, "array value iteration sum mismatch")
 }
 
 @test
-func testArrayRefIteration() {
-    let arr: [int32; 3] = [1, 2, 3]
+func testArrayIteratorCopiesItsSource() {
+    var arr: [int32; 3] = [1, 2, 3]
+    iterator := arr.iter()
+    arr.set(0, 100)
+    std::testing::assertEqual(iterator.next().unwrap(), 1, "iterator snapshots the inline array")
     var sum: int32 = 0
-    for x in &arr {
-        sum += *x
-    }
-    std.testing.assertEqual(sum, 6, "array ref iteration sum mismatch")
+    for x in arr { sum += x }
+    std::testing::assertEqual(sum, 105, "iteration yields the current array's values")
 }
 
 @test
 func testArrayIteratorAdapters() {
-    let arr: [int32; 5] = [1, 2, 3, 4, 5]
-    let count = arr.iter().filter(|x: &int32| { *x > 3 }).count()
-    std.testing.assertEqual(count, 2 as usize, "array filter+count mismatch")
+    var arr: [int32; 5] = [1, 2, 3, 4, 5]
+    count := arr.iter().filter((x: int32) => { x > 3 }).count()
+    std::testing::assertEqual(count, 2 as usize, "array filter+count mismatch")
 }
 
 @test
-func testArrayMutRefIteration() {
+func testArrayIterationRequiresExplicitReferenceRead() {
     var arr: [int32; 3] = [10, 20, 30]
+    reference := &arr
     var sum: int32 = 0
-    for x in &mut arr {
-        sum += *x
-    }
-    std.testing.assertEqual(sum, 60, "array mut ref iteration sum mismatch")
+    for x in *reference { sum += x }
+    std::testing::assertEqual(sum, 60, "explicit reference read yields array values")
+    *arr.at(0) = 40
+    std::testing::assertEqual(*arr.at(0), 40, "element references remain writable")
 }
 
 @test
 func testArrayEmptyIteration() {
-    let arr: [int32; 0] = []
+    var arr: [int32; 0] = []
     var count: usize = 0
     for _ in arr {
         count += 1
     }
-    std.testing.assertEqual(count, 0 as usize, "empty array should yield no elements")
+    std::testing::assertEqual(count, 0 as usize, "empty array should yield no elements")
 }
 
 @test
 func testArrayConditionalEquality() {
-    let left: [int32; 3] = [1, 2, 3]
-    let equal: [int32; 3] = [1, 2, 3]
-    let different: [int32; 3] = [1, 2, 4]
-    let emptyLeft: [int32; 0] = []
-    let emptyRight: [int32; 0] = []
+    var left: [int32; 3] = [1, 2, 3]
+    var equal: [int32; 3] = [1, 2, 3]
+    var different: [int32; 3] = [1, 2, 4]
+    var emptyLeft: [int32; 0] = []
+    var emptyRight: [int32; 0] = []
 
-    std.testing.assertTrue(left == equal, "arrays with equal elements should compare equal")
-    std.testing.assertTrue(left != different, "arrays should stop at the first unequal element")
-    std.testing.assertTrue(emptyLeft == emptyRight, "empty arrays should compare equal")
+    std::testing::assertTrue(left == equal, "arrays with equal elements should compare equal")
+    std::testing::assertTrue(left != different, "arrays should stop at the first unequal element")
+    std::testing::assertTrue(emptyLeft == emptyRight, "empty arrays should compare equal")
+}
+
+enum ArrayValue {
+    case empty
+    case number(int32)
+}
+
+@test
+func testArrayEnumValueIteration() {
+    var values: [ArrayValue; 3] = [.number(7), .empty, .number(9)]
+    var iterator = values.iter()
+    match iterator.next() {
+        case .some(.number(value)) => std::testing::assertEqual(value, 7, "first enum payload")
+        case _ => std::panic::panic("first enum case")
+    }
+    match iterator.next() {
+        case .some(.empty) => {}
+        case _ => std::panic::panic("empty enum case is still an element")
+    }
+    match iterator.next() {
+        case .some(.number(value)) => std::testing::assertEqual(value, 9, "last enum payload")
+        case _ => std::panic::panic("last enum case")
+    }
+    std::testing::assertTrue(iterator.next().isNone(), "value iterator exhaustion")
+    std::testing::assertTrue(iterator.next().isNone(), "repeated value iterator exhaustion")
+}
+
+struct ArrayZeroSized {}
+
+@test
+func testArrayZeroSizedValueIteration() {
+    var values: [ArrayZeroSized; 3] = [ArrayZeroSized {}, ArrayZeroSized {}, ArrayZeroSized {}]
+    var count: usize = 0
+    for _ in values {
+        count += 1
+    }
+    std::testing::assertEqual(count, 3 as usize, "zero-sized values are separate elements")
 }

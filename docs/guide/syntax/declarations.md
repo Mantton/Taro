@@ -6,11 +6,13 @@ Examples that continue earlier definitions are identified in the surrounding tex
 
 ## Visibility
 
-Declarations are public by default. Use `private` to restrict access to the
-containing scope.
+Declarations are public by default. Use `internal` for access throughout the
+defining package, including sibling modules. Use `private` for the containing
+scope; type-private fields are also accessible to the type's owned extensions.
 
 ```taro
 public struct PublicType { }    // Accessible everywhere
+internal struct PackageType { } // Accessible inside this package
 private struct PrivateType { }  // Private to this module
 struct DefaultPublicType { }    // Public when no modifier is present
 
@@ -30,6 +32,56 @@ func fastFunction() { }
 func separateFunction() { }
 ```
 
+`@NoCopy` marks a nominal type for the opt-in `taro vet` command:
+
+```taro
+@NoCopy
+struct State { value: int32 }
+```
+
+Vet reports value copies and by-value parameters of annotated types, including
+inline structs, tuples, arrays and enum payloads containing them. Share
+references instead. Unmarked class and collection handles copy normally because
+they share their targets. Fresh construction and returned values can initialize
+new bindings. Store references to NoCopy values in collections.
+
+This attribute adds no fields, runtime checks or language copy restriction.
+Normal `check`, `build` and `run` preserve ordinary value semantics. Vet is an
+advisory source check, not an ownership or synchronization guarantee; it does not
+prove the safety of arbitrary generic or unsafe operations. Findings use warning
+diagnostics and give `taro vet` a nonzero exit status.
+
+---
+
+## Local Bindings
+
+Every local binding is mutable. `name := expression` declares an inferred
+local, and `var name: Type = expression` (or `var name: Type`, assigned before
+use) declares one with an explicit type; `var` also introduces tuple and
+wildcard patterns. `let` was removed and reports an error suggesting the
+replacement. A shorthand declaration creates a new binding, including when its
+name shadows an earlier one. Use `=` to update an existing binding. Shorthand
+is not available for globals or conditional bindings.
+
+Optional conditions are written `if var`, `while var` and `guard var`. All
+`case` bindings are writable value copies; `case var` has the same behavior. Conditions may join bindings with `&&`, making
+earlier bindings available to later conditions. Write bindings directly in the
+condition or its `&&` chain, without wrapping a binding in parentheses. Bindings under `||`,
+negation, or ordinary function-call arguments are rejected.
+
+```taro
+func main() {
+    count := 0 // inferred mutable int32
+    var source: int32? = .some(2)
+    if var value = source && value > 0 {
+        value += 1
+        count = value
+    }
+    guard var value = source else { return }
+    assert(count == 3 && value == 2, "independent value bindings")
+}
+```
+
 ---
 
 ## Struct Declaration
@@ -46,7 +98,8 @@ struct Point {
 // With visibility on fields
 struct User {
     public name: string;
-    private password: string;
+    internal cacheKey: int32; // Accessible only inside this package.
+    private password: string; // Accessible to the type and its owned extensions.
 }
 
 // Readonly fields (immutable after construction)
@@ -130,6 +183,36 @@ enum Direction {
 
 ---
 
+### Named Enum Payloads
+
+A case may declare payload fields with braces. The field names become constructor
+argument labels; matching uses declaration order, like labeled tuple payloads.
+Fields may be separated by commas or newlines. Duplicate names are rejected.
+Payload fields inherit their variant’s visibility; `public`, `private`, and
+`internal` modifiers on individual payload fields are rejected.
+`readonly` prevents direct assignment to the stored field. Pattern bindings are
+writable value copies, including when the match target is a reference. Copied
+class and reference values still share their targets.
+
+```taro
+enum Event {
+    case click { readonly x: int32, y: int32 }
+}
+
+func main() {
+    var event: Event = Event::click { y: 4, x: 2 }
+    match &event {
+        case .click { x, y } => {
+            // x: int32; y: int32. These are local copies.
+            assert(x == 2, "copied payload")
+            y = 5
+        }
+    }
+}
+```
+
+---
+
 ## Interface Declaration
 
 Interfaces define contracts that types can implement.
@@ -137,27 +220,27 @@ Interfaces define contracts that types can implement.
 ```taro
 // Basic interface
 interface Drawable {
-    func draw(&self);
+    func draw();
 }
 
 // With return types
 interface Cloneable {
-    func clone(&self) -> Self;
+    func clone() -> Self;
 }
 
 // Interface inheritance
 interface Equal {
-    func equal(&self, other: &Self) -> bool;
+    func equal(other: &Self) -> bool;
 }
 
 interface Comparable: Equal {
-    func compare(&self, other: &Self) -> int32;
+    func compare(other: &Self) -> int32;
 }
 
 // Associated types
 interface Container {
     type Item;
-    func get(&self) -> Self.Item?;
+    func get() -> Self::Item?;
 }
 
 // Associated constants
@@ -168,9 +251,9 @@ interface Named {
 // Multiple methods
 interface Collection {
     type Element;
-    func count(&self) -> int32;
-    func isEmpty(&self) -> bool;
-    func contains(&self, element: Self.Element) -> bool;
+    func count() -> int32;
+    func isEmpty() -> bool;
+    func contains(element: Self::Element) -> bool;
 }
 ```
 
@@ -185,14 +268,13 @@ inherent computed property, or an accessor declared in the conformance:
 ```taro
 interface Counted {
     var count: int32 {
-        get(&self)
-        set(&mut self, value: int32)
+        get
     };
 }
 
 interface DefaultCount {
     var count: int32 {
-        get(&self) { 0 }
+        get { 0 }
     };
 }
 ```
@@ -235,9 +317,9 @@ func greetPerson(name: string = "World") {
 
 // Variadic parameters
 func sum(_ nums: int32...) -> int32 {
-    // nums is a Span[int32]; iteration produces immutable references.
+    // nums is a Span[int32]; iteration produces element values.
     var total = 0
-    for n in nums { total += *n }
+    for n in nums { total += n }
     return total
 }
 
@@ -259,10 +341,10 @@ func fetchCount() async -> int32 {
 }
 
 func main() {
-    let origin = Point { x: 0, y: 0 }
+    origin := Point { x: 0, y: 0 }
     move(from: origin, to: Point { x: 1, y: 2 })
     greetPerson()
-    let result = add(a: 1, b: sum(2, 3, 4))
+    result := add(a: 1, b: sum(2, 3, 4))
 }
 ```
 
@@ -270,16 +352,66 @@ Parameter names are also argument labels unless `_` suppresses the label.
 A separate label, as in `from source: Point`, keeps the external and internal
 names distinct. Variadic parameters must be last and cannot have defaults.
 
-Self parameters appear in interfaces and implementations:
+Instance methods omit `self` from their parameter lists. The declaration
+containing the method determines its receiver:
+
+| Target | Implicit `self` |
+| --- | --- |
+| Struct `T` | A writable local copy of the value |
+| `&T` | A reference to existing storage |
+| Class `C` | A copied handle to the shared object |
 
 ```taro
-interface Value {
-    func value(&self) -> int32;       // Immutable borrow (the default)
-    func constant(&const self) -> int32; // Explicitly immutable borrow
-    func update(&mut self);          // Mutable borrow
-    func consume(self) -> int32;     // By value
+interface Increment {
+    func increment()
+}
+
+struct Counter { count: int32 }
+extend Counter {
+    static func zero() -> Counter { Counter { count: 0 } }
+    func value() -> int32 { self.count }
+    func changeCopy() { self.count += 1 }
+}
+conform &Counter to Increment {
+    func increment() { self.count += 1 }
+}
+
+func update[T: Increment](_ value: T) { value.increment() }
+func main() {
+    counter := Counter::zero()
+    counter.changeCopy() // changes the receiver copy
+    counter.increment() // automatically takes &counter
+    update(&counter)    // the reference itself satisfies Increment
 }
 ```
+
+A method declared on `T` takes priority over an automatic reference to `T`.
+Automatic references require an addressable variable, stored field or element;
+a call such as `makeCounter().increment()` does not invent writable storage.
+A conformance of `&T` does not make `T` conform. For classes, `&C` refers to the
+slot holding a handle and can replace that handle; methods on `C` act on the
+shared object. `value.clone()` clones the value itself and requires its `Clone`
+conformance. To copy a reference, write `(&value).clone()`; automatic referencing
+does not silently change a value clone into a reference copy.
+
+Applicable inherent methods take priority over visible interface methods. If
+their inputs do not apply, interface requirements and defaults remain available.
+Calls and saved method values follow the same lookup rules. Inherited instance
+and static overloads remain visible; a subclass static declaration hides only
+the inherited declaration with the same input signature.
+
+Within a candidate group, exact argument types take priority over conversions
+such as class upcasts, optional wrapping and interface boxing. A concrete
+declaration wins over a generic declaration only when their conversion costs
+tie. Overload selection uses static argument types; virtual dispatch then picks
+the override of the selected method. Return types alone cannot distinguish
+overloads, even when the declarations are never called.
+
+Use `static func` for receiver-free factories and requirements. Explicit `self`
+and `&self` function parameters are rejected. Free functions retain their normal
+parameter lists. Methods that need their receiver's storage belong in
+`extend &T` or `conform &T`. Unrelated members belong in `extend`, rather than
+a `conform` body.
 
 ---
 
@@ -294,7 +426,7 @@ struct Point {
 }
 
 interface Drawable {
-    func draw(&self);
+    func draw();
 }
 
 struct Stack[T] {
@@ -302,31 +434,31 @@ struct Stack[T] {
 }
 
 // Basic implementation
-impl Point {
-    func magnitudeSquared(&self) -> int32 {
+extend Point {
+    func magnitudeSquared() -> int32 {
         return self.x * self.x + self.y * self.y
     }
 }
 
 // Implementation of interface
-impl Drawable for Point {
-    func draw(&self) {
+conform Point to Drawable {
+    func draw() {
         println(f"({self.x}, {self.y})")
     }
 }
 
 // Generic implementation
-impl[T] Stack[T] {
-    func first(&self) -> Optional[&T] {
+extend[T] Stack[T] {
+    func first() -> Optional[&T] {
         return self.items.get(0)
     }
 }
 
 // Constrained implementation
-impl[T] Stack[T] where T: PartialEq {
-    func contains(&self, item: &T) -> bool {
-        for element in &self.items {
-            if element == item { return true }
+extend[T] Stack[T] where T: PartialEq {
+    func contains(item: &T) -> bool {
+        for element in self.items {
+            if element == *item { return true }
         }
         return false
     }
@@ -334,16 +466,160 @@ impl[T] Stack[T] where T: PartialEq {
 ```
 
 Inherent methods can only be added to types declared in the current package.
-`impl[T] List[T] { ... }` is rejected outside std with *cannot add inherent
+`extend[T] List[T] { ... }` is rejected outside std with *cannot add inherent
 methods to type from another package without interface conformance*. A local
 interface may instead be implemented for a foreign type, such as
-`impl MyInterface for int32`, subject to conformance coherence rules.
+`conform int32 to MyInterface`, subject to conformance coherence rules.
 
-### Initializer Shorthand
+For a foreign interface, check the receiver first, followed by its interface
+type arguments in declaration order. A conformance needs a local input type;
+no uncovered type parameter may appear in earlier inputs. Thus a local `Vector`
+argument can permit an implementation for `float64`, and an earlier foreign
+`Container[T]` covers `T`. An earlier bare `T` or `&T` does not cover it.
+`&Local` counts as local; raw pointers and foreign containers of `Local` do not.
+Type aliases preserve these rules and do not establish new ownership.
 
-A static method named `new` can be called through the type itself. The type-call
-form is the idiomatic spelling for initialization; the explicit `.new` form is
-also valid.
+Implementations with intersecting receiver/interface inputs conflict, including
+across dependencies and aliases. Different associated outputs do not distinguish
+implementations. A missing current conformance for a positive bound does not
+prove that two generic implementations are disjoint.
+
+### Value Initializers
+
+A struct normally uses a field literal. Declaring any `init` in its owning
+package requires initializer calls instead, including inside factories. This also
+rejects update literals such as `Counter { value: 7, ..existing }`. Initializers
+have no receiver parameter. Their private `self` storage must have every field
+initialized on every successful return path. The implicit result is `Self`; an
+explicit `Result[Self, E]` annotation makes construction fallible.
+
+```taro
+struct Counter {
+    readonly origin: int32 = 1
+    value: int32
+}
+
+extend Counter {
+    init(_ value: int32) {
+        self.value = value
+        // self.origin = 2 // Error: its default already initialized this field.
+    }
+}
+
+func main() {
+    var counter: Counter = Counter(7)
+    // Counter { origin: 1, value: 7 } // Error: use the initializer.
+}
+```
+
+Defaults run once, in declaration order, before the initializer body. They may
+call synchronous helpers but cannot read `self` or other instance fields. A later
+assignment to a mutable field does not suppress its default's evaluation.
+Without an initializer, a field literal evaluates its explicit fields in written
+order, then fills omitted defaults in declaration order; explicit fields skip
+their defaults. Field visibility still applies to omitted fields. Synthesized
+`clone()` copies/clones the stored fields without rerunning defaults or `init`.
+
+GC protects initialized reference-bearing fields during partial construction.
+The result becomes usable after the body and its defers return successfully.
+A panic leaves no constructed result for the caller. Use `defer` and explicit
+close operations to release native resources.
+
+During `init`, taking references to `self` or its own field storage is forbidden,
+including references introduced by receiver autoref and captures. Copy an
+initialized field to a local before taking a reference to that independent
+storage. Existing reference values can still be copied, and their independent
+pointees can be reborrowed, such as `&*self.pointer`.
+
+A fallible initializer uses ordinary Result propagation. Successful completion
+or a bare `return` produces `.ok(self)` after checking that all fields are
+initialized. An error return discards partial storage without publishing it.
+
+```taro
+extend Counter {
+    init(checked value: int32) -> Result[Self, string] {
+        if value < 0 { return .err("negative counter") }
+        self.value = value
+    }
+}
+```
+
+Fallible class construction preserves the same publication boundary: only a
+complete successful payload becomes a GC object. Fallible delegation must use
+`super.init(...)!` or `self.init(...)!` immediately; the superclass or delegated
+self becomes initialized only on that success path. An overriding initializer
+must preserve the base initializer's Result error type.
+
+### Class Initializers
+
+Classes use initializer calls rather than field literals. A designated
+initializer constructs its base first with `super.init(...)`, then initializes
+its own fields. Own field defaults run once, in declaration order, immediately
+after base initialization (or before the body for a root class).
+
+```taro
+class Document { title: string }
+extend Document {
+    public init(_ title: string) { self.title = title }
+    public convenience init() { self.init("Untitled") }
+}
+final class Draft: Document { revision: int32 = 0 }
+
+func main() {
+    var draft: Draft = Draft() // Inherited convenience constructs a Draft.
+    assert(draft.title == "Untitled" && draft.revision == 0, "initialized")
+}
+```
+
+A convenience initializer must delegate with `self.init(...)` exactly once on
+every successful returning path. A fallible convenience initializer may return
+an error before delegation using `return .err(error)`. Successful returns are
+bare or implicit, so they always return the delegated self. Convenience-to-convenience calls select the declared body;
+eventual designated delegation constructs the requested subclass. After that
+delegation, field access is allowed, but instance-method calls, copying,
+capturing, passing or replacing `self` are prohibited throughout initialization.
+The restriction on references into self field storage also applies to convenience
+initializers after delegation. References to copied values or independent
+pointees remain allowed.
+Cycles are rejected, including cycles introduced by subclass constructor overrides.
+
+When all newly declared fields have defaults and a subclass declares no
+designated initializer, it inherits base designated initializers.
+Inherited signatures preserve argument labels, generic parameters, default
+arguments and variadics. Construction publishes the requested subclass and runs
+each level's field defaults once.
+
+Providing all base designated signatures also permits inherited convenience initializers,
+provided all new fields have defaults. Matching a base designated signature
+requires `override init`, even when the replacement is a convenience initializer.
+Matching only a convenience signature does not use `override`.
+
+Initializers default to package visibility; use `public init` or
+`public convenience init` for external construction. Inheritance preserves that
+visibility. An inherited public convenience may internally reach an inaccessible
+designated initializer without exposing that initializer to callers. All
+initializers remain synchronous; fallible or asynchronous setup uses factories.
+
+A `required init` establishes a constructor family every descendant must inherit
+or implement. An explicit implementation repeats `required`; matching a base
+designated signature also uses `override`. Required contracts must be at least
+as visible as the non-final class, so public inheritable classes require public
+required initializers. Final classes can keep private initializers.
+The public requirement also applies when a class omits its default `public`
+modifier; use `internal class` for a package-only constructor contract.
+
+Inside an instance method, `Self(...)` selects an accessible required initializer
+and constructs the receiver's runtime subclass, including that subclass's field
+defaults. A final class can construct its exact `Self` without a required
+contract. A non-final class cannot construct dynamic `Self` from a static method
+without an initialized instance providing the runtime class.
+
+### Explicit Factories
+
+A static function named `new` is an ordinary associated factory. Select it
+explicitly with `::new`; a type name does not implicitly select that function.
+A type call requires an actual initializer, whose declaration is separate from
+an ordinary factory.
 
 ```taro
 struct Point {
@@ -351,89 +627,124 @@ struct Point {
     y: int32
 }
 
-impl Point {
-    func new(x: int32, y: int32) -> Self {
+extend Point {
+    static func new(x: int32, y: int32) -> Self {
         return Point { x, y }
     }
 }
 
 func main() {
-    let point = Point(x: 10, y: 20)
-    let samePoint = Point.new(x: 10, y: 20)
+    point := Point::new(x: 10, y: 20)
+    factory := Point::new
+    another := factory(30, 40)
 }
 ```
 
-The shorthand participates in normal overload resolution. Generic types include
-their type arguments before the call, for example `Box[int32](42)` when `Box[T]`
-defines `func new(_ value: T) -> Self`.
+Factory calls and function values use ordinary overload resolution. Generic
+arguments precede the member, for example `Box[int32]::new(42)`.
 
 ### Computed Properties
 
-Computed properties use explicit `get`/`set` accessor blocks and are accessed
-with field-like syntax.
+Computed properties use `get { ... }` and field-like reads. They are synchronous
+and get-only. Their receiver follows ordinary method rules: `extend T` gets a
+value copy, `extend &T` gets the original storage, and class targets share their
+object. Explicit receiver parameters are not supported.
 
 ```taro
-struct Counter { raw: int32; }
+struct Counter { raw: int32 }
 
-impl Counter {
+extend Counter {
     var value: int32 {
-        get(&self) {
-            return self.raw
-        }
-        set(&mut self, value: int32) {
-            self.raw = value
-        }
+        get { self.raw }
+    };
+}
+
+extend &Counter {
+    func setValue(_ value: int32) {
+        self.raw = value
     }
+}
+
+func main() {
+    var counter: Counter = Counter { raw: 7 }
+    var current: int32 = counter.value
+    counter.setValue(current + 1)
 }
 ```
 
-Getter-only properties are read-only:
+A getter returns an ordinary value. Inline values are copied, while class and
+reference values retain their normal sharing. A getter on `&T` can return a
+reference into that storage. Automatic receiver referencing requires an existing
+place; returned values do not acquire a hidden writable temporary. Getters do not
+promise purity. Computed-property setters and direct assignment are rejected.
+
+Interfaces may require the same getter or provide a default body. A matching
+stored field can supply the getter without additional copy bounds. Matching
+inherent properties or properties declared in a conformance can also supply it.
+Qualified calls pass the declared receiver value, such as `Counted::count(value)`.
+
+### Native Subscripts
+
+Native subscripts declare their read, write and address capabilities directly:
 
 ```taro
-struct User { _id: int64; }
-
-impl User {
-    var id: int64 {
-        get(&self) {
-            return self._id
+struct Cell { value: int32 }
+extend &Cell {
+    subscript(index: usize) -> int32 {
+        address {
+            assert(index == 0, "cell index")
+            &self.value
         }
     }
 }
 ```
 
-Getters may be async:
+`address` supplies omitted getter and setter bodies. Explicit `get { ... }` and
+`set(value) { ... }` replace their corresponding defaults. Accessors share one
+implicit receiver category. A value target's escaping address points into its
+receiver copy; use a reference target to access original struct storage.
+
+Reads call `get` and copy the result. Whole-element assignment calls `set`.
+Taking `&items[i]`, mutating a nested inline field, or calling a reference method
+on an inline element requires `address`. These address operations bypass `set`.
+A class or reference returned by a getter can mutate its shared target without
+an element setter or address accessor.
+
+Numeric compound assignment uses an address when available, otherwise one
+get/modify/set operation. It evaluates RHS, receiver and indices once, in that
+order. Custom value operators follow ordinary method semantics; a custom operator
+needing `&Element` requires address access. Get/set-only subscripts do not invent
+borrowed temporaries or nested struct writeback.
+
+Indices have fixed arity. Multiple arguments (`matrix[row, column]`), one tuple
+argument (`matrix[(row, column)]`), and range values are distinct. Bare parameter
+names are unlabeled; explicit external labels are supported. Index types select
+the overload; expected result types do not select a competing overload.
+
+Interfaces declare capabilities with bodyless `get`, `set`, and `address`.
+Associated element types must be fixed at generic or erased use sites:
 
 ```taro
-struct Session { id: int64; }
-struct SessionStore {}
-
-impl SessionStore {
-    func loadCurrent(&self) async -> Session {
-        Session { id: 1 }
-    }
-
-    var current: Session {
-        get(&self) async {
-            return await self.loadCurrent()
-        }
-    }
+interface Readable[Key] {
+    type Element
+    subscript(key: Key) -> Self::Element { get }
+}
+func read[Source: Readable[usize, Element = int32]](_ source: Source) -> int32 {
+    source[0 as usize]
 }
 ```
 
-Rules:
+An implementation may expose extra capabilities to concrete callers. Generic
+and erased callers see only the declared interface contract. Ordinary functions
+with accessor-like names do not satisfy native requirements.
 
-- Exactly one `get` accessor is required.
-- `set` is optional.
-- `set` must use `set(&mut self, value: T)` where `T` matches the property type.
-- `set` cannot be `async`.
-- Async getters require explicit await at the read site: `await obj.prop`.
-- Compound assignment on a writable property evaluates the receiver once, reads
-  through `get`, applies the assignment operator, and writes through `set`.
-- Async getters cannot be used in compound assignment.
-- Interfaces can require accessors or provide default accessor bodies.
-- Stored fields and matching inherent properties can satisfy interface accessors;
-  conformances may also declare explicit property implementations.
-- `get` and `set` are contextual keywords only inside accessor blocks.
+Class subscripts support `override` and `final`. Index labels/types and the element
+type stay fixed. A partial override inherits omitted accessors; an address-only
+override preserves an explicit inherited getter or setter. Inherited defaults
+call the virtual address accessor, and a final partial override seals the entire
+subscript. Added capabilities belong to the derived static view; the base view
+retains its original contract. No accessor acquires an implicit writeback path.
+
 
 ---
 
@@ -442,7 +753,7 @@ Rules:
 Type aliases create alternative names for types.
 
 ```taro
-import std.hash.Hashable
+import std::hash::Hashable
 
 // Simple alias
 type Meters = int32
@@ -453,11 +764,11 @@ type StringMap[V] = Dictionary[string, V]
 type Callback[T] = (T) -> ()
 
 interface Readable[Value] {
-    func read(&self) -> Value;
+    func read() -> Value;
 }
 
 interface Writable[Value] {
-    func write(&mut self, _ value: Value);
+    func write(_ value: Value);
 }
 
 // Transparent interface-set aliases
@@ -480,11 +791,11 @@ func copy[Value: ReadWrite](_ value: Value) {}
 func erase(_ value: any ReadWrite) {}
 
 struct Cell { value: int32; }
-impl Readable[int32] for Cell {
-    func read(&self) -> int32 { self.value }
+conform Cell to Readable[int32] {
+    func read() -> int32 { self.value }
 }
-impl Writable[int32] for Cell {
-    func write(&mut self, _ value: int32) { self.value = value }
+conform Cell to Writable[int32] {
+    func write(_ value: int32) { self.value = value }
 }
 func cell() -> some ReadWrite { Cell { value: 0 } }
 ```
@@ -495,7 +806,7 @@ They are not concrete types, so a bare field or parameter type must use
 `any ReadWrite` when dynamic dispatch is intended.
 
 An interface set is also not a single conformance declaration. Implement each
-constituent explicitly; `impl ReadWrite for File` and `struct File: ReadWrite`
+constituent explicitly; `conform File to ReadWrite` and `struct File: ReadWrite`
 are rejected. Circular interface-set aliases are diagnosed.
 
 The `any` spelling remains significant: `type Boxed = any ReadWrite` aliases
@@ -542,8 +853,9 @@ extern "C" {
 ```
 
 Use the `blocking` ABI for foreign calls that may park indefinitely. It uses
-the C calling convention and symbol name while publishing the current GC
-stack-map roots for the duration of the call.
+the C calling convention and symbol name while identifying the blocking
+boundary, so the collector can run while the call is blocked. A plain
+`extern "C"` call that blocks stalls every collection until it returns.
 
 ```taro
 extern "blocking" {
@@ -551,7 +863,20 @@ extern "blocking" {
 }
 ```
 
-Blocking foreign functions must not call back into Taro before returning.
+Managed values passed to a foreign call stay alive for the call. Foreign code
+must not keep a managed pointer after it returns: the collector cannot see
+foreign memory. Store a `std::runtime::Handle[T]` integer instead, which roots
+its value until `delete()`, and use `std::runtime::keepAlive(value)` when
+foreign code reads an address derived from `value` after Taro's last use of it.
+
+A function passed directly as an argument to a foreign call, such as
+`pthread_create(&thread, null, worker, arg)`, may be called back from any
+thread, including threads the Taro runtime did not create and calls made while
+a blocking call is in progress. The compiler wraps it so each callback
+registers its thread with the collector on entry and parks it on return.
+Function pointers that reach foreign code another way (stored in a struct
+first, for example) are not wrapped and must only be called on threads that
+are already running Taro code. A panic must not unwind out of a callback.
 
 ---
 
@@ -561,19 +886,19 @@ Imports bring items into scope.
 
 ```taro
 // Import single item
-import std.fs.File
+import std::fs::File
 
 // Import with alias
-import std.fs.File as FsFile
+import std::fs::File as FsFile
 
 // Import multiple items
-import std.{io, fs, net}
+import std::{io, fs, net}
 
 // Glob import (all public items)
-import std.io.*
+import std::io::*
 
 // Nested path
-import std.collections.{Dictionary, List, Set}
+import std::collections::{Dictionary, List, Set}
 ```
 
 The standard prelude is available automatically unless a package sets
@@ -582,7 +907,7 @@ operators, marker interfaces, iteration interfaces, memory views, assertions,
 and printing functions. Prefer their unqualified names in application code:
 
 ```taro
-func copyAll[T: Copy](_ values: List[T]) -> Result[List[T], string] {
+func copyAll[T](_ values: List[T]) -> Result[List[T], string] {
     return .ok(values)
 }
 ```
@@ -597,8 +922,8 @@ explicitly.
 Exports re-export items from the current module.
 
 ```taro
-export std.fs.File
-export std.collections.*
+export std::fs::File
+export std::collections::*
 ```
 
 ---
@@ -625,7 +950,7 @@ function calls are not constant expressions.
 Module and namespace state must use explicit static declarations.
 
 ```taro
-static let applicationName: string = "Taro"
+static var applicationName: string = "Taro"
 static var counter: int32 = 0
 ```
 
@@ -638,18 +963,70 @@ interface, not with an `operator` declaration. `operator` is reserved but
 unimplemented.
 
 ```taro
+import std::ops::Add
+
 struct Point {
     x: int32;
     y: int32;
 }
 
-impl Add for Point {
-    func add(self, rhs: Point) -> Point {
+conform Point to Add {
+    func add(_ rhs: Point) -> Point {
         return Point { x: self.x + rhs.x, y: self.y + rhs.y }
     }
 }
+
+func main() {
+    first := Point { x: 1, y: 2 }
+    second := Point { x: 3, y: 4 }
+    sum := first + second
+    assert(sum.x == 4 && first.x == 1 && second.x == 3, "operands retain their values")
+}
 ```
 
-`std.ops` provides `Add`, `Sub`, `Mul`, `Div`, `Rem`, the bitwise operators, and
+User-defined operators use the same receiver rules as named methods. Binary
+requirements receive the declared RHS value. A value receiver copies its inline
+value; a reference receiver is declared on `&T`. Compound assignment calls its
+`…Assign` requirement without implicit writeback of a copied receiver. Use an
+implementation on `&T` to edit inline destination storage. Programs synchronize
+shared mutation themselves.
+
+`std::ops` provides `Add`, `Sub`, `Mul`, `Div`, `Rem`, the bitwise operators, and
 their `…Assign` counterparts for compound assignment. `Neg` and `Not` cover the
 unary operators, and `PartialEq` / `Equatable` cover equality.
+
+
+## Value Conversion Interfaces
+
+Implement `From[Source]` on the destination type to supply both its static
+`from(value)` constructor and the source's `into()` method:
+
+```taro
+struct Meters { value: int32 }
+conform Meters to From[int32] {
+    static func from(_ value: int32) -> Meters { Meters { value } }
+}
+var distance: Meters = 12_i32.into()
+```
+
+`TryFrom[Source]` chooses an associated `Error` and returns
+`Result[Self, Self::Error]`. Its blanket bridge supplies `TryInto[Target]`,
+including the same error type:
+
+```taro
+import std::convert::Parse
+conform Meters to TryFrom[string] {
+    type Error = std::convert::ParseError
+    static func tryFrom(_ input: string) -> Result[Meters, Self::Error] {
+        return .ok(Meters { value: int32::parse(input)! })
+    }
+}
+var parsed: Result[Meters, std::convert::ParseError] = "42".tryInto()
+```
+
+Give `into()` and `tryInto()` their destination through a type annotation,
+argument context, or generic return type. Generic functions can use
+`T: From[S]` or `T: TryFrom[S]` and call the corresponding bridge on an `S`.
+Conversions use ordinary GC value/handle semantics. Implementing an overlapping
+`Into` or `TryInto` for a pair already supplied by its bridge is an error.
+Postfix Result propagation (`!`) continues to convert errors through `From`.

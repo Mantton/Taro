@@ -13,6 +13,49 @@ use crate::{
 };
 use rustc_hash::FxHashMap;
 
+#[cfg(test)]
+mod qualified_access_tests {
+    use crate::test_support::analyze_script_diagnostics;
+
+    #[test]
+    fn qualified_namespace_and_instance_access_are_distinct() {
+        let diagnostics = analyze_script_diagnostics(
+            "namespace Tools { func answer() -> int32 { 42 }; }\n\
+             struct Counter { value: int32; }\n\
+             func inspect(_ counter: Counter) -> int32 { Tools::answer() + counter.value }",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn incorrect_member_separator_has_a_specific_diagnostic() {
+        for (source, expected) in [
+            (
+                "namespace Tools { func answer() {}; }; func inspect() { Tools.answer() }",
+                "qualified access to `answer` requires `::`",
+            ),
+            (
+                "struct Counter { value: int32; }; func inspect(_ counter: Counter) { counter::value }",
+                "instance access to `value` requires `.`",
+            ),
+        ] {
+            let diagnostics = analyze_script_diagnostics(source);
+            assert!(
+                diagnostics.iter().any(|d| d.message == expected),
+                "{diagnostics:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn qualified_enum_value_can_be_followed_by_instance_access() {
+        let diagnostics = analyze_script_diagnostics(
+            "enum Mode { case enabled; }\nextend Mode {\nfunc active() -> bool { true };\nstatic func viaSelf() -> bool { Self::enabled.active() };\n}\nfunc inspect() -> bool { Mode::enabled.active() }",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+}
+
 pub fn resolve_package(package: &ast::Package, resolver: &mut Resolver) -> CompileResult<()> {
     let mut actor = Actor {
         resolver,
@@ -78,7 +121,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             DefinitionKind::Interface => Some(Resolution::InterfaceSelfTypeParameter(def_id)),
             _ => None,
         };
-        self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
+        self.with_scope_source(LexicalScopeSource::Plain, |this| {
             this.with_generics_scope(generics, |this| {
                 if let Some(binding) = self_binding {
                     this.with_self_alias_scope(binding, work);
@@ -308,6 +351,22 @@ impl<'r, 'a> ast::AstVisitor for Actor<'r, 'a> {
         self.resolve_expression(node);
     }
 
+    fn visit_class_definition(&mut self, node: &ast::Class) -> Self::Result {
+        self.visit_generics(&node.generics);
+        if let Some(bounds) = &node.conformances {
+            for bound in bounds.bounds.iter() {
+                // A class header contains one class base plus interfaces.
+                // AliasTarget admits both categories; hierarchy collection
+                // subsequently validates and separates them.
+                self.resolve_path_with_source(bound.id, &bound.path, ResolutionSource::AliasTarget);
+                ast::walk_path_node(self, bound);
+            }
+        }
+        for field in &node.fields {
+            self.visit_field_definition(field);
+        }
+    }
+
     fn visit_conformance(&mut self, node: &ast::Conformances) -> Self::Result {
         for bound in node.bounds.iter() {
             self.resolve_path_with_source(bound.id, &bound.path, ResolutionSource::Interface);
@@ -320,7 +379,8 @@ impl<'r, 'a> ast::AstVisitor for Actor<'r, 'a> {
 impl<'r, 'a> Actor<'r, 'a> {
     fn resolve_declaration(&mut self, declaration: &ast::Declaration) {
         match &declaration.kind {
-            ast::DeclarationKind::TypeAlias(ast::TypeAlias { generics, .. })
+            ast::DeclarationKind::Class(ast::Class { generics, .. })
+            | ast::DeclarationKind::TypeAlias(ast::TypeAlias { generics, .. })
             | ast::DeclarationKind::Function(ast::Function { generics, .. })
             | ast::DeclarationKind::Interface(ast::Interface { generics, .. })
             | ast::DeclarationKind::Enum(ast::Enum { generics, .. })
@@ -370,7 +430,8 @@ impl<'r, 'a> Actor<'r, 'a> {
 
     fn resolve_namespace_declaration(&mut self, declaration: &ast::NamespaceDeclaration) {
         match &declaration.kind {
-            ast::NamespaceDeclarationKind::Enum(ast::Enum { generics, .. })
+            ast::NamespaceDeclarationKind::Class(ast::Class { generics, .. })
+            | ast::NamespaceDeclarationKind::Enum(ast::Enum { generics, .. })
             | ast::NamespaceDeclarationKind::Struct(ast::Struct { generics, .. })
             | ast::NamespaceDeclarationKind::TypeAlias(ast::TypeAlias { generics, .. })
             | ast::NamespaceDeclarationKind::Function(ast::Function { generics, .. })
@@ -401,6 +462,13 @@ impl<'r, 'a> Actor<'r, 'a> {
         ctx: AssocContext,
     ) {
         match &declaration.kind {
+            ast::AssociatedDeclarationKind::Initializer(initializer) => {
+                self.with_definition_generics(
+                    declaration.id,
+                    &initializer.function.generics,
+                    |this| ast::walk_assoc_declaration(this, declaration, ctx),
+                );
+            }
             ast::AssociatedDeclarationKind::AssociatedType(ast::TypeAlias { generics, .. }) => {
                 self.with_definition_generics(declaration.id, generics, |this| {
                     ast::walk_assoc_declaration(this, declaration, ctx)
@@ -424,6 +492,7 @@ impl<'r, 'a> Actor<'r, 'a> {
                 });
             }
             ast::AssociatedDeclarationKind::Constant(..)
+            | ast::AssociatedDeclarationKind::Subscript(..)
             | ast::AssociatedDeclarationKind::Property(..) => {
                 ast::walk_assoc_declaration(self, declaration, ctx)
             }
@@ -495,7 +564,15 @@ impl<'r, 'a> Actor<'r, 'a> {
     fn resolve_expression(&mut self, node: &ast::Expression) {
         match &node.kind {
             ast::ExpressionKind::Identifier(name) => {
-                let result = self.lookup_unqualified(node.id, name, ScopeNamespace::Value);
+                let lookup = if name.symbol.as_str() == "super" {
+                    Identifier {
+                        symbol: Symbol::new("self"),
+                        ..*name
+                    }
+                } else {
+                    *name
+                };
+                let result = self.lookup_unqualified(node.id, &lookup, ScopeNamespace::Value);
 
                 match result {
                     Ok(v) => match v {
@@ -589,21 +666,72 @@ impl<'r, 'a> Actor<'r, 'a> {
             ast::ExpressionKind::Specialize {
                 target,
                 type_arguments,
+                index,
             } => {
                 let result = self.resolve_expression_entity(target);
-                if let Ok(result) = result {
-                    let result = self.apply_specialization(result, type_arguments.span);
-                    match result {
-                        Ok(_) => {}
-                        Err(e) => {
-                            self.report_error(e);
+                if result.as_ref().is_ok_and(Self::entity_is_value) {
+                    self.resolver
+                        .expression_resolutions
+                        .insert(node.id, ExpressionResolutionState::DeferredAssociatedValue);
+                    self.visit_expression(target);
+                    if matches!(
+                        target.kind,
+                        ast::ExpressionKind::Member {
+                            qualified: false,
+                            ..
+                        }
+                    ) {
+                        let context = self.resolver.context;
+                        let (_, types) = context.dcx().with_deferred_diagnostics(|| {
+                            self.visit_type_arguments(type_arguments)
+                        });
+                        let (_, index_errors) = context.dcx().with_deferred_diagnostics(|| {
+                            if let Some(index) = index {
+                                for argument in index {
+                                    self.visit_expression_argument(argument);
+                                }
+                            }
+                        });
+                        self.resolver.member_bracket_diagnostics.insert(
+                            node.id,
+                            crate::diagnostics::BracketDiagnostics {
+                                types,
+                                index: index_errors,
+                            },
+                        );
+                        return;
+                    }
+                    if let Some(index) = index {
+                        for argument in index {
+                            self.visit_expression_argument(argument);
+                        }
+                    } else {
+                        self.resolver.dcx().emit_error(
+                            "a value subscript requires index expressions".into(),
+                            Some(type_arguments.span),
+                        );
+                    }
+                } else {
+                    if matches!(target.kind, ast::ExpressionKind::Specialize { .. }) {
+                        self.resolver.dcx().emit_error(
+                            "extra type arguments provided".into(),
+                            Some(type_arguments.span),
+                        );
+                    }
+                    if let Ok(result) = result {
+                        if let Err(error) = self.apply_specialization(result, type_arguments.span) {
+                            self.report_error(error);
                         }
                     }
+                    self.visit_expression(target);
+                    self.visit_type_arguments(type_arguments);
                 }
-
-                // Walk into the target and type arguments so nested expressions/types get
-                // resolved and recorded.
-                ast::walk_expression(self, node);
+            }
+            ast::ExpressionKind::Index { target, index } => {
+                self.visit_expression(target);
+                for argument in index {
+                    self.visit_expression_argument(argument);
+                }
             }
             ast::ExpressionKind::If(if_node) => {
                 self.with_scope_source(LexicalScopeSource::Plain, |this| {
@@ -624,8 +752,9 @@ impl<'r, 'a> Actor<'r, 'a> {
                 );
             }
             ast::ExpressionKind::StructLiteral(literal) => {
-                // Resolve the path as a type
-                self.resolve_path_with_source(node.id, &literal.path, ResolutionSource::Type);
+                if let ast::ConstructorPath::Qualified { path } = &literal.path {
+                    self.resolve_path_with_source(node.id, path, ResolutionSource::Constructor);
+                }
                 ast::walk_expression(self, node);
             }
             ast::ExpressionKind::Closure(closure) => {
@@ -647,20 +776,85 @@ impl<'r, 'a> Actor<'r, 'a> {
     ) -> Result<ResolvedEntity<'a>, ResolutionError> {
         match &node.kind {
             ast::ExpressionKind::Identifier(name) => {
-                self.lookup_unqualified(node.id, name, ScopeNamespace::Value)
+                let lookup = if name.symbol.as_str() == "super" {
+                    Identifier {
+                        symbol: Symbol::new("self"),
+                        ..*name
+                    }
+                } else {
+                    *name
+                };
+                self.lookup_unqualified(node.id, &lookup, ScopeNamespace::Value)
             }
-            ast::ExpressionKind::Member { target, name } => {
+            ast::ExpressionKind::Member {
+                target,
+                name,
+                qualified,
+            } => {
                 let entity = self.resolve_expression_entity(target)?;
+                // The preceding type-relative member may be an associated
+                // type or a value (notably `Self::unitCase`). A dot ends the
+                // path; type checking validates the resulting instance target.
+                if !qualified && matches!(entity, ResolvedEntity::DeferredAssociatedType) {
+                    return Ok(ResolvedEntity::DeferredAssociatedValue);
+                }
+                let requires_qualified = matches!(
+                    &entity,
+                    ResolvedEntity::Scoped(_)
+                        | ResolvedEntity::DeferredAssociatedType
+                        | ResolvedEntity::Resolved(
+                            Resolution::PrimaryType(..)
+                                | Resolution::SelfTypeAlias(_)
+                                | Resolution::InterfaceSelfTypeParameter(_)
+                                | Resolution::Definition(
+                                    _,
+                                    DefinitionKind::Enum
+                                        | DefinitionKind::Struct
+                                        | DefinitionKind::TypeAlias
+                                        | DefinitionKind::Interface
+                                        | DefinitionKind::TypeParameter
+                                        | DefinitionKind::AssociatedType
+                                )
+                        )
+                );
+                if *qualified != requires_qualified {
+                    return Err(ResolutionError::WrongMemberSeparator {
+                        name: *name,
+                        qualified: requires_qualified,
+                        span: Span {
+                            start: target.span.end,
+                            end: name.span.start,
+                            file: node.span.file,
+                        },
+                    });
+                }
                 self.resolve_member_access(entity, name, ScopeNamespace::Value)
             }
             ast::ExpressionKind::Specialize { target, .. } => {
                 let entity = self.resolve_expression_entity(target)?;
+                if Self::entity_is_value(&entity) {
+                    return Ok(ResolvedEntity::DeferredAssociatedValue);
+                }
                 self.apply_specialization(entity.clone(), node.span)?;
                 return Ok(entity);
             }
             // Anything else produces a value expression
             _ => return Ok(ResolvedEntity::DeferredAssociatedValue),
         }
+    }
+
+    fn entity_is_value(entity: &ResolvedEntity<'_>) -> bool {
+        matches!(
+            entity,
+            ResolvedEntity::DeferredAssociatedValue
+                | ResolvedEntity::Resolved(
+                    Resolution::LocalVariable(_)
+                        | Resolution::Definition(
+                            _,
+                            DefinitionKind::ModuleVariable | DefinitionKind::Constant
+                        )
+                )
+        )
     }
 
     fn lookup_unqualified(
@@ -987,7 +1181,7 @@ impl<'r, 'a> Actor<'r, 'a> {
                         .record_resolution(pat.id, ResolutionState::Complete(res));
                 }
                 ast::PatternKind::Member(path) => match path {
-                    ast::PatternPath::Qualified { path } => {
+                    ast::ConstructorPath::Qualified { path } => {
                         self.resolve_path_with_source(
                             pat.id,
                             path,
@@ -997,7 +1191,7 @@ impl<'r, 'a> Actor<'r, 'a> {
                     _ => {}
                 },
                 ast::PatternKind::PathTuple { path, .. } => match path {
-                    ast::PatternPath::Qualified { path } => {
+                    ast::ConstructorPath::Qualified { path } => {
                         self.resolve_path_with_source(
                             pat.id,
                             path,
@@ -1006,6 +1200,11 @@ impl<'r, 'a> Actor<'r, 'a> {
                     }
                     _ => {}
                 },
+                ast::PatternKind::PathNamed { path, .. } => {
+                    if let ast::ConstructorPath::Qualified { path } = path {
+                        self.resolve_path_with_source(pat.id, path, ResolutionSource::Constructor);
+                    }
+                }
                 ast::PatternKind::Or(pats, _) => {
                     // Add new set of bindings
                     bindings.push((PatBoundCtx::Or, Default::default()));
@@ -1182,7 +1381,7 @@ impl<'r, 'a> Actor<'r, 'a> {
 impl<'r, 'a> Actor<'r, 'a> {
     fn resolve_impl(&mut self, id: ast::NodeID, node: &ast::Impl) {
         let def_id = self.resolver.definition_id(id);
-        self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
+        self.with_scope_source(LexicalScopeSource::Plain, |this| {
             this.with_generics_scope(&node.generics, |this| {
                 let self_res = Resolution::SelfTypeAlias(def_id);
                 this.with_self_alias_scope(self_res, |this| {

@@ -1,0 +1,3 @@
+func main() {
+    operation := |value: int32| value + 1
+}

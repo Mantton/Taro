@@ -3,7 +3,7 @@ use crate::{
     cfg::TargetInfo,
     compile::context::GlobalContext,
     error::CompileResult,
-    hir::{self, DefinitionKind, StdItem},
+    hir::{self, StdItem},
     sema::resolve::{
         models::{
             ExpressionResolutionState, Holder, Resolution, ResolutionOutput, ResolutionState,
@@ -32,6 +32,7 @@ pub struct Actor<'a, 'c> {
     pub next_index: u32,
     pub node_mapping: FxHashMap<ast::NodeID, hir::NodeID>,
     optional_unwrap_replacement: Option<OptionalUnwrapReplacement>,
+    lowering_deferred_bracket: bool,
     target: TargetInfo,
 }
 
@@ -43,6 +44,7 @@ impl<'a, 'c> Actor<'a, 'c> {
             next_index: 0,
             node_mapping: Default::default(),
             optional_unwrap_replacement: None,
+            lowering_deferred_bracket: false,
             target: crate::cfg_eval::target_info(context),
         }
     }
@@ -169,6 +171,9 @@ impl<'a, 'c> Actor<'a, 'c> {
         let kind = match kind {
             ast::DeclarationKind::Interface(node) => {
                 hir::DeclarationKind::Interface(self.lower_interface(node))
+            }
+            ast::DeclarationKind::Class(node) => {
+                hir::DeclarationKind::Struct(self.lower_class(node))
             }
             ast::DeclarationKind::Struct(node) => {
                 hir::DeclarationKind::Struct(self.lower_struct(node))
@@ -334,6 +339,9 @@ impl<'a, 'c> Actor<'a, 'c> {
         } = node;
 
         let kind = match kind {
+            ast::NamespaceDeclarationKind::Class(node) => {
+                hir::DeclarationKind::Struct(self.lower_class(node))
+            }
             ast::NamespaceDeclarationKind::Struct(node) => {
                 hir::DeclarationKind::Struct(self.lower_struct(node))
             }
@@ -390,6 +398,16 @@ impl<'a, 'c> Actor<'a, 'c> {
         } = node;
 
         let kind = match kind {
+            ast::AssociatedDeclarationKind::Initializer(initializer) => {
+                let function = initializer.function;
+                let span = function.signature.span;
+                let mut function = self.lower_function(function, span);
+                function.initializer_kind = Some(hir::InitializerKind {
+                    is_required: initializer.is_required,
+                    is_convenience: initializer.is_convenience,
+                });
+                hir::AssociatedDeclarationKind::Initializer(function)
+            }
             ast::AssociatedDeclarationKind::Constant(node) => {
                 hir::AssociatedDeclarationKind::Constant(self.lower_constant(node))
             }
@@ -404,7 +422,18 @@ impl<'a, 'c> Actor<'a, 'c> {
                 hir::AssociatedDeclarationKind::Property(hir::ComputedProperty {
                     ty: self.lower_type(node.ty),
                     getter_id: self.definition_id(node.getter_id),
+                })
+            }
+            ast::AssociatedDeclarationKind::Subscript(node) => {
+                hir::AssociatedDeclarationKind::Subscript(hir::NativeSubscript {
+                    ty: self.lower_type(node.ty),
+                    getter_id: node.getter_id.map(|id| self.definition_id(id)),
                     setter_id: node.setter_id.map(|id| self.definition_id(id)),
+                    address_id: node.address_id.map(|id| self.definition_id(id)),
+                    getter_is_default: node.getter_is_default,
+                    setter_is_default: node.setter_is_default,
+                    is_override: node.is_override,
+                    is_final: node.is_final,
                 })
             }
         };
@@ -432,8 +461,22 @@ impl Actor<'_, '_> {
         }
     }
 
+    fn lower_class(&mut self, node: ast::Class) -> hir::Struct {
+        let header = hir::ClassHeader {
+            is_final: node.is_final,
+        };
+        let mut value = self.lower_struct(ast::Struct {
+            generics: node.generics,
+            fields: node.fields,
+            conformances: node.conformances,
+        });
+        value.class_header = Some(header);
+        value
+    }
+
     fn lower_struct(&mut self, node: ast::Struct) -> hir::Struct {
         hir::Struct {
+            class_header: None,
             generics: self.lower_generics(node.generics),
             fields: node
                 .fields
@@ -685,6 +728,9 @@ impl<'a, 'c> Actor<'a, 'c> {
             block: node.block.map(|n| self.lower_block(n)),
             is_unsafe: node.is_unsafe,
             is_async: node.is_async,
+            is_final: node.is_final,
+            is_override: node.is_override,
+            initializer_kind: None,
             abi,
         }
     }
@@ -905,7 +951,7 @@ impl Actor<'_, '_> {
         let kind = match node.kind {
             ast::TypeKind::Nominal(path) => hir::TypeKind::Nominal(self.lower_path(node.id, path)),
             ast::TypeKind::Pointer(ty, mt) => hir::TypeKind::Pointer(self.lower_type(ty), mt),
-            ast::TypeKind::Reference(ty, mt) => hir::TypeKind::Reference(self.lower_type(ty), mt),
+            ast::TypeKind::Reference(ty) => hir::TypeKind::Reference(self.lower_type(ty)),
             ast::TypeKind::Parenthesis(ty) => return self.lower_type(ty),
             ast::TypeKind::Tuple(items) => {
                 let items = items.into_iter().map(|n| self.lower_type(n)).collect();
@@ -920,6 +966,14 @@ impl Actor<'_, '_> {
                 self.mk_foundation_type(
                     node.span,
                     hir::StdItem::Optional,
+                    vec![hir::TypeArgument::Type(inner)],
+                )
+            }
+            ast::TypeKind::Slice(element) => {
+                let inner = self.lower_type(element);
+                self.mk_foundation_type(
+                    node.span,
+                    hir::StdItem::Span,
                     vec![hir::TypeArgument::Type(inner)],
                 )
             }
@@ -1034,10 +1088,7 @@ impl Actor<'_, '_> {
             ast::PatternKind::Rest => hir::PatternKind::Rest,
             ast::PatternKind::Identifier(ident) => {
                 self.node_mapping.insert(node.id, id);
-                hir::PatternKind::Binding {
-                    name: ident,
-                    mode: hir::BindingMode::ByValue,
-                }
+                hir::PatternKind::Binding { name: ident }
             }
             ast::PatternKind::Tuple(items, span) => hir::PatternKind::Tuple(
                 items
@@ -1046,26 +1097,37 @@ impl Actor<'_, '_> {
                     .collect(),
                 span,
             ),
-            ast::PatternKind::Reference {
-                pattern,
-                mutability: mutable,
-            } => hir::PatternKind::Reference {
-                pattern: Box::new(self.lower_pattern(*pattern)),
-                mutable,
-            },
-            ast::PatternKind::Member(pattern_path) => {
-                hir::PatternKind::Member(self.lower_pattern_path(node.id, pattern_path))
+
+            ast::PatternKind::Member(constructor_path) => {
+                hir::PatternKind::Member(self.lower_constructor_path(node.id, constructor_path))
             }
             ast::PatternKind::PathTuple {
                 path,
                 fields,
                 field_span,
             } => hir::PatternKind::PathTuple {
-                path: self.lower_pattern_path(node.id, path),
+                path: self.lower_constructor_path(node.id, path),
                 fields: fields
                     .into_iter()
                     .map(|field| self.lower_pattern(field))
                     .collect(),
+                field_span,
+            },
+            ast::PatternKind::PathNamed {
+                path,
+                fields,
+                rest,
+                field_span,
+            } => hir::PatternKind::PathNamed {
+                path: self.lower_constructor_path(node.id, path),
+                fields: fields
+                    .into_iter()
+                    .map(|field| hir::NamedPatternField {
+                        name: field.name,
+                        pattern: self.lower_pattern(field.pattern),
+                    })
+                    .collect(),
+                rest,
                 field_span,
             },
             ast::PatternKind::Or(items, span) => hir::PatternKind::Or(
@@ -1221,6 +1283,54 @@ impl Actor<'_, '_> {
 }
 
 impl Actor<'_, '_> {
+    /// Keep language operations qualified until requirements are available.
+    /// In particular, compiling std must not use ordinary method lookup for loops.
+    fn lower_language_method_call(
+        &mut self,
+        item: StdItem,
+        interface_name: &str,
+        method_name: &str,
+        receiver: Box<hir::Expression>,
+        span: Span,
+    ) -> Box<hir::Expression> {
+        let base = hir::PathSegment {
+            id: self.next_index(),
+            identifier: Identifier::new(self.context.intern_symbol(interface_name), span),
+            arguments: None,
+            span,
+            resolution: Resolution::StdItem(item),
+        };
+        let interface = hir::Type {
+            id: self.next_index(),
+            span,
+            kind: hir::TypeKind::Nominal(hir::ResolvedPath::Resolved(hir::Path {
+                span,
+                resolution: Resolution::StdItem(item),
+                segments: vec![base],
+            })),
+        };
+        let method = hir::PathSegment {
+            id: self.next_index(),
+            identifier: Identifier::new(self.context.intern_symbol(method_name), span),
+            arguments: None,
+            span,
+            resolution: Resolution::Error,
+        };
+        let path = hir::ResolvedPath::Relative(Box::new(interface), method);
+        let callee = self.mk_expression(hir::ExpressionKind::Path(path), span);
+        self.mk_expression(
+            hir::ExpressionKind::Call {
+                callee,
+                arguments: vec![hir::ExpressionArgument {
+                    label: None,
+                    expression: receiver,
+                    span,
+                }],
+            },
+            span,
+        )
+    }
+
     fn lower_for_statement(&mut self, node: ast::ForStatement, span: Span) -> hir::StatementKind {
         /*
         Desugars:
@@ -1237,15 +1347,10 @@ impl Actor<'_, '_> {
                 }
             }
         */
-        let iterable_std_item = if node.is_await {
-            StdItem::AsyncIterable
+        let (iterable_std_item, iterable_interface_name, make_iterator_name) = if node.is_await {
+            (StdItem::AsyncIterable, "AsyncIterable", "iter")
         } else {
-            StdItem::Iterable
-        };
-        let iterable_interface_name = if node.is_await {
-            "AsyncIterable"
-        } else {
-            "Iterable"
+            (StdItem::Iterable, "Iterable", "iter")
         };
         let iterator_std_item = if node.is_await {
             StdItem::AsyncIterator
@@ -1258,93 +1363,53 @@ impl Actor<'_, '_> {
             "Iterator"
         };
 
-        // 1. Lower the iterator expression
+        // 1. Lower the iterator expression. As `Self` of the call below, a literal
+        // would stay open for a representation that no context here can choose, and
+        // the loop body would be checked without knowing its element type.
+        let iterates_literal = matches!(node.iterator.kind, ast::ExpressionKind::Array(_));
         let collection = self.lower_expression(node.iterator);
+        let mut outer_statements = vec![];
+        let collection = if iterates_literal {
+            let values_ident = Identifier::new(self.context.intern_symbol("$for_values"), span);
+            let values_pattern_id = self.next_index();
+            let values_local = hir::Local {
+                id: self.next_index(),
+                mutability: hir::Mutability::Immutable,
+                pattern: hir::Pattern {
+                    id: values_pattern_id,
+                    span,
+                    kind: hir::PatternKind::Binding { name: values_ident },
+                },
+                ty: None,
+                initializer: Some(collection),
+            };
+            outer_statements
+                .push(self.mk_statement(hir::StatementKind::Variable(values_local), span));
+            let values_path = self.mk_single_segment_resolved_path(
+                values_ident,
+                Resolution::LocalVariable(values_pattern_id),
+            );
+            self.mk_expression(hir::ExpressionKind::Path(values_path), span)
+        } else {
+            collection
+        };
 
         // 2. Create local binding: var __for_iter = collection.iter()
-        let iter_ident = Identifier::new(self.context.intern_symbol("__for_iter"), span);
+        let iter_ident = Identifier::new(self.context.intern_symbol("$for_iter"), span);
         let iter_pattern_id = self.next_index();
         let iter_pattern = hir::Pattern {
             id: iter_pattern_id,
             span,
-            kind: hir::PatternKind::Binding {
-                name: iter_ident,
-                mode: hir::BindingMode::ByValue,
-            },
+            kind: hir::PatternKind::Binding { name: iter_ident },
         };
 
-        let make_iterator_call = {
-            let ufcs_call = (|| {
-                let iterable_id = self.context.std_item_def(iterable_std_item)?;
-                let iterable_reqs = self.context.get_interface_requirements(iterable_id)?;
-                let make_iter_def = iterable_reqs
-                    .methods
-                    .iter()
-                    .find(|m| self.context.symbol_eq(m.name, "iter"))?;
-
-                let iterable_path = hir::ResolvedPath::Resolved(hir::Path {
-                    span,
-                    resolution: Resolution::Definition(iterable_id, DefinitionKind::Interface),
-                    segments: vec![hir::PathSegment {
-                        id: self.next_index(),
-                        identifier: Identifier::new(
-                            self.context.intern_symbol(iterable_interface_name),
-                            span,
-                        ),
-                        arguments: None,
-                        span,
-                        resolution: Resolution::Definition(iterable_id, DefinitionKind::Interface),
-                    }],
-                });
-
-                let iterable_ty = hir::Type {
-                    id: self.next_index(),
-                    span,
-                    kind: hir::TypeKind::Nominal(iterable_path),
-                };
-
-                let make_iter_segment = hir::PathSegment {
-                    id: self.next_index(),
-                    identifier: Identifier::new(self.context.intern_symbol("iter"), span),
-                    arguments: None,
-                    span,
-                    resolution: Resolution::Definition(
-                        make_iter_def.id,
-                        self.context.definition_kind(make_iter_def.id),
-                    ),
-                };
-
-                let make_iter_fn_path =
-                    hir::ResolvedPath::Relative(Box::new(iterable_ty), make_iter_segment);
-                let make_iter_fn_expr =
-                    self.mk_expression(hir::ExpressionKind::Path(make_iter_fn_path), span);
-
-                Some(self.mk_expression(
-                    hir::ExpressionKind::Call {
-                        callee: make_iter_fn_expr,
-                        arguments: vec![hir::ExpressionArgument {
-                            label: None,
-                            expression: collection.clone(),
-                            span,
-                        }],
-                    },
-                    span,
-                ))
-            })();
-
-            if let Some(call) = ufcs_call {
-                call
-            } else {
-                self.mk_expression(
-                    hir::ExpressionKind::MethodCall {
-                        receiver: collection,
-                        name: Identifier::new(self.context.intern_symbol("iter"), span),
-                        arguments: vec![],
-                    },
-                    span,
-                )
-            }
-        };
+        let make_iterator_call = self.lower_language_method_call(
+            iterable_std_item,
+            iterable_interface_name,
+            make_iterator_name,
+            collection,
+            span,
+        );
 
         let iter_local = hir::Local {
             id: self.next_index(),
@@ -1361,91 +1426,22 @@ impl Actor<'_, '_> {
         );
         let iter_ref_expr = self.mk_expression(hir::ExpressionKind::Path(iter_ref_path), span);
 
-        let next_call = {
-            let ufcs_call = (|| {
-                let iterator_id = self.context.std_item_def(iterator_std_item)?;
-                let iterator_reqs = self.context.get_interface_requirements(iterator_id)?;
-                let next_def = iterator_reqs
-                    .methods
-                    .iter()
-                    .find(|m| self.context.symbol_eq(m.name, "next"))?;
-
-                let iterator_path = hir::ResolvedPath::Resolved(hir::Path {
-                    span,
-                    resolution: Resolution::Definition(iterator_id, DefinitionKind::Interface),
-                    segments: vec![hir::PathSegment {
-                        id: self.next_index(),
-                        identifier: Identifier::new(
-                            self.context.intern_symbol(iterator_interface_name),
-                            span,
-                        ),
-                        arguments: None,
-                        span,
-                        resolution: Resolution::Definition(iterator_id, DefinitionKind::Interface),
-                    }],
-                });
-
-                let iterator_ty = hir::Type {
-                    id: self.next_index(),
-                    span,
-                    kind: hir::TypeKind::Nominal(iterator_path),
-                };
-
-                let next_segment = hir::PathSegment {
-                    id: self.next_index(),
-                    identifier: Identifier::new(self.context.intern_symbol("next"), span),
-                    arguments: None,
-                    span,
-                    resolution: Resolution::Definition(
-                        next_def.id,
-                        self.context.definition_kind(next_def.id),
-                    ),
-                };
-
-                let next_fn_path = hir::ResolvedPath::Relative(Box::new(iterator_ty), next_segment);
-                let next_fn_expr =
-                    self.mk_expression(hir::ExpressionKind::Path(next_fn_path), span);
-                let iter_mut_borrow = self.mk_expression(
-                    hir::ExpressionKind::Reference(iter_ref_expr.clone(), hir::Mutability::Mutable),
-                    span,
-                );
-
-                Some(self.mk_expression(
-                    hir::ExpressionKind::Call {
-                        callee: next_fn_expr,
-                        arguments: vec![hir::ExpressionArgument {
-                            label: None,
-                            expression: iter_mut_borrow,
-                            span,
-                        }],
-                    },
-                    span,
-                ))
-            })();
-
-            if let Some(call) = ufcs_call {
-                call
-            } else {
-                self.mk_expression(
-                    hir::ExpressionKind::MethodCall {
-                        receiver: iter_ref_expr,
-                        name: Identifier::new(self.context.intern_symbol("next"), span),
-                        arguments: vec![],
-                    },
-                    span,
-                )
-            }
-        };
+        let next_call = self.lower_language_method_call(
+            iterator_std_item,
+            iterator_interface_name,
+            "next",
+            iter_ref_expr,
+            span,
+        );
 
         // var element = __for_iter.next();
-        let element_ident = Identifier::new(self.context.intern_symbol("element"), span);
+        let element_ident = Identifier::new(self.context.intern_symbol("$element"), span);
         let element_pattern_id = self.next_index();
         let element_pattern = hir::Pattern {
             id: element_pattern_id,
             span,
             kind: hir::PatternKind::Binding {
                 name: element_ident,
-                mode: hir::BindingMode::ByValue,
             },
         };
 
@@ -1470,7 +1466,7 @@ impl Actor<'_, '_> {
             id: self.next_index(),
             span,
             kind: hir::PatternKind::PathTuple {
-                path: hir::PatternPath::Qualified { path: some_path },
+                path: hir::ConstructorPath::Qualified { path: some_path },
                 fields: vec![user_pattern],
                 field_span: span,
             },
@@ -1525,7 +1521,7 @@ impl Actor<'_, '_> {
         let none_pattern = hir::Pattern {
             id: self.next_index(),
             span,
-            kind: hir::PatternKind::Member(hir::PatternPath::Qualified { path: none_path }),
+            kind: hir::PatternKind::Member(hir::ConstructorPath::Qualified { path: none_path }),
         };
 
         // Arm 2: case Optional.none => break
@@ -1568,7 +1564,8 @@ impl Actor<'_, '_> {
         // 11. Create outer block: { var __for_iter = ...; loop { ... } }
         let iter_stmt = self.mk_statement(hir::StatementKind::Variable(iter_local), span);
         let loop_stmt = self.mk_statement(loop_stmt_kind, span);
-        let outer_block = self.mk_block(vec![iter_stmt, loop_stmt], span);
+        outer_statements.extend([iter_stmt, loop_stmt]);
+        let outer_block = self.mk_block(outer_statements, span);
 
         hir::StatementKind::Expression(
             self.mk_expression(hir::ExpressionKind::Block(outer_block), span),
@@ -1576,6 +1573,22 @@ impl Actor<'_, '_> {
     }
 }
 impl Actor<'_, '_> {
+    fn index_expression(
+        &mut self,
+        target: Box<hir::Expression>,
+        index: Vec<hir::ExpressionArgument>,
+    ) -> hir::ExpressionKind {
+        let nodes = hir::IndexCallNodes {
+            call: self.next_index(),
+            receiver: self.next_index(),
+        };
+        hir::ExpressionKind::Index {
+            target,
+            index,
+            nodes,
+        }
+    }
+
     fn lower_expression(&mut self, node: Box<ast::Expression>) -> Box<hir::Expression> {
         if let ast::ExpressionKind::OptionalUnwrap(_) = &node.kind {
             if let Some(replacement) = &self.optional_unwrap_replacement {
@@ -1594,7 +1607,7 @@ impl Actor<'_, '_> {
             ast::ExpressionKind::InferredMember { name } => {
                 hir::ExpressionKind::InferredMember { name }
             }
-            ast::ExpressionKind::Member { target, name } => {
+            ast::ExpressionKind::Member { target, name, .. } => {
                 match self
                     .resolutions
                     .expression_resolutions
@@ -1624,18 +1637,64 @@ impl Actor<'_, '_> {
             ast::ExpressionKind::Specialize {
                 target,
                 type_arguments,
+                index,
             } => {
-                // Convert Specialize into a path with type arguments on the final segment
-                match self.lower_specialize_as_path(&target, type_arguments, node.span) {
-                    Some(path) => hir::ExpressionKind::Path(path),
-                    None => {
-                        self.context.dcx.emit_error(
-                            "type arguments can only be applied to path-like expressions".into(),
-                            Some(node.span),
-                        );
+                if let Some(diagnostics) = self
+                    .resolutions
+                    .member_bracket_diagnostics
+                    .get(&node.id)
+                    .cloned()
+                {
+                    let member = self.lower_expression(target);
+                    let previous = self.lowering_deferred_bracket;
+                    self.lowering_deferred_bracket = true;
+                    let type_arguments = self.lower_type_arguments(type_arguments);
+                    let indexed = index.map(|index| {
+                        let index = self.lower_expression_arguments(index);
+                        let kind = self.index_expression(member.clone(), index);
+                        Box::new(hir::Expression {
+                            id: self.next_index(),
+                            kind,
+                            span: node.span,
+                        })
+                    });
+                    self.lowering_deferred_bracket = previous;
+                    hir::ExpressionKind::MemberBrackets {
+                        member,
+                        type_arguments,
+                        indexed,
+                        diagnostics,
+                    }
+                } else if matches!(
+                    self.resolutions.expression_resolutions.get(&node.id),
+                    Some(ExpressionResolutionState::DeferredAssociatedValue)
+                ) {
+                    if let Some(index) = index {
+                        let target = self.lower_expression(target);
+                        let index = self.lower_expression_arguments(index);
+                        self.index_expression(target, index)
+                    } else {
                         hir::ExpressionKind::Malformed
                     }
+                } else {
+                    // Convert Specialize into a path with type arguments on the final segment
+                    match self.lower_specialize_as_path(&target, type_arguments, node.span) {
+                        Some(path) => hir::ExpressionKind::Path(path),
+                        None => {
+                            self.context.dcx.emit_error(
+                                "type arguments can only be applied to path-like expressions"
+                                    .into(),
+                                Some(node.span),
+                            );
+                            hir::ExpressionKind::Malformed
+                        }
+                    }
                 }
+            }
+            ast::ExpressionKind::Index { target, index } => {
+                let target = self.lower_expression(target);
+                let index = self.lower_expression_arguments(index);
+                self.index_expression(target, index)
             }
             ast::ExpressionKind::Array(nodes) => hir::ExpressionKind::Array(
                 nodes
@@ -1665,8 +1724,8 @@ impl Actor<'_, '_> {
             ast::ExpressionKind::Break { label } => hir::ExpressionKind::Break { label },
             ast::ExpressionKind::Continue { label } => hir::ExpressionKind::Continue { label },
             ast::ExpressionKind::Call(node, args) => self.lower_call(node, args),
-            ast::ExpressionKind::Reference(node, mutability) => {
-                hir::ExpressionKind::Reference(self.lower_expression(node), mutability)
+            ast::ExpressionKind::Reference(node) => {
+                hir::ExpressionKind::Reference(self.lower_expression(node))
             }
             ast::ExpressionKind::Dereference(node) => {
                 hir::ExpressionKind::Dereference(self.lower_expression(node))
@@ -1768,10 +1827,7 @@ impl Actor<'_, '_> {
 
                 let lhs = self.lower_expression(lhs);
                 let rhs = self.lower_expression(rhs);
-                let identiier = Identifier::new(self.context.intern_symbol("Range"), node.span);
-                let range_path = self
-                    .mk_single_segment_resolved_path(identiier, Resolution::StdItem(foundational));
-                let foo = self.mk_expression(hir::ExpressionKind::Path(range_path), node.span);
+                let factory = self.mk_foundation_factory(foundational, node.span);
 
                 let arguments = vec![lhs, rhs]
                     .into_iter()
@@ -1784,7 +1840,7 @@ impl Actor<'_, '_> {
 
                 let call = self.mk_expression(
                     hir::ExpressionKind::Call {
-                        callee: foo,
+                        callee: factory,
                         arguments,
                     },
                     node.span,
@@ -1792,18 +1848,12 @@ impl Actor<'_, '_> {
                 return call;
             }
             ast::ExpressionKind::DictionaryLiteral(map_pairs) => {
-                // ["foo": "bar"] => { let dictionary = Dictionary(); dictionary.insert("foo", "bar"); dictionary }
-                // Initialize the dictionary via a foundational call.
-                let ctor_ident =
-                    Identifier::new(self.context.intern_symbol("Dictionary"), node.span);
-                let ctor_path = self.mk_single_segment_resolved_path(
-                    ctor_ident,
-                    Resolution::StdItem(hir::StdItem::Dictionary),
-                );
-                let ctor = self.mk_expression(hir::ExpressionKind::Path(ctor_path), node.span);
+                // Dictionary literals call the ordinary `Dictionary::new`
+                // factory explicitly; type paths have no implicit value meaning.
+                let constructor = self.mk_foundation_factory(hir::StdItem::Dictionary, node.span);
                 let initializer = self.mk_expression(
                     hir::ExpressionKind::Call {
-                        callee: ctor,
+                        callee: constructor,
                         arguments: vec![],
                     },
                     node.span,
@@ -1817,7 +1867,6 @@ impl Actor<'_, '_> {
                     span: node.span,
                     kind: hir::PatternKind::Binding {
                         name: dictionary_ident,
-                        mode: hir::BindingMode::ByValue,
                     },
                 };
 
@@ -1957,7 +2006,7 @@ impl Actor<'_, '_> {
             ast::ExpressionKind::StructLiteral(struct_literal) => {
                 // Use the struct-literal expression node id, which is the key used by
                 // resolver.resolve_path_with_source(...) for this path.
-                let path = self.lower_path(node.id, struct_literal.path.clone());
+                let path = self.lower_constructor_path(node.id, struct_literal.path.clone());
                 let fields = struct_literal
                     .fields
                     .iter()
@@ -1967,7 +2016,8 @@ impl Actor<'_, '_> {
                         span: f.span,
                     })
                     .collect();
-                hir::ExpressionKind::StructLiteral(hir::StructLiteral { path, fields })
+                let base = struct_literal.base.map(|base| self.lower_expression(base));
+                hir::ExpressionKind::StructLiteral(hir::StructLiteral { path, fields, base })
             }
             ast::ExpressionKind::CfgCheck(cfg_expr) => {
                 // Evaluate the cfg expression at compile time
@@ -1993,55 +2043,30 @@ impl Actor<'_, '_> {
         name: Identifier,
         span: Span,
     ) -> Option<hir::Path> {
-        // Only compact purely qualified dotted chains that are fully resolved by the resolver.
-        // If any segment is deferred, keep it in expression form so typeck can resolve associated
-        // items/types.
-        let mut parts: Vec<(ast::NodeID, Identifier)> = Vec::new();
-        self.collect_member_chain_parts(target, &mut parts)?;
-        parts.push((member_expr_id, name));
-
-        let (base_id, base_ident) = parts.first()?;
-
-        let mut segments = Vec::with_capacity(parts.len());
-        let mut last_resolution = self.get_resolution(*base_id);
-        segments.push(hir::PathSegment {
+        // Reuse path lowering so explicit arguments on intermediate segments
+        // survive qualification, e.g. Interface[Arg]::method(receiver).
+        let hir::ResolvedPath::Resolved(mut path) = self.try_expr_as_resolved_path(target)? else {
+            return None;
+        };
+        let ExpressionResolutionState::Resolved(resolution) = self
+            .resolutions
+            .expression_resolutions
+            .get(&member_expr_id)?
+            .clone()
+        else {
+            return None;
+        };
+        let resolution = self.lower_resolution(resolution);
+        path.segments.push(hir::PathSegment {
             id: self.next_index(),
-            identifier: *base_ident,
+            identifier: name,
             arguments: None,
-            span: base_ident.span,
-            resolution: last_resolution.clone(),
+            span: name.span,
+            resolution: resolution.clone(),
         });
-
-        for (part_id, ident) in parts.into_iter().skip(1) {
-            match self
-                .resolutions
-                .expression_resolutions
-                .get(&part_id)
-                .cloned()
-            {
-                Some(ExpressionResolutionState::Resolved(res)) => {
-                    last_resolution = self.lower_resolution(res);
-                    segments.push(hir::PathSegment {
-                        id: self.next_index(),
-                        identifier: ident,
-                        arguments: None,
-                        span: ident.span,
-                        resolution: last_resolution.clone(),
-                    });
-                }
-                Some(ExpressionResolutionState::DeferredAssociatedType)
-                | Some(ExpressionResolutionState::DeferredAssociatedValue) => return None,
-                None => unreachable!(
-                    "ICE: missing expression resolution for member chain segment {part_id:?}"
-                ),
-            }
-        }
-
-        Some(hir::Path {
-            span,
-            resolution: last_resolution,
-            segments,
-        })
+        path.resolution = resolution;
+        path.span = span;
+        Some(path)
     }
 
     fn lower_deferred_associated_type_member_chain(
@@ -2058,6 +2083,7 @@ impl Actor<'_, '_> {
             let ast::ExpressionKind::Member {
                 target: inner,
                 name: seg_name,
+                ..
             } = &base_expr.kind
             else {
                 break;
@@ -2108,25 +2134,6 @@ impl Actor<'_, '_> {
         unreachable!()
     }
 
-    fn collect_member_chain_parts(
-        &self,
-        expr: &ast::Expression,
-        out: &mut Vec<(ast::NodeID, Identifier)>,
-    ) -> Option<()> {
-        match &expr.kind {
-            ast::ExpressionKind::Identifier(ident) => {
-                out.push((expr.id, *ident));
-                Some(())
-            }
-            ast::ExpressionKind::Member { target, name } => {
-                self.collect_member_chain_parts(target, out)?;
-                out.push((expr.id, *name));
-                Some(())
-            }
-            _ => None,
-        }
-    }
-
     /// Attempts to convert an AST expression to a resolved path suitable for attaching type arguments.
     /// Returns None if the expression cannot be converted to a path.
     fn try_expr_as_resolved_path(&mut self, expr: &ast::Expression) -> Option<hir::ResolvedPath> {
@@ -2135,7 +2142,7 @@ impl Actor<'_, '_> {
                 let resolved_path = self.lower_identifier_expression_path(expr.id, *ident);
                 Some(resolved_path)
             }
-            ast::ExpressionKind::Member { target, name } => {
+            ast::ExpressionKind::Member { target, name, .. } => {
                 // Check resolution state to determine how to handle
                 match self
                     .resolutions
@@ -2161,6 +2168,7 @@ impl Actor<'_, '_> {
             ast::ExpressionKind::Specialize {
                 target,
                 type_arguments,
+                ..
             } => {
                 // Recursively handle nested Specialize - attach type arguments to the inner path
                 let mut path = self.try_expr_as_resolved_path(target)?;
@@ -2298,10 +2306,7 @@ impl Actor<'_, '_> {
                 let pattern = hir::Pattern {
                     id,
                     span: param.span,
-                    kind: hir::PatternKind::Binding {
-                        name: param.name,
-                        mode: hir::BindingMode::ByValue,
-                    },
+                    kind: hir::PatternKind::Binding { name: param.name },
                 };
 
                 hir::ClosureParam {
@@ -2329,7 +2334,7 @@ impl Actor<'_, '_> {
             return_ty,
             is_async: closure.is_async,
             body,
-            is_move: closure.is_move,
+            snapshot_captures: false,
             span,
         })
     }
@@ -2351,7 +2356,7 @@ impl Actor<'_, '_> {
         &mut self,
         node: ast::PatternBindingCondition,
     ) -> hir::PatternBindingCondition {
-        // Transform `let x = opt` into `case Optional.some(x) = opt`
+        // Transform `var x = opt` into `case Optional.some(x) = opt`
         let inner_pattern = self.lower_pattern(node.pattern);
         let some_span = inner_pattern.span;
 
@@ -2359,7 +2364,7 @@ impl Actor<'_, '_> {
             id: self.next_index(),
             span: some_span,
             kind: hir::PatternKind::PathTuple {
-                path: hir::PatternPath::Qualified {
+                path: hir::ConstructorPath::Qualified {
                     path: self.mk_optional_variant_path("some", some_span),
                 },
                 fields: vec![inner_pattern],
@@ -2397,10 +2402,7 @@ impl Actor<'_, '_> {
         let val_binding_pattern = hir::Pattern {
             id: val_pattern_id,
             span: lhs_span,
-            kind: hir::PatternKind::Binding {
-                name: val_ident,
-                mode: hir::BindingMode::ByValue,
-            },
+            kind: hir::PatternKind::Binding { name: val_ident },
         };
 
         // Create Optional.some(__optional_val) pattern using qualified path
@@ -2409,7 +2411,7 @@ impl Actor<'_, '_> {
             id: self.next_index(),
             span: lhs_span,
             kind: hir::PatternKind::PathTuple {
-                path: hir::PatternPath::Qualified { path: some_path },
+                path: hir::ConstructorPath::Qualified { path: some_path },
                 fields: vec![val_binding_pattern],
                 field_span: lhs_span,
             },
@@ -2433,7 +2435,7 @@ impl Actor<'_, '_> {
         let none_pattern = hir::Pattern {
             id: self.next_index(),
             span: rhs_span,
-            kind: hir::PatternKind::Member(hir::PatternPath::Qualified { path: none_path }),
+            kind: hir::PatternKind::Member(hir::ConstructorPath::Qualified { path: none_path }),
         };
 
         // Arm 2: case Optional.none => rhs
@@ -2571,18 +2573,24 @@ impl Actor<'_, '_> {
 
 impl Actor<'_, '_> {
     fn lower_variant(&mut self, node: ast::Variant) -> hir::Variant {
+        let named = matches!(&node.kind, ast::VariantKind::Struct(..));
         hir::Variant {
             def_id: self.definition_id(node.id),
             ctor_def_id: self.definition_id(node.ctor_id),
             identifier: node.identifier,
             kind: match node.kind {
                 ast::VariantKind::Unit => hir::VariantKind::Unit,
-                ast::VariantKind::Tuple(fields) => hir::VariantKind::Tuple(
-                    fields
+                ast::VariantKind::Tuple(fields) | ast::VariantKind::Struct(fields) => {
+                    let fields = fields
                         .into_iter()
-                        .map(|node| self.lower_field_definition(node))
-                        .collect(),
-                ),
+                        .map(|field| self.lower_field_definition(field))
+                        .collect();
+                    if named {
+                        hir::VariantKind::Struct(fields)
+                    } else {
+                        hir::VariantKind::Tuple(fields)
+                    }
+                }
             },
             discriminant: node.discriminant.map(|node| self.lower_anon_const(node)),
             span: node.span,
@@ -2592,6 +2600,7 @@ impl Actor<'_, '_> {
     fn lower_field_definition(&mut self, node: ast::FieldDefinition) -> hir::FieldDefinition {
         hir::FieldDefinition {
             def_id: self.definition_id(node.id),
+            default_value: node.default_value.map(|expr| self.lower_expression(expr)),
             mutability: node.mutability,
             label: node.label,
             identifier: node.identifier,
@@ -2604,7 +2613,15 @@ impl Actor<'_, '_> {
 impl Actor<'_, '_> {
     fn lower_path(&mut self, id: ast::NodeID, node: ast::Path) -> hir::ResolvedPath {
         let state = self.resolutions.resolutions.get(&id).cloned();
-        let Some(state) = state else { unreachable!() };
+        let state = state.unwrap_or_else(|| {
+            if self.lowering_deferred_bracket {
+                // Resolution intentionally retained an erroneous alternative.
+                // Its diagnostic is replayed only if this branch is selected.
+                ResolutionState::Complete(Resolution::Error)
+            } else {
+                unreachable!("resolved path mapping")
+            }
+        });
 
         let (base_resolution, unresolved_count) = match state {
             ResolutionState::Complete(resolution) => (resolution, 0),
@@ -2671,13 +2688,19 @@ impl Actor<'_, '_> {
         }
     }
 
-    fn lower_pattern_path(&mut self, id: ast::NodeID, path: ast::PatternPath) -> hir::PatternPath {
+    fn lower_constructor_path(
+        &mut self,
+        id: ast::NodeID,
+        path: ast::ConstructorPath,
+    ) -> hir::ConstructorPath {
         match path {
-            ast::PatternPath::Qualified { path } => {
+            ast::ConstructorPath::Qualified { path } => {
                 let path = self.lower_path(id, path);
-                hir::PatternPath::Qualified { path }
+                hir::ConstructorPath::Qualified { path }
             }
-            ast::PatternPath::Inferred { name, span } => hir::PatternPath::Inferred { name, span },
+            ast::ConstructorPath::Inferred { name, span } => {
+                hir::ConstructorPath::Inferred { name, span }
+            }
         }
     }
 
@@ -2742,6 +2765,24 @@ impl Actor<'_, '_> {
         let state = self.resolutions.resolutions.get(&id).cloned();
         let resolution = self.convert_resolution_state(state);
         resolution
+    }
+
+    /// Build an explicit foundational factory path for syntax desugaring.
+    /// Missing type arguments are inferred from the surrounding expression.
+    fn mk_foundation_factory(&mut self, item: StdItem, span: Span) -> Box<hir::Expression> {
+        let name = item.name_str().expect("foundation type must have a name");
+        let identifier = Identifier::new(self.context.intern_symbol(name), span);
+        let path = self.mk_single_segment_resolved_path(identifier, Resolution::StdItem(item));
+        let base = self.mk_ty(hir::TypeKind::Nominal(path), span);
+        let member = hir::PathSegment {
+            id: self.next_index(),
+            identifier: Identifier::new(self.context.intern_symbol("new"), span),
+            arguments: None,
+            span,
+            resolution: Resolution::Error,
+        };
+        let path = hir::ResolvedPath::Relative(base, member);
+        self.mk_expression(hir::ExpressionKind::Path(path), span)
     }
 
     fn mk_single_segment_resolved_path(
@@ -2880,7 +2921,6 @@ impl Actor<'_, '_> {
                 span: expr.span,
                 kind: hir::PatternKind::Binding {
                     name: binding_ident,
-                    mode: hir::BindingMode::ByValue,
                 },
             };
 
@@ -2888,7 +2928,7 @@ impl Actor<'_, '_> {
                 id: self.next_index(),
                 span: expr.span,
                 kind: hir::PatternKind::PathTuple {
-                    path: hir::PatternPath::Qualified {
+                    path: hir::ConstructorPath::Qualified {
                         path: self.mk_optional_variant_path("some", expr.span),
                     },
                     fields: vec![binding_pattern],
@@ -2899,7 +2939,7 @@ impl Actor<'_, '_> {
             let none_pattern = hir::Pattern {
                 id: self.next_index(),
                 span: expr.span,
-                kind: hir::PatternKind::Member(hir::PatternPath::Qualified {
+                kind: hir::PatternKind::Member(hir::ConstructorPath::Qualified {
                     path: self.mk_optional_variant_path("none", expr.span),
                 }),
             };
@@ -2991,7 +3031,7 @@ impl Actor<'_, '_> {
                 .find_outer_optional_unwrap(lhs, skip_id)
                 .or_else(|| self.find_outer_optional_unwrap(rhs, skip_id)),
             ast::ExpressionKind::Unary(_, rhs)
-            | ast::ExpressionKind::Reference(rhs, _)
+            | ast::ExpressionKind::Reference(rhs)
             | ast::ExpressionKind::Dereference(rhs)
             | ast::ExpressionKind::Propagate(rhs) => self.find_outer_optional_unwrap(rhs, skip_id),
             ast::ExpressionKind::Range(lhs, rhs, _) => self
@@ -3021,7 +3061,12 @@ impl Actor<'_, '_> {
             ast::ExpressionKind::StructLiteral(node) => node
                 .fields
                 .iter()
-                .find_map(|field| self.find_outer_optional_unwrap(&field.expression, skip_id)),
+                .find_map(|field| self.find_outer_optional_unwrap(&field.expression, skip_id))
+                .or_else(|| {
+                    node.base
+                        .as_deref()
+                        .and_then(|base| self.find_outer_optional_unwrap(base, skip_id))
+                }),
             _ => None,
         }
     }
@@ -3328,7 +3373,7 @@ mod tests {
     #[test]
     fn resolved_member_chain_keeps_per_segment_resolution() {
         let package = analyze_script(
-            "func main() {\n    Foo.bar()\n}\n\nnamespace Foo {\n    func bar() {}\n}\n",
+            "func main() {\n    Foo::bar()\n}\n\nnamespace Foo {\n    func bar() {}\n}\n",
             |package, _| package,
         );
 

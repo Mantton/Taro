@@ -1,4 +1,4 @@
-import std.collections.List
+import std::collections::List
 
 enum IntOutcome {
     case success(int32)
@@ -6,24 +6,31 @@ enum IntOutcome {
 }
 
 func make_success(_ val: int32) -> IntOutcome {
-    IntOutcome.success(val)
+    IntOutcome::success(val)
 }
 
-struct RangeIterator {
+final class RangeIterator {
     current: int32
     end: int32
 }
 
-impl Iterator for RangeIterator {
+extend RangeIterator {
+    init(current: int32, end: int32) {
+        self.current = current
+        self.end = end
+    }
+}
+
+conform RangeIterator to Iterator {
     type Element = int32
 
-    func next(&mut self) -> Optional[int32] {
+    func next() -> Optional[int32] {
         if self.current < self.end {
-            let value = self.current
+            value := self.current
             self.current = self.current + 1
-            return Optional.some(value)
+            return Optional::some(value)
         }
-        return Optional.none
+        return Optional::none
     }
 }
 
@@ -32,40 +39,40 @@ struct SimpleRange {
     end: int32
 }
 
-impl Iterable for SimpleRange {
+conform SimpleRange to Iterable {
     type Iterator = RangeIterator
     type Element = int32
 
-    func iter(self) -> RangeIterator {
-        RangeIterator { current: self.start, end: self.end }
+    func iter() -> RangeIterator {
+        RangeIterator ( current: self.start, end: self.end )
     }
 }
 
 func test_match_inference() {
     var x = make_success(10)
     match x {
-        case .success(val) => { let _: int32 = val + 1 }
+        case .success(val) => { var _: int32 = val + 1 }
         case .failure => {}
     }
 }
 
 func test_nested_blocks() {
-    var x = IntOutcome.failure
+    var x = IntOutcome::failure
     if true {
         if true {
             x = make_success(42)
         }
     }
     match x {
-        case .success(val) => { let _: int32 = val }
+        case .success(val) => { var _: int32 = val }
         case .failure => {}
     }
 }
 
 func test_ifelse_inference() {
-    let x = if true { make_success(1) } else { IntOutcome.failure }
+    x := if true { make_success(1) } else { IntOutcome::failure }
     match x {
-        case .success(v) => { let _: int32 = v }
+        case .success(v) => { var _: int32 = v }
         case .failure => {}
     }
 }
@@ -76,7 +83,7 @@ func test_nested_match() {
         case .success(val) => {
             var y = make_success(val)
             match y {
-                case .success(inner) => { let _: int32 = inner }
+                case .success(inner) => { var _: int32 = inner }
                 case .failure => {}
             }
         }
@@ -88,7 +95,7 @@ func test_match_on_call_nested() {
     match make_success(200) {
         case .success(val) => {
             match make_success(val + 1) {
-                case .success(inner) => { let _: int32 = inner }
+                case .success(inner) => { var _: int32 = inner }
                 case .failure => {}
             }
         }
@@ -97,11 +104,11 @@ func test_match_on_call_nested() {
 }
 
 func test_loop_match_nesting() {
-    let range = SimpleRange { start: 0, end: 3 }
+    range := SimpleRange { start: 0, end: 3 }
     for i in range {
         match make_success(i) {
             case .success(val) => {
-                let _ = val * 2
+                var _ = val * 2
             }
             case .failure => {}
         }
@@ -109,12 +116,12 @@ func test_loop_match_nesting() {
 }
 
 func test_match_loop_nesting() {
-    let result = make_success(5)
+    result := make_success(5)
     match result {
         case .success(count) => {
-            let r = SimpleRange { start: 0, end: count }
+            r := SimpleRange { start: 0, end: count }
             for k in r {
-                let _ = k
+                var _ = k
             }
         }
         case .failure => {}
@@ -122,8 +129,8 @@ func test_match_loop_nesting() {
 }
 
 func test_inferred_members_main() {
-    let a: int32? = .none
-    let b: int32? = .some(1)
+    var a: int32? = .none
+    var b: int32? = .some(1)
 
     match a {
         case .some(_) => assert(false, "a is none")
@@ -151,12 +158,12 @@ func g() -> int32? {
 }
 
 func test_inferred_expr_contexts() {
-    let _x: int32? = .some(7)
-    let _y: int32? = .none
+    var _x: int32? = .some(7)
+    var _y: int32? = .none
 
-    let _z: int32? = if true { .some(1) } else { .none }
+    var _z: int32? = if true { .some(1) } else { .none }
 
-    let _m: int32? = match true {
+    var _m: int32? = match true {
         case true => .some(9)
         case false => .none
     }
@@ -166,24 +173,24 @@ func test_call_context() {
     func makeOpt() -> int32? {
         .some(5)
     }
-    let _v: int32? = makeOpt()
+    var _v: int32? = makeOpt()
 }
 
 func test_asi_newline_continuation() {
-    let _a: int32? =
+    var _a: int32? =
         .none
 
-    let _b: int32? =
+    var _b: int32? =
         .some(3)
 
-    let c: int32? = .some(4)
+    var c: int32? = .some(4)
     c
         .isSome()
 }
 
 func test_nested_generic() {
-    let _a: int32?? = .some(.none)
-    let _b: int32?? = .some(.some(1))
+    var _a: int32?? = .some(.none)
+    var _b: int32?? = .some(.some(1))
 }
 
 func takesOpt(_ v: int32?) {}
@@ -193,13 +200,13 @@ func test_expected_from_call() {
     takesOpt(.some(11))
 }
 
-func pushSome[Key](_ values: &mut List[Key?], _ key: Key) {
+func pushSome[Key](_ values: &List[Key?], _ key: Key) {
     values.append(.some(key))
 }
 
 func test_inferred_some_method_arg_expectation() {
-    var values: List[int32?] = List()
-    pushSome(&mut values, 10)
+    var values: List[int32?] = List::new()
+    pushSome(&values, 10)
     assert(values.len() == 1, "pushSome should append one value")
 }
 
@@ -212,26 +219,26 @@ func makeList() -> [int32] {
 }
 
 func twoSumLike(_ nums: [int32], target: int32) -> [int32] {
-    let _ = nums
-    let _ = target
+    var _ = nums
+    var _ = target
     return []
 }
 
 func test_contextual_list_literals() {
-    let values: [_] = [1, 2, 3]
+    var values: [_] = [1, 2, 3]
     assert(values.len() == 3, "annotated list literal should infer element type")
     assert(*values.at(2) == 3, "annotated list literal value check")
 
-    let from_arg_len = takesList([7, 8, 9])
+    from_arg_len := takesList([7, 8, 9])
     assert(from_arg_len == 3, "list literal should typecheck against call argument context")
 
-    let from_return = makeList()
+    from_return := makeList()
     assert(*from_return.at(1) == 5, "list literal should typecheck against return context")
 
-    let empty: [int32] = []
+    var empty: [int32] = []
     assert(empty.len() == 0, "empty list literal should typecheck against annotation context")
 
-    let labeled = twoSumLike([1, 2], target: 3)
+    labeled := twoSumLike([1, 2], target: 3)
     assert(labeled.len() == 0, "list literal should typecheck with labeled call arguments")
 }
 
@@ -248,5 +255,5 @@ func main() {
     test_inferred_some_method_arg_expectation()
     test_contextual_list_literals()
 
-    std.print("PASS: Type inference\n")
+    std::print("PASS: Type inference\n")
 }

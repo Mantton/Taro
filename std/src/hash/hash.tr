@@ -1,15 +1,23 @@
-import std.ops.PartialEq
-import std.mem.Span
+import std::ops::PartialEq
+import std::mem::Span
 
 @lang("Hashable")
+/// Equal values must feed equivalent data to the same hasher. Dictionary keys
+/// must retain stable hash and equality behavior for as long as they are stored.
 public interface Hashable: PartialEq {
-    func hash[H: Hasher](&self, into hasher: &mut H)
+    func hash[H: Hasher](into hasher: H)
 }
 
 public interface Hasher {
-    func write(&mut self, _ bytes: Span[uint8])
-    func finish(&self) -> uint64
-    func combine[Value: Hashable](&mut self, _ value: Value) {
+    func write(_ bytes: Span[uint8])
+    func finish() -> uint64
+    /// Hashes the bytes of `value`. The default copies them into independent
+    /// storage for `write`; a hasher whose `write` only reads its input may
+    /// hash the immutable string storage in place instead.
+    func writeString(_ value: &string) {
+        self.write(Span[uint8]::fromString(value))
+    }
+    func combine[Value: Hashable](_ value: Value) {
         value.hash(into: self)
     }
 }

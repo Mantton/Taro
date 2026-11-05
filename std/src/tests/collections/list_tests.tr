@@ -1,7 +1,7 @@
-import std.collections.{List, __list_from_raw_parts}
-import std.cmp.{Ordering, PartialOrd, Ord}
-import std.marker.Clone
-import std.optional.Optional
+import std::collections::{List, __list_from_raw_parts}
+import std::cmp::{Ordering, PartialOrd, Ord}
+import std::marker::Clone
+import std::optional::Optional
 
 struct CapacityWideElement {
     left: uint64
@@ -10,25 +10,24 @@ struct CapacityWideElement {
 
 @test
 func testWideListInitialCapacityAndGrowth() {
-    var wide: List[CapacityWideElement] = List()
+    var wide: List[CapacityWideElement] = List::new()
     wide.append(CapacityWideElement { left: 11, right: 12 })
     wide.append(CapacityWideElement { left: 21, right: 22 })
-    std.testing.assertEqual(wide.capacity(), 2 as usize, "wide pairs should fit one small buffer")
+    std::testing::assertEqual(wide.capacity(), 2 as usize, "wide pairs should fit one small buffer")
     wide.append(CapacityWideElement { left: 31, right: 32 })
-    std.runtime.collect()
-    std.testing.assertEqual(wide.len(), 3 as usize, "growth preserves length")
-    std.testing.assertEqual(wide.at(0).left, 11 as uint64, "growth preserves first element")
-    std.testing.assertEqual(wide.at(1).right, 22 as uint64, "growth preserves second element")
-    std.testing.assertEqual(wide.at(2).left, 31 as uint64, "growth writes third element")
-    var scalar: List[int32] = List()
+    std::testing::assertEqual(wide.len(), 3 as usize, "growth preserves length")
+    std::testing::assertEqual(wide.at(0).left, 11 as uint64, "growth preserves first element")
+    std::testing::assertEqual(wide.at(1).right, 22 as uint64, "growth preserves second element")
+    std::testing::assertEqual(wide.at(2).left, 31 as uint64, "growth writes third element")
+    var scalar: List[int32] = List::new()
     scalar.append(1)
-    std.testing.assertEqual(scalar.capacity(), 4 as usize, "scalar lists retain four slots")
+    std::testing::assertEqual(scalar.capacity(), 4 as usize, "scalar lists retain four slots")
 }
 
 func sumRef(_ list: &List[int32]) -> int32 {
     var sum: int32 = 0
-    for x in list {
-        sum = sum + *x
+    for x in *list {
+        sum = sum + x
     }
     return sum
 }
@@ -41,9 +40,9 @@ func sumByValue(_ list: List[int32]) -> int32 {
     return sum
 }
 
-func firstMutable(_ values: &mut List[int32?]) -> Optional[&mut int32] {
-    let slot = values.at(0 as usize)
-    return match slot {
+func firstValue(_ values: &List[int32?]) -> Optional[int32] {
+    slot := values.at(0 as usize)
+    return match *slot {
         case .some(v) => .some(v)
         case .none => .none
     }
@@ -53,22 +52,22 @@ struct SizedString {
     value: string
 }
 
-impl std.ops.PartialEq for SizedString {
-    public func eq(&self, _ other: &SizedString) -> bool {
-        std.string.stringLen(self.value) == std.string.stringLen(other.value)
+conform SizedString to std::ops::PartialEq {
+    public func eq(_ other: SizedString) -> bool {
+        std::string::stringLen(self.value) == std::string::stringLen(other.value)
     }
 }
 
-impl PartialOrd for SizedString {
-    func partialCmp(&self, _ other: &SizedString) -> Optional[Ordering] {
+conform SizedString to PartialOrd {
+    func partialCmp(_ other: SizedString) -> Optional[Ordering] {
         .some(self.cmp(other))
     }
 }
 
-impl Ord for SizedString {
-    func cmp(&self, _ other: &SizedString) -> Ordering {
-        let lhsLen = std.string.stringLen(self.value)
-        let rhsLen = std.string.stringLen(other.value)
+conform SizedString to Ord {
+    func cmp(_ other: SizedString) -> Ordering {
+        lhsLen := std::string::stringLen(self.value)
+        rhsLen := std::string::stringLen(other.value)
         return if lhsLen == rhsLen {
             .equal
         } else if lhsLen < rhsLen {
@@ -81,207 +80,197 @@ impl Ord for SizedString {
 
 @test
 func testListBasicCreationAndAppend() {
-    var list: List[string] = List()
+    var list: List[string] = List::new()
     list.append("Foo")
     list.append("Bar")
     list.append("Baz")
-    std.testing.assertEqual(list.len(), 3 as usize, "list append should update length")
+    std::testing::assertEqual(list.len(), 3 as usize, "list append should update length")
 
-    var withCapacity: List[string] = List(withCapacity: 10)
+    var withCapacity: List[string] = List::new(withCapacity: 10)
     withCapacity.append("x")
-    std.testing.assertEqual(withCapacity.len(), 1 as usize, "capacity constructor should create usable list")
+    std::testing::assertEqual(withCapacity.len(), 1 as usize, "capacity constructor should create usable list")
 }
 
 @test
 func testListIteratorModes() {
-    var list: List[int32] = List()
+    var list: List[int32] = List::new()
     list.append(1)
     list.append(2)
     list.append(3)
 
-    std.testing.assertEqual(sumRef(&list), 6, "ref iterator sum mismatch")
+    std::testing::assertEqual(sumRef(&list), 6, "ref iterator sum mismatch")
 
-    var mutableSum: int32 = 0
-    for x in &mut list {
-        mutableSum += *x
-    }
-    std.testing.assertEqual(mutableSum, 6, "mut ref iterator sum mismatch")
+    // Iteration yields copies (D9); element references come from `at`.
+    *list.at(0) += 10
+    std::testing::assertEqual(*list.at(0), 11, "element reference writes through")
+    *list.at(0) -= 10
 
-    std.testing.assertEqual(sumByValue(list), 6, "value iterator sum mismatch")
+    std::testing::assertEqual(sumByValue(list), 6, "value iterator sum mismatch")
 }
 
 @test
 func testListStaticConstructorInference() {
-    var fromCtor = List[rune]()
+    var fromCtor: List[rune] = List::new()
     fromCtor.append('a')
     fromCtor.append('b')
-    std.testing.assertEqual(fromCtor.len(), 2 as usize, "ctor length mismatch")
-    std.testing.assertEqual(*fromCtor.at(0), 'a', "ctor element 0 mismatch")
-    std.testing.assertEqual(*fromCtor.at(1), 'b', "ctor element 1 mismatch")
+    std::testing::assertEqual(fromCtor.len(), 2 as usize, "inferred factory length mismatch")
+    std::testing::assertEqual(*fromCtor.at(0), 'a', "inferred factory element 0 mismatch")
+    std::testing::assertEqual(*fromCtor.at(1), 'b', "inferred factory element 1 mismatch")
 
-    var fromStatic = List[rune].new()
+    var fromStatic = List[rune]::new()
     fromStatic.append('c')
-    std.testing.assertEqual(fromStatic.len(), 1 as usize, "static new length mismatch")
-    std.testing.assertEqual(*fromStatic.at(0), 'c', "static new element mismatch")
+    std::testing::assertEqual(fromStatic.len(), 1 as usize, "static new length mismatch")
+    std::testing::assertEqual(*fromStatic.at(0), 'c', "static new element mismatch")
 
-    var withCap: List[rune] = List[rune].new(withCapacity: 4)
+    var withCap: List[rune] = List[rune]::new(withCapacity: 4)
     withCap.append('d')
     withCap.append('e')
-    std.testing.assertEqual(withCap.len(), 2 as usize, "capacity new length mismatch")
-    std.testing.assertEqual(*withCap.at(0), 'd', "capacity new element 0 mismatch")
-    std.testing.assertEqual(*withCap.at(1), 'e', "capacity new element 1 mismatch")
+    std::testing::assertEqual(withCap.len(), 2 as usize, "capacity new length mismatch")
+    std::testing::assertEqual(*withCap.at(0), 'd', "capacity new element 0 mismatch")
+    std::testing::assertEqual(*withCap.at(1), 'e', "capacity new element 1 mismatch")
 }
 
 @test
-func testListAtMutOverloadInference() {
-    var values: List[int32?] = List()
-    let entry: int32? = .some(1)
-    values.append(entry)
-
-    let maybeRef = firstMutable(&mut values)
-    std.testing.assertTrue(maybeRef.isSome(), "firstMutable should produce mutable reference for populated list")
-    *maybeRef.unwrap() = 7
-
-    let readBack = values.at(0 as usize)
-    std.testing.assertTrue(readBack.isSome(), "list entry should remain present after mutable update")
-    std.testing.assertEqual(
-        readBack.unwrap(),
-        7,
-        "mutable overload inference should allow updating nested optional value",
-    )
+func testListOptionalPayloadReadCopiesValue() {
+    var values: List[int32?] = [.some(1)]
+    var copied = firstValue(&values).unwrap()
+    copied = 7
+    std::testing::assertEqual(values.at(0).unwrap(), 1, "pattern payload reads preserve list storage")
+    *values.at(0) = .some(copied)
+    std::testing::assertEqual(values.at(0).unwrap(), 7, "explicit replacement updates the list")
 }
 
 @test
 func testListReserve() {
-    var list: List[int32] = List()
+    var list: List[int32] = List::new()
     list.reserve(100 as usize)
-    std.testing.assertTrue(list.capacity() >= (100 as usize), "reserve should ensure capacity >= requested")
-    std.testing.assertEqual(list.len(), 0 as usize, "reserve should not change length")
+    std::testing::assertTrue(list.capacity() >= (100 as usize), "reserve should ensure capacity >= requested")
+    std::testing::assertEqual(list.len(), 0 as usize, "reserve should not change length")
 
     // Reserve less than current capacity should be a no-op
-    let capBefore = list.capacity()
+    capBefore := list.capacity()
     list.reserve(50 as usize)
-    std.testing.assertEqual(list.capacity(), capBefore, "reserve smaller should be no-op")
+    std::testing::assertEqual(list.capacity(), capBefore, "reserve smaller should be no-op")
 }
 
 @test
 @expectPanic
 func testListWithCapacityRejectsOverflowingByteCapacity() {
-    let capacity = std.mem.maxBufferCapacity[CapacityWideElement]() + (1 as usize)
-    let _ = List[CapacityWideElement].new(withCapacity: capacity)
+    capacity := std::mem::maxBufferCapacity[CapacityWideElement]() + (1 as usize)
+    var _ = List[CapacityWideElement]::new(withCapacity: capacity)
 }
 
 @test
 @expectPanic
 func testListReserveRejectsOverflowingByteCapacity() {
-    var list: List[CapacityWideElement] = List()
-    list.reserve(std.mem.maxBufferCapacity[CapacityWideElement]() + (1 as usize))
+    var list: List[CapacityWideElement] = List::new()
+    list.reserve(std::mem::maxBufferCapacity[CapacityWideElement]() + (1 as usize))
 }
 
 @test
 @expectPanic
 func testListAppendRejectsCapacityOverflowBeforeWrite() {
-    let capacity = std.mem.maxBufferCapacity[int32]()
-    var list = __list_from_raw_parts[int32](unsafe { 0 as *mut uint8 }, capacity, capacity)
+    capacity := std::mem::maxBufferCapacity[int32]()
+    var list = unsafe { __list_from_raw_parts[int32](0 as *mut uint8, capacity, capacity) }
     list.append(1)
 }
 
 @test
 @expectPanic
 func testListInsertRejectsCapacityOverflowBeforeWrite() {
-    let capacity = std.mem.maxBufferCapacity[int32]()
-    var list = __list_from_raw_parts[int32](unsafe { 0 as *mut uint8 }, capacity, capacity)
-    let _ = list.insert(at: capacity, 1)
+    capacity := std::mem::maxBufferCapacity[int32]()
+    var list = unsafe { __list_from_raw_parts[int32](0 as *mut uint8, capacity, capacity) }
+    var _ = list.insert(at: capacity, 1)
 }
 
 @test
 func testListInsertAtBeginning() {
-    var list: List[int32] = List()
+    var list: List[int32] = List::new()
     list.append(2)
     list.append(3)
 
-    let ok = list.insert(at: 0 as usize, 1)
-    std.testing.assertTrue(ok, "insert at 0 should succeed")
-    std.testing.assertEqual(list.len(), 3 as usize, "insert should increase length")
-    std.testing.assertEqual(*list.at(0), 1, "insert at 0: element 0")
-    std.testing.assertEqual(*list.at(1), 2, "insert at 0: element 1")
-    std.testing.assertEqual(*list.at(2), 3, "insert at 0: element 2")
+    ok := list.insert(at: 0 as usize, 1)
+    std::testing::assertTrue(ok, "insert at 0 should succeed")
+    std::testing::assertEqual(list.len(), 3 as usize, "insert should increase length")
+    std::testing::assertEqual(*list.at(0), 1, "insert at 0: element 0")
+    std::testing::assertEqual(*list.at(1), 2, "insert at 0: element 1")
+    std::testing::assertEqual(*list.at(2), 3, "insert at 0: element 2")
 }
 
 @test
 func testListInsertAtMiddle() {
-    var list: List[int32] = List()
+    var list: List[int32] = List::new()
     list.append(1)
     list.append(3)
 
-    let ok = list.insert(at: 1 as usize, 2)
-    std.testing.assertTrue(ok, "insert at middle should succeed")
-    std.testing.assertEqual(*list.at(0), 1, "insert middle: element 0")
-    std.testing.assertEqual(*list.at(1), 2, "insert middle: element 1")
-    std.testing.assertEqual(*list.at(2), 3, "insert middle: element 2")
+    ok := list.insert(at: 1 as usize, 2)
+    std::testing::assertTrue(ok, "insert at middle should succeed")
+    std::testing::assertEqual(*list.at(0), 1, "insert middle: element 0")
+    std::testing::assertEqual(*list.at(1), 2, "insert middle: element 1")
+    std::testing::assertEqual(*list.at(2), 3, "insert middle: element 2")
 }
 
 @test
 func testListInsertAtEnd() {
-    var list: List[int32] = List()
+    var list: List[int32] = List::new()
     list.append(1)
     list.append(2)
 
-    let ok = list.insert(at: 2 as usize, 3)
-    std.testing.assertTrue(ok, "insert at end should succeed")
-    std.testing.assertEqual(*list.at(2), 3, "insert at end: last element")
+    ok := list.insert(at: 2 as usize, 3)
+    std::testing::assertTrue(ok, "insert at end should succeed")
+    std::testing::assertEqual(*list.at(2), 3, "insert at end: last element")
 }
 
 @test
 func testListInsertOutOfBounds() {
-    var list: List[int32] = List()
+    var list: List[int32] = List::new()
     list.append(1)
 
-    let ok = list.insert(at: 5 as usize, 99)
-    std.testing.assertFalse(ok, "insert beyond len should return false")
-    std.testing.assertEqual(list.len(), 1 as usize, "insert failure should not change length")
+    ok := list.insert(at: 5 as usize, 99)
+    std::testing::assertFalse(ok, "insert beyond len should return false")
+    std::testing::assertEqual(list.len(), 1 as usize, "insert failure should not change length")
 }
 
 @test
 func testListRemoveAtFirst() {
-    var list: List[int32] = List()
+    var list: List[int32] = List::new()
     list.append(10)
     list.append(20)
     list.append(30)
 
-    let removed = list.removeAt(0 as usize)
-    std.testing.assertTrue(removed.isSome(), "removeAt 0 should return some")
-    std.testing.assertEqual(removed.unwrap(), 10, "removeAt 0 should return first element")
-    std.testing.assertEqual(list.len(), 2 as usize, "removeAt should decrease length")
-    std.testing.assertEqual(*list.at(0), 20, "after removeAt 0: element 0 shifted")
-    std.testing.assertEqual(*list.at(1), 30, "after removeAt 0: element 1 shifted")
+    removed := list.removeAt(0 as usize)
+    std::testing::assertTrue(removed.isSome(), "removeAt 0 should return some")
+    std::testing::assertEqual(removed.unwrap(), 10, "removeAt 0 should return first element")
+    std::testing::assertEqual(list.len(), 2 as usize, "removeAt should decrease length")
+    std::testing::assertEqual(*list.at(0), 20, "after removeAt 0: element 0 shifted")
+    std::testing::assertEqual(*list.at(1), 30, "after removeAt 0: element 1 shifted")
 }
 
 @test
 func testListRemoveAtLast() {
-    var list: List[int32] = List()
+    var list: List[int32] = List::new()
     list.append(10)
     list.append(20)
 
-    let removed = list.removeAt(1 as usize)
-    std.testing.assertTrue(removed.isSome(), "removeAt last should return some")
-    std.testing.assertEqual(removed.unwrap(), 20, "removeAt last should return last element")
-    std.testing.assertEqual(list.len(), 1 as usize, "removeAt last should decrease length")
+    removed := list.removeAt(1 as usize)
+    std::testing::assertTrue(removed.isSome(), "removeAt last should return some")
+    std::testing::assertEqual(removed.unwrap(), 20, "removeAt last should return last element")
+    std::testing::assertEqual(list.len(), 1 as usize, "removeAt last should decrease length")
 }
 
 @test
 func testListRemoveAtOutOfBounds() {
-    var list: List[int32] = List()
+    var list: List[int32] = List::new()
     list.append(1)
 
-    let removed = list.removeAt(5 as usize)
-    std.testing.assertTrue(removed.isNone(), "removeAt OOB should return none")
-    std.testing.assertEqual(list.len(), 1 as usize, "removeAt OOB should not change length")
+    removed := list.removeAt(5 as usize)
+    std::testing::assertTrue(removed.isNone(), "removeAt OOB should return none")
+    std::testing::assertEqual(list.len(), 1 as usize, "removeAt OOB should not change length")
 }
 
 @test
 func testListSort() {
-    var list: List[int32] = List()
+    var list: List[int32] = List::new()
     list.append(5)
     list.append(2)
     list.append(8)
@@ -290,87 +279,84 @@ func testListSort() {
 
     list.sort()
 
-    std.testing.assertEqual(*list.at(0), 1, "sort: element 0")
-    std.testing.assertEqual(*list.at(1), 2, "sort: element 1")
-    std.testing.assertEqual(*list.at(2), 4, "sort: element 2")
-    std.testing.assertEqual(*list.at(3), 5, "sort: element 3")
-    std.testing.assertEqual(*list.at(4), 8, "sort: element 4")
+    std::testing::assertEqual(*list.at(0), 1, "sort: element 0")
+    std::testing::assertEqual(*list.at(1), 2, "sort: element 1")
+    std::testing::assertEqual(*list.at(2), 4, "sort: element 2")
+    std::testing::assertEqual(*list.at(3), 5, "sort: element 3")
+    std::testing::assertEqual(*list.at(4), 8, "sort: element 4")
 }
 
 @test
 func testListSortAlreadySorted() {
-    var list: List[int32] = List()
+    var list: List[int32] = List::new()
     list.append(1)
     list.append(2)
     list.append(3)
 
     list.sort()
 
-    std.testing.assertEqual(*list.at(0), 1, "sort already sorted: element 0")
-    std.testing.assertEqual(*list.at(1), 2, "sort already sorted: element 1")
-    std.testing.assertEqual(*list.at(2), 3, "sort already sorted: element 2")
+    std::testing::assertEqual(*list.at(0), 1, "sort already sorted: element 0")
+    std::testing::assertEqual(*list.at(1), 2, "sort already sorted: element 1")
+    std::testing::assertEqual(*list.at(2), 3, "sort already sorted: element 2")
 }
 
 @test
 func testListSortEmpty() {
-    var list: List[int32] = List()
+    var list: List[int32] = List::new()
     list.sort()
-    std.testing.assertEqual(list.len(), 0 as usize, "sort empty list should remain empty")
+    std::testing::assertEqual(list.len(), 0 as usize, "sort empty list should remain empty")
 }
 
 @test
 func testListStringPopAndRemoveAt() {
-    var list: List[string] = List()
+    var list: List[string] = List::new()
     list.append("alpha")
     list.append("beta")
     list.append("gamma")
 
-    let removed = list.removeAt(1 as usize)
-    std.testing.assertTrue(removed.isSome(), "removeAt should return removed string")
-    std.testing.assertEqual(removed.unwrap(), "beta", "removeAt should return middle string")
+    removed := list.removeAt(1 as usize)
+    std::testing::assertTrue(removed.isSome(), "removeAt should return removed string")
+    std::testing::assertEqual(removed.unwrap(), "beta", "removeAt should return middle string")
 
-    let popped = list.pop()
-    std.testing.assertTrue(popped.isSome(), "pop should return removed string")
-    std.testing.assertEqual(popped.unwrap(), "gamma", "pop should return last string")
-    std.runtime.collect()
-    std.testing.assertEqual(*list.at(0), "alpha", "remaining string should stay in place")
+    popped := list.pop()
+    std::testing::assertTrue(popped.isSome(), "pop should return removed string")
+    std::testing::assertEqual(popped.unwrap(), "gamma", "pop should return last string")
+    std::testing::assertEqual(*list.at(0), "alpha", "remaining string should stay in place")
 
     list.clear()
-    std.runtime.collect()
-    std.testing.assertEqual(list.len(), 0 as usize, "clear should drop logical string length")
+    std::testing::assertEqual(list.len(), 0 as usize, "clear should drop logical string length")
 }
 
 @test
 func testListStringSpareCapacityAfterCollect() {
-    var list: List[string] = List(withCapacity: 64)
-    list.append(std.sprintf("kept %v", 1))
-    std.runtime.collect()
+    var list: List[string] = List::new(withCapacity: 64)
+    list.append(std::sprintf("kept %v", 1))
 
-    std.testing.assertEqual(list.len(), 1 as usize, "list should keep initialized length")
-    std.testing.assertEqual(*list.at(0), "kept 1", "initialized string should survive collect")
+    std::testing::assertEqual(list.len(), 1 as usize, "list should keep initialized length")
+    std::testing::assertEqual(*list.at(0), "kept 1", "initialized string should survive collect")
 }
 
 @test
 func testListStringIteratorAndSort() {
-    var list: List[SizedString] = List()
+    var list: List[SizedString] = List::new()
     list.append(SizedString { value: "pear" })
     list.append(SizedString { value: "a" })
     list.append(SizedString { value: "orange" })
 
     list.sort()
-    std.testing.assertEqual((*list.at(0)).value, "a", "sort should order shortest string first")
-    std.testing.assertEqual((*list.at(1)).value, "pear", "sort should order middle string second")
-    std.testing.assertEqual((*list.at(2)).value, "orange", "sort should order longest string last")
+    std::testing::assertEqual((*list.at(0)).value, "a", "sort should order shortest string first")
+    std::testing::assertEqual((*list.at(1)).value, "pear", "sort should order middle string second")
+    std::testing::assertEqual((*list.at(2)).value, "orange", "sort should order longest string last")
 
     var iter = list.iter()
-    let first = iter.next()
-    std.testing.assertTrue(first.isSome(), "string iterator should yield first item")
+    first := iter.next()
+    std::testing::assertTrue(first.isSome(), "string iterator should yield first item")
     match first {
         case .some(value) => {
-            std.testing.assertEqual(value.value, "a", "string iterator should read sorted value")
+            std::testing::assertEqual(value.value, "a", "string iterator should read sorted value")
         }
         case .none => {
-            std.testing.assertTrue(false, "string iterator unexpectedly returned none")
+            std::testing::assertTrue(false, "string iterator unexpectedly returned none")
         }
     }
 }
@@ -378,17 +364,17 @@ func testListStringIteratorAndSort() {
 @test
 func testListFrom() {
     var iter = 1_i32..4_i32
-    var list = List[int32].from(&mut iter.iter())
+    var list = List[int32]::from(&iter.iter())
 
-    std.testing.assertEqual(list.len(), 3 as usize, "from should collect 3 elements")
-    std.testing.assertEqual(*list.at(0), 1, "from: element 0")
-    std.testing.assertEqual(*list.at(1), 2, "from: element 1")
-    std.testing.assertEqual(*list.at(2), 3, "from: element 2")
+    std::testing::assertEqual(list.len(), 3 as usize, "from should collect 3 elements")
+    std::testing::assertEqual(*list.at(0), 1, "from: element 0")
+    std::testing::assertEqual(*list.at(1), 2, "from: element 1")
+    std::testing::assertEqual(*list.at(2), 3, "from: element 2")
 }
 
 @test
 func testListCloneProducesIndependentStorage() {
-    var original: List[int32] = List()
+    var original: List[int32] = List::new()
     original.append(1)
     original.append(2)
     original.append(3)
@@ -397,19 +383,19 @@ func testListCloneProducesIndependentStorage() {
     copy.append(4)
     copy.set(0 as usize, 99)
 
-    std.testing.assertEqual(original.len(), 3 as usize, "clone should not change original length")
-    std.testing.assertEqual(*original.at(0), 1, "clone should preserve original elements")
-    std.testing.assertEqual(copy.len(), 4 as usize, "clone should be independently mutable")
-    std.testing.assertEqual(*copy.at(0), 99, "clone mutation should update copied storage")
-    std.testing.assertEqual(*copy.at(3), 4, "clone append should update copied storage")
+    std::testing::assertEqual(original.len(), 3 as usize, "clone should not change original length")
+    std::testing::assertEqual(*original.at(0), 1, "clone should preserve original elements")
+    std::testing::assertEqual(copy.len(), 4 as usize, "clone should be independently mutable")
+    std::testing::assertEqual(*copy.at(0), 99, "clone mutation should update copied storage")
+    std::testing::assertEqual(*copy.at(3), 4, "clone append should update copied storage")
 
-    let movedSum = sumByValue(copy)
-    std.testing.assertEqual(movedSum, 108, "cloned list should still move by value")
+    movedSum := sumByValue(copy)
+    std::testing::assertEqual(movedSum, 108, "cloned list should still move by value")
 }
 
 @test
 func testListCloneSupportsMultipleIndependentCopies() {
-    var original: List[int32] = List()
+    var original: List[int32] = List::new()
     original.append(10)
     original.append(20)
     original.append(30)
@@ -417,20 +403,20 @@ func testListCloneSupportsMultipleIndependentCopies() {
     var left = original.clone()
     var right = original.clone()
 
-    let removed = left.removeAt(1 as usize)
+    removed := left.removeAt(1 as usize)
     right.sort()
 
-    std.testing.assertTrue(removed.isSome(), "clone removeAt should return removed value")
-    std.testing.assertEqual(removed.unwrap(), 20, "clone removeAt should remove the requested element")
-    std.testing.assertEqual(original.len(), 3 as usize, "original should stay intact across multiple clones")
-    std.testing.assertEqual(left.len(), 2 as usize, "left clone should reflect its own removal")
-    std.testing.assertEqual(right.len(), 3 as usize, "right clone should keep its own length")
-    std.testing.assertEqual(*right.at(0), 10, "right clone should sort independently")
+    std::testing::assertTrue(removed.isSome(), "clone removeAt should return removed value")
+    std::testing::assertEqual(removed.unwrap(), 20, "clone removeAt should remove the requested element")
+    std::testing::assertEqual(original.len(), 3 as usize, "original should stay intact across multiple clones")
+    std::testing::assertEqual(left.len(), 2 as usize, "left clone should reflect its own removal")
+    std::testing::assertEqual(right.len(), 3 as usize, "right clone should keep its own length")
+    std::testing::assertEqual(*right.at(0), 10, "right clone should sort independently")
 }
 
 @test
 func testListCloneStringValues() {
-    var original: List[string] = List()
+    var original: List[string] = List::new()
     original.append("hello")
     original.append("world")
 
@@ -438,9 +424,9 @@ func testListCloneStringValues() {
     copy.append("!")
     copy.set(0 as usize, "goodbye")
 
-    std.testing.assertEqual(original.len(), 2 as usize, "string clone should preserve original length")
-    std.testing.assertEqual(*original.at(0), "hello", "string clone should preserve original contents")
-    std.testing.assertEqual(copy.len(), 3 as usize, "string clone should allow independent append")
-    std.testing.assertEqual(*copy.at(0), "goodbye", "string clone should allow independent mutation")
-    std.testing.assertEqual(*copy.at(2), "!", "string clone append should affect only the clone")
+    std::testing::assertEqual(original.len(), 2 as usize, "string clone should preserve original length")
+    std::testing::assertEqual(*original.at(0), "hello", "string clone should preserve original contents")
+    std::testing::assertEqual(copy.len(), 3 as usize, "string clone should allow independent append")
+    std::testing::assertEqual(*copy.at(0), "goodbye", "string clone should allow independent mutation")
+    std::testing::assertEqual(*copy.at(2), "!", "string clone append should affect only the clone")
 }

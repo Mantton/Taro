@@ -1,0 +1,42 @@
+// ENV: TARO_GC_STRESS=1
+// New and copied empty tables must contain valid inactive optional slots,
+// including when the element's first variant carries an erased GC payload.
+interface Reader {
+    func read() -> int32
+}
+
+struct StoredReader { target: &int32 }
+conform StoredReader to Reader {
+    func read() -> int32 { *self.target }
+}
+
+@noinline
+func reader(_ value: int32) -> any Reader {
+    var stored = value
+    StoredReader { target: &stored }
+}
+
+func main() {
+    var empty: [string: (any Reader)?] = [:]
+    copiedEmpty := empty.copy()
+    std::runtime::collect()
+    assert(copiedEmpty.isEmpty(), "copied empty buffers remain valid during collection")
+
+    empty.set(key: "inactive", value: .none)
+    copiedEmpty.set(key: "live", value: .some(reader(42)))
+    var index: int32 = 0
+    while index < 257 {
+        empty.set(key: sprintf("key-%v", index), value: .none)
+        index += 1
+    }
+    // Growth constructs larger empty buffers; copying visits their unused
+    // optional slots as well as active values. Neither may treat zero as none.
+    populatedCopy := copiedEmpty.copy()
+    grownCopy := empty.copy()
+    empty.clear()
+    copiedEmpty.clear()
+    std::runtime::collect()
+    assert(grownCopy.get(&"inactive").unwrap().isNone(), "stored none is distinct from an absent key")
+    assert(grownCopy.len() == 258, "growth and copies preserve every binding")
+    assert(populatedCopy.get(&"live").unwrap().unwrap().read() == 42, "published buffers retain erased reference targets")
+}

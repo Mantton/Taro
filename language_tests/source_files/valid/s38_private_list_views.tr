@@ -1,0 +1,28 @@
+import std::collections::List
+struct Document { value: int32 }
+enum Entry { case closed; case document(Document) }
+struct Selection { entry: &Entry }
+func tick() async { await std::testing::yieldNow() }
+func first(_ values: &List[Entry]) async -> &Entry { await tick(); &values[0] }
+func select(_ values: &List[Entry]) async -> Selection { await tick(); Selection { entry: &values[0] } }
+func main() async {
+    var values: List[Entry] = List[Entry]::new() // List[Entry]; NoCopy collection and NoCopy enum payload.
+    values.append(.document(Document { value: 7 }))
+    var saved: &Entry = await first(&values) // &Entry; loan follows caller-owned list after completion.
+    match *saved {
+        case .document(document) => assert(document.value == 7, "borrowed NoCopy enum payload")
+        case _ => panic("document expected")
+    }
+    values.append(.closed) // saved's last dependent use has passed.
+    var selection: Selection = await select(&values) // Selection; inferred dependent view, no lifetime spelling.
+    match *selection.entry {
+        case .document(document) => assert(document.value == 7, "stored returned borrow")
+        case _ => panic("document expected")
+    }
+    values.append(.closed)
+    assert(values.len() == 3, "last-use view releases collection access")
+    var count: int32 = 1
+    var increment = () => { await tick(); count += 1 }
+    await increment()
+    assert(count == 2, "inferred async borrowing capture uses private caller storage")
+}

@@ -1,8 +1,4 @@
-error: type 'Incomplete' does not satisfy requirements for interface 'Value'
- -> language_tests/source_files/invalid/interface_property_required_setter.tr:13:5
-	impl Value for Incomplete {}
-	     ^^^^^
-info: missing writable property 'value' of type 'int32'
- -> language_tests/source_files/invalid/interface_property_required_setter.tr:13:5
-	impl Value for Incomplete {}
-	     ^^^^^
+error: computed properties are get-only; use `get { ... }` with implicit self
+ -> language_tests/source_files/invalid/interface_property_required_setter.tr:7:8
+	        set(value)
+	        ^^^

@@ -1,0 +1,17 @@
+import classes::{Base, Reader, Other, libraryRead}
+class Child[X, Y]: Base[Y, X] {}
+conform[X, Y] Child[X, Y] to Reader[X] { public override func read() -> int32 { 10 }; }
+extend[X, Y] Child[X, Y] { public override func read() -> int32 { 4 }; }
+func read[T: Reader[int32]](_ value: T) -> int32 { value.read() }
+func echo[T: Reader[int32], U](_ value: T, _ input: U) -> U { value.echo(input) }
+func main() {
+    child := Child[int32, bool](true, 42)
+    var base: Base[bool, int32] = child
+    assert(base.read() == 4 && child.read() == 4, "imported inherent family is independent")
+    assert(libraryRead(base) == 10 && read(base) == 10 && read(child) == 10, "imported witness overrides retain their original family")
+    assert(Other::read(child) == 2, "an imported identical signature remains independent")
+    assert(echo(child, 7_i64) == 7 && echo(base, 9_i32) == 9, "inherited partial witness retains the reordered base environment and method arguments")
+    assert(*Reader[int32]::element(child) == 42 && *Reader[int32]::element(base) == 42, "inherited bodies use the actual generic base instantiation")
+    var erased: any Reader[int32] = base
+    assert(erased.read() == 10 && *erased.element() == 42, "imported erased dispatch reaches the local override")
+}

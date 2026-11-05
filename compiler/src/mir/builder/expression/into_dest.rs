@@ -4,7 +4,7 @@ use crate::{
     mir::{
         self, AggregateKind, BasicBlockId, BinaryOperator, BlockAnd, BlockAndExtension, CastKind,
         Category, Constant, LocalId, Operand, Place, PlaceElem, Rvalue, RvalueFunc, TerminatorKind,
-        builder::MirBuilder,
+        builder::{CleanupId, CleanupScopeId, MirBuilder},
         optimize::async_transform::{
             AsyncRuntimeFn, definition_in_std_module, find_or_register_async_runtime_function,
             find_std_function,
@@ -31,29 +31,27 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         expr_id: ExprId,
     ) -> BlockAnd<()> {
         let expr = &self.thir.exprs[expr_id];
+        if let Some(operand) = self.prepared_argument_operand(block, expr_id) {
+            self.push_assign(block, destination, Rvalue::Use(operand), expr.span);
+            return block.unit();
+        }
         let block_and = match &expr.kind {
             ExprKind::Local(..) => {
                 let place = unpack!(block = self.as_place(block, expr_id));
-                let operand = if self.is_type_copyable(expr.ty) {
-                    Operand::Copy(place)
-                } else {
-                    self.deactivate_task_cleanup(block, &place, expr.span);
-                    Operand::Move(place)
-                };
+                let operand = Operand::Copy(place);
                 let rvalue = Rvalue::Use(operand);
                 self.push_assign(block, destination, rvalue, expr.span);
                 block.unit()
             }
-            ExprKind::Reference {
-                mutable,
-                expr: ref_expr,
-            } => {
-                // Take the address of the place, preserving mutability.
+            ExprKind::Reference { expr: ref_expr } => {
+                if self.static_place(*ref_expr).is_some() {
+                    return self.static_reference_into(destination, block, *ref_expr);
+                }
+                if self.is_class_field(*ref_expr) {
+                    return self.class_field_into(destination, block, *ref_expr);
+                }
                 let place = unpack!(block = self.as_place(block, *ref_expr));
-                let rvalue = Rvalue::Ref {
-                    mutable: *mutable,
-                    place,
-                };
+                let rvalue = Rvalue::Ref { place };
                 self.push_assign(block, destination, rvalue, expr.span);
                 block.unit()
             }
@@ -135,7 +133,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 let place = Place::from_local(self.body.return_local);
                 if let Some(&value) = value.as_ref() {
                     block = self.expr_into_dest(place, block, value).into_block();
-                } else {
+                } else if self.thir.constructor_self.is_none() {
                     self.push_assign_unit(block, expr.span, place, self.gcx);
                 }
                 self.record_return_edge(block, expr.span)
@@ -150,8 +148,17 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             ExprKind::Call {
                 callee,
                 args,
+                argument_evaluation_order,
                 is_async,
-            } => self.lower_call_into_dest(destination, block, *callee, args, *is_async, expr.span),
+            } => self.lower_ordered_call_into_dest(
+                destination,
+                block,
+                *callee,
+                args,
+                argument_evaluation_order.as_deref(),
+                *is_async,
+                expr.span,
+            ),
             ExprKind::ListLiteral {
                 elements,
                 element_ty,
@@ -186,50 +193,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 self.push_assign(block, destination, rvalue, expr.span);
                 block.unit()
             }
-            ExprKind::Make { value } => {
-                let value_ty = self.thir.exprs[*value].ty;
-                let ptr_local = self.new_temp_with_ty(
-                    self.gcx
-                        .store
-                        .interners
-                        .intern_ty(crate::sema::models::TyKind::Pointer(
-                            value_ty,
-                            crate::hir::Mutability::Immutable,
-                        )),
-                    expr.span,
-                );
-                let alloc_rvalue = Rvalue::Alloc { ty: value_ty };
-                self.push_assign(block, Place::from_local(ptr_local), alloc_rvalue, expr.span);
-
-                // Evaluate initializer into a temp first so calls never write
-                // directly into fresh pointee memory.
-                let tmp_local = self.new_temp_with_ty(value_ty, expr.span);
-                block = self
-                    .expr_into_dest(Place::from_local(tmp_local), block, *value)
-                    .into_block();
-
-                // Initialize *ptr_local using an init+take copy.
-                let dest_place = Place {
-                    local: ptr_local,
-                    projection: vec![mir::PlaceElem::Deref],
-                };
-                let init_value = Rvalue::Use(Operand::copy_with(
-                    Place::from_local(tmp_local),
-                    mir::CopyModifiers {
-                        init: true,
-                        take: true,
-                    },
-                ));
-                self.push_assign(block, dest_place, init_value, expr.span);
-
-                // Return the pointer.
-                let rvalue = Rvalue::Use(Operand::Copy(Place::from_local(ptr_local)));
-                self.push_assign(block, destination, rvalue, expr.span);
-                block.unit()
-            }
             ExprKind::Block(block_id) => self.lower_block(destination, block, *block_id),
             ExprKind::Adt(adt_expression) => {
-                // Evaluate each field into an operand in declaration order.
+                // Snapshot explicit fields in source order, then evaluate the
+                // update base once. Aggregate operands are arranged by slot.
                 let field_count = match adt_expression.definition.kind {
                     crate::sema::models::AdtKind::Struct => {
                         let def = self.gcx.get_struct_definition(adt_expression.definition.id);
@@ -244,7 +211,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                             .enum_variant_by_index(adt_expression.definition.id, variant_index);
                         match variant.kind {
                             crate::sema::models::EnumVariantKind::Unit => 0,
-                            crate::sema::models::EnumVariantKind::Tuple(enum_variant_fields) => {
+                            crate::sema::models::EnumVariantKind::Tuple(enum_variant_fields)
+                            | crate::sema::models::EnumVariantKind::Struct(enum_variant_fields) => {
                                 enum_variant_fields.len()
                             }
                         }
@@ -255,6 +223,28 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 for field in &adt_expression.fields {
                     let operand = unpack!(block = self.as_operand(block, field.expression));
                     tmp[field.index.index()] = Some(operand);
+                }
+                if let Some(base) = adt_expression.base {
+                    // A place base needs no whole-struct temporary. An rvalue
+                    // is materialized by as_place. No calls occur between the
+                    // field reads and the aggregate assignment.
+                    let base = unpack!(block = self.as_place(block, base));
+                    let declared = self.gcx.get_struct_definition(adt_expression.definition.id);
+                    for (index, operand) in tmp.iter_mut().enumerate() {
+                        if operand.is_some() {
+                            continue;
+                        }
+                        let ty = crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args(
+                            self.gcx,
+                            declared.fields[index].ty,
+                            adt_expression.generic_args,
+                        );
+                        let mut field = base.clone();
+                        field
+                            .projection
+                            .push(PlaceElem::Field(FieldIndex::from_usize(index), ty));
+                        *operand = Some(Operand::Copy(field));
+                    }
                 }
                 let fields: IndexVec<FieldIndex, Operand<'ctx>> = IndexVec::from_vec(
                     tmp.into_iter()
@@ -273,15 +263,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 self.push_assign(block, destination, rvalue, expr.span);
                 block.unit()
             }
+            ExprKind::Field { .. } if self.is_instant_class_field(expr_id) => {
+                self.class_field_read_into(destination, block, expr_id)
+            }
             ExprKind::Deref(..) | ExprKind::Field { .. } | ExprKind::Upvar { .. } => {
                 debug_assert!(matches!(Category::of(&expr.kind), Category::Place));
                 let place = unpack!(block = self.as_place(block, expr_id));
-                let operand = if self.is_type_copyable(expr.ty) {
-                    Operand::Copy(place)
-                } else {
-                    self.deactivate_task_cleanup(block, &place, expr.span);
-                    Operand::Move(place)
-                };
+                let operand = Operand::Copy(place);
                 let rvalue = Rvalue::Use(operand);
                 self.push_assign(block, destination, rvalue, expr.span);
                 block.unit()
@@ -331,18 +319,34 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 if let ExprKind::Call {
                     callee,
                     args,
+                    argument_evaluation_order,
                     is_async: true,
+                    ..
                 } = &self.thir.exprs[*future].kind
                 {
                     if self.is_hidden_task_result_intrinsic(*callee) {
-                        return self.lower_awaited_task_result(destination, block, args, expr.span);
-                    }
-                    if self.is_hidden_task_group_next_intrinsic(*callee) {
-                        return self.lower_awaited_task_group_next(
-                            destination,
+                        return self.with_call_arguments_in_order(
                             block,
                             args,
-                            expr.span,
+                            argument_evaluation_order.as_deref(),
+                            |this, block| {
+                                this.lower_awaited_task_result(destination, block, args, expr.span)
+                            },
+                        );
+                    }
+                    if self.is_hidden_task_group_next_intrinsic(*callee) {
+                        return self.with_call_arguments_in_order(
+                            block,
+                            args,
+                            argument_evaluation_order.as_deref(),
+                            |this, block| {
+                                this.lower_awaited_task_group_next(
+                                    destination,
+                                    block,
+                                    args,
+                                    expr.span,
+                                )
+                            },
                         );
                     }
                 }
@@ -368,6 +372,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                         value: future_op,
                         resume,
                         resume_arg: destination.clone(),
+                        no_result: None,
                         cancel,
                         cancel_complete,
                         unwind,
@@ -381,7 +386,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             | ExprKind::Literal(..)
             | ExprKind::Unary { .. }
             | ExprKind::Binary { .. }
+            | ExprKind::ClassIdentity { .. }
             | ExprKind::Cast { .. }
+            | ExprKind::ClassUpcast { .. }
+            | ExprKind::ClassSelfResult { .. }
             | ExprKind::ExistentialTryCast { .. }
             | ExprKind::ExistentialTypeIs { .. }
             | ExprKind::ClosureToFnPointer { .. }
@@ -404,10 +412,22 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             }
         };
 
-        block_and
+        let end = block_and.into_block();
+        // An async call constructs a future even when its eventual result is
+        // Never. Only execution/await of that operation is non-returning.
+        if matches!(expr.ty.kind(), TyKind::Never)
+            && !matches!(expr.kind, ExprKind::Call { is_async: true, .. })
+            && self.body.basic_blocks[end].terminator.is_none()
+        {
+            self.terminate(end, expr.span, TerminatorKind::Unreachable);
+            return self
+                .new_block_with_note("after never expression".into())
+                .unit();
+        }
+        end.unit()
     }
 
-    fn lower_call_into_dest(
+    pub(super) fn lower_call_into_dest(
         &mut self,
         destination: Place<'ctx>,
         mut block: BasicBlockId,
@@ -513,14 +533,87 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         if self.is_hidden_blocking_intrinsic(callee) {
             return self.lower_blocking_call(destination, block, callee, args, span);
         }
-        if self.is_hidden_add_cleanup_intrinsic(callee) {
-            return self.lower_add_cleanup_call(destination, block, callee, args, span);
+        if self.is_hidden_intrinsic_named(callee, "__intrinsic_keep_alive") {
+            // No call survives: the statement is a liveness use, so the value
+            // stays a reported root at every earlier safepoint even after
+            // inlining removes the surrounding uses.
+            let [argument] = args else {
+                panic!("keep-alive intrinsic arity")
+            };
+            let operand = unpack!(block = self.as_operand(block, *argument));
+            self.body.basic_blocks[block]
+                .statements
+                .push(mir::Statement {
+                    kind: mir::StatementKind::KeepAlive(operand),
+                    span,
+                });
+            self.push_assign_unit(block, span, destination.clone(), self.gcx);
+            return block.unit();
+        }
+        if self.is_hidden_intrinsic_named(callee, "__intrinsic_class_owner") {
+            let [argument] = args else {
+                panic!("class owner intrinsic arity")
+            };
+            let operand = unpack!(block = self.as_operand(block, *argument));
+            let reference_ty = self.thir.exprs[*argument].ty;
+            let reference = self.new_temp_with_ty(reference_ty, span);
+
+            self.push_assign(
+                block,
+                Place::from_local(reference),
+                Rvalue::Use(operand),
+                span,
+            );
+            let source = Place {
+                local: reference,
+                projection: vec![PlaceElem::Deref],
+            };
+            self.push_assign(
+                block,
+                destination.clone(),
+                Rvalue::Cast {
+                    operand: Operand::Copy(source),
+                    ty: self.body.place_ty(self.gcx, &destination),
+                    kind: CastKind::ClassObjectOwner,
+                },
+                span,
+            );
+            return block.unit();
+        }
+        if self.is_hidden_intrinsic_named(callee, "__intrinsic_class_from_owner")
+            || self.is_hidden_intrinsic_named(callee, "__intrinsic_class_from_handle")
+        {
+            let [argument] = args else {
+                panic!("class ownership intrinsic arity")
+            };
+            let operand = if self.is_hidden_intrinsic_named(callee, "__intrinsic_class_from_handle")
+            {
+                // Materialize the argument once, then transfer that temporary's
+                // strong debt. A fresh allocation needs no extra retain/release.
+                let handle = unpack!(block = self.as_temp(block, *argument));
+                Operand::Copy(Place::from_local(handle))
+            } else {
+                unpack!(block = self.as_operand(block, *argument))
+            };
+            let kind = if self.is_hidden_intrinsic_named(callee, "__intrinsic_class_from_handle") {
+                CastKind::NativeClassHandle
+            } else {
+                CastKind::ClassFromOwner
+            };
+            self.push_assign(
+                block,
+                destination.clone(),
+                Rvalue::Cast {
+                    operand,
+                    ty: self.body.place_ty(self.gcx, &destination),
+                    kind,
+                },
+                span,
+            );
+            return block.unit();
         }
         if self.is_hidden_cancel_task_intrinsic(callee) {
             return self.lower_cancel_task_call(destination, block, args, span);
-        }
-        if self.is_hidden_detach_task_intrinsic(callee) {
-            return self.lower_detach_task_call(destination, block, args, span);
         }
         if self.is_hidden_task_result_intrinsic(callee) {
             return self.lower_task_result_call(destination, block, args, span);
@@ -559,11 +652,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             ExprKind::Zst { id, .. } => {
                 matches!(
                     self.gcx.try_definition_kind(id),
-                    Some(
-                        DefinitionKind::Function
-                            | DefinitionKind::AssociatedFunction
-                            | DefinitionKind::AssociatedOperator
-                    )
+                    Some(DefinitionKind::Function | DefinitionKind::AssociatedFunction)
                 ) && self.gcx.get_signature(id).is_variadic
             }
             _ => false,
@@ -585,6 +674,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                             && let TyKind::FnPointer { inputs, .. } = method_ty.kind()
                         {
                             method_ty = self.gcx.store.interners.intern_ty(TyKind::FnPointer {
+                                effects: Default::default(),
                                 inputs,
                                 output: self.gcx.async_handle_ty(),
                             });
@@ -594,19 +684,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             } else {
                 None
             };
-        let closure_self_param_ty =
-            if let crate::sema::models::TyKind::Closure { closure_def_id, .. } = callee_ty.kind() {
-                self.gcx
-                    .get_signature(closure_def_id)
-                    .inputs
-                    .first()
-                    .map(|param| param.ty)
-            } else if let crate::sema::models::TyKind::Parameter(_) = callee_ty.kind() {
-                self.get_callable_trait_self_param_ty(callee_ty)
-            } else {
-                None
-            };
-        let callable_self_place = if closure_self_param_ty.is_some() {
+        let callable_self_place = if matches!(callee_ty.kind(), TyKind::Closure { .. })
+            || callable_trait_target.is_some()
+        {
             Some(unpack!(block = self.as_place(block, callee)))
         } else {
             None
@@ -625,81 +705,19 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             unpack!(block = self.as_operand(block, callee))
         };
 
-        let closure_self_arg: Option<Operand<'ctx>> =
-            closure_self_param_ty.and_then(|self_param_ty| {
-                let closure_place = callable_self_place.clone()?;
-                match self_param_ty.kind() {
-                    crate::sema::models::TyKind::Reference(_, mutability) => {
-                        let ref_local = self.new_temp_with_ty(self_param_ty, span);
-                        self.push_assign(
-                            block,
-                            Place::from_local(ref_local),
-                            Rvalue::Ref {
-                                mutable: matches!(mutability, crate::hir::Mutability::Mutable),
-                                place: closure_place,
-                            },
-                            span,
-                        );
-                        Some(Operand::Copy(Place::from_local(ref_local)))
-                    }
-                    crate::sema::models::TyKind::Pointer(_, mutability) => {
-                        let ref_ty = self.gcx.store.interners.intern_ty(
-                            crate::sema::models::TyKind::Reference(callee_ty, mutability),
-                        );
-                        let ref_local = self.new_temp_with_ty(ref_ty, span);
-                        self.push_assign(
-                            block,
-                            Place::from_local(ref_local),
-                            Rvalue::Ref {
-                                mutable: matches!(mutability, crate::hir::Mutability::Mutable),
-                                place: closure_place,
-                            },
-                            span,
-                        );
-
-                        let ptr_local = self.new_temp_with_ty(self_param_ty, span);
-                        self.push_assign(
-                            block,
-                            Place::from_local(ptr_local),
-                            Rvalue::Cast {
-                                kind: CastKind::Pointer,
-                                operand: Operand::Copy(Place::from_local(ref_local)),
-                                ty: self_param_ty,
-                            },
-                            span,
-                        );
-
-                        Some(Operand::Copy(Place::from_local(ptr_local)))
-                    }
-                    _ => {
-                        let reusable_async_environment = match callee_ty.kind() {
-                            crate::sema::models::TyKind::Closure {
-                                closure_def_id,
-                                kind: crate::sema::models::ClosureKind::AsyncFn,
-                                ..
-                            } => self.gcx.get_closure_captures(closure_def_id).is_some_and(
-                                |captures| {
-                                    captures.captures.iter().all(|capture| {
-                                        matches!(
-                                            capture.capture_kind,
-                                            crate::sema::models::CaptureKind::ByCopy
-                                        )
-                                    })
-                                },
-                            ),
-                            _ => false,
-                        };
-
-                        if reusable_async_environment {
-                            // This is an internal, field-proven copy. Closure
-                            // types do not generally implement Copy.
-                            Some(Operand::Copy(closure_place))
-                        } else {
-                            Some(Operand::Move(closure_place))
-                        }
-                    }
-                }
-            });
+        let closure_self_arg = callable_self_place.map(|place| {
+            // Fn and AsyncFn receive a value, including their environment.
+            // CopyValue also snapshots nested erased payloads while captured
+            // references and class handles keep their ordinary shared identity.
+            let environment = self.new_temp_with_ty(callee_ty, span);
+            self.push_assign(
+                block,
+                Place::from_local(environment),
+                Rvalue::Use(Operand::Copy(place)),
+                span,
+            );
+            Operand::Copy(Place::from_local(environment))
+        });
         if let crate::sema::models::TyKind::FnPointer { inputs, .. } = callee_ty.kind() {
             let param_count = inputs.len();
             if is_known_variadic && param_count > 0 {
@@ -746,14 +764,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 panic!("Variadic param must be List");
             };
 
-            let list_operand = unpack!(
-                block = self.lower_variadic_sequence(block, var_args, list_ty, elem_ty, span)
-            );
-
             let fixed_operands: Vec<Operand<'ctx>> = fixed
                 .iter()
                 .map(|arg| unpack!(block = self.as_operand(block, *arg)))
                 .collect();
+            let list_operand = unpack!(
+                block = self.lower_variadic_sequence(block, var_args, list_ty, elem_ty, span)
+            );
             (fixed_operands, Some(list_operand))
         } else {
             let all_args = args
@@ -772,6 +789,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 fn_trait_args_ty.expect("callable type parameter must carry its argument type");
             let packed_args = if matches!(args_ty.kind(), TyKind::Tuple(_)) {
                 let tuple_local = self.new_temp_with_ty(args_ty, span);
+                self.register_storage_cleanup(tuple_local, span);
+
                 self.push_assign(
                     block,
                     Place::from_local(tuple_local),
@@ -781,11 +800,11 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     },
                     span,
                 );
-                if self.is_type_copyable(args_ty) {
-                    Operand::Copy(Place::from_local(tuple_local))
-                } else {
-                    Operand::Move(Place::from_local(tuple_local))
-                }
+                // This is a fresh compiler-owned pack, not a user argument
+                // binding. Its fields already performed their required copies
+                // or moves. Transfer the pack, even if its tuple type is Copy,
+                // so borrowed controllers are not duplicated and left behind.
+                Operand::Copy(Place::from_local(tuple_local))
             } else {
                 let [argument] = fixed_args.as_slice() else {
                     panic!("ICE: single-argument callable bound received the wrong arity")
@@ -808,7 +827,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             TerminatorKind::Call {
                 func: function,
                 args: final_args,
-                devirt_hint: None,
                 destination,
                 target: next,
                 unwind,
@@ -876,33 +894,11 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             panic!("ICE: detached lowering expects exactly one thunk argument");
         };
         let task_output_ty = intrinsic_type_arg(self.thir, callee, 0);
-        let (after_spawn, task_token_local) =
-            self.lower_spawn_to_token(block, *thunk, task_output_ty, span);
-
-        let detach_id =
-            find_or_register_async_runtime_function(self.gcx, AsyncRuntimeFn::DetachTask, span);
-        let detach_ty = self.gcx.get_type(detach_id);
-        let after_detach = self.new_block();
-        self.terminate(
-            after_spawn,
-            span,
-            TerminatorKind::Call {
-                func: Operand::Constant(Constant {
-                    ty: detach_ty,
-                    value: mir::ConstantKind::Function(
-                        detach_id,
-                        GenericArguments::empty(),
-                        detach_ty,
-                    ),
-                }),
-                args: vec![Operand::Copy(Place::from_local(task_token_local))],
-                devirt_hint: None,
-                destination,
-                target: after_detach,
-                unwind: mir::CallUnwindAction::Terminate,
-            },
-        );
-        after_detach.unit()
+        // Work runs independently of its handle, so fire-and-forget work is an
+        // ordinary spawn whose handle is discarded.
+        let (after_spawn, _) = self.lower_spawn_to_token(block, *thunk, task_output_ty, span);
+        let _ = destination;
+        after_spawn.unit()
     }
 
     fn lower_spawn_to_token(
@@ -914,7 +910,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     ) -> (BasicBlockId, LocalId) {
         let handle_local = self.new_temp_with_ty(self.gcx.async_handle_ty(), span);
         block = self
-            .lower_async_fn_once_into_dest(
+            .lower_async_callable_into_dest(
                 Place::from_local(handle_local),
                 block,
                 thunk,
@@ -923,9 +919,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             )
             .into_block();
 
-        let size_local =
-            unpack!(block = self.lower_size_of_type_to_local(block, task_output_ty, span));
-        let task_token_local = self.new_temp_with_ty(self.gcx.types.uint, span);
+        let desc_local = unpack!(
+            block = self.lower_task_output_descriptor_to_local(block, task_output_ty, span)
+        );
+        let task_token_local = self.new_temp_with_ty(task_handle_ty(self.gcx), span);
 
         let executor_spawn_id =
             find_or_register_async_runtime_function(self.gcx, AsyncRuntimeFn::Spawn, span);
@@ -946,13 +943,12 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 }),
                 args: vec![
                     Operand::Copy(Place::from_local(handle_local)),
-                    Operand::Copy(Place::from_local(size_local)),
+                    Operand::Copy(Place::from_local(desc_local)),
                     spawn_metadata[0].clone(),
                     spawn_metadata[1].clone(),
                     spawn_metadata[2].clone(),
                     spawn_metadata[3].clone(),
                 ],
-                devirt_hint: None,
                 destination: Place::from_local(task_token_local),
                 target: after_spawn,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -961,15 +957,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         (after_spawn, task_token_local)
     }
 
-    /// Invoke a spawned operation through `AsyncFnOnce.callOnce` even when its
-    /// concrete closure kind is the reusable `AsyncFn` or `AsyncFnMut`.
-    ///
-    /// Public task APIs are lowered directly at their call site, bypassing the
-    /// generic body in `std.task.spawn`. Calling the concrete closure body here
-    /// would therefore borrow its environment and let the returned child
-    /// future outlive that environment. The interface adapter owns the closure
-    /// in its own async frame and borrows it only for the lifetime of that frame.
-    fn lower_async_fn_once_into_dest(
+    /// Invoke the repeatable AsyncFn adapter. Its reference to the selected
+    /// environment is retained by the child's GC-traced future, including when
+    /// the caller's temporary closure value escapes into that future.
+    fn lower_async_callable_into_dest(
         &mut self,
         destination: Place<'ctx>,
         mut block: BasicBlockId,
@@ -980,8 +971,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let thunk_ty = self.thir.exprs[thunk].ty;
         let interface_id = self
             .gcx
-            .std_item_def(StdItem::AsyncFnOnce)
-            .expect("AsyncFnOnce std item must be available for task lowering");
+            .std_item_def(StdItem::AsyncFn)
+            .expect("AsyncFn std item must be available for task lowering");
         let method_id = self
             .gcx
             .get_interface_requirements(interface_id)
@@ -989,10 +980,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 requirements
                     .methods
                     .iter()
-                    .find(|method| self.gcx.symbol_eq(method.name, "callOnce"))
+                    .find(|method| self.gcx.symbol_eq(method.name, "call"))
                     .map(|method| method.id)
             })
-            .expect("AsyncFnOnce.callOnce requirement must be available for task lowering");
+            .expect("AsyncFn.call requirement must be available for task lowering");
 
         let empty_inputs = self.gcx.store.interners.intern_ty_list(vec![]);
         let args_ty = self
@@ -1011,11 +1002,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             .interners
             .intern_ty_list(vec![thunk_ty, args_ty]);
         let callable_ty = self.gcx.store.interners.intern_ty(TyKind::FnPointer {
+            effects: Default::default(),
             inputs: callable_inputs,
             output: self.gcx.async_handle_ty(),
         });
 
-        let thunk_operand = unpack!(block = self.as_operand(block, thunk));
+        let thunk_place = unpack!(block = self.as_place(block, thunk));
+        let thunk_operand = Operand::Copy(thunk_place);
         let unit_operand = Operand::Constant(Constant {
             ty: args_ty,
             value: mir::ConstantKind::Unit,
@@ -1032,7 +1025,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             TerminatorKind::Call {
                 func: function,
                 args: vec![thunk_operand, unit_operand],
-                devirt_hint: None,
                 destination,
                 target: next,
                 unwind,
@@ -1120,7 +1112,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     Operand::Copy(duration_secs_place(self.gcx, duration_place.clone())),
                     Operand::Copy(duration_nanos_place(self.gcx, duration_place)),
                 ],
-                devirt_hint: None,
                 destination,
                 target: next,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -1159,46 +1150,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     ),
                 }),
                 args: vec![Operand::Copy(Place::from_local(token_local))],
-                devirt_hint: None,
-                destination,
-                target: next,
-                unwind: mir::CallUnwindAction::Terminate,
-            },
-        );
-
-        next.unit()
-    }
-
-    fn lower_detach_task_call(
-        &mut self,
-        destination: Place<'ctx>,
-        mut block: BasicBlockId,
-        args: &[ExprId],
-        span: Span,
-    ) -> BlockAnd<()> {
-        let [task] = args else {
-            panic!("ICE: detach task lowering expects exactly one task argument");
-        };
-
-        let token_local = unpack!(block = self.lower_task_token_local(block, *task, span));
-        let detach_id =
-            find_or_register_async_runtime_function(self.gcx, AsyncRuntimeFn::DetachTask, span);
-        let detach_ty = self.gcx.get_type(detach_id);
-        let next = self.new_block();
-        self.terminate(
-            block,
-            span,
-            TerminatorKind::Call {
-                func: Operand::Constant(Constant {
-                    ty: detach_ty,
-                    value: mir::ConstantKind::Function(
-                        detach_id,
-                        GenericArguments::empty(),
-                        detach_ty,
-                    ),
-                }),
-                args: vec![Operand::Copy(Place::from_local(token_local))],
-                devirt_hint: None,
                 destination,
                 target: next,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -1247,7 +1198,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     ),
                 }),
                 args: vec![Operand::Copy(Place::from_local(token_local))],
-                devirt_hint: None,
                 destination,
                 target: next,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -1308,7 +1258,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     ),
                 }),
                 args: vec![Operand::Copy(Place::from_local(token_local))],
-                devirt_hint: None,
                 destination: Place::from_local(handle_local),
                 target: after_handle,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -1316,6 +1265,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         );
 
         let resume = self.new_block_with_note("task-result-resume".into());
+        let no_result = self.new_block_with_note("task-result-without-value".into());
         let (cancel, cancel_complete) = self.async_cancel_cleanup_target(span);
         let unwind = self.call_unwind_action(span);
         self.terminate(
@@ -1325,6 +1275,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 value: Operand::Copy(Place::from_local(handle_local)),
                 resume,
                 resume_arg: Place::from_local(resume_local),
+                no_result: Some(no_result),
                 cancel,
                 cancel_complete,
                 unwind,
@@ -1340,7 +1291,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let status_ty = self.gcx.get_type(status_id);
         let after_status = self.new_block();
         self.terminate(
-            resume,
+            no_result,
             span,
             TerminatorKind::Call {
                 func: Operand::Constant(Constant {
@@ -1352,15 +1303,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     ),
                 }),
                 args: vec![Operand::Copy(Place::from_local(token_local))],
-                devirt_hint: None,
                 destination: Place::from_local(status_local),
                 target: after_status,
                 unwind: mir::CallUnwindAction::Terminate,
             },
         );
 
-        // Move panic information into a GC-backed payload before reclaiming
-        // the task slot (reclaim clears panic_info).
+        // Each observer receives its own immutable copy of a panic payload.
         let payload_data_local = self.new_temp_with_ty(self.gcx.types.string, span);
         let take_panic_id = find_or_register_async_runtime_function(
             self.gcx,
@@ -1382,48 +1331,22 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     ),
                 }),
                 args: vec![Operand::Copy(Place::from_local(token_local))],
-                devirt_hint: None,
                 destination: Place::from_local(payload_data_local),
                 target: after_take_panic,
                 unwind: mir::CallUnwindAction::Terminate,
             },
         );
 
-        let reclaim_id =
-            find_or_register_async_runtime_function(self.gcx, AsyncRuntimeFn::ReclaimSpawned, span);
-        let reclaim_ty = self.gcx.get_type(reclaim_id);
-        let reclaim_dest = self.new_temp_with_ty(self.gcx.types.void, span);
-        let after_reclaim = self.new_block();
-        self.terminate(
-            after_take_panic,
-            span,
-            TerminatorKind::Call {
-                func: Operand::Constant(Constant {
-                    ty: reclaim_ty,
-                    value: mir::ConstantKind::Function(
-                        reclaim_id,
-                        GenericArguments::empty(),
-                        reclaim_ty,
-                    ),
-                }),
-                args: vec![Operand::Copy(Place::from_local(token_local))],
-                devirt_hint: None,
-                destination: Place::from_local(reclaim_dest),
-                target: after_reclaim,
-                unwind: mir::CallUnwindAction::Terminate,
-            },
-        );
-
-        let ok_block = self.new_block_with_note("task-result-ok".into());
+        let ok_block = resume;
         let cancelled_block = self.new_block_with_note("task-result-cancelled".into());
         let panicked_block = self.new_block_with_note("task-result-panicked".into());
         let join_block = self.new_block_with_note("task-result-join".into());
         self.terminate(
-            after_reclaim,
+            after_take_panic,
             span,
             TerminatorKind::SwitchInt {
                 discr: Operand::Copy(Place::from_local(status_local)),
-                targets: vec![(1, ok_block), (2, cancelled_block)],
+                targets: vec![(2, cancelled_block)],
                 otherwise: panicked_block,
             },
         );
@@ -1439,7 +1362,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                         variant_index: Some(thir::VariantIndex::from_usize(0)),
                         generic_args: result_args,
                     },
-                    fields: IndexVec::from_vec(vec![Operand::Move(Place::from_local(ready_local))]),
+                    fields: IndexVec::from_vec(vec![Operand::Copy(Place::from_local(ready_local))]),
                 },
                 span,
             );
@@ -1482,7 +1405,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     variant_index: Some(thir::VariantIndex::from_usize(1)),
                     generic_args: result_args,
                 },
-                fields: IndexVec::from_vec(vec![Operand::Move(Place::from_local(
+                fields: IndexVec::from_vec(vec![Operand::Copy(Place::from_local(
                     cancelled_error_local,
                 ))]),
             },
@@ -1525,7 +1448,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     variant_index: Some(thir::VariantIndex::from_usize(1)),
                     generic_args: err_args,
                 },
-                fields: IndexVec::from_vec(vec![Operand::Move(Place::from_local(payload_local))]),
+                fields: IndexVec::from_vec(vec![Operand::Copy(Place::from_local(payload_local))]),
             },
             span,
         );
@@ -1538,7 +1461,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     variant_index: Some(thir::VariantIndex::from_usize(1)),
                     generic_args: result_args,
                 },
-                fields: IndexVec::from_vec(vec![Operand::Move(Place::from_local(
+                fields: IndexVec::from_vec(vec![Operand::Copy(Place::from_local(
                     panicked_error_local,
                 ))]),
             },
@@ -1588,7 +1511,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     Operand::Copy(Place::from_local(size_local)),
                     Operand::Copy(Place::from_local(policy_local)),
                 ],
-                devirt_hint: None,
                 destination,
                 target: next,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -1614,7 +1536,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let group_operand = unpack!(block = self.as_operand(block, *group_id));
         let handle_local = self.new_temp_with_ty(self.gcx.async_handle_ty(), span);
         block = self
-            .lower_async_fn_once_into_dest(
+            .lower_async_callable_into_dest(
                 Place::from_local(handle_local),
                 block,
                 *thunk,
@@ -1623,7 +1545,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             )
             .into_block();
 
-        let size_local = unpack!(block = self.lower_size_of_type_to_local(block, result_ty, span));
+        let desc_local =
+            unpack!(block = self.lower_task_output_descriptor_to_local(block, result_ty, span));
         let token_local = self.new_temp_with_ty(self.gcx.types.uint, span);
         let spawn_id =
             find_or_register_async_runtime_function(self.gcx, AsyncRuntimeFn::TaskGroupSpawn, span);
@@ -1645,13 +1568,12 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 args: vec![
                     group_operand,
                     Operand::Copy(Place::from_local(handle_local)),
-                    Operand::Copy(Place::from_local(size_local)),
+                    Operand::Copy(Place::from_local(desc_local)),
                     spawn_metadata[0].clone(),
                     spawn_metadata[1].clone(),
                     spawn_metadata[2].clone(),
                     spawn_metadata[3].clone(),
                 ],
-                devirt_hint: None,
                 destination: Place::from_local(token_local),
                 target: after_spawn,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -1688,7 +1610,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
         let handle_local = self.new_temp_with_ty(self.gcx.async_handle_ty(), span);
         block = self
-            .lower_async_fn_once_into_dest(
+            .lower_async_callable_into_dest(
                 Place::from_local(handle_local),
                 block,
                 *thunk,
@@ -1697,7 +1619,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             )
             .into_block();
 
-        let size_local = unpack!(block = self.lower_size_of_type_to_local(block, result_ty, span));
+        let desc_local =
+            unpack!(block = self.lower_task_output_descriptor_to_local(block, result_ty, span));
         let token_local = self.new_temp_with_ty(self.gcx.types.uint, span);
         let spawn_id =
             find_or_register_async_runtime_function(self.gcx, AsyncRuntimeFn::TaskGroupSpawn, span);
@@ -1719,13 +1642,12 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 args: vec![
                     Operand::Copy(group_place),
                     Operand::Copy(Place::from_local(handle_local)),
-                    Operand::Copy(Place::from_local(size_local)),
+                    Operand::Copy(Place::from_local(desc_local)),
                     spawn_metadata[0].clone(),
                     spawn_metadata[1].clone(),
                     spawn_metadata[2].clone(),
                     spawn_metadata[3].clone(),
                 ],
-                devirt_hint: None,
                 destination: Place::from_local(token_local),
                 target: after_spawn,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -1767,7 +1689,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     value: mir::ConstantKind::Function(next_id, GenericArguments::empty(), next_ty),
                 }),
                 args: vec![group_operand],
-                devirt_hint: None,
                 destination,
                 target: next,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -1822,7 +1743,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     value: mir::ConstantKind::Function(next_id, GenericArguments::empty(), next_ty),
                 }),
                 args: vec![Operand::Copy(Place::from_local(group_local))],
-                devirt_hint: None,
                 destination: Place::from_local(handle_local),
                 target: after_handle,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -1830,6 +1750,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         );
 
         let resume = self.new_block_with_note("task-group-next-resume".into());
+        let no_result = self.new_block_with_note("task-group-next-without-value".into());
         let (cancel, cancel_complete) = self.async_cancel_cleanup_target(span);
         let unwind = self.call_unwind_action(span);
         self.terminate(
@@ -1839,52 +1760,16 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 value: Operand::Copy(Place::from_local(handle_local)),
                 resume,
                 resume_arg: Place::from_local(ready_local),
+                no_result: Some(no_result),
                 cancel,
                 cancel_complete,
                 unwind,
             },
         );
 
-        let status_local = self.new_temp_with_ty(self.gcx.types.uint8, span);
-        let status_id = find_or_register_async_runtime_function(
-            self.gcx,
-            AsyncRuntimeFn::TaskGroupNextStatus,
-            span,
-        );
-        let status_ty = self.gcx.get_type(status_id);
-        let after_status = self.new_block();
-        self.terminate(
-            resume,
-            span,
-            TerminatorKind::Call {
-                func: Operand::Constant(Constant {
-                    ty: status_ty,
-                    value: mir::ConstantKind::Function(
-                        status_id,
-                        GenericArguments::empty(),
-                        status_ty,
-                    ),
-                }),
-                args: vec![Operand::Copy(Place::from_local(group_local))],
-                devirt_hint: None,
-                destination: Place::from_local(status_local),
-                target: after_status,
-                unwind: mir::CallUnwindAction::Terminate,
-            },
-        );
-
-        let some_block = self.new_block_with_note("task-group-next-some".into());
-        let none_block = self.new_block_with_note("task-group-next-none".into());
+        let some_block = resume;
+        let none_block = no_result;
         let join_block = self.new_block_with_note("task-group-next-join".into());
-        self.terminate(
-            after_status,
-            span,
-            TerminatorKind::SwitchInt {
-                discr: Operand::Copy(Place::from_local(status_local)),
-                targets: vec![(1, some_block)],
-                otherwise: none_block,
-            },
-        );
 
         self.push_assign(
             some_block,
@@ -1895,7 +1780,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     variant_index: Some(thir::VariantIndex::from_usize(0)),
                     generic_args: optional_args,
                 },
-                fields: IndexVec::from_vec(vec![Operand::Move(Place::from_local(ready_local))]),
+                fields: IndexVec::from_vec(vec![Operand::Copy(Place::from_local(ready_local))]),
             },
             span,
         );
@@ -1997,7 +1882,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     value: mir::ConstantKind::Function(call_id, GenericArguments::empty(), call_ty),
                 }),
                 args: vec![group_operand],
-                devirt_hint: None,
                 destination,
                 target: next,
                 // This runtime helper re-panics when a child panic was recorded,
@@ -2034,7 +1918,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     value: mir::ConstantKind::Function(call_id, GenericArguments::empty(), call_ty),
                 }),
                 args: vec![group_operand],
-                devirt_hint: None,
                 destination,
                 target: next,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -2052,22 +1935,64 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     ) -> BlockAnd<LocalId> {
         let mut task_place = unpack!(block = self.as_place(block, task));
         let task_is_indirect = matches!(
-            self.thir.exprs[task].ty.kind(),
+            crate::sema::tycheck::utils::normalize_aliases(self.gcx, self.thir.exprs[task].ty)
+                .kind(),
             TyKind::Reference(..) | TyKind::Pointer(..)
         );
         if task_is_indirect {
             task_place.projection.push(PlaceElem::Deref);
-        } else {
-            self.deactivate_task_cleanup(block, &task_place, span);
         }
-        let token_local = self.new_temp_with_ty(self.gcx.types.uint, span);
+        let token_local = self.new_temp_with_ty(task_handle_ty(self.gcx), span);
+        let token = task_token_place(self.gcx, task_place);
         self.push_assign(
             block,
             Place::from_local(token_local),
-            Rvalue::Use(Operand::Copy(task_token_place(self.gcx, task_place))),
+            Rvalue::Use(Operand::Copy(token)),
             span,
         );
         block.and(token_local)
+    }
+
+    fn lower_task_output_descriptor_to_local(
+        &mut self,
+        block: BasicBlockId,
+        ty: Ty<'ctx>,
+        span: Span,
+    ) -> BlockAnd<LocalId> {
+        let id = find_std_function(
+            self.gcx,
+            "intrinsic",
+            "__intrinsic_task_output_descriptor",
+            span,
+        )
+        .unwrap_or_else(|_| panic!("task lowering requires its output descriptor intrinsic"));
+        let generic_args = self
+            .gcx
+            .store
+            .interners
+            .intern_generic_args(vec![GenericArgument::Type(ty)]);
+        let function_ty = crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args(
+            self.gcx,
+            self.gcx.get_type(id),
+            generic_args,
+        );
+        let local = self.new_temp_with_ty(self.gcx.get_signature(id).output, span);
+        let next = self.new_block();
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: function_ty,
+                    value: mir::ConstantKind::Function(id, generic_args, function_ty),
+                }),
+                args: vec![],
+                destination: Place::from_local(local),
+                target: next,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+        next.and(local)
     }
 
     fn lower_size_of_type_to_local(
@@ -2109,7 +2034,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     ),
                 }),
                 args: vec![],
-                devirt_hint: None,
                 destination: Place::from_local(size_local),
                 target: after_size,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -2171,7 +2095,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     value: mir::ConstantKind::Function(wait_id, GenericArguments::empty(), wait_ty),
                 }),
                 args: vec![source_id_operand],
-                devirt_hint: None,
                 destination,
                 target: next,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -2239,10 +2162,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         self.is_hidden_intrinsic_named(callee, "__intrinsic_blocking")
     }
 
-    fn is_hidden_add_cleanup_intrinsic(&self, callee: ExprId) -> bool {
-        self.is_hidden_intrinsic_named(callee, "__intrinsic_add_cleanup")
-    }
-
     fn lower_dump_tasks_call(
         &mut self,
         destination: Place<'ctx>,
@@ -2266,7 +2185,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     value: mir::ConstantKind::Function(func_id, GenericArguments::empty(), func_ty),
                 }),
                 args: vec![],
-                devirt_hint: None,
                 destination,
                 target: next,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -2313,7 +2231,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     Operand::Copy(Place::from_local(first_token)),
                     Operand::Copy(Place::from_local(second_token)),
                 ],
-                devirt_hint: None,
                 destination,
                 target: next,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -2362,7 +2279,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     Operand::Copy(duration_secs_place(self.gcx, duration_place.clone())),
                     Operand::Copy(duration_nanos_place(self.gcx, duration_place)),
                 ],
-                devirt_hint: None,
                 destination,
                 target: next,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -2390,18 +2306,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
         let output_ty = intrinsic_type_arg(self.thir, callee, 0);
         let closure_ty = intrinsic_type_arg(self.thir, callee, 1);
-        if !self.type_is_sendable_in_current_definition(closure_ty) {
-            self.gcx.dcx().emit_error(
-                "std.task.blocking closure captures must be Sendable".into(),
-                Some(self.thir.exprs[*thunk].span),
-            );
-        }
-        if !self.type_is_sendable_in_current_definition(output_ty) {
-            self.gcx.dcx().emit_error(
-                "std.task.blocking result must be Sendable".into(),
-                Some(span),
-            );
-        }
         let generic_args = self.gcx.store.interners.intern_generic_args(vec![
             GenericArgument::Type(output_ty),
             GenericArgument::Type(closure_ty),
@@ -2414,6 +2318,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             .unwrap_or_else(|_| panic!("blocking lowering requires std.task.__blockingInvoke"));
         let adapter_inputs = self.gcx.store.interners.intern_ty_list(vec![closure_ty]);
         let adapter_ty = self.gcx.store.interners.intern_ty(TyKind::FnPointer {
+            effects: Default::default(),
             inputs: adapter_inputs,
             output: self.gcx.async_handle_ty(),
         });
@@ -2429,7 +2334,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     value: mir::ConstantKind::Function(adapter_id, generic_args, adapter_ty),
                 }),
                 args: vec![thunk_operand],
-                devirt_hint: None,
                 destination: Place::from_local(adapter_local),
                 target: after_adapter,
                 unwind: adapter_unwind,
@@ -2437,39 +2341,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         );
         block = after_adapter;
 
-        let desc_id = find_std_function(self.gcx, "intrinsic", "__intrinsic_gc_desc", span)
-            .unwrap_or_else(|_| {
-                panic!("blocking lowering requires std.intrinsic.__intrinsic_gc_desc")
-            });
-        let desc_fn_ty = self.gcx.get_type(desc_id);
-        let desc_ty = self.gcx.get_signature(desc_id).output;
-        let desc_local = self.new_temp_with_ty(desc_ty, span);
-        let after_desc = self.new_block();
-        self.terminate(
-            block,
-            span,
-            TerminatorKind::Call {
-                func: Operand::Constant(Constant {
-                    ty: desc_fn_ty,
-                    value: mir::ConstantKind::Function(
-                        desc_id,
-                        self.gcx
-                            .store
-                            .interners
-                            .intern_generic_args(vec![GenericArgument::Type(output_ty)]),
-                        desc_fn_ty,
-                    ),
-                }),
-                args: vec![],
-                devirt_hint: None,
-                destination: Place::from_local(desc_local),
-                target: after_desc,
-                unwind: mir::CallUnwindAction::Terminate,
-            },
-        );
-        block = after_desc;
-
-        let size_local = unpack!(block = self.lower_size_of_type_to_local(block, output_ty, span));
+        let desc_local =
+            unpack!(block = self.lower_task_output_descriptor_to_local(block, output_ty, span));
         let runtime_id =
             find_or_register_async_runtime_function(self.gcx, AsyncRuntimeFn::Blocking, span);
         let runtime_ty = self.gcx.get_type(runtime_id);
@@ -2488,162 +2361,14 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 }),
                 args: vec![
                     Operand::Copy(Place::from_local(adapter_local)),
-                    Operand::Copy(Place::from_local(size_local)),
                     Operand::Copy(Place::from_local(desc_local)),
                 ],
-                devirt_hint: None,
                 destination,
                 target: next,
                 unwind: mir::CallUnwindAction::Terminate,
             },
         );
         next.unit()
-    }
-
-    fn lower_add_cleanup_call(
-        &mut self,
-        destination: Place<'ctx>,
-        mut block: BasicBlockId,
-        callee: ExprId,
-        args: &[ExprId],
-        span: Span,
-    ) -> BlockAnd<()> {
-        let [owner, state, cleanup] = args else {
-            panic!("ICE: cleanup lowering expects owner, state, and callback arguments");
-        };
-        assert_eq!(
-            self.body.place_ty(self.gcx, &destination),
-            self.gcx.types.uint,
-            "ICE: cleanup intrinsic must lower into a usize token destination"
-        );
-
-        let state_ty = intrinsic_type_arg(self.thir, callee, 1);
-        let cleanup_ty = intrinsic_type_arg(self.thir, callee, 2);
-        if !self.type_is_sendable_in_current_definition(state_ty) {
-            self.gcx.dcx().emit_error(
-                "std.runtime.addCleanup state must be Sendable".into(),
-                Some(self.thir.exprs[*state].span),
-            );
-        }
-        if !self.type_is_sendable_in_current_definition(cleanup_ty) {
-            self.gcx.dcx().emit_error(
-                "std.runtime.addCleanup callback captures must be Sendable".into(),
-                Some(self.thir.exprs[*cleanup].span),
-            );
-        }
-
-        // Evaluate and preserve the owner address before moving state into the
-        // adapter frame. Registration itself does not retain this pointer.
-        let owner_operand = unpack!(block = self.as_operand(block, *owner));
-        let owner_ptr_ty = crate::sema::models::Ty::new(
-            TyKind::Pointer(self.gcx.types.uint8, crate::hir::Mutability::Immutable),
-            self.gcx,
-        );
-        let owner_ptr_local = self.new_temp_with_ty(owner_ptr_ty, span);
-        self.push_assign(
-            block,
-            Place::from_local(owner_ptr_local),
-            Rvalue::Cast {
-                operand: owner_operand,
-                ty: owner_ptr_ty,
-                kind: CastKind::Pointer,
-            },
-            span,
-        );
-
-        // The async frame gives the runtime one rooted, type-erased owner for
-        // both cleanup state and the callback until cancellation or execution.
-        let state_operand = unpack!(block = self.as_operand(block, *state));
-        let cleanup_operand = unpack!(block = self.as_operand(block, *cleanup));
-        let adapter_id = find_std_function(self.gcx, "runtime", "__cleanupInvoke", span)
-            .unwrap_or_else(|_| panic!("cleanup lowering requires std.runtime.__cleanupInvoke"));
-        let generic_args = self.gcx.store.interners.intern_generic_args(vec![
-            GenericArgument::Type(state_ty),
-            GenericArgument::Type(cleanup_ty),
-        ]);
-        let adapter_inputs = self
-            .gcx
-            .store
-            .interners
-            .intern_ty_list(vec![state_ty, cleanup_ty]);
-        let adapter_ty = self.gcx.store.interners.intern_ty(TyKind::FnPointer {
-            inputs: adapter_inputs,
-            output: self.gcx.async_handle_ty(),
-        });
-        let adapter_local = self.new_temp_with_ty(self.gcx.async_handle_ty(), span);
-        let after_adapter = self.new_block();
-        let adapter_unwind = self.call_unwind_action(span);
-        self.terminate(
-            block,
-            span,
-            TerminatorKind::Call {
-                func: Operand::Constant(Constant {
-                    ty: adapter_ty,
-                    value: mir::ConstantKind::Function(adapter_id, generic_args, adapter_ty),
-                }),
-                args: vec![state_operand, cleanup_operand],
-                devirt_hint: None,
-                destination: Place::from_local(adapter_local),
-                target: after_adapter,
-                unwind: adapter_unwind,
-            },
-        );
-        block = after_adapter;
-
-        let runtime_id = find_or_register_async_runtime_function(
-            self.gcx,
-            AsyncRuntimeFn::CleanupRegister,
-            span,
-        );
-        let runtime_ty = self.gcx.get_type(runtime_id);
-        let next = self.new_block();
-        self.terminate(
-            block,
-            span,
-            TerminatorKind::Call {
-                func: Operand::Constant(Constant {
-                    ty: runtime_ty,
-                    value: mir::ConstantKind::Function(
-                        runtime_id,
-                        GenericArguments::empty(),
-                        runtime_ty,
-                    ),
-                }),
-                args: vec![
-                    Operand::Copy(Place::from_local(owner_ptr_local)),
-                    Operand::Copy(Place::from_local(adapter_local)),
-                ],
-                devirt_hint: None,
-                destination,
-                target: next,
-                unwind: mir::CallUnwindAction::Terminate,
-            },
-        );
-        next.unit()
-    }
-
-    fn type_is_sendable_in_current_definition(&self, ty: crate::sema::models::Ty<'ctx>) -> bool {
-        let Some(sendable_id) = self.gcx.std_item_def(StdItem::Sendable) else {
-            return false;
-        };
-        let constraints =
-            crate::sema::tycheck::constraints::canonical_constraints_of(self.gcx, self.thir.id)
-                .into_iter()
-                .map(|constraint| constraint.value)
-                .collect::<Vec<_>>();
-        let param_env = self.gcx.store.arenas.global.alloc_slice_clone(&constraints);
-        let goal = crate::sema::models::InterfaceGoal {
-            interface_id: sendable_id,
-            self_ty: ty,
-            interface_args: GenericArguments::empty(),
-            bindings: &[],
-            param_env,
-        };
-        matches!(
-            self.gcx
-                .prove_interface_goal(goal, crate::sema::models::SelectionMode::Typecheck,),
-            crate::sema::models::GoalResult::Proven
-        )
     }
 
     fn lower_is_task_cancelled_call(
@@ -2677,7 +2402,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     value: mir::ConstantKind::Function(func_id, GenericArguments::empty(), func_ty),
                 }),
                 args: vec![],
-                devirt_hint: None,
                 destination,
                 target: next,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -2763,10 +2487,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         self.is_hidden_intrinsic_named(callee, "__intrinsic_cancel_task")
     }
 
-    fn is_hidden_detach_task_intrinsic(&self, callee: ExprId) -> bool {
-        self.is_hidden_intrinsic_named(callee, "__intrinsic_detach_task")
-    }
-
     fn is_hidden_task_result_intrinsic(&self, callee: ExprId) -> bool {
         self.is_hidden_intrinsic_named(callee, "__intrinsic_task_result")
     }
@@ -2834,7 +2554,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     value: mir::ConstantKind::Function(msg_id, GenericArguments::empty(), msg_ty),
                 }),
                 args: vec![data_operand],
-                devirt_hint: None,
                 destination,
                 target: next,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -2875,7 +2594,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     ),
                 }),
                 args: vec![data_operand],
-                devirt_hint: None,
                 destination,
                 target: next,
                 // The runtime helper re-raises the captured panic, so the
@@ -2902,6 +2620,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                         .store
                         .interners
                         .intern_ty(crate::sema::models::TyKind::FnPointer {
+                            effects: Default::default(),
                             inputs,
                             output: self.gcx.async_handle_ty(),
                         }),
@@ -2942,7 +2661,26 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         scrutinee: ExprId,
     ) -> BlockAnd<()> {
         let expr = &self.thir.exprs[expr_id];
-        let scrutinee_place = unpack!(block = self.as_place(block, scrutinee));
+        let mut scrutinee_place = unpack!(block = self.as_place(block, scrutinee));
+        let ExprKind::Match { arms, .. } = &expr.kind else {
+            unreachable!()
+        };
+        if arms.iter().any(|arm| self.thir.arms[*arm].guard.is_some()) {
+            // A guard may replace the source through any alias. Freeze value
+            // storage before testing patterns so fallback projections remain
+            // valid. Unguarded matches inspect the source directly.
+            let local = self.new_temp_with_ty(self.thir.exprs[scrutinee].ty, expr.span);
+            self.push_storage_live(block, local, expr.span);
+            self.register_storage_cleanup(local, expr.span);
+            let snapshot = Place::from_local(local);
+            self.push_assign(
+                block,
+                snapshot.clone(),
+                Rvalue::Use(Operand::Copy(scrutinee_place)),
+                expr.span,
+            );
+            scrutinee_place = snapshot;
+        }
 
         let tree = &self
             .thir
@@ -2953,7 +2691,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
         let mut var_places: FxHashMap<usize, Place<'ctx>> = FxHashMap::default();
         var_places.insert(tree.root_var.id, scrutinee_place.clone());
-        self.apply_deref_vars(&mut var_places, &tree.deref_vars);
 
         let join_block = self.new_block_with_note("match-join".into());
         let mut join_has_incoming = false;
@@ -2965,7 +2702,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             &mut join_has_incoming,
             &var_places,
             expr.span,
-            &tree.deref_vars,
+            None,
         );
         if !join_has_incoming {
             self.terminate(join_block, expr.span, TerminatorKind::Unreachable);
@@ -2973,28 +2710,45 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         join_block.unit()
     }
 
-    fn apply_deref_vars(
-        &self,
-        var_places: &mut FxHashMap<usize, Place<'ctx>>,
-        deref_vars: &[thir::match_tree::DerefVar],
+    /// Binding copies belong to this arm, including on early exit or unwind.
+    /// A successful guard passes its existing copies through to the body.
+    fn lower_match_arm(
+        &mut self,
+        block: BasicBlockId,
+        body: &thir::match_tree::Body<'ctx>,
+        destination: &Place<'ctx>,
+        join_block: BasicBlockId,
+        join_has_incoming: &mut bool,
+        var_places: &FxHashMap<usize, Place<'ctx>>,
+        prepared: Option<(Option<CleanupId>, CleanupScopeId)>,
     ) {
-        for deref_var in deref_vars {
-            if var_places.contains_key(&deref_var.deref) {
-                continue;
-            }
-            let Some(base_place) = var_places.get(&deref_var.base) else {
-                continue;
-            };
-            let mut proj = base_place.projection.clone();
-            proj.push(PlaceElem::Deref);
-            var_places.insert(
-                deref_var.deref,
-                Place {
-                    local: base_place.local,
-                    projection: proj,
-                },
+        let (saved_cleanup, saved_scope) =
+            prepared.unwrap_or((self.current_cleanup, self.current_cleanup_scope));
+        let block = if prepared.is_none() {
+            self.current_cleanup_scope = self.fresh_cleanup_scope();
+            self.bind_match_bindings(block, body.arm, &body.bindings, var_places)
+                .into_block()
+        } else {
+            block
+        };
+        let arm = &self.thir.arms[body.arm];
+        let block = self
+            .expr_into_dest(destination.clone(), block, arm.body)
+            .into_block();
+        if self.body.basic_blocks[block].terminator.is_none() {
+            let mut cache = FxHashMap::default();
+            cache.insert(saved_cleanup, join_block);
+            let cleanup = self.ensure_cleanup_path(
+                self.current_cleanup,
+                saved_cleanup,
+                join_block,
+                &mut cache,
             );
+            self.goto(block, cleanup, arm.span);
+            *join_has_incoming = true;
         }
+        self.current_cleanup = saved_cleanup;
+        self.current_cleanup_scope = saved_scope;
     }
 
     fn lower_match_decision(
@@ -3006,53 +2760,131 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         join_has_incoming: &mut bool,
         var_places: &FxHashMap<usize, Place<'ctx>>,
         span: Span,
-        deref_vars: &[thir::match_tree::DerefVar],
+        condition_targets: Option<(BasicBlockId, BasicBlockId)>,
     ) {
         match decision {
+            thir::match_tree::Decision::Dereference {
+                source,
+                target,
+                next,
+            } => {
+                let mut referent = var_places
+                    .get(&source.id)
+                    .expect("structural reference source")
+                    .clone();
+                referent.projection.push(PlaceElem::Deref);
+                if next.has_guard() {
+                    // Only the read value is frozen: ordinary reference/handle
+                    // bindings still retain their shared-target semantics.
+                    let snapshot = self.new_temp_with_ty(target.ty, span);
+                    let place = Place::from_local(snapshot);
+                    self.push_assign(
+                        block,
+                        place.clone(),
+                        Rvalue::Use(Operand::Copy(referent)),
+                        span,
+                    );
+                    referent = place;
+                }
+                let mut places = var_places.clone();
+                places.insert(target.id, referent);
+                self.lower_match_decision(
+                    block,
+                    next,
+                    destination,
+                    join_block,
+                    join_has_incoming,
+                    &places,
+                    span,
+                    condition_targets,
+                );
+            }
             thir::match_tree::Decision::Success(body) => {
                 let arm = &self.thir.arms[body.arm];
                 let arm_block = self.new_block_with_note(format!("match-arm-{}", body.arm.index()));
                 if !self.goto_if_fallthrough(block, arm_block, span) {
                     return;
                 }
-                let arm_block = self
-                    .bind_match_bindings(arm_block, body.arm, &body.bindings, var_places)
-                    .into_block();
-                let arm_block = self
-                    .expr_into_dest(destination.clone(), arm_block, arm.body)
-                    .into_block();
-                if self.goto_if_fallthrough(arm_block, join_block, arm.span) {
-                    *join_has_incoming = true;
+                if let Some((if_true, if_false)) = condition_targets {
+                    let arm_block = self
+                        .bind_match_bindings(arm_block, body.arm, &body.bindings, var_places)
+                        .into_block();
+                    let ExprKind::Literal(thir::Constant {
+                        value: thir::ConstantKind::Bool(value),
+                        ..
+                    }) = &self.thir.exprs[arm.body].kind
+                    else {
+                        panic!("binding-condition decision must end in a boolean literal");
+                    };
+                    self.goto(arm_block, if *value { if_true } else { if_false }, arm.span);
+                    return;
                 }
+                self.lower_match_arm(
+                    arm_block,
+                    body,
+                    destination,
+                    join_block,
+                    join_has_incoming,
+                    var_places,
+                    None,
+                );
             }
             thir::match_tree::Decision::Failure => {
                 self.terminate(block, span, TerminatorKind::Unreachable);
             }
             thir::match_tree::Decision::Guard(guard_expr, body, fallback) => {
+                assert!(
+                    condition_targets.is_none(),
+                    "binding conditions have no guarded arms"
+                );
                 let arm = &self.thir.arms[body.arm];
                 let guard_block =
                     self.new_block_with_note(format!("match-guard-{}", body.arm.index()));
                 if !self.goto_if_fallthrough(block, guard_block, span) {
                     return;
                 }
+                // Guard and body share one set of writable binding copies.
+                // Failed candidates discard those copies before the fallback.
+                let saved_cleanup = self.current_cleanup;
+                let saved_scope = self.current_cleanup_scope;
+                self.current_cleanup_scope = self.fresh_cleanup_scope();
                 block = self
                     .bind_match_bindings(guard_block, body.arm, &body.bindings, var_places)
                     .into_block();
                 let guard_operand = unpack!(block = self.as_operand(block, *guard_expr));
+                let candidate_cleanup = self.current_cleanup;
+                let candidate_scope = self.current_cleanup_scope;
                 let then_block =
                     self.new_block_with_note(format!("match-arm-{}", body.arm.index()));
+                let discard_block = self.new_block_with_note("match-guard-discard".into());
                 let else_block = self.new_block_with_note("match-guard-fallback".into());
                 self.terminate(
                     block,
                     arm.span,
-                    TerminatorKind::if_(guard_operand, then_block, else_block),
+                    TerminatorKind::if_(guard_operand, then_block, discard_block),
                 );
-                let then_block = self
-                    .expr_into_dest(destination.clone(), then_block, arm.body)
-                    .into_block();
-                if self.goto_if_fallthrough(then_block, join_block, arm.span) {
-                    *join_has_incoming = true;
-                }
+                self.lower_match_arm(
+                    then_block,
+                    body,
+                    destination,
+                    join_block,
+                    join_has_incoming,
+                    var_places,
+                    Some((saved_cleanup, saved_scope)),
+                );
+                self.current_cleanup = candidate_cleanup;
+                self.current_cleanup_scope = candidate_scope;
+                let mut cache = FxHashMap::default();
+                cache.insert(saved_cleanup, else_block);
+                let cleanup = self.ensure_cleanup_path(
+                    candidate_cleanup,
+                    saved_cleanup,
+                    else_block,
+                    &mut cache,
+                );
+                self.goto(discard_block, cleanup, arm.span);
+                self.current_cleanup = saved_cleanup;
+                self.current_cleanup_scope = saved_scope;
                 self.lower_match_decision(
                     else_block,
                     fallback,
@@ -3061,7 +2893,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     join_has_incoming,
                     var_places,
                     span,
-                    deref_vars,
+                    condition_targets,
                 );
             }
             thir::match_tree::Decision::Switch(branch_var, cases, fallback) => {
@@ -3080,7 +2912,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                             join_has_incoming,
                             var_places,
                             span,
-                            deref_vars,
+                            condition_targets,
                         );
                     } else {
                         self.terminate(block, span, TerminatorKind::Unreachable);
@@ -3089,7 +2921,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 };
 
                 match &first_case.constructor {
-                    thir::match_tree::Constructor::Tuple(_) => {
+                    thir::match_tree::Constructor::Tuple(_)
+                    | thir::match_tree::Constructor::Struct(_) => {
                         if cases.len() != 1 {
                             self.terminate(block, span, TerminatorKind::Unreachable);
                             return;
@@ -3097,7 +2930,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                         let case = &cases[0];
                         let mut case_places = var_places.clone();
                         self.add_tuple_case_places(&mut case_places, branch_place, &case.arguments);
-                        self.apply_deref_vars(&mut case_places, deref_vars);
                         self.lower_match_decision(
                             block,
                             &case.body,
@@ -3106,7 +2938,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                             join_has_incoming,
                             &case_places,
                             span,
-                            deref_vars,
+                            condition_targets,
                         );
                     }
                     thir::match_tree::Constructor::Literal(
@@ -3126,7 +2958,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                             join_has_incoming,
                             var_places,
                             span,
-                            deref_vars,
+                            condition_targets,
                         );
                     }
                     _ => {
@@ -3162,7 +2994,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                                         variant_index,
                                         &case.arguments,
                                     );
-                                    self.apply_deref_vars(&mut case_places, deref_vars);
                                     *index as u128
                                 }
                                 thir::match_tree::Constructor::Literal(
@@ -3177,7 +3008,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                                 | thir::match_tree::Constructor::Literal(
                                     thir::match_tree::LiteralKey::String(_),
                                 )
-                                | thir::match_tree::Constructor::Tuple(_) => {
+                                | thir::match_tree::Constructor::Tuple(_)
+                                | thir::match_tree::Constructor::Struct(_) => {
                                     self.terminate(block, span, TerminatorKind::Unreachable);
                                     return;
                                 }
@@ -3191,7 +3023,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                                 join_has_incoming,
                                 &case_places,
                                 span,
-                                deref_vars,
+                                condition_targets,
                             );
                             targets.push((value, case_block));
                         }
@@ -3206,7 +3038,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                                 join_has_incoming,
                                 var_places,
                                 span,
-                                deref_vars,
+                                condition_targets,
                             );
                             fallback_block
                         } else {
@@ -3242,7 +3074,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         join_has_incoming: &mut bool,
         var_places: &FxHashMap<usize, Place<'ctx>>,
         span: Span,
-        deref_vars: &[thir::match_tree::DerefVar],
+        condition_targets: Option<(BasicBlockId, BasicBlockId)>,
     ) {
         if cases.is_empty() {
             if let Some(fallback) = fallback {
@@ -3254,7 +3086,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     join_has_incoming,
                     var_places,
                     span,
-                    deref_vars,
+                    condition_targets,
                 );
             } else {
                 self.terminate(block, span, TerminatorKind::Unreachable);
@@ -3272,7 +3104,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 join_has_incoming,
                 var_places,
                 span,
-                deref_vars,
+                condition_targets,
             );
             fb
         });
@@ -3314,7 +3146,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 join_has_incoming,
                 var_places,
                 span,
-                deref_vars,
+                condition_targets,
             );
 
             block = next_block;
@@ -3364,7 +3196,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 TerminatorKind::Call {
                     func: string_eq_func,
                     args: vec![Operand::Copy(branch_place.clone()), rhs],
-                    devirt_hint: None,
                     destination: destination.clone(),
                     target: next_block,
                     unwind,
@@ -3397,245 +3228,118 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         block.and(Operand::Copy(Place::from_local(temp)))
     }
 
-    /// Allocates a GC-tracked buffer and fills it with the given element expressions.
-    /// Returns (block, buf_ptr_u8_place, buf_ptr_t_local, len_const).
-    fn fill_element_buffer(
-        &mut self,
-        mut block: BasicBlockId,
-        args: &[ExprId],
-        elem_ty: crate::sema::models::Ty<'ctx>,
-        span: Span,
-    ) -> (BasicBlockId, Place<'ctx>, LocalId, Operand<'ctx>) {
-        let count = args.len();
-        let usize_ty = self.gcx.types.uint;
-
-        let makebuf_id = self.find_function_in_std("mem", "__gc__makebuf", span);
-        let desc_fn_id = self.find_function_in_std("intrinsic", "__intrinsic_gc_desc", span);
-        let ptr_add_id = self.find_function_in_std("intrinsic", "__intrinsic_ptr_add", span);
-
-        // 1. Call __intrinsic_gc_desc[T]().
-        let generics = vec![crate::sema::models::GenericArgument::Type(elem_ty)];
-        let generics = self.gcx.store.interners.intern_generic_args(generics);
-        let desc_fn_ty = self.gcx.get_type(desc_fn_id);
-        let desc_output = match desc_fn_ty.kind() {
-            crate::sema::models::TyKind::FnPointer { output, .. } => output,
-            _ => panic!("__intrinsic_gc_desc must be a function"),
-        };
-        let desc_func_op = Operand::Constant(Constant {
-            ty: desc_fn_ty,
-            value: mir::ConstantKind::Function(desc_fn_id, generics, desc_fn_ty),
-        });
-
-        let next_block = self.new_block();
-        let desc_dest = Place::from_local(self.new_temp_with_ty(desc_output, span));
-
-        self.terminate(
-            block,
-            span,
-            TerminatorKind::Call {
-                func: desc_func_op,
-                args: vec![],
-                devirt_hint: None,
-                destination: desc_dest.clone(),
-                target: next_block,
-                unwind: mir::CallUnwindAction::Terminate,
-            },
-        );
-        block = next_block;
-
-        // 2. Call __gc__makebuf(desc, count, count)
-        let makebuf_fn_ty = self.gcx.get_type(makebuf_id);
-        let makebuf_output = match makebuf_fn_ty.kind() {
-            crate::sema::models::TyKind::FnPointer { output, .. } => output,
-            _ => panic!("__gc__makebuf must be a function"),
-        };
-
-        let len_const = Operand::Constant(Constant {
-            ty: usize_ty,
-            value: mir::ConstantKind::Integer(count as u64),
-        });
-
-        let makebuf_generic_args = self.gcx.store.interners.intern_generic_args(vec![]);
-        let makebuf_func = Operand::Constant(Constant {
-            ty: makebuf_fn_ty,
-            value: mir::ConstantKind::Function(makebuf_id, makebuf_generic_args, makebuf_fn_ty),
-        });
-
-        let buf_ptr_dest = Place::from_local(self.new_temp_with_ty(makebuf_output, span));
-        let next_block_2 = self.new_block();
-        let makebuf_unwind = self.call_unwind_action(span);
-
-        self.terminate(
-            block,
-            span,
-            TerminatorKind::Call {
-                func: makebuf_func,
-                args: vec![
-                    Operand::Copy(desc_dest),
-                    len_const.clone(),
-                    len_const.clone(),
-                ],
-                devirt_hint: None,
-                destination: buf_ptr_dest.clone(),
-                target: next_block_2,
-                unwind: makebuf_unwind,
-            },
-        );
-        block = next_block_2;
-
-        // 3. Cast *mut u8 to *mut T.
-        let ptr_t_ty = crate::sema::models::Ty::new(
-            crate::sema::models::TyKind::Pointer(elem_ty, crate::hir::Mutability::Mutable),
-            self.gcx,
-        );
-        let buf_ptr_t = self.new_temp_with_ty(ptr_t_ty, span);
-
-        self.push_assign(
-            block,
-            Place::from_local(buf_ptr_t),
-            Rvalue::Cast {
-                kind: CastKind::Pointer,
-                operand: Operand::Copy(buf_ptr_dest.clone()),
-                ty: ptr_t_ty,
-            },
-            span,
-        );
-
-        // 4. Fill buffer.
-        let ptr_add_generics = self
-            .gcx
-            .store
-            .interners
-            .intern_generic_args(vec![crate::sema::models::GenericArgument::Type(elem_ty)]);
-
-        let ptr_add_ty = self.gcx.get_type(ptr_add_id);
-        let ptr_add_output = match ptr_add_ty.kind() {
-            crate::sema::models::TyKind::FnPointer { output, .. } => {
-                crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args(
-                    self.gcx,
-                    output,
-                    ptr_add_generics,
-                )
-            }
-            _ => panic!("__intrinsic_ptr_add must be a function"),
-        };
-
-        let ptr_add_func = Operand::Constant(Constant {
-            ty: ptr_add_ty,
-            value: mir::ConstantKind::Function(ptr_add_id, ptr_add_generics, ptr_add_ty),
-        });
-
-        for (i, arg_expr_id) in args.iter().enumerate() {
-            let arg_operand = unpack!(block = self.as_operand(block, *arg_expr_id));
-
-            let offset_ptr_place = if i == 0 {
-                Place::from_local(buf_ptr_t)
-            } else {
-                let next_block_loop = self.new_block();
-                let temp_ptr = self.new_temp_with_ty(ptr_add_output, span);
-                let idx_op = Operand::Constant(Constant {
-                    ty: usize_ty,
-                    value: mir::ConstantKind::Integer(i as u64),
-                });
-
-                self.terminate(
-                    block,
-                    span,
-                    TerminatorKind::Call {
-                        func: ptr_add_func.clone(),
-                        args: vec![Operand::Copy(Place::from_local(buf_ptr_t)), idx_op],
-                        devirt_hint: None,
-                        destination: Place::from_local(temp_ptr),
-                        target: next_block_loop,
-                        unwind: mir::CallUnwindAction::Terminate,
-                    },
-                );
-                block = next_block_loop;
-
-                let temp_mut_ptr = self.new_temp_with_ty(ptr_t_ty, span);
-                self.push_assign(
-                    block,
-                    Place::from_local(temp_mut_ptr),
-                    Rvalue::Cast {
-                        kind: CastKind::Pointer,
-                        operand: Operand::Copy(Place::from_local(temp_ptr)),
-                        ty: ptr_t_ty,
-                    },
-                    span,
-                );
-
-                Place::from_local(temp_mut_ptr)
-            };
-
-            let dest = Place {
-                local: offset_ptr_place.local,
-                projection: vec![PlaceElem::Deref],
-            };
-            self.push_assign(block, dest, Rvalue::Use(arg_operand), span);
-        }
-
-        (block, buf_ptr_dest, buf_ptr_t, len_const)
-    }
-
+    /// Pack variadic arguments into a fixed array and pass its storage as the
+    /// synthetic Span.
     fn lower_variadic_sequence(
         &mut self,
         mut block: BasicBlockId,
         args: &[ExprId],
-        span_ty: crate::sema::models::Ty<'ctx>,
-        elem_ty: crate::sema::models::Ty<'ctx>,
+        span_ty: Ty<'ctx>,
+        elem_ty: Ty<'ctx>,
         span: Span,
     ) -> BlockAnd<Operand<'ctx>> {
-        let (new_block, _buf_ptr_dest, buf_ptr_t, len_const) =
-            self.fill_element_buffer(block, args, elem_ty, span);
-        block = new_block;
+        let pack_ty = self.variadic_pack_ty(elem_ty, args.len());
+        let pack = self.new_temp_with_ty(pack_ty, span);
+        self.push_storage_live(block, pack, span);
+        self.register_storage_cleanup(pack, span);
 
-        // Cast *mut T to *const T for Span's ptr field.
-        let ptr_const_t_ty = crate::sema::models::Ty::new(
-            crate::sema::models::TyKind::Pointer(elem_ty, crate::hir::Mutability::Immutable),
-            self.gcx,
-        );
-        let buf_ptr_const_t = self.new_temp_with_ty(ptr_const_t_ty, span);
+        let mut fields = Vec::with_capacity(args.len());
+        for argument in args {
+            fields.push(unpack!(block = self.as_operand(block, *argument)));
+        }
         self.push_assign(
             block,
-            Place::from_local(buf_ptr_const_t),
-            Rvalue::Cast {
-                kind: CastKind::Pointer,
-                operand: Operand::Copy(Place::from_local(buf_ptr_t)),
-                ty: ptr_const_t_ty,
+            Place::from_local(pack),
+            Rvalue::Aggregate {
+                kind: AggregateKind::Array {
+                    len: args.len(),
+                    element: elem_ty,
+                },
+                fields: IndexVec::from_vec(fields),
             },
             span,
         );
 
-        // Aggregate Span { ptr, len }.
-        let fields = IndexVec::from_vec(vec![
-            Operand::Copy(Place::from_local(buf_ptr_const_t)),
-            len_const.clone(),
-        ]);
+        let TyKind::Adt(definition, generic_args) = span_ty.kind() else {
+            unreachable!()
+        };
+        let definition = self.gcx.get_struct_definition(definition.id);
+        let pointer_ty = Ty::new(
+            TyKind::Pointer(elem_ty, crate::hir::Mutability::Immutable),
+            self.gcx,
+        );
+        let pointer = self.new_temp_with_ty(pointer_ty, span);
+        if args.is_empty() {
+            // Empty packs never fabricate a reference to absent element storage.
+            self.push_assign(
+                block,
+                Place::from_local(pointer),
+                Rvalue::Zeroed { ty: pointer_ty },
+                span,
+            );
+        } else {
+            let whole_ref_ty = Ty::new(TyKind::Reference(pack_ty), self.gcx);
+            let whole = self.new_temp_with_ty(whole_ref_ty, span);
 
-        let (span_def_id, generic_args) =
-            if let crate::sema::models::TyKind::Adt(def, args) = span_ty.kind() {
-                (def.id, args)
-            } else {
-                unreachable!()
-            };
+            self.push_assign(
+                block,
+                Place::from_local(whole),
+                Rvalue::Ref {
+                    place: Place::from_local(pack),
+                },
+                span,
+            );
+            let element_ref_ty = Ty::new(TyKind::Reference(elem_ty), self.gcx);
+            let first = self.new_temp_with_ty(element_ref_ty, span);
 
-        let span_temp = self.new_temp_with_ty(span_ty, span);
+            // A nonempty inline array starts at element zero. Preserve the
+            // whole-array control/dependencies while changing its data type;
+            // protecting only element zero would lose other elements' debts.
+            self.push_assign(
+                block,
+                Place::from_local(first),
+                Rvalue::Cast {
+                    kind: CastKind::Pointer,
+                    operand: Operand::Copy(Place::from_local(whole)),
+                    ty: element_ref_ty,
+                },
+                span,
+            );
+            self.push_assign(
+                block,
+                Place::from_local(pointer),
+                Rvalue::Cast {
+                    kind: CastKind::Pointer,
+                    operand: Operand::Copy(Place::from_local(first)),
+                    ty: pointer_ty,
+                },
+                span,
+            );
+        }
+        // The slice pointer roots the entire pack allocation.
+        let view_fields = vec![
+            Operand::Copy(Place::from_local(pointer)),
+            Operand::Constant(Constant {
+                ty: self.gcx.types.uint,
+                value: mir::ConstantKind::Integer(args.len() as u64),
+            }),
+        ];
+        let view = self.new_temp_with_ty(span_ty, span);
 
         self.push_assign(
             block,
-            Place::from_local(span_temp),
+            Place::from_local(view),
             Rvalue::Aggregate {
                 kind: AggregateKind::Adt {
-                    def_id: span_def_id,
+                    def_id: definition.adt_def.id,
                     variant_index: None,
                     generic_args,
                 },
-                fields,
+                fields: IndexVec::from_vec(view_fields),
             },
             span,
         );
-
-        block.and(Operand::Copy(Place::from_local(span_temp)))
+        block.and(Operand::Copy(Place::from_local(view)))
     }
 
     fn lower_list_literal(
@@ -3643,47 +3347,84 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         mut block: BasicBlockId,
         destination: Place<'ctx>,
         args: &[ExprId],
-        _list_ty: crate::sema::models::Ty<'ctx>,
-        elem_ty: crate::sema::models::Ty<'ctx>,
+        list_ty: Ty<'ctx>,
+        elem_ty: Ty<'ctx>,
         span: Span,
     ) -> BasicBlockId {
-        let (new_block, buf_ptr_dest, _buf_ptr_t, len_const) =
-            self.fill_element_buffer(block, args, elem_ty, span);
-        block = new_block;
+        // Own native storage before evaluating elements. Every append publishes
+        // one initialized owner atomically; panic/cancellation drops exactly the
+        // completed prefix, including across awaits in element expressions.
+        let owner = self.new_temp_with_ty(list_ty, span);
+        self.push_storage_live(block, owner, span);
+        self.register_storage_cleanup(owner, span);
 
-        // Call __list_from_raw_parts[Element](buffer, len, cap).
-        let list_fn_id = self.find_function_in_std("collections", "__list_from_raw_parts", span);
-        let list_fn_generics = self
+        let owner = Place::from_local(owner);
+        let generics = self
             .gcx
             .store
             .interners
-            .intern_generic_args(vec![crate::sema::models::GenericArgument::Type(elem_ty)]);
-        let list_fn_ty = self.gcx.get_type(list_fn_id);
-        let list_func = Operand::Constant(Constant {
-            ty: list_fn_ty,
-            value: mir::ConstantKind::Function(list_fn_id, list_fn_generics, list_fn_ty),
-        });
-
+            .intern_generic_args(vec![GenericArgument::Type(elem_ty)]);
+        let function = |builder: &Self, name| {
+            let id = builder.find_function_in_std("collections", name, span);
+            let ty = crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args(
+                builder.gcx,
+                builder.gcx.get_type(id),
+                generics,
+            );
+            Operand::Constant(Constant {
+                ty,
+                value: mir::ConstantKind::Function(id, generics, ty),
+            })
+        };
+        let constructor = function(self, "__list_with_capacity");
+        let append = function(self, "__list_append");
+        let next = self.new_block();
         let unwind = self.call_unwind_action(span);
-        let next_block = self.new_block();
         self.terminate(
             block,
             span,
             TerminatorKind::Call {
-                func: list_func,
-                args: vec![
-                    Operand::Copy(buf_ptr_dest),
-                    len_const.clone(),
-                    len_const.clone(),
-                ],
-                devirt_hint: None,
-                destination,
-                target: next_block,
+                func: constructor,
+                args: vec![Operand::Constant(Constant {
+                    ty: self.gcx.types.uint,
+                    value: mir::ConstantKind::Integer(args.len() as u64),
+                })],
+                destination: owner.clone(),
+                target: next,
                 unwind,
             },
         );
-
-        next_block
+        block = next;
+        for expression in args {
+            let value = unpack!(block = self.as_operand(block, *expression));
+            let receiver_ty = Ty::new(TyKind::Reference(list_ty), self.gcx);
+            let receiver = Place::from_local(self.new_temp_with_ty(receiver_ty, span));
+            self.push_assign(
+                block,
+                receiver.clone(),
+                Rvalue::Ref {
+                    place: owner.clone(),
+                },
+                span,
+            );
+            let result = Place::from_local(self.new_temp_with_ty(self.gcx.types.void, span));
+            let next = self.new_block();
+            let unwind = self.call_unwind_action(span);
+            self.terminate(
+                block,
+                span,
+                TerminatorKind::Call {
+                    func: append.clone(),
+                    args: vec![Operand::Copy(receiver), value],
+                    destination: result,
+                    target: next,
+                    unwind,
+                },
+            );
+            block = next;
+        }
+        self.push_assign(block, destination, Rvalue::Use(Operand::Copy(owner)), span);
+        block
     }
 
     fn find_function_in_std(
@@ -3878,43 +3619,34 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             // every alternative that reaches the arm.
             self.push_storage_live(block, local, binding.span);
 
-            let is_deref_place = src_place
-                .projection
-                .iter()
-                .any(|p| matches!(p, PlaceElem::Deref));
-            if matches!(binding.mode, crate::hir::BindingMode::ByValue) && is_deref_place {
-                self.place_bindings.insert(binding.local, src_place.clone());
-                continue;
-            }
+            self.register_storage_cleanup(local, binding.span);
 
-            // Generate the appropriate rvalue based on binding mode
-            let rvalue = match binding.mode {
-                crate::hir::BindingMode::ByValue => {
-                    let operand = if self.is_type_copyable(binding.ty) {
-                        Operand::Copy(src_place.clone())
-                    } else {
-                        Operand::Move(src_place.clone())
-                    };
-                    Rvalue::Use(operand)
-                }
-                crate::hir::BindingMode::ByRef(mutability) => {
-                    // Take a reference to the place
-                    Rvalue::Ref {
-                        mutable: mutability == crate::hir::Mutability::Mutable,
-                        place: src_place.clone(),
-                    }
-                }
-            };
-
-            self.push_assign(block, Place::from_local(local), rvalue, binding.span);
+            self.push_assign(
+                block,
+                Place::from_local(local),
+                Rvalue::Use(Operand::Copy(src_place.clone())),
+                binding.span,
+            );
         }
         block.unit()
     }
 }
 
+/// The collected handle object every copy of a `Task` shares.
+fn task_handle_ty<'ctx>(gcx: Gcx<'ctx>) -> Ty<'ctx> {
+    crate::mir::optimize::async_transform::raw_ptr_ty(
+        gcx,
+        gcx.types.uint8,
+        crate::hir::Mutability::Mutable,
+    )
+}
+
 fn task_token_place<'ctx>(gcx: Gcx<'ctx>, task_place: Place<'ctx>) -> Place<'ctx> {
     let mut projection = task_place.projection;
-    projection.push(PlaceElem::Field(FieldIndex::from_raw(0), gcx.types.uint));
+    projection.push(PlaceElem::Field(
+        FieldIndex::from_raw(0),
+        task_handle_ty(gcx),
+    ));
     Place {
         local: task_place.local,
         projection,
@@ -3956,24 +3688,69 @@ fn duration_nanos_place<'ctx>(gcx: Gcx<'ctx>, duration_place: Place<'ctx>) -> Pl
 }
 
 impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
-    fn then_else_break(&mut self, mut block: BasicBlockId, condition: ExprId) -> BlockAnd<()> {
-        let place = unpack!(block = self.as_temp(block, condition));
-        let operand = if self.is_type_copyable(self.thir.exprs[condition].ty) {
-            Operand::Copy(Place::from_local(place))
-        } else {
-            Operand::Move(Place::from_local(place))
-        };
+    /// Preserve condition-success edges instead of merging a binding match into
+    /// a boolean temporary and branching again. Only success initializes its
+    /// pattern locals; ordinary initialization dataflow can then prove their use.
+    pub(in crate::mir::builder) fn lower_condition(
+        &mut self,
+        mut block: BasicBlockId,
+        condition: ExprId,
+        if_true: BasicBlockId,
+        if_false: BasicBlockId,
+    ) {
+        let expr = &self.thir.exprs[condition];
+        match &expr.kind {
+            ExprKind::Logical { op, lhs, rhs } => {
+                let next = self.new_block_with_note("condition connector".into());
+                match op {
+                    mir::LogicalOperator::And => self.lower_condition(block, *lhs, next, if_false),
+                    mir::LogicalOperator::Or => self.lower_condition(block, *lhs, if_true, next),
+                }
+                self.lower_condition(next, *rhs, if_true, if_false);
+            }
+            ExprKind::Match {
+                scrutinee,
+                binding_condition: true,
+                ..
+            } => {
+                let source = unpack!(block = self.as_place(block, *scrutinee));
+                let tree = &self
+                    .thir
+                    .match_reports
+                    .get(&condition)
+                    .expect("binding match has a decision tree")
+                    .tree;
+                let mut places = FxHashMap::default();
+                places.insert(tree.root_var.id, source);
+                let unused_destination = self.unit_temp_place(expr.span);
+                let mut unused_join = false;
+                self.lower_match_decision(
+                    block,
+                    &tree.decision,
+                    &unused_destination,
+                    if_false,
+                    &mut unused_join,
+                    &places,
+                    expr.span,
+                    Some((if_true, if_false)),
+                );
+            }
+            _ => {
+                let operand = unpack!(block = self.as_operand(block, condition));
+                self.terminate(
+                    block,
+                    expr.span,
+                    TerminatorKind::if_(operand, if_true, if_false),
+                );
+            }
+        }
+    }
 
+    fn then_else_break(&mut self, block: BasicBlockId, condition: ExprId) -> BlockAnd<()> {
         let then_block = self.new_block_with_note("then block".into());
         let else_block = self.new_block_with_note("else block".into());
-
-        let expr = &self.thir.exprs[condition];
-        self.terminate(
-            block,
-            expr.span,
-            TerminatorKind::if_(operand, then_block, else_block),
-        );
-        self.break_for_else(else_block, expr.span);
+        self.lower_condition(block, condition, then_block, else_block);
+        self.break_for_else(else_block, self.thir.exprs[condition].span);
         then_block.unit()
     }
 

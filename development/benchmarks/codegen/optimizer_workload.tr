@@ -18,6 +18,6 @@ func workload(_ iterations: int64, _ seed: int64) -> int64 {
 }
 
 func main() {
-    let seed = std.env.args().len() as int64
-    std.printf("%d\n", workload(100000000, seed))
+    seed := std::env::args().len() as int64
+    std::printf("%d\n", workload(100000000, seed))
 }

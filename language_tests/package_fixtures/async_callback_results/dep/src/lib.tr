@@ -1,0 +1,25 @@
+public struct Record { value: int32 }
+public struct Projector {}
+func tick() async { await std::testing::yieldNow() }
+conform Projector to AsyncFn[(&Record,), &int32] {
+    func call( args: (&Record,)) async -> &int32 {
+        await tick()
+        &args.0.value
+    }
+}
+extend &Record {
+    public func project[F: AsyncFn[&Record, &int32]](_ callback: F) async -> &int32 {
+        await callback(self)
+    }
+}
+public func record(_ value: int32) -> Record { Record { value } }
+public func projector() -> Projector { Projector {} }
+
+public func increment(_ value: int32) -> int32 { value + 1 }
+public func incrementLater(_ value: int32) async -> int32 {
+    await tick()
+    value + 1
+}
+public func applyNamed[F: Fn(int32) -> int32](_ callback: F) -> int32 { callback(41) }
+public func namedCallback() -> any Fn(int32) -> int32 { increment }
+public func namedAsyncCallback() -> any AsyncFn(int32) -> int32 { incrementLater }

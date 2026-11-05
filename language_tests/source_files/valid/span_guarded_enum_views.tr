@@ -1,0 +1,40 @@
+// Returned slices share GC storage and copy only their headers.
+// ENV: TARO_WORKERS=4
+struct Document { revision: int32 }
+enum Item {
+    case empty
+    case document(Document)
+}
+
+func revision(_ item: &Item) -> int32 {
+    match *item {
+        case .empty => 0
+        case .document(document) => document.revision
+    }
+}
+
+func main() {
+    var items: [Item] = [.document(Document { revision: 7 }), .empty]
+    {
+        var view: std::mem::Span[Item] = (&items).asSpan()
+        var copied: std::mem::Span[Item] = view
+        var selected: &Item = copied.at(0)
+        assert(revision(selected) == 7, "copying a slice preserves its elements")
+        var tail: std::mem::Span[Item] = view.slice(1, 1)
+        assert(revision(tail.at(0)) == 0, "a slice preserves its source")
+    }
+    items.append(.empty)
+    {
+        var view: std::mem::Span[Item] = items.asSpan()
+        *view.at(0) = .document(Document { revision: 9 })
+        var moved: std::mem::Span[Item] = view
+        var shared: std::mem::Span[Item] = moved
+        assert(revision(shared.at(0)) == 9, "copying a slice shares access")
+    }
+    var removed: Item = items.removeAt(0).unwrap()
+    assert(revision(&removed) == 9, "removal returns the payload")
+    var empty: [Item] = []
+    var emptyView: std::mem::Span[Item] = (&empty).asSpan()
+    assert(emptyView.isEmpty(), "empty storage needs no first-element reference")
+    print("guarded enum views ok\n")
+}

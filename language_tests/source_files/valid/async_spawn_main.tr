@@ -1,8 +1,10 @@
 func main() async {
-    std.print("hello\n")
+    std::print("hello\n")
 
-    std.task.detached(|| async {
-        await std.testing.yieldNow()
-        std.print("world\n")
+    task := std::task::spawn(() async => {
+        await std::testing::yieldNow()
+        std::print("world\n")
     })
+    // Returning main cancels unfinished work; await completion explicitly.
+    (await task.result()).unwrap()
 }

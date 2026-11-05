@@ -3,7 +3,7 @@ func asyncValue() async -> int32 {
 }
 
 func badAwait() async {
-    defer { let _ = await asyncValue() }
+    defer { var _ = await asyncValue() }
 }
 
 func main() {

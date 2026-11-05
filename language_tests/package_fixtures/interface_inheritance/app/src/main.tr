@@ -1,4 +1,4 @@
-import dep.{Count, Forward, Value}
+import dep::{Count, Forward, Value}
 
 // Standard, arbitrary, transitive, and repeated generic parents all use the
 // same hierarchy, regardless of which package declares them.
@@ -8,20 +8,20 @@ interface Combined: Forward[int32], Value[string], Count[2] {}
 interface LocalChild: Combined {}
 
 struct Item {}
-impl Clone for Item {
-    func clone(&self) -> Item { Item {} }
+conform Item to Clone {
+    func clone() -> Item { Item {} }
 }
-impl CloneChild for Item {}
-impl Value[int32] for Item {
-    func value(&self) -> int32 { 42 }
+conform Item to CloneChild {}
+conform Item to Value[int32] {
+    func value() -> int32 { 42 }
 }
-impl Value[string] for Item {
-    func value(&self) -> string { "forty-two" }
+conform Item to Value[string] {
+    func value() -> string { "forty-two" }
 }
-impl Count[2] for Item {}
-impl Forward[int32] for Item {}
-impl Combined for Item {}
-impl LocalChild for Item {}
+conform Item to Count[2] {}
+conform Item to Forward[int32] {}
+conform Item to Combined {}
+conform Item to LocalChild {}
 
 func readForward[T: Forward[int32]](_ item: &T) -> int32 {
     item.value()
@@ -32,16 +32,16 @@ func duplicate[T: CloneChild](_ item: &T) -> T {
 }
 
 func main() {
-    let item = Item {}
+    item := Item {}
     assert(readForward(&duplicate(&item)) == 42, "imported Clone superinterface bound")
-    let combined: any LocalChild = Item {}
-    let number: any Value[int32] = combined
+    var combined: any LocalChild = Item {}
+    var number: any Value[int32] = combined
     assert(number.value() == 42, "transitive imported existential upcast")
-    let textSource: any LocalChild = Item {}
-    let text: any Value[string] = textSource
+    var textSource: any LocalChild = Item {}
+    var text: any Value[string] = textSource
     assert(text.value() == "forty-two", "repeated generic parent preserves arguments")
-    let countSource: any LocalChild = Item {}
-    let count: any Count[2] = countSource
+    var countSource: any LocalChild = Item {}
+    var count: any Count[2] = countSource
     assert(count.count() == 2, "imported const generic default method")
-    std.print("PASS: cross-package interface inheritance\n")
+    std::print("PASS: cross-package interface inheritance\n")
 }

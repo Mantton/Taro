@@ -4,7 +4,7 @@
 /// the parser grouped the input. `1 + 2 * 3` renders as `(1 + (2 * 3))`, which
 /// makes a precedence mistake visible rather than plausible.
 
-func renderList(_ items: &List[Expression], _ separator: string) -> string {
+func renderList(_ items: List[Expression], _ separator: string) -> string {
     var out = ""
     var first = true
     for item in items {
@@ -17,7 +17,7 @@ func renderList(_ items: &List[Expression], _ separator: string) -> string {
     return out
 }
 
-func renderBlock(_ statements: &List[Statement]) -> string {
+func renderBlock(_ statements: List[Statement]) -> string {
     var out = ""
     for statement in statements {
         out = out + renderStatement(statement)
@@ -25,13 +25,13 @@ func renderBlock(_ statements: &List[Statement]) -> string {
     return out
 }
 
-public func renderExpression(_ expression: &Expression) -> string {
+public func renderExpression(_ expression: Expression) -> string {
     match expression {
-        case .identifier(name) => return *name
-        case .integer(value) => return sprintf("%v", *value)
-        case .text(value) => return sprintf("\"%s\"", *value)
+        case .identifier(name) => return name
+        case .integer(value) => return sprintf("%v", value)
+        case .text(value) => return sprintf("\"%s\"", value)
         case .boolean(value) => {
-            if *value { return "true" }
+            if value { return "true" }
             return "false"
         }
         case .prefix(op, operand) => {
@@ -46,7 +46,7 @@ public func renderExpression(_ expression: &Expression) -> string {
             // straight against the condition, so an atomic one renders as `ifx`
             // and the output stops being readable back.
             var out = "if " + renderExpression(*condition) + " " + renderBlock(consequence)
-            if *hasAlternative {
+            if hasAlternative {
                 out = out + " else " + renderBlock(alternative)
             }
             return out
@@ -58,7 +58,7 @@ public func renderExpression(_ expression: &Expression) -> string {
                 if !first {
                     names = names + ", "
                 }
-                names = names + *name
+                names = names + name
                 first = false
             }
             return "fn(" + names + ") " + renderBlock(body)
@@ -79,7 +79,7 @@ public func renderExpression(_ expression: &Expression) -> string {
                 if !first {
                     out = out + ", "
                 }
-                out = out + renderExpression(&entry.key) + ":" + renderExpression(&entry.value)
+                out = out + renderExpression(entry.key) + ":" + renderExpression(entry.value)
                 first = false
             }
             return "{" + out + "}"
@@ -87,10 +87,10 @@ public func renderExpression(_ expression: &Expression) -> string {
     }
 }
 
-public func renderStatement(_ statement: &Statement) -> string {
+public func renderStatement(_ statement: Statement) -> string {
     match statement {
         case .bind(name, value) => {
-            return "let " + *name + " = " + renderExpression(value) + ";"
+            return "let " + name + " = " + renderExpression(value) + ";"
         }
         case .produce(value) => {
             return "return " + renderExpression(value) + ";"
@@ -99,6 +99,6 @@ public func renderStatement(_ statement: &Statement) -> string {
     }
 }
 
-public func renderProgram(_ program: &Program) -> string {
-    return renderBlock(&program.statements)
+public func renderProgram(_ program: Program) -> string {
+    return renderBlock(program.statements)
 }

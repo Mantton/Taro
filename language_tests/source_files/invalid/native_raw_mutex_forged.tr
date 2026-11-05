@@ -1,0 +1,4 @@
+func forge(_ pointer: *mut uint8) -> std::sys::sync::RawMutex {
+    std::sys::sync::RawMutex { owner: pointer }
+}
+func main() {}

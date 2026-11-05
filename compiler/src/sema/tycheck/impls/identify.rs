@@ -46,7 +46,7 @@ impl<'ctx> Actor<'ctx> {
             TypeHead::Parameter(_) => false,
             TypeHead::Primary(_)
             | TypeHead::Tuple(_)
-            | TypeHead::Reference(_)
+            | TypeHead::Reference
             | TypeHead::Pointer(_)
             | TypeHead::Array => self.is_std_package(impl_pkg),
         }
@@ -58,7 +58,14 @@ impl<'ctx> Actor<'ctx> {
             return;
         }
 
-        let Some(head) = self.context.get_impl_type_head(impl_id) else {
+        // References are fundamental storage targets. Their inherent-member
+        // ownership follows the referenced type, while lookup retains &T's
+        // distinct reference head and exact target constraints.
+        let mut target = node.target.as_ref();
+        while let hir::TypeKind::Reference(inner) = &target.kind {
+            target = inner;
+        }
+        let Some(head) = self.type_head_for_node(target) else {
             return;
         };
 
@@ -86,7 +93,7 @@ impl<'ctx> Actor<'ctx> {
         match &ty.kind {
             hir::TypeKind::Nominal(path) => self.type_head_for_nominal(ty, path),
             hir::TypeKind::Pointer(.., m) => Some(TypeHead::Pointer(*m)),
-            hir::TypeKind::Reference(.., m) => Some(TypeHead::Reference(*m)),
+            hir::TypeKind::Reference(..) => Some(TypeHead::Reference),
             hir::TypeKind::Tuple(items) => {
                 let Ok(arity) = u16::try_from(items.len()) else {
                     self.context

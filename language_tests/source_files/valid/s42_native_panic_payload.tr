@@ -1,0 +1,28 @@
+// ENV: TARO_WORKERS=4
+func captureMessage() async -> string {
+    var task: std::task::Task[int32] = std::task::spawn(() async -> int32 => {
+        await std::testing::yieldNow()
+        panic("native captured report")
+    })
+    match await task.result() {
+        case .err(.panicked(payload)) => return payload.message()
+        case _ => panic("expected a captured child panic")
+    }
+}
+func main() async {
+    var messages: List[string] = List[string]::new()
+    messages.append(await captureMessage())
+    var copy: string = *messages.at(0)
+    messages.append(await captureMessage())
+    assert(copy == "native captured report", "copied message outlives the original report and task")
+    assert(*messages.at(1) == copy, "native reports transfer independently")
+    var task: std::task::Task[int32] = std::task::spawn(() => {
+        await std::task::sleep(std::time::Duration::fromSeconds(60_u64))
+        return 1
+    })
+    task.cancel()
+    match await task.result() {
+        case .err(.cancelled) => {}
+        case _ => panic("empty native panic carrier must preserve cancellation")
+    }
+}

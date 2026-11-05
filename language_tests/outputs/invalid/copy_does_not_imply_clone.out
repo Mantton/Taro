@@ -1,0 +1,4 @@
+error: type 'CopyOnly' does not conform to interface 'Clone'
+ -> language_tests/source_files/invalid/copy_does_not_imply_clone.tr:7:27
+	    var result: CopyOnly = duplicate(&value)
+	                           ^^^^^^^^^

@@ -1,0 +1,5 @@
+[package]
+name = "github.com/example/named-fields-app"
+kind = "executable"
+[require]
+"github.com/example/named-fields-dep" = { path = "../dep", alias = "dep" }

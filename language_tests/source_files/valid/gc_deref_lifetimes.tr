@@ -1,0 +1,29 @@
+// ENV: TARO_GC_STRESS=1
+struct Label { text: string }
+struct View[T] { target: &T }
+conform[T] View[T] to Deref {
+    type Target = T
+    @noinline
+    func deref() -> &T {
+        std::runtime::collect()
+        self.target
+    }
+}
+func make(_ suffix: string) -> View[Label] {
+    label := Label { text: "retained " + suffix }
+    View { target: &label }
+}
+func boxed() -> any Deref[Target = Label] { make("erased") }
+func main() {
+    var view = make("value")
+    retained := &view.text
+    view = make("replacement")
+    std::runtime::collect()
+    assert(*retained == "retained value", "returned field references retain the original target")
+    assert(view.text == "retained replacement", "replacing a wrapper changes its current target")
+    var erased: any Deref[Target = Label] = boxed()
+    erasedAddress := &erased.text
+    erased = make("another box")
+    std::runtime::collect()
+    assert(*erasedAddress == "retained erased", "erased Deref returns a retained target reference")
+}

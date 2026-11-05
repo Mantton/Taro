@@ -22,13 +22,13 @@ backticks when a name would otherwise be a keyword.
 
 ```taro
 // Standard identifiers
-let myVariable = 10
-let _private = 20
-let camelCase = 30
+myVariable := 10
+_private := 20
+camelCase := 30
 
 // Escaped identifiers (for reserved words)
-let `type` = "string"
-let `func` = 42
+var `type` = "string"
+var `func` = 42
 ```
 
 ---
@@ -76,7 +76,7 @@ For example, `255_u8` and `0xFF_u8` have type `uint8`. Unsuffixed integer
 literals use context, defaulting to `int32` when unconstrained.
 
 An integer literal must fit its final type. A leading minus is included in
-that check, so `-128_i8` and `let x: int8 = -128` are valid, while `128_i8`
+that check, so `-128_i8` and `var x: int8 = -128` are valid, while `128_i8`
 and `-129_i8` are errors. The same boundaries apply to constant initializers
 and patterns. Negating an already negative value remains an operation and
 uses the configured overflow checks.
@@ -121,8 +121,8 @@ tokens, not a line break. Strings and f-strings still occupy one source line.
 F-strings are prefixed with `f` and support interpolation with `{expr}`.
 
 ```taro
-let name = "Ada"
-let score = 7
+name := "Ada"
+score := 7
 f"Hello, {name} (score={score})"
 f"sum={score + 5}"          // Full expression support
 f"{{ok}}"                   // Escaped braces -> "{ok}"
@@ -156,31 +156,29 @@ Runes represent single Unicode code points and are enclosed in single quotes.
 ```
 any         as          is          break       case        const       continue
 async       await       defer       else        enum        export      extern      false
-for         func        guard       if          impl        import
-in          init        interface   let         loop        match
+for         func        guard       if          extend      conform     import
+in          init                    interface   loop        match
 mod         namespace   nil         operator    private     public      readonly
 return      static      struct      true        type        var
-where       while       mut         unsafe
+where       while       mut         unsafe      class       final       override
 ```
 
-`init` is reserved and cannot be used as an identifier or declared as a method,
-but it is accepted at member-access position. Taro has no `init` declaration
-form: initializers are static `new` methods, reachable through the type-call
-shorthand described in [Declarations](./declarations.md#initializer-shorthand).
+`init` introduces initializer declarations in owning-package `extend`
+blocks. Classes use explicit initializers; structs use literals unless they
+provide an initializer. `extend` declares inherent members and `conform` supplies
+interface implementations. Legacy `impl` syntax is rejected.
 
-### Future Reserved Keywords
-
-These keywords are reserved for future use:
-
-```
-class       final       override    fileprivate protected ref
-```
+`class`, `final` and `override` are active keywords. `fileprivate`, `protected`
+and `ref` remain reserved without a supported declaration meaning, and `let`
+stays reserved so its removal can be diagnosed.
 
 ### Contextual Keywords
 
-`get` and `set` are contextual keywords for computed-property accessor blocks.
-`move` is contextual before a closure, and `some` is contextual in an opaque
-return type. They remain valid identifiers elsewhere.
+`get`, `set`, `address` and `subscript` are contextual accessor/declaration
+keywords. Computed properties support getters; native subscripts support all
+three capabilities. `required` and `convenience` modify initializers; `some`
+introduces an opaque return type. These words remain valid identifiers elsewhere.
+`weak` and `move` are ordinary identifiers, with no storage/capture modifier role.
 
 ---
 
@@ -231,6 +229,7 @@ return type. They remain valid identifiers elsewhere.
 | Operator | Description |
 |----------|-------------|
 | `=` | Assignment |
+| `:=` | New writable local with inferred type |
 | `+=` | Add and assign |
 | `-=` | Subtract and assign |
 | `*=` | Multiply and assign |

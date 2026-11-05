@@ -20,7 +20,7 @@ func bad_return() -> Handle {
 
 // ERROR: opaque type used directly as variable type
 func bad_variable() {
-    let h: Handle
+    var h: Handle
 }
 
 func main() {

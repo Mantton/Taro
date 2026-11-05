@@ -1,0 +1,9 @@
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: original sync failure
+struct Receipt {}
+func forbidden(_ receipt: Receipt) async { panic("sync task body entered") }
+func main() {
+    var receipt: Receipt = Receipt {}
+    std::task::detached(() => await forbidden(receipt))
+    panic("original sync failure")
+}

@@ -1,23 +1,23 @@
-import std.collections.List
+import std::collections::List
 
 struct TaggedValue {
     text: string
 }
 
-impl std.fmt.Display for TaggedValue {
-    func display(&self, _ into: &mut std.fmt.Formatter) {
+conform TaggedValue to std::fmt::Display {
+    func display(_ into: &std::fmt::Formatter) {
         into.writeString(self.text)
     }
 }
 
-impl std.fmt.Formattable for TaggedValue {
-    func format(&self, _ into: &mut std.fmt.Formatter, _ spec: rune, _ state: &std.fmt.FormatState) {
+conform TaggedValue to std::fmt::Formattable {
+    func format(_ into: &std::fmt::Formatter, _ spec: rune, _ state: &std::fmt::FormatState) {
         if spec == 'v' {
             into.writeString(self.text)
             return
         }
 
-        std.panic.panic("TaggedValue only supports %v")
+        std::panic::panic("TaggedValue only supports %v")
     }
 }
 
@@ -25,8 +25,8 @@ struct DisplayOnlyValue {
     text: string
 }
 
-impl std.fmt.Display for DisplayOnlyValue {
-    func display(&self, _ into: &mut std.fmt.Formatter) {
+conform DisplayOnlyValue to std::fmt::Display {
+    func display(_ into: &std::fmt::Formatter) {
         into.writeString(self.text)
     }
 }
@@ -36,171 +36,254 @@ struct PreferFormatValue {
     formatText: string
 }
 
-impl std.fmt.Display for PreferFormatValue {
-    func display(&self, _ into: &mut std.fmt.Formatter) {
+conform PreferFormatValue to std::fmt::Display {
+    func display(_ into: &std::fmt::Formatter) {
         into.writeString(self.displayText)
     }
 }
 
-impl std.fmt.Formattable for PreferFormatValue {
-    func format(&self, _ into: &mut std.fmt.Formatter, _ spec: rune, _ state: &std.fmt.FormatState) {
+conform PreferFormatValue to std::fmt::Formattable {
+    func format(_ into: &std::fmt::Formatter, _ spec: rune, _ state: &std::fmt::FormatState) {
         if spec == 'v' {
             into.writeString(self.formatText)
             return
         }
-        std.panic.panic("PreferFormatValue only supports %v")
+        std::panic::panic("PreferFormatValue only supports %v")
     }
 }
 
 @test
 func testRuneCasting() {
-    let runeAsByte: uint8 = 'A' as uint8
-    std.testing.assertEqual(runeAsByte, 65_u8, "rune -> uint8 cast should preserve ASCII codepoint")
+    var runeAsByte: uint8 = 'A' as uint8
+    std::testing::assertEqual(runeAsByte, 65_u8, "rune -> uint8 cast should preserve ASCII codepoint")
 
-    let byteAsRune: rune = 66_u8 as rune
-    std.testing.assertEqual(byteAsRune, 'B', "int literal -> rune cast should preserve ASCII codepoint")
+    var byteAsRune: rune = 66_u8 as rune
+    std::testing::assertEqual(byteAsRune, 'B', "int literal -> rune cast should preserve ASCII codepoint")
 }
 
 @test
 func testSprintfBasic() {
-    let text = std.sprintf("x=%d y=%s z=%v pct=100%%", 7, "ok", true)
-    std.testing.assertEqual(text, "x=7 y=ok z=true pct=100%", "sprintf should return rendered string")
+    text := std::sprintf("x=%d y=%s z=%v pct=100%%", 7, "ok", true)
+    std::testing::assertEqual(text, "x=7 y=ok z=true pct=100%", "sprintf should return rendered string")
 }
 
 @test
 func testSprintfCustomType() {
-    let tagged = TaggedValue { text: "custom" }
-    std.testing.assertEqual(std.sprintf("%v", tagged), "custom", "sprintf should support custom Formattable types")
-    std.testing.assertEqual(std.sprintf("%v", 'B'), "B", "sprintf should support runes")
-    std.testing.assertEqual(std.sprintf("%d", 1), "1", "sprintf should support integers")
+    tagged := TaggedValue { text: "custom" }
+    std::testing::assertEqual(std::sprintf("%v", tagged), "custom", "sprintf should support custom Formattable types")
+    std::testing::assertEqual(std::sprintf("%v", 'B'), "B", "sprintf should support runes")
+    std::testing::assertEqual(std::sprintf("%d", 1), "1", "sprintf should support integers")
 }
 
 @test
 func testFormatterWritesUnicodeRunesAndGrows() {
-    let rocket = std.intrinsic.__intrinsic_rune_from_u32_unchecked(0x1F680_u32)
-    std.testing.assertEqual(std.sprintf("%v", rocket), "🚀", "rune formatting should emit UTF-8")
+    rocket := std::intrinsic::__intrinsic_rune_from_u32_unchecked(0x1F680_u32)
+    std::testing::assertEqual(std::sprintf("%v", rocket), "🚀", "rune formatting should emit UTF-8")
 
-    var formatter = std.fmt.Formatter()
+    var formatter = std::fmt::Formatter::new()
     var index: usize = 0
     while index < (2048 as usize) {
         formatter.writeString("xyz")
         index += 1
     }
-    let rendered = formatter.intoString()
-    std.testing.assertEqual(rendered.byteLen(), 6144 as usize, "formatter should preserve large accumulated output")
-    std.testing.assertTrue(rendered.startsWith("xyzxyz"), "grown formatter should preserve its prefix")
-    std.testing.assertTrue(rendered.endsWith("xyzxyz"), "grown formatter should preserve its suffix")
+    rendered := formatter.toString()
+    std::testing::assertEqual(rendered.byteLen(), 6144 as usize, "formatter should preserve large accumulated output")
+    std::testing::assertTrue(rendered.startsWith("xyzxyz"), "grown formatter should preserve its prefix")
+    std::testing::assertTrue(rendered.endsWith("xyzxyz"), "grown formatter should preserve its suffix")
 }
 
 @test
 func testDisplayFallbackAndFormattablePreference() {
-    let display_only = DisplayOnlyValue { text: "display-only" }
-    let display_only_text = std.sprintf("%v", display_only)
-    std.testing.assertEqual(
+    display_only := DisplayOnlyValue { text: "display-only" }
+    display_only_text := std::sprintf("%v", display_only)
+    std::testing::assertEqual(
         display_only_text,
         "display-only",
         "display-only values should format via Display fallback",
     )
 
-    let prefer_format = PreferFormatValue {
+    prefer_format := PreferFormatValue {
         displayText: "display",
         formatText: "format",
     }
-    let prefer_format_text = std.sprintf("%v", prefer_format)
-    std.testing.assertEqual(
+    prefer_format_text := std::sprintf("%v", prefer_format)
+    std::testing::assertEqual(
         prefer_format_text,
         "format",
         "Formattable should be preferred over Display fallback",
     )
 }
 
+struct CollectingFormatValue {
+    nested: any std::fmt::Display
+}
+
+conform CollectingFormatValue to std::fmt::Display {
+    func display(_ into: &std::fmt::Formatter) {
+        into.writeString("fallback")
+    }
+}
+
+conform CollectingFormatValue to std::fmt::Formattable {
+    func format(_ into: &std::fmt::Formatter, _ spec: rune, _ state: &std::fmt::FormatState) {
+        self.nested.asRef[TaggedValue]().unwrap().text = "changed"
+        std::runtime::collect()
+        into.writeString(std::sprintf("%v", self.nested))
+    }
+}
+
+@test
+func testFormattingKeepsNestedValueSnapshotsAcrossCollection() {
+    var value: any std::fmt::Display = CollectingFormatValue {
+        nested: TaggedValue { text: "original " + "text" },
+    }
+    std::testing::assertEqual(std::sprintf("%v", value), "changed", "formatting can mutate its own nested value")
+    std::runtime::collect()
+    original := value.asRef[CollectingFormatValue]().unwrap().nested.asRef[TaggedValue]().unwrap().text
+    std::testing::assertEqual(original, "original text", "formatting leaves the caller's nested value unchanged")
+}
+
 @test
 func testListDisplayFormatting() {
-    var values = List[int32]()
+    var values = List[int32]::new()
     values.append(1)
     values.append(2)
     values.append(3)
 
-    let rendered = std.sprintf("%v", values)
-    std.testing.assertEqual(rendered, "[1, 2, 3]", "list should render with brackets and comma separators")
+    rendered := std::sprintf("%v", values)
+    std::testing::assertEqual(rendered, "[1, 2, 3]", "list should render with brackets and comma separators")
 }
 
 @test
 func testListDisplayFallbackForDisplayOnlyElements() {
-    var values = List[DisplayOnlyValue]()
+    var values = List[DisplayOnlyValue]::new()
     values.append(DisplayOnlyValue { text: "a" })
     values.append(DisplayOnlyValue { text: "b" })
 
-    let rendered = std.sprintf("%v", values)
-    std.testing.assertEqual(rendered, "[a, b]", "list should use Display when elements are display-only")
+    rendered := std::sprintf("%v", values)
+    std::testing::assertEqual(rendered, "[a, b]", "list should use Display when elements are display-only")
 }
 
 @test
 func testListFormattableElementsPreferFormat() {
-    var values = List[PreferFormatValue]()
+    var values = List[PreferFormatValue]::new()
     values.append(PreferFormatValue { displayText: "display-a", formatText: "format-a" })
     values.append(PreferFormatValue { displayText: "display-b", formatText: "format-b" })
 
-    let rendered = std.sprintf("%v", values)
-    std.testing.assertEqual(rendered, "[format-a, format-b]", "list should format elements via Formattable")
+    rendered := std::sprintf("%v", values)
+    std::testing::assertEqual(rendered, "[format-a, format-b]", "list should format elements via Formattable")
 }
 
 @test
 func testListDisplayEmpty() {
-    let values = List[int32]()
-    let rendered = std.sprintf("%v", values)
-    std.testing.assertEqual(rendered, "[]", "empty list should render as []")
+    values := List[int32]::new()
+    rendered := std::sprintf("%v", values)
+    std::testing::assertEqual(rendered, "[]", "empty list should render as []")
 }
 
 @test
 @expectPanic
 func testSprintfDynamicRuntimePanic() {
-    let format = "%q"
-    let _ = std.sprintf(format, 1)
+    format := "%q"
+    var _ = std::sprintf(format, 1)
 }
 
 @test
 func testWidthPadsOnTheLeft() {
-    std.testing.assertEqual(std.sprintf("%5d", 42), "   42", "a narrow value is right-aligned")
-    std.testing.assertEqual(std.sprintf("%5s", "ab"), "   ab", "strings pad the same way")
-    std.testing.assertEqual(std.sprintf("%3v", 7), "  7", "%v honours width too")
+    std::testing::assertEqual(std::sprintf("%5d", 42), "   42", "a narrow value is right-aligned")
+    std::testing::assertEqual(std::sprintf("%5s", "ab"), "   ab", "strings pad the same way")
+    std::testing::assertEqual(std::sprintf("%3v", 7), "  7", "%v honours width too")
 }
 
 @test
 func testWidthNeverTruncates() {
-    std.testing.assertEqual(std.sprintf("%2d", 12345), "12345", "a value wider than the field is written whole")
-    std.testing.assertEqual(std.sprintf("%0d", 7), "7", "a zero width is no width at all")
+    std::testing::assertEqual(std::sprintf("%2d", 12345), "12345", "a value wider than the field is written whole")
+    std::testing::assertEqual(std::sprintf("%0d", 7), "7", "a zero width is no width at all")
 }
 
 @test
 func testLeftAlignPadsOnTheRight() {
-    std.testing.assertEqual(std.sprintf("%-5d|", 42), "42   |", "a dash aligns left")
-    std.testing.assertEqual(std.sprintf("%-5s|", "ab"), "ab   |", "strings align left too")
+    std::testing::assertEqual(std::sprintf("%-5d|", 42), "42   |", "a dash aligns left")
+    std::testing::assertEqual(std::sprintf("%-5s|", "ab"), "ab   |", "strings align left too")
     // Left alignment wins over zero padding, as it does in C and Go.
-    std.testing.assertEqual(std.sprintf("%-05d|", 42), "42   |", "a dash beats a zero")
+    std::testing::assertEqual(std::sprintf("%-05d|", 42), "42   |", "a dash beats a zero")
 }
 
 @test
 func testZeroPadKeepsTheSignInFront() {
-    std.testing.assertEqual(std.sprintf("%04d", 7), "0007", "zeros fill the field")
-    std.testing.assertEqual(std.sprintf("%04d", -7), "-007", "the sign stays leftmost")
-    std.testing.assertEqual(std.sprintf("%04d", 12345), "12345", "a wide value is untouched")
+    std::testing::assertEqual(std::sprintf("%04d", 7), "0007", "zeros fill the field")
+    std::testing::assertEqual(std::sprintf("%04d", -7), "-007", "the sign stays leftmost")
+    std::testing::assertEqual(std::sprintf("%04d", 12345), "12345", "a wide value is untouched")
 }
 
 @test
 func testZeroPadOnStringsFillsWithZeros() {
-    std.testing.assertEqual(std.sprintf("%04s", "ab"), "00ab", "the flag is not restricted to numbers")
+    std::testing::assertEqual(std::sprintf("%04s", "ab"), "00ab", "the flag is not restricted to numbers")
 }
 
 @test
 func testWidthCountsRunesNotBytes() {
     // "é" is two bytes but one column, so the field is measured in characters.
-    std.testing.assertEqual(std.sprintf("%3s|", "é"), "  é|", "padding counts runes")
+    std::testing::assertEqual(std::sprintf("%3s|", "é"), "  é|", "padding counts runes")
 }
 
 @test
 func testEscapedPercentIsNotAFlag() {
     // The `0` here is literal text, not a zero-pad flag on the conversion.
-    std.testing.assertEqual(std.sprintf("%%04d"), "%04d", "an escaped percent consumes no flags")
-    std.testing.assertEqual(std.sprintf("100%% of %d", 3), "100% of 3", "escapes still work beside conversions")
+    std::testing::assertEqual(std::sprintf("%%04d"), "%04d", "an escaped percent consumes no flags")
+    std::testing::assertEqual(std::sprintf("100%% of %d", 3), "100% of 3", "escapes still work beside conversions")
+}
+
+@test
+func testTypedFormattingKeepsNestedValueSnapshots() {
+    var value = CollectingFormatValue {
+        nested: TaggedValue { text: "original text" },
+    }
+    std::testing::assertEqual(std::sprintf("%%%v", value), "%changed", "typed formatting keeps escaped percent handling")
+    std::runtime::collect()
+    original := value.nested.asRef[TaggedValue]().unwrap().text
+    std::testing::assertEqual(original, "original text", "typed formatting cannot mutate the caller's inline payload")
+}
+
+final class RetainedFormatReferences {
+    writer: (&std::fmt::Formatter)?
+    state: (&std::fmt::FormatState)?
+    value: (&RetainingFormatValue)?
+}
+extend RetainedFormatReferences {
+    init() {
+        self.writer = .none
+        self.state = .none
+        self.value = .none
+    }
+}
+struct RetainingFormatValue {
+    retained: RetainedFormatReferences
+    text: string
+}
+conform RetainingFormatValue to std::fmt::Display {
+    func display(_ into: &std::fmt::Formatter) { into.writeString("fallback") }
+}
+conform RetainingFormatValue to std::fmt::Formattable {
+    func format(_ into: &std::fmt::Formatter, _ spec: rune, _ state: &std::fmt::FormatState) {
+        self.retained.writer = .some(into)
+        self.retained.state = .some(state)
+        self.retained.value = .some(&self)
+        into.writeString(self.text)
+    }
+}
+
+@test
+func testTypedFormattingRetainsFormatterReferencesAcrossCollection() {
+    retained := RetainedFormatReferences()
+    value := RetainingFormatValue { retained, text: "ok" }
+    rendered := std::sprintf("[%5v]", value)
+    std::runtime::collect()
+    std::testing::assertEqual(rendered, "[   ok]", "typed arguments share the ordinary padding parser")
+    std::testing::assertEqual(retained.state.unwrap().width, 5 as usize, "escaped state reference stays alive")
+    retained.writer.unwrap().writeString("!")
+    retained.value.unwrap().text = "changed later"
+    std::runtime::collect()
+    std::testing::assertEqual(value.text, "ok", "escaped receiver is an independent value snapshot")
+    std::testing::assertEqual(rendered, "[   ok]", "later formatter writes cannot change the returned string")
 }

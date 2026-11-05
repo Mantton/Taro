@@ -1,0 +1,24 @@
+error: self is implicit; declare storage receivers with `extend &T` or `conform &T to I`
+ -> language_tests/source_files/invalid/static_receiver.tr:4:22
+	    static func owned(self) {}
+	                      ^^^^
+error: a static function cannot declare a self receiver
+ -> language_tests/source_files/invalid/static_receiver.tr:4:22
+	    static func owned(self) {}
+	                      ^^^^
+error: self is implicit; declare storage receivers with `extend &T` or `conform &T to I`
+ -> language_tests/source_files/invalid/static_receiver.tr:5:23
+	    static func shared(&self) {}
+	                       ^
+error: a static function cannot declare a self receiver
+ -> language_tests/source_files/invalid/static_receiver.tr:5:23
+	    static func shared(&self) {}
+	                       ^^^^^
+error: self is implicit; declare storage receivers with `extend &T` or `conform &T to I`
+ -> language_tests/source_files/invalid/static_receiver.tr:6:26
+	    static func exclusive(&self) {}
+	                          ^
+error: a static function cannot declare a self receiver
+ -> language_tests/source_files/invalid/static_receiver.tr:6:26
+	    static func exclusive(&self) {}
+	                          ^^^^^

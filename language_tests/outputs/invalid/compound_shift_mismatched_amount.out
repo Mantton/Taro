@@ -1,0 +1,4 @@
+error: no overload matches this call
+ -> language_tests/source_files/invalid/compound_shift_mismatched_amount.tr:4:4
+	    value <<= amount // Shift amounts use the operand's own integer type.
+	    ^^^^^^^^^^^^^^^^

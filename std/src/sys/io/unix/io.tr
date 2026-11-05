@@ -1,22 +1,71 @@
-import std.io.Error
-import std.libc
-import std.result.Result
+import std::io::Error
+import std::libc
+import std::result::Result
 
 extern "taro_rt" {
     func __rt__async_io_adopt_fd(_ fd: int32) -> usize
     func __rt__async_io_close_source(_ source_id: usize) -> int32
     func __rt__async_io_dup(_ fd: int32) -> int32
-    func __rt__async_io_pipe(_ read_fd_out: *mut int32, _ write_fd_out: *mut int32) -> int32
-    func __rt__async_io_read_source(_ source_id: usize, _ buf: *mut uint8, _ len: usize) -> isize
-    func __rt__async_io_write_source(_ source_id: usize, _ buf: *const uint8, _ len: usize) -> isize
+    unsafe func __rt__async_io_pipe(_ read_fd_out: *mut int32, _ write_fd_out: *mut int32) -> int32
+    unsafe func __rt__async_io_read_source(_ source_id: usize, _ buf: *mut uint8, _ len: usize) -> isize
+    unsafe func __rt__async_io_write_source(_ source_id: usize, _ buf: *const uint8, _ len: usize) -> isize
+    func __rt__fd_lease_open(_ fd: int32) -> uint64
+    func __rt__fd_lease_acquire(_ lease: uint64) -> int32
+    func __rt__fd_lease_release(_ lease: uint64) -> int32
+    func __rt__fd_lease_close(_ lease: uint64) -> int32
+    func __rt__fd_lease_take(_ lease: uint64) -> int32
+}
+
+// Descriptor leases. Copies of a resource handle share one lease id; each
+// native call acquires the descriptor for its own duration, and close defers
+// releasing the descriptor until the last in-flight call has finished, so a
+// concurrent close can never hand an active descriptor number to a new open.
+// Lease ids are never reused; 0 is never a live lease. An async stream's
+// source id is its lease id.
+
+public func leaseOpen(_ fd: int32) -> uint64 {
+    __rt__fd_lease_open(fd)
+}
+
+/// Borrow the descriptor for one native call; pair with `leaseRelease`.
+public func leaseAcquire(_ lease: uint64, _ operation: string) -> Result[int32, Error] {
+    fd := __rt__fd_lease_acquire(lease)
+    if fd < 0 {
+        return .err(mapErrno(0_i32 - fd).withOperation(operation))
+    }
+    return .ok(fd)
+}
+
+public func leaseRelease(_ lease: uint64) {
+    var _ = __rt__fd_lease_release(lease)
+}
+
+/// Stops new operations immediately. With an operation in flight, success
+/// acknowledges the close request; the descriptor closes after its last call.
+/// Deferred close failures are reported on stderr and in runtime statistics.
+public func leaseClose(_ lease: uint64, _ operation: string) -> Result[(), Error] {
+    res := __rt__fd_lease_close(lease)
+    if res < 0 {
+        return .err(mapErrno(0_i32 - res).withOperation(operation))
+    }
+    return .ok(())
+}
+
+/// Transfer the descriptor out of an idle lease without closing it.
+public func leaseTake(_ lease: uint64, _ operation: string) -> Result[int32, Error] {
+    fd := __rt__fd_lease_take(lease)
+    if fd < 0 {
+        return .err(mapErrno(0_i32 - fd).withOperation(operation))
+    }
+    return .ok(fd)
 }
 
 public struct PlatformAsyncStream {
-    source_id: usize
+    internal source_id: usize
 }
 
 public func writeStdout(_ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
-    let res = std.libc.write(std.libc.STDOUT_FILENO, buf, len)
+    res := unsafe { std::libc::write(std::libc::STDOUT_FILENO, buf, len) }
     if res < 0 {
         return .err(lastError().withOperation("write stdout"))
     }
@@ -24,7 +73,7 @@ public func writeStdout(_ buf: *const uint8, _ len: usize) -> Result[usize, Erro
 }
 
 public func writeStderr(_ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
-    let res = std.libc.write(std.libc.STDERR_FILENO, buf, len)
+    res := unsafe { std::libc::write(std::libc::STDERR_FILENO, buf, len) }
     if res < 0 {
         return .err(lastError().withOperation("write stderr"))
     }
@@ -37,7 +86,7 @@ public func writeStderr(_ buf: *const uint8, _ len: usize) -> Result[usize, Erro
 /// reactor registration `stdin()` performs, so a synchronous caller does not
 /// need the async runtime running.
 public func readStdin(_ buf: *mut uint8, _ len: usize) -> Result[usize, Error] {
-    let res = std.libc.read(std.libc.STDIN_FILENO, buf, len)
+    res := unsafe { std::libc::read(std::libc::STDIN_FILENO, buf, len) }
     if res < 0 {
         return .err(lastError().withOperation("read stdin"))
     }
@@ -45,10 +94,12 @@ public func readStdin(_ buf: *mut uint8, _ len: usize) -> Result[usize, Error] {
 }
 
 public func adoptFd(_ fd: int32) -> Result[PlatformAsyncStream, Error] {
-    let sourceId = __rt__async_io_adopt_fd(fd)
+    sourceId := __rt__async_io_adopt_fd(fd)
     if sourceId == 0 {
-        let _ = std.libc.close(fd)
-        return .err(lastError().withOperation("adopt file descriptor"))
+        // Read first: close() may replace the reason adoption failed.
+        error := lastError().withOperation("adopt file descriptor")
+        var _ = std::libc::close(fd)
+        return .err(error)
     }
 
     return .ok(PlatformAsyncStream {
@@ -57,7 +108,7 @@ public func adoptFd(_ fd: int32) -> Result[PlatformAsyncStream, Error] {
 }
 
 func duplicateAndWrap(_ fd: int32) -> Result[PlatformAsyncStream, Error] {
-    let duplicated = __rt__async_io_dup(fd)
+    duplicated := __rt__async_io_dup(fd)
     if duplicated < 0 {
         return .err(lastError().withOperation("duplicate file descriptor"))
     }
@@ -66,42 +117,42 @@ func duplicateAndWrap(_ fd: int32) -> Result[PlatformAsyncStream, Error] {
 }
 
 public func stdin() -> Result[PlatformAsyncStream, Error] {
-    duplicateAndWrap(std.libc.STDIN_FILENO)
+    duplicateAndWrap(std::libc::STDIN_FILENO)
 }
 
 public func stdout() -> Result[PlatformAsyncStream, Error] {
-    duplicateAndWrap(std.libc.STDOUT_FILENO)
+    duplicateAndWrap(std::libc::STDOUT_FILENO)
 }
 
 public func stderr() -> Result[PlatformAsyncStream, Error] {
-    duplicateAndWrap(std.libc.STDERR_FILENO)
+    duplicateAndWrap(std::libc::STDERR_FILENO)
 }
 
 public func pipe() -> Result[(PlatformAsyncStream, PlatformAsyncStream), Error] {
     var readFd: int32 = -1
     var writeFd: int32 = -1
-    let res = __rt__async_io_pipe(
-        unsafe { (&mut readFd as *mut int32) },
-        unsafe { (&mut writeFd as *mut int32) },
-    )
+    res := unsafe { __rt__async_io_pipe(
+        unsafe { (&readFd as *mut int32) },
+        unsafe { (&writeFd as *mut int32) },
+    ) }
     if res < 0 {
         return .err(lastError().withOperation("create pipe"))
     }
 
-    let readEnd = adoptFd(readFd)
-    let wrappedRead = match readEnd {
+    readEnd := adoptFd(readFd)
+    wrappedRead := match readEnd {
         case .ok(stream) => stream
         case .err(err) => {
-            let _ = std.libc.close(writeFd)
+            var _ = std::libc::close(writeFd)
             return .err(err)
         }
     }
 
-    let writeEnd = adoptFd(writeFd)
-    let wrappedWrite = match writeEnd {
+    writeEnd := adoptFd(writeFd)
+    wrappedWrite := match writeEnd {
         case .ok(stream) => stream
         case .err(err) => {
-            let _ = close(wrappedRead)
+            var _ = close(wrappedRead)
             return .err(err)
         }
     }
@@ -114,11 +165,19 @@ public func close(_ stream: PlatformAsyncStream) -> Result[(), Error] {
         return .ok(())
     }
 
-    let res = __rt__async_io_close_source(stream.source_id)
+    res := __rt__async_io_close_source(stream.source_id)
     if res < 0 {
         return .err(mapErrno((0_i32 - res) as int32).withOperation("close"))
     }
     return .ok(())
+}
+
+// A socket with nothing ready is routine, and callers go on to wait for it, so
+// that one case doesn't allocate the details an error's reader would want.
+func sourceFailure(_ res: isize, _ operation: string) -> Error {
+    error := mapErrno(((0 as isize) - res) as int32)
+    if error.isKind(.wouldBlock) { return error }
+    return error.withOperation(operation)
 }
 
 public func read(
@@ -126,9 +185,9 @@ public func read(
     _ buf: *mut uint8,
     _ len: usize,
 ) -> Result[usize, Error] {
-    let res = __rt__async_io_read_source(stream.source_id, buf, len)
+    res := unsafe { __rt__async_io_read_source(stream.source_id, buf, len) }
     if res < 0 {
-        return .err(mapErrno(((0 as isize) - res) as int32).withOperation("read"))
+        return .err(sourceFailure(res, "read"))
     }
     return .ok(res as usize)
 }
@@ -138,9 +197,9 @@ public func write(
     _ buf: *const uint8,
     _ len: usize,
 ) -> Result[usize, Error] {
-    let res = __rt__async_io_write_source(stream.source_id, buf, len)
+    res := unsafe { __rt__async_io_write_source(stream.source_id, buf, len) }
     if res < 0 {
-        return .err(mapErrno(((0 as isize) - res) as int32).withOperation("write"))
+        return .err(sourceFailure(res, "write"))
     }
     return .ok(res as usize)
 }

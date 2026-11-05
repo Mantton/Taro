@@ -1,0 +1,29 @@
+struct Counter { value: int32 }
+extend Counter {
+    func inspect() -> int32 { self.value }
+
+}
+func main() {
+    var value: Counter = Counter { value: 7 }
+    unsafe {
+        var pointer: *mut Counter = &value as *mut Counter
+        assert(pointer.value == 7, "explicitly authorized raw field access")
+        pointer.increment()
+        inspect := pointer.inspect
+        assert(inspect() == 8, "bound receiver uses its lexical unsafe context")
+        (*pointer).value = 9
+    }
+    assert(value.value == 9, "raw operation finished before checked access")
+    var scalar: int32 = 11
+    unsafe {
+        var pointer: *mut int32 = &scalar as *mut int32
+        assert(pointer.read() == 11, "Copy read from valid initialized storage")
+        pointer.write(13_i32)
+    }
+    assert(scalar == 13, "write into a live primitive slot")
+}
+
+
+extend &Counter {
+    func increment() { self.value += 1 }
+}

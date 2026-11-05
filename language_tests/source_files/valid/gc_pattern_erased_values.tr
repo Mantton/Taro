@@ -1,0 +1,26 @@
+interface Counter {
+    func read() -> int32
+}
+struct Value { number: int32 }
+conform Value to Counter {
+    func read() -> int32 { self.number }
+}
+enum Choice { case empty; case value(any Counter) }
+func add(_ value: &any Counter, _ amount: int32) { value.asRef[Value]().unwrap().number += amount }
+func reject(_ value: &any Counter) -> bool { add(value, 10); false }
+func main() {
+    var original: any Counter = Value { number: 7 }
+    var choice: Choice = .value(original)
+    match *&choice {
+        case .value(value) => {
+            add(&value, 1)
+            assert(value.read() == 8 && original.read() == 7, "pattern copies erased value storage")
+        }
+        case .empty => panic("value expected")
+    }
+    match *&choice {
+        case .value(value) if reject(&value) => panic("guard should reject")
+        case .value(value) => assert(value.read() == 7, "failed guard preserves erased payload")
+        case .empty => panic("value expected")
+    }
+}

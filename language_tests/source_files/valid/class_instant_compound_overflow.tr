@@ -1,0 +1,19 @@
+// EXPECT_EXIT: 101
+// OVERFLOW_CHECKS
+// EXPECT_STDERR_CONTAINS: panic: attempt to add with overflow
+// EXPECT_STDOUT_CONTAINS: cleanup observed 255
+// Overflow panics only after the field access ends: cleanup that touches the
+// same field must neither deadlock nor see a partially applied update.
+class Gauge { level: uint8 = 255 }
+extend Gauge {
+    init() {}
+}
+func main() {
+    var gauge: Gauge = Gauge()
+    var alias: Gauge = gauge
+    defer {
+        std::printf("cleanup observed %v\n", alias.level)
+        alias.level = 0
+    }
+    gauge.level += 1
+}

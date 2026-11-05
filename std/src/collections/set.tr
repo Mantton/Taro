@@ -1,49 +1,55 @@
-import std.hash.Hashable
-import std.iter.{Iterable, Iterator}
-import std.marker.Clone
+import std::hash::Hashable
+import std::iter::{Iterable, Iterator}
+import std::marker::Clone
 
+/// A shared handle to a hash set (G15). Copying a Set shares its elements;
+/// `copy()` makes an independent set.
 @lang("Set")
 public struct Set[Element: Hashable] {
-    storage: Dictionary[Element, ()]
+    internal storage: Dictionary[Element, ()]
 }
 
-impl[Element: Hashable] Set[Element] {
-    public func new() -> Self {
+extend[Element: Hashable] Set[Element] {
+    public static func new() -> Self {
         Set[Element] {
-            storage: Dictionary[Element, ()](),
+            storage: Dictionary[Element, ()]::new(),
         }
     }
 
-    public func len(&self) -> usize {
+    public func copy() -> Self {
+        Set[Element] { storage: self.storage.copy() }
+    }
+
+    public func len() -> usize {
         self.storage.len()
     }
 
-    public func isEmpty(&self) -> bool {
+    public func isEmpty() -> bool {
         self.storage.isEmpty()
     }
 }
 
-impl[Element: Hashable] Set[Element] {
-    public func insert(&mut self, _ value: Element) {
-        let _ = self.storage.insert(key: value, value: ())
+extend[Element: Hashable] Set[Element] {
+    public func insert(_ value: Element) {
+        var _ = self.storage.insert(key: value, value: ())
     }
 
-    public func contains(&self, _ value: &Element) -> bool {
+    public func contains(_ value: &Element) -> bool {
         self.storage.contains(value)
     }
 
-    public func remove(&mut self, _ value: &Element) -> bool {
+    public func remove(_ value: &Element) -> bool {
         self.storage.remove(value).isSome()
     }
 
-    public func clear(&mut self) {
+    public func clear() {
         self.storage.clear()
     }
 }
 
-impl[Element: Hashable] Clone for Set[Element] where Element: Clone {
-    public func clone(&self) -> Self {
-        var cloned = Set[Element].new()
+conform[Element: Hashable] Set[Element] to Clone where Element: Clone {
+    public func clone() -> Self {
+        var cloned = Set[Element]::new()
         for value in self {
             cloned.insert(value.clone())
         }
@@ -52,133 +58,76 @@ impl[Element: Hashable] Clone for Set[Element] where Element: Clone {
 }
 
 public struct SetIterator[Element: Hashable] {
-    inner: DictOwnedEntriesIterator[Element, ()]
+    internal inner: DictKeysIterator[Element, ()]
 }
 
-impl[Element: Hashable] Iterator for SetIterator[Element] {
+conform[Element: Hashable] SetIterator[Element] to Iterator {
     type Element = Element
 
-    public func next(&mut self) -> Element? {
-        match self.inner.next() {
-            case .some(value) => return .some(value.0)
-            case .none => return .none
-        }
-    }
-}
-
-public struct SetRefIterator[Element: Hashable] {
-    inner: DictKeysIterator[Element, ()]
-}
-
-impl[Element: Hashable] Iterator for SetRefIterator[Element] {
-    type Element = &Element
-
-    public func next(&mut self) -> Self.Element? {
+    public func next() -> Element? {
         self.inner.next()
     }
 }
 
-public struct SetMutIterator[Element: Hashable] {
-    inner: DictMutKeysIterator[Element, ()]
-}
-
-impl[Element: Hashable] Iterator for SetMutIterator[Element] {
-    type Element = &Element
-
-    public func next(&mut self) -> Self.Element? {
-        self.inner.next()
-    }
-}
-
-impl[Element: Hashable] Iterable for Set[Element] {
+conform[Element: Hashable] Set[Element] to Iterable {
     type Iterator = SetIterator[Element]
     type Element = Element
 
-    public func iter(self) -> Self.Iterator {
-        SetIterator[Element] {
-            inner: DictOwnedEntriesIterator[Element, ()] {
-                dict: self.storage,
-                currentSlot: 0,
-            },
-        }
+    public func iter() -> Self::Iterator {
+        SetIterator[Element] { inner: self.storage.keys() }
     }
 }
 
-impl[Element: Hashable] Iterable for &Set[Element] {
-    type Iterator = SetRefIterator[Element]
-    type Element = &Element
-
-    public func iter(self) -> Self.Iterator {
-        SetRefIterator[Element] {
-            inner: self.storage.keys(),
-        }
-    }
-}
-
-impl[Element: Hashable] Iterable for &mut Set[Element] {
-    type Iterator = SetMutIterator[Element]
-    type Element = &Element
-
-    public func iter(self) -> Self.Iterator {
-        SetMutIterator[Element] {
-            inner: self.storage.keys(),
-        }
-    }
-}
-
-impl[Element: Hashable] Set[Element] where Element: Clone {
-    public func union(&self, _ other: &Set[Element]) -> Set[Element] {
-        var result = Set[Element].new()
-        for x in self {
-            result.insert(x.clone())
-        }
+// Set algebra returns new sets; elements are copied as ordinary values.
+extend[Element: Hashable] Set[Element] {
+    public func union(_ other: Set[Element]) -> Set[Element] {
+        var result = self.copy()
         for x in other {
-            result.insert(x.clone())
+            result.insert(x)
         }
         result
     }
 
-    public func intersection(&self, _ other: &Set[Element]) -> Set[Element] {
-        var result = Set[Element].new()
-        if self.len() <= other.len() {
-            for x in self {
-                if other.contains(x) {
-                    result.insert(x.clone())
-                }
-            }
-        } else {
-            for x in other {
-                if self.contains(x) {
-                    result.insert(x.clone())
-                }
+    public func intersection(_ other: Set[Element]) -> Set[Element] {
+        var result = Set[Element]::new()
+        var (smaller, larger) = if self.len() <= other.len() { (self, other) } else { (other, self) }
+        for x in smaller {
+            if larger.contains(&x) {
+                result.insert(x)
             }
         }
         result
     }
 
-    public func difference(&self, _ other: &Set[Element]) -> Set[Element] {
-        var result = Set[Element].new()
+    public func difference(_ other: Set[Element]) -> Set[Element] {
+        var result = Set[Element]::new()
         for x in self {
-            if !other.contains(x) {
-                result.insert(x.clone())
+            if !other.contains(&x) {
+                result.insert(x)
             }
         }
         result
     }
 
-    public func isSubset(&self, of other: &Set[Element]) -> bool {
+    public func isSubset(of other: Set[Element]) -> bool {
         if self.len() > other.len() {
             return false
         }
         for x in self {
-            if !other.contains(x) {
+            if !other.contains(&x) {
                 return false
             }
         }
         return true
     }
 
-    public func isSuperset(&self, of other: &Set[Element]) -> bool {
+    public func isSuperset(of other: Set[Element]) -> bool {
         other.isSubset(of: self)
     }
+}
+
+conform[Element: Hashable] SetIterator[Element] to Iterable {
+    type Element = Element
+    type Iterator = SetIterator[Element]
+    public func iter() -> Self::Iterator { self }
 }

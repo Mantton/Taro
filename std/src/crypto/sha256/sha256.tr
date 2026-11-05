@@ -1,0 +1,14 @@
+import std::crypto::__rt__crypto_digest
+import std::mem::Span
+
+func calculate(_ data: *const uint8, _ length: usize) -> [uint8; 32] {
+    var output: [uint8; 32] = [0_u8; 32]
+    valid := unsafe { __rt__crypto_digest(0_u8, data, length, (&output as *mut [uint8; 32]) as *mut uint8) }
+    std::assert(valid, "invalid SHA backend algorithm")
+    return output
+}
+/// SHA-256 digest as raw bytes. Input is borrowed for this call only.
+public func sum(_ bytes: Span[uint8]) -> [uint8; 32] { calculate(bytes.asPtr(), bytes.len()) }
+/// Read immutable string storage directly. Span.fromString creates a writable
+/// snapshot and would unnecessarily copy the entire input before hashing.
+public func sum(_ text: string) -> [uint8; 32] { calculate(std::string::stringData(text), text.byteLen()) }

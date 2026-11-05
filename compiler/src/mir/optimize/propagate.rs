@@ -45,6 +45,12 @@ impl<'ctx> MirPass<'ctx> for CopyPropagation {
         for (bb, block) in body.basic_blocks.iter_enumerated() {
             for (stmt_index, stmt) in block.statements.iter().enumerate() {
                 match &stmt.kind {
+                    StatementKind::StorageLive(local) | StatementKind::StorageDead(local) => {
+                        // A saved copy may outlive its source storage. Global
+                        // substitution cannot redirect that copy across this
+                        // boundary without a path-sensitive lifetime proof.
+                        complex_dest[local.index()] = true;
+                    }
                     StatementKind::Assign(dest, rv) => {
                         if dest.projection.is_empty() {
                             assignment_count[dest.local.index()] += 1;
@@ -54,7 +60,7 @@ impl<'ctx> MirPass<'ctx> for CopyPropagation {
                                     stmt_index,
                                 });
                             }
-                            if let Rvalue::Use(Operand::Copy(src) | Operand::Move(src)) = rv {
+                            if let Rvalue::Use(Operand::Copy(src)) = rv {
                                 if src.projection.is_empty() {
                                     copy_source[dest.local.index()] = Some(src.local);
                                 }
@@ -63,7 +69,7 @@ impl<'ctx> MirPass<'ctx> for CopyPropagation {
                             complex_dest[dest.local.index()] = true;
                         }
 
-                        if let Rvalue::Ref { place, .. } = rv {
+                        if let Rvalue::Ref { place, .. } | Rvalue::CleanupAddress { place } = rv {
                             if place.projection.is_empty() {
                                 address_taken[place.local.index()] = true;
                             }
@@ -100,7 +106,10 @@ impl<'ctx> MirPass<'ctx> for CopyPropagation {
         // 2. Build propagation map
         let mut propagate: Vec<Option<LocalId>> = vec![None; num_locals];
         for (local_idx, local_decl) in body.locals.iter_enumerated() {
-            if matches!(local_decl.kind, LocalKind::Param | LocalKind::Return) {
+            if matches!(
+                local_decl.kind,
+                LocalKind::Param | LocalKind::Return | LocalKind::ConstructorSelf
+            ) {
                 continue;
             }
             if assignment_count[local_idx.index()] == 1
@@ -226,6 +235,9 @@ fn source_is_stable(
         LocalKind::Param => assignment_count[src.index()] == 0,
         LocalKind::Temp => assignment_count[src.index()] == 1,
         LocalKind::User => assignment_count[src.index()] == 1,
+        // Initializer storage carries a field-initialization proof. Keep its
+        // identity instead of lending that privilege to a propagated local.
+        LocalKind::ConstructorSelf => false,
         LocalKind::Return => false,
     }
 }
@@ -256,7 +268,7 @@ fn record_operand_use(
     uses: &mut [Vec<UseSite>],
 ) {
     match op {
-        Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
+        Operand::Copy(place) | Operand::CopyWith(place, _) => {
             record_place_use(place, block, stmt_index, uses);
         }
         Operand::Constant(_) => {}
@@ -271,7 +283,15 @@ fn record_rvalue_uses(
     projection_use: &mut [bool],
 ) {
     rv.for_each_place(|place| record_place_use(place, block, stmt_index, uses));
-    if let Rvalue::Ref { place, .. } | Rvalue::Discriminant { place } = rv {
+    if let Rvalue::CopyValue { source } = rv {
+        // Owning acquisition names storage. Operand-only substitutions must
+        // not remove that storage without also preserving its ownership effect.
+        projection_use[source.local.index()] = true;
+    }
+    if let Rvalue::Ref { place, .. }
+    | Rvalue::CleanupAddress { place }
+    | Rvalue::Discriminant { place } = rv
+    {
         if !place.projection.is_empty() {
             projection_use[place.local.index()] = true;
         }

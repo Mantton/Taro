@@ -83,6 +83,8 @@ pub enum KnownAttribute {
     Lang,
     /// `@repr("Taro" | "C")` - selects struct layout representation
     Repr,
+    /// `@NoCopy` - advisory vet marker on a nominal type declaration
+    NoCopy,
 }
 
 impl KnownAttribute {
@@ -98,6 +100,7 @@ impl KnownAttribute {
             "expectPanic" => Some(KnownAttribute::ExpectPanic),
             "lang" => Some(KnownAttribute::Lang),
             "repr" => Some(KnownAttribute::Repr),
+            "NoCopy" => Some(KnownAttribute::NoCopy),
             _ => None,
         }
     }
@@ -195,15 +198,29 @@ pub type AssociatedDeclaration = Declaration<AssociatedDeclarationKind>;
 pub enum AssociatedDeclarationKind {
     Constant(Constant),
     Function(Function),
+    /// Constructor with a private uninitialized self binding and owned result.
+    Initializer(Function),
     Type(TypeAlias),
     Property(ComputedProperty),
+    Subscript(NativeSubscript),
 }
 
 #[derive(Debug, Clone)]
 pub struct ComputedProperty {
     pub ty: Box<Type>,
     pub getter_id: DefinitionID,
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeSubscript {
+    pub ty: Box<Type>,
+    pub getter_id: Option<DefinitionID>,
     pub setter_id: Option<DefinitionID>,
+    pub address_id: Option<DefinitionID>,
+    pub getter_is_default: bool,
+    pub setter_is_default: bool,
+    pub is_override: bool,
+    pub is_final: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -215,9 +232,15 @@ pub struct Interface {
 
 #[derive(Debug, Clone)]
 pub struct Struct {
+    pub class_header: Option<ClassHeader>,
     pub generics: Generics,
     pub fields: Vec<FieldDefinition>,
     pub conformances: Option<Conformances>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ClassHeader {
+    pub is_final: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -256,7 +279,18 @@ pub struct Function {
     pub block: Option<Block>,
     pub is_unsafe: bool,
     pub is_async: bool,
+    pub is_final: bool,
+    pub is_override: bool,
+    /// Kept through lowering for constructor inheritance/delegation checks.
+    /// Ordinary methods, including a method merely named init, have no kind.
+    pub initializer_kind: Option<InitializerKind>,
     pub abi: Option<Abi>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InitializerKind {
+    pub is_required: bool,
+    pub is_convenience: bool,
 }
 
 /// AST Representation of a function parameter
@@ -345,7 +379,7 @@ pub struct Constant {
 #[derive(Debug, Clone)]
 pub struct Impl {
     pub generics: Generics,
-    /// The interface being implemented (Some for `impl I for T`, None for `impl T`)
+    /// Some for `conform T to I`, absent for `extend T`.
     pub interface: Option<Box<Type>>,
     /// The type implementing the interface (the target type)
     pub target: Box<Type>,
@@ -404,8 +438,8 @@ pub enum TypeKind {
     Pointer(Box<Type>, Mutability),
     /// Reference Type
     ///
-    /// `&T` | `&const T`
-    Reference(Box<Type>, Mutability),
+    /// `&T`
+    Reference(Box<Type>),
     /// Tuple Type
     ///
     /// `(T, V)`
@@ -548,11 +582,13 @@ pub struct Variant {
 pub enum VariantKind {
     Unit,
     Tuple(Vec<FieldDefinition>),
+    Struct(Vec<FieldDefinition>),
 }
 
 #[derive(Debug, Clone)]
 pub struct FieldDefinition {
     pub def_id: DefinitionID,
+    pub default_value: Option<Box<Expression>>,
     pub mutability: Mutability,
     pub label: Option<Label>,
     pub identifier: Identifier,
@@ -616,6 +652,14 @@ pub struct Expression {
     pub span: Span,
 }
 
+/// Private call and receiver identities for native accessor selection.
+/// Index arguments retain their ordinary expression identities.
+#[derive(Debug, Clone, Copy)]
+pub struct IndexCallNodes {
+    pub call: NodeID,
+    pub receiver: NodeID,
+}
+
 #[derive(Debug, Clone)]
 pub enum ExpressionKind {
     /// Runes, Bools, Integers, Floats, Strings
@@ -632,6 +676,21 @@ pub enum ExpressionKind {
     Member {
         target: Box<Expression>,
         name: Identifier,
+    },
+    /// A value member followed by brackets can specialize a method or index a
+    /// stored/computed value. The parses have disjoint IDs for their arguments;
+    /// type checking chooses one branch before captures or THIR are emitted.
+    MemberBrackets {
+        member: Box<Expression>,
+        type_arguments: TypeArguments,
+        indexed: Option<Box<Expression>>,
+        diagnostics: crate::diagnostics::BracketDiagnostics,
+    },
+    /// A native subscript value or address access.
+    Index {
+        target: Box<Expression>,
+        index: Vec<ExpressionArgument>,
+        nodes: IndexCallNodes,
     },
     /// `.bar`
     InferredMember {
@@ -675,8 +734,8 @@ pub enum ExpressionKind {
         name: Identifier,
         arguments: Vec<ExpressionArgument>,
     },
-    /// &a | &const T
-    Reference(Box<Expression>, Mutability),
+    /// &a
+    Reference(Box<Expression>),
     /// *a
     Dereference(Box<Expression>),
     /// `a + b`
@@ -816,8 +875,10 @@ pub struct PatternBindingCondition {
 
 #[derive(Debug, Clone)]
 pub struct StructLiteral {
-    pub path: ResolvedPath,
+    pub path: ConstructorPath,
     pub fields: Vec<ExpressionField>,
+    /// Evaluated once after explicit fields; supplies all omitted fields.
+    pub base: Option<Box<Expression>>,
 }
 
 #[derive(Debug, Clone)]
@@ -841,7 +902,8 @@ pub struct ClosureExpr {
     /// Closure body expression
     pub body: Box<Expression>,
     /// Whether `move` keyword was specified (forces by-move capture)
-    pub is_move: bool,
+    /// Compiler-generated method values snapshot their selected receiver.
+    pub snapshot_captures: bool,
     pub span: Span,
 }
 
@@ -867,12 +929,6 @@ pub struct Pattern {
     pub kind: PatternKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BindingMode {
-    ByValue,
-    ByRef(Mutability),
-}
-
 #[derive(Debug, Clone)]
 pub enum PatternKind {
     /// _
@@ -881,21 +937,21 @@ pub enum PatternKind {
     Rest,
     Binding {
         name: Identifier,
-        mode: BindingMode,
     },
     // (a, b)
     Tuple(Vec<Pattern>, Span),
-    // &T
-    Reference {
-        pattern: Box<Pattern>,
-        mutable: Mutability,
-    },
     // Foo.Bar
-    Member(PatternPath),
+    Member(ConstructorPath),
     // Foo.Bar(a, b)
     PathTuple {
-        path: PatternPath,
+        path: ConstructorPath,
         fields: Vec<Pattern>,
+        field_span: Span,
+    },
+    PathNamed {
+        path: ConstructorPath,
+        fields: Vec<NamedPatternField>,
+        rest: bool,
         field_span: Span,
     },
     // Foo | Bar
@@ -907,9 +963,15 @@ pub enum PatternKind {
 }
 
 #[derive(Debug, Clone)]
-pub enum PatternPath {
+pub enum ConstructorPath {
     Qualified { path: ResolvedPath },          // A.B.C
     Inferred { name: Identifier, span: Span }, // .B
+}
+
+#[derive(Debug, Clone)]
+pub struct NamedPatternField {
+    pub name: Identifier,
+    pub pattern: Pattern,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -918,6 +980,9 @@ pub enum StdItem {
     Optional,
     Result,
     List,
+    ListIterator,
+    ClassHandle,
+    AtomicHandle,
     Set,
     Dictionary,
     Range,
@@ -927,22 +992,20 @@ pub enum StdItem {
     Benchmark,
 
     // Interfaces
-    Copy,
+    Deref,
+    AnyObject,
     Clone,
-    Sendable,
     Hashable,
     Equatable,
+    Encodable,
+    Decodable,
     From,
     Iterator,
     Iterable,
     AsyncIterator,
     AsyncIterable,
     Fn,
-    FnMut,
     AsyncFn,
-    AsyncFnMut,
-    FnOnce,
-    AsyncFnOnce,
     Tuple,
     Add,
     AddAssign,
@@ -983,9 +1046,7 @@ pub enum StdItem {
     // Async
     Task,
     PanicPayload,
-
     // Builtin
-    Make,
 }
 
 impl StdItem {
@@ -994,6 +1055,9 @@ impl StdItem {
             StdItem::Optional => Some("Optional"),
             StdItem::Result => Some("Result"),
             StdItem::List => Some("List"),
+            StdItem::ListIterator => Some("ListIterator"),
+            StdItem::ClassHandle => Some("ClassHandle"),
+            StdItem::AtomicHandle => Some("AtomicHandle"),
             StdItem::Set => Some("Set"),
             StdItem::Dictionary => Some("Dictionary"),
             StdItem::Range => Some("Range"),
@@ -1001,22 +1065,20 @@ impl StdItem {
             StdItem::MaybeUninit => Some("MaybeUninit"),
             StdItem::Span => Some("Span"),
             StdItem::Benchmark => Some("Benchmark"),
-            StdItem::Copy => Some("Copy"),
+            StdItem::Deref => Some("Deref"),
+            StdItem::AnyObject => Some("AnyObject"),
             StdItem::Clone => Some("Clone"),
-            StdItem::Sendable => Some("Sendable"),
             StdItem::Hashable => Some("Hashable"),
             StdItem::Equatable => Some("Equatable"),
+            StdItem::Encodable => Some("Encodable"),
+            StdItem::Decodable => Some("Decodable"),
             StdItem::From => Some("From"),
             StdItem::Iterator => Some("Iterator"),
             StdItem::Iterable => Some("Iterable"),
             StdItem::AsyncIterator => Some("AsyncIterator"),
             StdItem::AsyncIterable => Some("AsyncIterable"),
             StdItem::Fn => Some("Fn"),
-            StdItem::FnMut => Some("FnMut"),
             StdItem::AsyncFn => Some("AsyncFn"),
-            StdItem::AsyncFnMut => Some("AsyncFnMut"),
-            StdItem::FnOnce => Some("FnOnce"),
-            StdItem::AsyncFnOnce => Some("AsyncFnOnce"),
             StdItem::Tuple => Some("Tuple"),
             StdItem::Add => Some("Add"),
             StdItem::AddAssign => Some("AddAssign"),
@@ -1053,7 +1115,6 @@ impl StdItem {
             StdItem::ResultOkCtor => Some("ResultOkCtor"),
             StdItem::ResultErrVariant => Some("ResultErrVariant"),
             StdItem::ResultErrCtor => Some("ResultErrCtor"),
-            StdItem::Make => None,
         }
     }
 
@@ -1062,6 +1123,9 @@ impl StdItem {
             "Optional" => Some(Self::Optional),
             "Result" => Some(Self::Result),
             "List" => Some(Self::List),
+            "ListIterator" => Some(Self::ListIterator),
+            "ClassHandle" => Some(Self::ClassHandle),
+            "AtomicHandle" => Some(Self::AtomicHandle),
             "Set" => Some(Self::Set),
             "Dictionary" => Some(Self::Dictionary),
             "Range" => Some(Self::Range),
@@ -1069,22 +1133,20 @@ impl StdItem {
             "MaybeUninit" => Some(Self::MaybeUninit),
             "Span" => Some(Self::Span),
             "Benchmark" => Some(Self::Benchmark),
-            "Copy" => Some(Self::Copy),
+            "Deref" => Some(Self::Deref),
+            "AnyObject" => Some(Self::AnyObject),
             "Clone" => Some(Self::Clone),
-            "Sendable" => Some(Self::Sendable),
             "Hashable" => Some(Self::Hashable),
             "Equatable" => Some(Self::Equatable),
+            "Encodable" => Some(Self::Encodable),
+            "Decodable" => Some(Self::Decodable),
             "From" => Some(Self::From),
             "Iterator" => Some(Self::Iterator),
             "Iterable" => Some(Self::Iterable),
             "AsyncIterator" => Some(Self::AsyncIterator),
             "AsyncIterable" => Some(Self::AsyncIterable),
             "Fn" => Some(Self::Fn),
-            "FnMut" => Some(Self::FnMut),
             "AsyncFn" => Some(Self::AsyncFn),
-            "AsyncFnMut" => Some(Self::AsyncFnMut),
-            "FnOnce" => Some(Self::FnOnce),
-            "AsyncFnOnce" => Some(Self::AsyncFnOnce),
             "Tuple" => Some(Self::Tuple),
             "Add" => Some(Self::Add),
             "AddAssign" => Some(Self::AddAssign),
@@ -1121,6 +1183,9 @@ impl StdItem {
         match self {
             StdItem::Optional | StdItem::Result => Some(DefinitionKind::Enum),
             StdItem::List
+            | StdItem::ListIterator
+            | StdItem::ClassHandle
+            | StdItem::AtomicHandle
             | StdItem::Set
             | StdItem::Dictionary
             | StdItem::Range
@@ -1130,22 +1195,20 @@ impl StdItem {
             | StdItem::Benchmark
             | StdItem::Task
             | StdItem::PanicPayload => Some(DefinitionKind::Struct),
-            StdItem::Copy
+            StdItem::Deref
+            | StdItem::AnyObject
             | StdItem::Clone
-            | StdItem::Sendable
             | StdItem::Hashable
             | StdItem::Equatable
+            | StdItem::Encodable
+            | StdItem::Decodable
             | StdItem::From
             | StdItem::Iterator
             | StdItem::Iterable
             | StdItem::AsyncIterator
             | StdItem::AsyncIterable
             | StdItem::Fn
-            | StdItem::FnMut
             | StdItem::AsyncFn
-            | StdItem::AsyncFnMut
-            | StdItem::FnOnce
-            | StdItem::AsyncFnOnce
             | StdItem::Tuple
             | StdItem::Add
             | StdItem::AddAssign
@@ -1187,7 +1250,6 @@ impl StdItem {
                     crate::sema::resolve::models::VariantCtorKind::Function,
                 ))
             }
-            StdItem::Make => None,
         }
     }
 
@@ -1197,6 +1259,8 @@ impl StdItem {
             StdItem::Optional
                 | StdItem::Result
                 | StdItem::List
+                | StdItem::ListIterator
+                | StdItem::ClassHandle
                 | StdItem::Set
                 | StdItem::Dictionary
                 | StdItem::Range
@@ -1204,9 +1268,9 @@ impl StdItem {
                 | StdItem::MaybeUninit
                 | StdItem::Span
                 | StdItem::Benchmark
-                | StdItem::Copy
+                | StdItem::Deref
+                | StdItem::AnyObject
                 | StdItem::Clone
-                | StdItem::Sendable
                 | StdItem::Hashable
                 | StdItem::Equatable
                 | StdItem::From
@@ -1215,11 +1279,7 @@ impl StdItem {
                 | StdItem::AsyncIterator
                 | StdItem::AsyncIterable
                 | StdItem::Fn
-                | StdItem::FnMut
                 | StdItem::AsyncFn
-                | StdItem::AsyncFnMut
-                | StdItem::FnOnce
-                | StdItem::AsyncFnOnce
                 | StdItem::Task
                 | StdItem::PanicPayload
                 | StdItem::Tuple
@@ -1259,10 +1319,12 @@ impl StdItem {
         )
     }
 
-    pub const ALL_REQUIRED: [StdItem; 62] = [
+    pub const ALL_REQUIRED: [StdItem; 60] = [
         StdItem::Optional,
         StdItem::Result,
         StdItem::List,
+        StdItem::ListIterator,
+        StdItem::ClassHandle,
         StdItem::Set,
         StdItem::Dictionary,
         StdItem::Range,
@@ -1270,9 +1332,9 @@ impl StdItem {
         StdItem::MaybeUninit,
         StdItem::Span,
         StdItem::Benchmark,
-        StdItem::Copy,
+        StdItem::Deref,
+        StdItem::AnyObject,
         StdItem::Clone,
-        StdItem::Sendable,
         StdItem::Hashable,
         StdItem::Equatable,
         StdItem::From,
@@ -1281,11 +1343,7 @@ impl StdItem {
         StdItem::AsyncIterator,
         StdItem::AsyncIterable,
         StdItem::Fn,
-        StdItem::FnMut,
         StdItem::AsyncFn,
-        StdItem::AsyncFnMut,
-        StdItem::FnOnce,
-        StdItem::AsyncFnOnce,
         StdItem::Tuple,
         StdItem::Add,
         StdItem::AddAssign,
@@ -1324,23 +1382,20 @@ impl StdItem {
         StdItem::ResultErrCtor,
     ];
 
-    pub const ALL_INTERFACES: [StdItem; 42] = [
-        StdItem::Copy,
+    pub const ALL_INTERFACES: [StdItem; 39] = [
+        StdItem::AnyObject,
         StdItem::Clone,
-        StdItem::Sendable,
         StdItem::Hashable,
         StdItem::Equatable,
+        StdItem::Encodable,
+        StdItem::Decodable,
         StdItem::From,
         StdItem::Iterator,
         StdItem::Iterable,
         StdItem::AsyncIterator,
         StdItem::AsyncIterable,
         StdItem::Fn,
-        StdItem::FnMut,
         StdItem::AsyncFn,
-        StdItem::AsyncFnMut,
-        StdItem::FnOnce,
-        StdItem::AsyncFnOnce,
         StdItem::Tuple,
         StdItem::Add,
         StdItem::AddAssign,
@@ -1373,13 +1428,18 @@ impl StdItem {
     pub fn is_derivable(self) -> bool {
         matches!(
             self,
-            Self::Copy | Self::Clone | Self::Hashable | Self::Equatable | Self::PartialEq
+            Self::Clone
+                | Self::Hashable
+                | Self::Equatable
+                | Self::PartialEq
+                | Self::Encodable
+                | Self::Decodable
         )
     }
 
     /// Whether this interface is a marker-only interface (no methods to synthesize).
     pub fn is_marker_only(self) -> bool {
-        matches!(self, Self::Copy | Self::Sendable | Self::Tuple)
+        matches!(self, Self::Tuple)
     }
 
     /// Convert an OperatorKind (from declarations) to its corresponding operator interface.
@@ -1441,6 +1501,7 @@ pub enum UseTreeContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FunctionContext {
     Free,
+    Initializer(AssocContext),
     Assoc(AssocContext),
 }
 
@@ -1453,11 +1514,6 @@ pub fn is_expression_bodied(block: &Block) -> Option<&Expression> {
 
 pub trait HirVisitor: Sized {
     type Result: VisitorResult = ();
-
-    #[allow(unused)]
-    fn visit_package(&mut self, node: &Package) -> Self::Result {
-        walk_package(self, node)
-    }
 
     fn visit_module(&mut self, node: &Module, is_root: bool) -> Self::Result {
         walk_module(self, node, is_root)
@@ -1660,8 +1716,8 @@ pub trait HirVisitor: Sized {
         walk_pattern(self, node)
     }
 
-    fn visit_pattern_path(&mut self, node: &PatternPath) -> Self::Result {
-        walk_pattern_path(self, node)
+    fn visit_constructor_path(&mut self, node: &ConstructorPath) -> Self::Result {
+        walk_constructor_path(self, node)
     }
 
     fn visit_identifier(&mut self, _node: &Identifier) -> Self::Result {
@@ -1746,6 +1802,13 @@ pub fn walk_assoc_declaration<V: HirVisitor>(
         AssociatedDeclarationKind::Constant(node) => {
             try_visit!(visitor.visit_constant(node));
         }
+        AssociatedDeclarationKind::Initializer(node) => {
+            try_visit!(visitor.visit_function(
+                declaration.id,
+                node,
+                FunctionContext::Initializer(context)
+            ));
+        }
         AssociatedDeclarationKind::Function(node) => {
             try_visit!(visitor.visit_function(
                 declaration.id,
@@ -1757,6 +1820,9 @@ pub fn walk_assoc_declaration<V: HirVisitor>(
             try_visit!(visitor.visit_type_alias(node));
         }
         AssociatedDeclarationKind::Property(node) => {
+            try_visit!(visitor.visit_type(&node.ty));
+        }
+        AssociatedDeclarationKind::Subscript(node) => {
             try_visit!(visitor.visit_type(&node.ty));
         }
     }
@@ -1803,12 +1869,15 @@ pub fn walk_variant<V: HirVisitor>(visitor: &mut V, node: &Variant) -> V::Result
     visit_optional!(visitor, visit_anon_const, &node.discriminant);
     match &node.kind {
         VariantKind::Unit => {}
-        VariantKind::Tuple(fields) => walk_list!(visitor, visit_field_definition, fields),
+        VariantKind::Tuple(fields) | VariantKind::Struct(fields) => {
+            walk_list!(visitor, visit_field_definition, fields)
+        }
     }
     V::Result::output()
 }
 
 pub fn walk_field_definition<V: HirVisitor>(visitor: &mut V, node: &FieldDefinition) -> V::Result {
+    visit_optional!(visitor, visit_expression, &node.default_value);
     visit_optional!(visitor, visit_label, &node.label);
     visitor.visit_identifier(&node.identifier);
     try_visit!(visitor.visit_type(&node.ty));
@@ -1925,7 +1994,7 @@ pub fn walk_type<V: HirVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
         TypeKind::Nominal(path) => {
             try_visit!(visitor.visit_resolved_path(path));
         }
-        TypeKind::Pointer(internal, _) | TypeKind::Reference(internal, _) => {
+        TypeKind::Pointer(internal, _) | TypeKind::Reference(internal) => {
             try_visit!(visitor.visit_type(internal));
         }
         TypeKind::Tuple(elems) => {
@@ -2148,6 +2217,24 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, node: &Expression) -> V::
             try_visit!(visitor.visit_expression(target));
             try_visit!(visitor.visit_identifier(name));
         }
+        ExpressionKind::MemberBrackets {
+            member,
+            type_arguments,
+            indexed,
+            ..
+        } => {
+            try_visit!(visitor.visit_expression(member));
+            try_visit!(visitor.visit_type_arguments(type_arguments));
+            if let Some(indexed) = indexed
+                && let ExpressionKind::Index { index, .. } = &indexed.kind
+            {
+                walk_list!(visitor, visit_expression_argument, index);
+            }
+        }
+        ExpressionKind::Index { target, index, .. } => {
+            try_visit!(visitor.visit_expression(target));
+            walk_list!(visitor, visit_expression_argument, index);
+        }
         ExpressionKind::InferredMember { name } => {
             try_visit!(visitor.visit_identifier(name));
         }
@@ -2185,7 +2272,7 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, node: &Expression) -> V::
             try_visit!(visitor.visit_expression(receiver));
             walk_list!(visitor, visit_expression_argument, arguments);
         }
-        ExpressionKind::Reference(expression, _) => {
+        ExpressionKind::Reference(expression) => {
             try_visit!(visitor.visit_expression(expression));
         }
         ExpressionKind::Dereference(expression) => {
@@ -2235,10 +2322,11 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, node: &Expression) -> V::
             try_visit!(visitor.visit_expression(expression));
         }
         ExpressionKind::StructLiteral(struct_literal) => {
-            try_visit!(visitor.visit_resolved_path(&struct_literal.path));
+            try_visit!(visitor.visit_constructor_path(&struct_literal.path));
             for field in &struct_literal.fields {
                 try_visit!(visitor.visit_expression(&field.expression));
             }
+            visit_optional!(visitor, visit_expression, &struct_literal.base);
         }
         ExpressionKind::Closure(closure) => {
             for param in &closure.params {
@@ -2309,15 +2397,19 @@ pub fn walk_pattern<V: HirVisitor>(visitor: &mut V, pattern: &Pattern) -> V::Res
         PatternKind::Tuple(patterns, _) => {
             walk_list!(visitor, visit_pattern, patterns);
         }
-        PatternKind::Reference { pattern, .. } => {
-            try_visit!(visitor.visit_pattern(pattern));
-        }
-        PatternKind::Member(pattern_path) => {
-            try_visit!(visitor.visit_pattern_path(pattern_path));
+
+        PatternKind::Member(constructor_path) => {
+            try_visit!(visitor.visit_constructor_path(constructor_path));
         }
         PatternKind::PathTuple { path, fields, .. } => {
-            try_visit!(visitor.visit_pattern_path(path));
+            try_visit!(visitor.visit_constructor_path(path));
             walk_list!(visitor, visit_pattern, fields);
+        }
+        PatternKind::PathNamed { path, fields, .. } => {
+            try_visit!(visitor.visit_constructor_path(path));
+            for field in fields {
+                try_visit!(visitor.visit_pattern(&field.pattern));
+            }
         }
         PatternKind::Or(patterns, _) => {
             walk_list!(visitor, visit_pattern, patterns);
@@ -2328,12 +2420,12 @@ pub fn walk_pattern<V: HirVisitor>(visitor: &mut V, pattern: &Pattern) -> V::Res
     V::Result::output()
 }
 
-pub fn walk_pattern_path<V: HirVisitor>(visitor: &mut V, node: &PatternPath) -> V::Result {
+pub fn walk_constructor_path<V: HirVisitor>(visitor: &mut V, node: &ConstructorPath) -> V::Result {
     match node {
-        PatternPath::Qualified { path } => {
+        ConstructorPath::Qualified { path } => {
             try_visit!(visitor.visit_resolved_path(path));
         }
-        PatternPath::Inferred { name, .. } => {
+        ConstructorPath::Inferred { name, .. } => {
             try_visit!(visitor.visit_identifier(name));
         }
     }

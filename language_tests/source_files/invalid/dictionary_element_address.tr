@@ -1,0 +1,6 @@
+struct Record { value: int32 }
+func main() {
+    var values: [string: Record] = ["key": Record { value: 7 }]
+    reference := &values["key"]
+    values["key"].value = 9
+}

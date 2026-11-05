@@ -24,16 +24,24 @@ use rustc_hash::FxHashMap;
 use std::{path::PathBuf, rc::Rc};
 
 pub fn run(arguments: CheckArgs) -> Result<(), ReportedError> {
+    run_with_mode(arguments, false)
+}
+
+pub fn run_vet(arguments: CheckArgs) -> Result<(), ReportedError> {
+    run_with_mode(arguments, true)
+}
+
+fn run_with_mode(arguments: CheckArgs, vet: bool) -> Result<(), ReportedError> {
     let arguments = arguments.common;
 
     if arguments.is_single_file() {
-        run_single_file(arguments)
+        run_single_file(arguments, vet)
     } else {
-        run_package(arguments)
+        run_package(arguments, vet)
     }
 }
 
-fn run_single_file(arguments: CommonCompileArgs) -> Result<(), ReportedError> {
+fn run_single_file(arguments: CommonCompileArgs, vet: bool) -> Result<(), ReportedError> {
     let compile_options = arguments.compile_mode_options();
     let profile_dir = profile_dir_name(compile_options.profile);
     let cwd = std::env::current_dir().map_err(|e| {
@@ -138,7 +146,7 @@ fn run_single_file(arguments: CommonCompileArgs) -> Result<(), ReportedError> {
                 ReportedError
             })?;
 
-    let reused = if incremental_enabled {
+    let reused = if incremental_enabled && !vet {
         match metadata::try_load_package_metadata(
             compiler.context,
             &fingerprint_input,
@@ -173,7 +181,11 @@ fn run_single_file(arguments: CommonCompileArgs) -> Result<(), ReportedError> {
     };
 
     if !reused {
-        let _ = compiler.check()?;
+        let _ = if vet {
+            compiler.vet()?
+        } else {
+            compiler.check()?
+        };
         if let Err(e) = metadata::write_package_metadata(
             compiler.context,
             &fingerprint_input,
@@ -188,7 +200,7 @@ fn run_single_file(arguments: CommonCompileArgs) -> Result<(), ReportedError> {
     Ok(())
 }
 
-fn run_package(arguments: CommonCompileArgs) -> Result<(), ReportedError> {
+fn run_package(arguments: CommonCompileArgs, vet: bool) -> Result<(), ReportedError> {
     let compile_options = arguments.compile_mode_options();
     let profile_dir = profile_dir_name(compile_options.profile);
     let cwd = std::env::current_dir().map_err(|e| {
@@ -351,7 +363,7 @@ fn run_package(arguments: CommonCompileArgs) -> Result<(), ReportedError> {
                 })?;
 
         let mut compiler = Compiler::new(&icx, config);
-        let reused = if incremental_enabled {
+        let reused = if incremental_enabled && !(vet && is_root) {
             match metadata::try_load_package_metadata(
                 compiler.context,
                 &fingerprint_input,
@@ -396,7 +408,11 @@ fn run_package(arguments: CommonCompileArgs) -> Result<(), ReportedError> {
         };
 
         if !reused {
-            let _ = compiler.check()?;
+            let _ = if vet && is_root {
+                compiler.vet()?
+            } else {
+                compiler.check()?
+            };
             if let Err(e) = metadata::write_package_metadata(
                 compiler.context,
                 &fingerprint_input,

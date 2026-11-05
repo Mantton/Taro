@@ -1,0 +1,9 @@
+interface Readable { func read() -> int32; }
+struct Counter { value: int32 }
+conform Counter to Readable { func read() -> int32 { self.value }; }
+func same[T: Readable](_ left: &T, _ right: &T) -> bool { left.read() == right.read() }
+func main() {
+    var left: any Readable = Counter { value: 1 } // any Readable; one hidden type identity.
+    var right: any Readable = Counter { value: 2 } // any Readable; independently erased identity.
+    var result: bool = same(&left, &right) // Error: matching public container types do not establish equal hidden T.
+}

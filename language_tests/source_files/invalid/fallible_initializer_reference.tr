@@ -1,0 +1,10 @@
+static var saved: int32? = .none
+func inspect(_ value: &int32) { saved = .some(*value) }
+class Record { value: int32 }
+extend Record {
+    public init() -> Result[Self, string] {
+        self.value = 7
+        inspect(&self.value)
+    }
+}
+func main() { var _ = Record() }

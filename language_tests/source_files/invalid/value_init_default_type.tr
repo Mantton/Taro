@@ -1,0 +1,2 @@
+struct Counter { value: int32 = false }
+func main() {}

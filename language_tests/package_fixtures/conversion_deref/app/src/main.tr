@@ -1,0 +1,14 @@
+import dep::{Point, View, ConversionFailure}
+func main() {
+    var point: Point = 17_i32.into()
+    assert(point.read() == 17, "external From supplies the std Into bridge")
+    var success: Result[Point, ConversionFailure] = 19_i64.tryInto()
+    assert(success.unwrap().value == 19, "external TryFrom associated error")
+    var failure: Result[Point, ConversionFailure] = (-1_i64).tryInto()
+    assert(failure.isErr(), "external fallible bridge")
+    var view = View { target: &point }
+    view.value = 23
+    assert(point.value == 23 && view.read() == 23, "external Deref target and method")
+    copy := *view
+    assert(copy.value == 23, "external unary Deref")
+}

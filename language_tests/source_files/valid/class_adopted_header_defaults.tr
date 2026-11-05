@@ -1,0 +1,11 @@
+interface Readable { func read() -> int32 { 7 }; func twice() -> int32 { self.read() + self.read() }; }
+class Base: Readable {}
+extend Base { init() {} }
+class Derived: Base {}
+conform Derived to Readable { override func read() -> int32 { 17 }; }
+func evaluate[T: Readable](_ value: &T) -> int32 { value.twice() }
+func main() {
+    var child: Derived = Derived() // Derived; strong handle.
+    var base: Base = child // Base; aliases the same object.
+    assert(base.read() == 17 && base.twice() == 34 && child.twice() == 34 && evaluate(&base) == 34, "inline default families dispatch through subclass overrides")
+}

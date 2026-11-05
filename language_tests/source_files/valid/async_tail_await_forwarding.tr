@@ -1,0 +1,94 @@
+// A function that only returns another call's result needs no frame of its own,
+// and nothing may reveal that it has none.
+func leaf(_ value: int32) async -> int32 {
+    await std::task::yieldNow()
+    return value + 1
+}
+func wrapper(_ value: int32) async -> int32 { return await leaf(value) }
+func outerWrapper(_ value: int32) async -> int32 { return await wrapper(value) }
+
+func chained() async {
+    var total: int32 = 0
+    var round: int32 = 0
+    while round < 64 {
+        total += await outerWrapper(round)
+        round += 1
+    }
+    assert(total == 2080, "forwarded calls return their callee's result")
+}
+
+func readThrough(_ value: &int32) async -> int32 { return await leaf(*value) }
+
+func capturesMutableBinding() async {
+    // The task may read before or after this write, but it must not see the
+    // value from before the spawn once it can only have started afterwards.
+    var source: int32 = 1
+    started := std::sync::atomic::Bool::new(false)
+    gate := std::task::spawn(() async => {
+        while !started.load() { await std::task::yieldNow() }
+        return await readThrough(&source)
+    })
+    source = 41
+    started.store(true)
+    assert((await gate.result()).unwrap() == 42, "a read through a reference happens when it runs")
+}
+
+func capturesImmutableBinding() async {
+    fixed := 6 as int32
+    task := std::task::spawn(() async => { return await leaf(fixed) })
+    assert((await task.result()).unwrap() == 7, "an immutable capture keeps its value")
+}
+
+func hangs() async -> int32 {
+    await std::task::sleep(std::time::Duration::fromSeconds(3600))
+    return 0
+}
+func hangsWrapped() async -> int32 { return await hangs() }
+
+func cancels() async {
+    task := std::task::spawn(() async => { return await hangsWrapped() })
+    await std::task::yieldNow()
+    task.cancel()
+    assert((await task.result()).isErr(), "cancellation reaches through a forwarded call")
+    timed := await std::task::withTimeout(std::time::Duration::fromMillis(5), () async => {
+        return await hangsWrapped()
+    })
+    assert(timed.isErr(), "a timeout reaches through a forwarded call")
+}
+
+func fails(_ value: int32) async -> int32 {
+    await std::task::yieldNow()
+    if value > 0 { std::panic::panic("planned failure") }
+    return value
+}
+func failsWrapped(_ value: int32) async -> int32 { return await fails(value) }
+
+func panics() async {
+    task := std::task::spawn(() async => { return await failsWrapped(1) })
+    assert((await task.result()).isErr(), "a panic reaches through a forwarded call")
+}
+
+func wrapVoid() async { return await std::task::yieldNow() }
+
+interface Source {
+    func next(_ base: int32) async -> int32
+}
+struct Fixed { offset: int32 }
+conform Fixed to Source {
+    public func next(_ base: int32) async -> int32 { return await leaf(base + self.offset) }
+}
+func dispatched(_ source: any Source, _ base: int32) async -> int32 { return await source.next(base) }
+func viaFunctionValue[F: AsyncFn(int32) -> int32](_ f: F, _ value: int32) async -> int32 { return await f(value) }
+
+func main() async {
+    assert((await outerWrapper(1)) == 2, "chained forwarding")
+    assert((await dispatched(Fixed { offset: 10 }, 1)) == 12, "forwarded interface dispatch")
+    assert((await viaFunctionValue(wrapper, 2)) == 3, "forwarded function value")
+    await wrapVoid()
+    await capturesMutableBinding()
+    await capturesImmutableBinding()
+    await cancels()
+    await panics()
+    await chained()
+    println("PASS: forwarded awaits behave like the calls they replace")
+}

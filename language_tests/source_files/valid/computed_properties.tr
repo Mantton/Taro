@@ -1,180 +1,46 @@
-struct Counter {
-    value: int32
+struct Counter { value: int32 }
+struct OwnedValue { value: int32 }
+
+struct CopyValue { value: int32 }
+extend CopyValue {
+    var snapshot: int32 { get { self.value } };
 }
-
-impl Counter {
-    var doubled: int32 {
-        get(&self) {
-            self.value * 2
-        }
-
-        set(&mut self, value: int32) {
-            self.value = value / 2
-        }
-    };
-
-    var next: int32 {
-        get(&self) async {
-            self.value + 1
-        }
-    };
-
-    var incremented: int32 {
-        get(&mut self) {
-            self.value += 1
-            self.value
-        }
-    };
+struct ItemBag { values: std::collections::List[int32] }
+extend ItemBag {
+    var snapshot: std::collections::List[int32] { get { self.values.clone() } };
 }
-
-struct CopyValue: Copy {
-    value: int32
-}
-
-impl CopyValue {
-    var snapshot: int32 {
-        get(self) {
-            self.value
-        }
-
-        set(&mut self, value: int32) {
-            self.value = value
-        }
-    };
-}
-
-struct MoveValue {
-    values: std.collections.List[int32]
-}
-
-impl MoveValue {
-    var takeValues: std.collections.List[int32] {
-        get(self) {
-            self.values
-        }
-    };
-}
-
-struct TrackedCounter {
-    value: int32
-    getterCalls: int32
-    setterCalls: int32
-}
-
-impl TrackedCounter {
-    var current: int32 {
-        get(&mut self) {
-            self.getterCalls += 1
-            self.value
-        }
-
-        set(&mut self, value: int32) {
-            self.setterCalls += 1
-            self.value = value
-        }
-    };
-}
-
-struct ReceiverProbe {
-    counter: TrackedCounter
-    receiverCalls: int32
-}
-
-impl ReceiverProbe {
-    func counterRef(&mut self) -> &mut TrackedCounter {
-        self.receiverCalls += 1
-        return &mut self.counter
-    }
-}
-
-struct RhsProbe {
-    calls: int32
-}
-
-impl RhsProbe {
-    func next(&mut self) -> int32 {
-        self.calls += 1
-        4
-    }
-}
-
-struct Score: Copy {
-    value: int32
-}
-
-impl std.ops.AddAssign[int32] for Score {
-    func addAssign(&mut self, rhs: int32) {
-        self.value += rhs
-    }
-}
-
-struct ScoreBox {
-    score: Score
-}
-
-impl ScoreBox {
-    var current: Score {
-        get(&self) {
-            self.score
-        }
-
-        set(&mut self, value: Score) {
-            self.score = value
-        }
-    };
-}
-
-func main() async {
-    var counter = Counter { value: 10 }
-
-    let doubled_before = counter.doubled
-    assert(doubled_before == 20, "sync getter")
-
-    counter.doubled = 50
-    assert(counter.value == 25, "setter")
-
-    let next = await counter.next
-    assert(next == 26, "async getter")
-
-    let inc1 = counter.incremented
-    let inc2 = counter.incremented
-    assert(inc1 == 26, "&mut self getter first read")
-    assert(inc2 == 27, "&mut self getter second read")
-
-    var copy_value = CopyValue { value: 7 }
-    let snap1 = copy_value.snapshot
-    let snap2 = copy_value.snapshot
-    assert(snap1 == 7, "self getter with Copy receiver (first)")
-    assert(snap2 == 7, "self getter with Copy receiver (second)")
-    copy_value.snapshot += 1
-    assert(copy_value.value == 8, "compound property with consuming Copy getter")
-
-    var items: std.collections.List[int32] = std.collections.List()
+func main() {
+    var counter: Counter = Counter { value: 10 }
+    var before: int32 = counter.doubled
+    assert(before == 20, "shared getter")
+    counter.setDoubled(50)
+    assert(counter.doubled == 50, "explicit mutation method")
+    var first: OwnedValue = counter.owned
+    var second: OwnedValue = counter.owned
+    assert(first.value + second.value == 50, "getter constructs owned noncopyable results")
+    read := () => counter.owned
+    var third: OwnedValue = read()
+    var fourth: OwnedValue = read()
+    assert(third.value + fourth.value == 50, "getter invocation borrows captured receiver")
+    var value: CopyValue = CopyValue { value: 7 }
+    assert(value.snapshot == 7, "shared getter on Copy receiver")
+    var items: std::collections::List[int32] = std::collections::List::new()
     items.append(10)
     items.append(20)
-    let move_value = MoveValue { values: items }
-    let taken = move_value.takeValues
-    assert(taken.len() == 2, "self getter moves non-copy payload")
+    var bag: ItemBag = ItemBag { values: items }
+    var copied: std::collections::List[int32] = bag.snapshot
+    copied.append(30)
+    assert(copied.len() == 3 && bag.values.len() == 2, "explicitly cloned owned property result")
+    std::print("PASS: computed properties\n")
+}
 
-    var receiver = ReceiverProbe {
-        counter: TrackedCounter { value: 10, getterCalls: 0, setterCalls: 0 },
-        receiverCalls: 0,
-    }
-    var rhs = RhsProbe { calls: 0 }
-    receiver.counterRef().current += rhs.next()
-    assert(receiver.receiverCalls == 1, "compound property receiver evaluated once")
-    assert(receiver.counter.getterCalls == 1, "compound property getter evaluated once")
-    assert(rhs.calls == 1, "compound property RHS evaluated once")
-    assert(receiver.counter.setterCalls == 1, "compound property setter evaluated once")
-    assert(receiver.counter.value == 14, "compound property stores updated value")
 
-    var score = Score { value: 5 }
-    score += 2
-    assert(score.value == 7, "AddAssign overload on ordinary place")
+extend &Counter {
+    func setDoubled( _ value: int32) { self.value = value / 2 }
+}
 
-    var scoreBox = ScoreBox { score: Score { value: 8 } }
-    scoreBox.current += 3
-    assert(scoreBox.score.value == 11, "AddAssign overload on computed property")
 
-    std.print("PASS: computed properties\n")
+extend Counter {
+    var doubled: int32 { get { self.value * 2 } };
+    var owned: OwnedValue { get { OwnedValue { value: self.value } } };
 }

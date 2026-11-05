@@ -1,0 +1,4 @@
+error: implementation declarations use `extend Type` or `conform Type to Interface`
+ -> language_tests/source_files/invalid/legacy_impl_declaration.tr:3:0
+	impl Counter {}
+	^^^^

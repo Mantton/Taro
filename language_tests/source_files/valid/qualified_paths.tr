@@ -1,0 +1,33 @@
+import std::collections::{List}
+
+namespace Model {
+    public struct Entry {
+        value: int32
+    }
+}
+
+enum Mode {
+    case enabled
+    case disabled
+}
+
+extend Mode {
+    func active() -> bool { true }
+    static func viaSelf() -> bool { Self::enabled.active() }
+}
+
+func main() {
+    // Generic type paths, static functions, struct literals and instance access
+    // must retain their distinct separators through parsing and resolution.
+    var values: List[Model::Entry] = List[Model::Entry]::new()
+    values.append(Model::Entry { value: 7 })
+    assert(values.at(0).value == 7, "qualified element type")
+
+    assert(Mode::enabled.active(), "instance method after qualified enum value")
+    assert(Mode::viaSelf(), "instance method after a Self-qualified enum value")
+    var mode: Mode = Mode::enabled
+    match mode {
+        case Mode::enabled => print("qualified paths\n")
+        case Mode::disabled => panic("wrong enum case")
+    }
+}

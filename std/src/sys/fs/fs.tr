@@ -1,14 +1,14 @@
 @cfg(family("unix"))
-import std.sys.fs.unix.*
+import std::sys::fs::unix::*
 
 @cfg(family("unix"))
-export std.sys.fs.unix.*
+export std::sys::fs::unix::*
 
 @cfg(family("windows"))
-import std.sys.fs.windows.*
+import std::sys::fs::windows::*
 
 @cfg(family("windows"))
-export std.sys.fs.windows.*
+export std::sys::fs::windows::*
 
 public type RawFile = PlatformFile
 public type RawDir = PlatformDir

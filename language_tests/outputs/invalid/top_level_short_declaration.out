@@ -1,0 +1,4 @@
+error: top-level and namespace variables must use `static var`
+ -> language_tests/source_files/invalid/top_level_short_declaration.tr:1:0
+	count := 1
+	^^^^^

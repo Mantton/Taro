@@ -1,0 +1,8 @@
+func fileState(_ value: &std::fs::File) { var _ = value.state }
+func directoryState(_ value: &std::fs::ReadDir) { var _ = value.state }
+func temporaryState(_ value: &std::fs::TempDir) { var _ = value.state }
+func socketState(_ value: &std::net::TcpStream) { var _ = value.state }
+func childState(_ value: &std::process::Child) { var _ = value.state }
+func inputState(_ value: &std::process::ChildStdin) { var _ = value.state }
+func streamState(_ value: &std::io::task::AsyncStream) { var _ = value.state }
+func main() {}

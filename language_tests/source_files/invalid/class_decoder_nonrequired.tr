@@ -1,0 +1,7 @@
+class ManualDecoded: std::encoding::Decodable { value: int32 }
+extend ManualDecoded {
+    public init[D: std::encoding::Decoder](from decoder: D) -> Result[Self, D::Error] {
+        self.value = decoder.decodeInt32()!
+    }
+}
+func main() {}

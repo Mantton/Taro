@@ -12,14 +12,14 @@ struct CLayout {
 }
 
 func main() {
-    let auto_size = std.mem.sizeOf[AutoLayout]()
-    let c_size = std.mem.sizeOf[CLayout]()
+    auto_size := std::mem::sizeOf[AutoLayout]()
+    c_size := std::mem::sizeOf[CLayout]()
 
     assert(auto_size == 16 as usize, "repr(Taro) should pack this layout to 16 bytes")
     assert(c_size == 24 as usize, "repr(C) should keep declaration-order C layout")
     assert(auto_size < c_size, "repr(Taro) should optimize this layout")
-    assert(std.mem.sizeOf[()]() == 0 as usize, "unit should have zero storage size")
-    assert(std.mem.alignOf[()]() == 1 as usize, "unit should have stable minimum alignment")
+    assert(std::mem::sizeOf[()]() == 0 as usize, "unit should have zero storage size")
+    assert(std::mem::alignOf[()]() == 1 as usize, "unit should have stable minimum alignment")
 
     var value = AutoLayout { a: 1, b: 2, c: 3 }
     assert(value.a == 1, "field `a` read should map correctly")
@@ -33,7 +33,7 @@ func main() {
     assert(value.b == 20, "field `b` write should map correctly")
     assert(value.c == 30, "field `c` write should map correctly")
 
-    let copy = value
+    copy := value
     assert(copy.a == 10, "copied field `a` should preserve value")
     assert(copy.b == 20, "copied field `b` should preserve value")
     assert(copy.c == 30, "copied field `c` should preserve value")

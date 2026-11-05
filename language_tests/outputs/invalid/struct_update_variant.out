@@ -1,0 +1,4 @@
+error: struct updates require a struct type; enum variants cannot use `..base`
+ -> language_tests/source_files/invalid/struct_update_variant.tr:2:38
+	func update(_ base: Shape) -> Shape { .rect { width: 1, ..base } }
+	                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^

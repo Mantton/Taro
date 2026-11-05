@@ -1,0 +1,6 @@
+import std::marker::AnyObject
+
+// Copy alone does not give an inline value an object identity.
+struct Counter: AnyObject { value: int32 }
+
+func main() {}

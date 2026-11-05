@@ -1,0 +1,25 @@
+// A reference returned by Span.at keeps the span's local element storage alive
+// after the frame that declared it has returned.
+@noinline
+func escapedElement() -> &uint64 {
+    var storage: [uint64; 4] = [11, 22, 33, 44]
+    var data: *mut uint64 = unsafe { &storage as *mut uint64 }
+    span := unsafe { std::mem::Span[uint64]::from(data, 4) }
+    return span.at(2)
+}
+@noinline
+func clobberStack(_ depth: uint64) -> uint64 {
+    var noise: [uint64; 32] = [depth; 32]
+    if depth == 0 { return noise[3] }
+    return clobberStack(depth - 1) + noise[5]
+}
+func main() {
+    element := escapedElement()
+    var total = clobberStack(64)
+    std::runtime::collect()
+    total += clobberStack(64)
+    assert(*element == 33, "escaped element keeps its value")
+    *element = 99
+    assert(*element == 99 && total == 4160, "escaped element stays writable")
+    print("PASS: Span.at keeps local storage alive\n")
+}

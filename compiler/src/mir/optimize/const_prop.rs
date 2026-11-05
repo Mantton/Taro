@@ -140,6 +140,7 @@ fn find_candidates(body: &Body<'_>) -> Vec<bool> {
                     );
                     record_rvalue_uses(rvalue, block_id, statement_index, &mut uses, &mut invalid);
                 }
+
                 StatementKind::SetDiscriminant { place, .. } => {
                     invalid[place.local.index()] = true;
                     record_place_use(place, block_id, statement_index, &mut uses, &mut invalid);
@@ -149,6 +150,7 @@ fn find_candidates(body: &Body<'_>) -> Vec<bool> {
                 }
                 StatementKind::SourceScope(_)
                 | StatementKind::StorageLive(_)
+                | StatementKind::StorageDead(_)
                 | StatementKind::SetInitialized(_)
                 | StatementKind::GcSafepoint(_)
                 | StatementKind::Nop => {}
@@ -268,7 +270,7 @@ fn record_operand_use(
 ) {
     match operand {
         Operand::Copy(place) => record_place_use(place, block, statement, uses, invalid),
-        Operand::Move(place) | Operand::CopyWith(place, _) => {
+        Operand::CopyWith(place, _) => {
             record_place_use(place, block, statement, uses, invalid);
             invalid[place.local.index()] = true;
         }
@@ -294,7 +296,10 @@ fn record_rvalue_uses(
             record_operand_use(lhs, block, statement, uses, invalid);
             record_operand_use(rhs, block, statement, uses, invalid);
         }
-        Rvalue::Ref { place, .. } | Rvalue::Discriminant { place } => {
+        Rvalue::CopyValue { source: place }
+        | Rvalue::Ref { place, .. }
+        | Rvalue::CleanupAddress { place }
+        | Rvalue::Discriminant { place } => {
             record_place_use(place, block, statement, uses, invalid);
             invalid[place.local.index()] = true;
         }
@@ -331,7 +336,9 @@ fn rewrite_rvalue_operands<'ctx>(rvalue: &mut Rvalue<'ctx>, constants: &[Option<
                 rewrite_operand(field, constants);
             }
         }
-        Rvalue::Ref { .. }
+        Rvalue::CopyValue { .. }
+        | Rvalue::Ref { .. }
+        | Rvalue::CleanupAddress { .. }
         | Rvalue::Discriminant { .. }
         | Rvalue::Alloc { .. }
         | Rvalue::Zeroed { .. } => {}

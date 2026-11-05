@@ -8,6 +8,6 @@
 // EXPECT_STDERR_COUNT: 1 runtime stats:
 
 func main() async {
-    await std.testing.yieldNow()
-    std.print("PASS: Runtime observability\n")
+    await std::testing::yieldNow()
+    std::print("PASS: Runtime observability\n")
 }

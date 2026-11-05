@@ -1,0 +1,24 @@
+error: dereferencing a raw pointer requires an unsafe { ... } block
+ -> language_tests/source_files/invalid/raw_pointer_dereference.tr:6:50
+	func explicit(_ pointer: *const int32) -> int32 { *pointer }
+	                                                  ^^^^^^^^
+error: dereferencing a raw pointer requires an unsafe { ... } block
+ -> language_tests/source_files/invalid/raw_pointer_dereference.tr:7:49
+	func field(_ pointer: *const Counter) -> int32 { pointer.value }
+	                                                 ^^^^^^^
+error: dereferencing a raw pointer requires an unsafe { ... } block
+ -> language_tests/source_files/invalid/raw_pointer_dereference.tr:8:39
+	func method(_ pointer: *mut Counter) { pointer.increment() }
+	                                       ^^^^^^^
+error: dereferencing a raw pointer requires an unsafe { ... } block
+ -> language_tests/source_files/invalid/raw_pointer_dereference.tr:10:15
+	    inspect := pointer.inspect
+	               ^^^^^^^
+error: dereferencing a raw pointer requires an unsafe { ... } block
+ -> language_tests/source_files/invalid/raw_pointer_dereference.tr:14:25
+	    var value: &int32 = &*pointer
+	                         ^^^^^^^^
+error: cannot take a reference through a `*const` pointer
+ -> language_tests/source_files/invalid/raw_pointer_dereference.tr:14:25
+	    var value: &int32 = &*pointer
+	                         ^^^^^^^^

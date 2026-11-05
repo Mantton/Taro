@@ -1,0 +1,10 @@
+interface Read { func read() -> int32; }
+struct Wrapper[T] { value: T }
+conform[T: Read] Wrapper[T] to Read {
+    func read() -> int32 { self.value.read() }
+}
+struct Missing {}
+func main() {
+    var boxed: any Read = Wrapper[Missing] { value: Missing {} }
+    var _ = boxed
+}

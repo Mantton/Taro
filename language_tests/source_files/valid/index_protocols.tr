@@ -1,0 +1,40 @@
+// Collection indexing is native. Generic indexing uses an ordinary explicit
+// user-defined interface; there is no built-in Index protocol.
+interface Addressable[Key] {
+    type Element
+    subscript(key: Key) -> Self::Element { address }
+}
+conform[T] List[T] to Addressable[usize] {
+    type Element = T
+    subscript(index: usize) -> T { address { self.at(index) } }
+}
+conform[T, const Size: usize] &[T; Size] to Addressable[usize] {
+    type Element = T
+    subscript(index: usize) -> T { address { self.at(index) } }
+}
+func first[C: Addressable[usize]](_ source: C) -> &C::Element { &source[0 as usize] }
+func writeFirst[C: Addressable[usize]](_ source: C, _ value: C::Element) { source[0 as usize] = value }
+struct Record { value: int32 }
+struct Token { value: int32 }
+struct Lookup { value: int32 }
+conform &Lookup to Addressable[Token] {
+    type Element = int32
+    subscript(token: Token) -> int32 { address { &self.value } }
+}
+func main() {
+    var numbers: [int32] = [1_i32, 2_i32]
+    writeFirst(numbers, 7_i32)
+    assert(*first(numbers) == 7_i32, "generic native list capabilities")
+    var array: [int32; 2] = [3_i32, 4_i32]
+    writeFirst(&array, 9_i32)
+    assert(*first(&array) == 9_i32, "generic native array capabilities")
+    var records: [Record] = [Record { value: 11 }]
+    writeFirst(records, Record { value: 13 })
+    reference := first(records)
+    reference.value += 1
+    assert(records[0 as usize].value == 14, "explicit element address retains storage")
+    var lookup = Lookup { value: 23 }
+    token := Token { value: 0 }
+    var result: &int32 = &lookup[token]
+    assert(*result == 23_i32, "custom value index type")
+}

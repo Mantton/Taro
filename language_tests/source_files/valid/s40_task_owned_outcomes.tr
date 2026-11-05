@@ -1,0 +1,33 @@
+// S40 full-SDK acceptance fixture. Payload and Response deliberately omit Copy.
+struct Payload { value: int32 }
+enum Response { case value(Payload) }
+
+func main() async {
+    var success: std::task::Task[Response] = std::task::spawn(() => {
+        var response: Response = .value(Payload { value: 41 })
+        return response
+    })
+    match await success.result() {
+        case .ok(.value(payload)) => assert(payload.value == 41, "owned result transferred")
+        case .err(_) => panic("unexpected task failure")
+    }
+
+    var failed: std::task::Task[Response] = std::task::spawn(() -> Response => {
+        panic("captured failure without a Response payload")
+    })
+    match await failed.result() {
+        case .err(.panicked(_)) => {}
+        case _ => panic("expected captured task panic")
+    }
+
+    var cancelled: std::task::Task[Response] = std::task::spawn(() => {
+        await std::task::sleep(std::time::Duration::fromSeconds(60_u64))
+        var response: Response = .value(Payload { value: 99 })
+        return response
+    })
+    cancelled.cancel()
+    match await cancelled.result() {
+        case .err(.cancelled) => {}
+        case _ => panic("expected cancellation without a Response payload")
+    }
+}

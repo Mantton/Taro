@@ -1,0 +1,4 @@
+error: type 'Wrapper[Plain]' does not conform to interface 'Clone'
+ -> language_tests/source_files/invalid/conditional_value_requirements.tr:8:4
+	    needsClone(&plain)
+	    ^^^^^^^^^^

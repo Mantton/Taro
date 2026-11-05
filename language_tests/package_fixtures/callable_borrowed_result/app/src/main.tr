@@ -1,0 +1,20 @@
+import dep::{makeRecord, makeProjector, makeViewProjector}
+
+func main() {
+    var flag: bool = true
+    record := makeRecord()
+    callback := makeProjector(&flag)
+    var selected: &int32 = record.select(callback)
+    flag = false
+    assert(*selected == 7, "generic call forwards the argument, not the consumed callback's debt")
+
+    view := record.selectView(makeViewProjector(&flag))
+    flag = true
+    assert(view.read() == 9, "imported view-result callable keeps only argument dependencies")
+    flag = false
+
+    direct := makeProjector(&flag)
+    var other: &int32 = direct.call(args: (&record,))
+    flag = true
+    assert(*other == 9, "imported nominal callable keeps its argument-source declaration")
+}

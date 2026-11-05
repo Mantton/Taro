@@ -1,17 +1,17 @@
-import std.collections.{List, __list_from_raw_parts}
-import std.io.{Error, Reader, Writer}
-import std.marker.Sendable
-import std.mem.{MutableSpan, Span, growBuffer, makeBuffer, maxBufferCapacity}
-import std.result.Result
+import std::collections::{List, __list_copy_bytes}
+import std::io::{Error, Reader, Writer}
+import std::mem::{Span, NativeBytes, Span, maxBufferCapacity}
+import std::result::Result
 
 const BUFFER_INITIAL_CAPACITY: usize = 64
+const TAKEN_SLACK_LIMIT: usize = 512
 
 func bufferCapacityError() -> Error {
-    Error(.resourceExhausted).withOperation("grow byte buffer")
+    Error::new(.resourceExhausted).withOperation("grow byte buffer")
 }
 
 func nextBufferCapacity(_ current: usize, _ required: usize) -> usize? {
-    let maximum = maxBufferCapacity[uint8]()
+    maximum := maxBufferCapacity[uint8]()
     if required > maximum {
         return .none
     }
@@ -35,188 +35,208 @@ func nextBufferCapacity(_ current: usize, _ required: usize) -> usize? {
     return .some(next)
 }
 
-/// A growable in-memory byte stream.
-///
-/// Reads advance an internal cursor while writes append to the unread data.
-/// Consumed storage is compacted only when a later write needs the space.
-/// `Buffer` owns GC-managed storage and is moved, rather than implicitly
-/// copied, so transferring it between tasks preserves exclusive mutation.
-public struct Buffer {
-    buffer: *mut uint8
+final class BufferState {
+    storage: NativeBytes
     readStart: usize
     writeEnd: usize
     capacityValue: usize
 }
 
-impl Sendable for Buffer {}
+extend BufferState {
+    init(_ storage: NativeBytes, _ length: usize, _ capacity: usize) {
+        self.storage = storage
+        self.readStart = 0
+        self.writeEnd = length
+        self.capacityValue = capacity
+    }
+}
 
-impl Buffer {
-    /// Create an empty buffer without allocating.
-    public func new() -> Self {
-        Buffer {
-            buffer: unsafe { 0 as *mut uint8 },
-            readStart: 0,
-            writeEnd: 0,
-            capacityValue: 0,
-        }
+/// A shared growable byte stream. Copies share bytes and read/write positions.
+/// Reads advance its cursor; writes append and may compact consumed storage.
+/// String/list conversions return independent snapshots without consuming it.
+public struct Buffer {
+    private state: BufferState
+}
+
+extend Buffer {
+    /// Create an empty shared buffer.
+    public static func new() -> Self {
+        Buffer { state: BufferState(NativeBytes::new(0), 0, 0) }
+    }
+
+    // A buffer whose first writes needn't grow it.
+    internal static func withCapacity(_ capacity: usize) -> Self {
+        Buffer { state: BufferState(NativeBytes::new(capacity), 0, capacity) }
     }
 
     /// Create a buffer containing an independent copy of `bytes`.
-    public func new(_ bytes: Span[uint8]) -> Self {
-        let len = bytes.len()
+    public static func new(_ bytes: Span[uint8]) -> Self {
+        len := bytes.len()
         if len == 0 {
-            return Buffer()
+            return Buffer::new()
         }
 
-        let storage = makeBuffer[uint8](0, len)
-        let source = unsafe { bytes.at(0) as *const uint8 }
-        source.copyToNonoverlapping(storage, len)
-        return Buffer {
-            buffer: storage,
-            readStart: 0,
-            writeEnd: len,
-            capacityValue: len,
-        }
+        storage := NativeBytes::new(len)
+        source := unsafe { bytes.at(0) as *const uint8 }
+        unsafe { source.copyToNonoverlapping(storage.data(), len) }
+        return Buffer { state: BufferState(storage, len, len) }
     }
 
     /// Create a buffer containing an independent copy of the string's bytes.
     /// Bytes are preserved exactly; UTF-8 validation is not performed.
-    public func new(_ value: string) -> Self {
-        let len = std.string.stringLen(value)
+    public static func new(_ value: string) -> Self {
+        len := std::string::stringLen(value)
         if len == 0 {
-            return Buffer()
+            return Buffer::new()
         }
 
-        let storage = makeBuffer[uint8](0, len)
-        std.string.stringData(value).copyToNonoverlapping(storage, len)
-        return Buffer {
-            buffer: storage,
-            readStart: 0,
-            writeEnd: len,
-            capacityValue: len,
-        }
+        storage := NativeBytes::new(len)
+        unsafe { std::string::stringData(value).copyToNonoverlapping(storage.data(), len) }
+        return Buffer { state: BufferState(storage, len, len) }
     }
 
     /// Return the number of unread bytes.
-    public func len(&self) -> usize {
-        self.writeEnd - self.readStart
+    public func len() -> usize {
+        self.state.writeEnd - self.state.readStart
     }
 
-    public func isEmpty(&self) -> bool {
+    public func isEmpty() -> bool {
         self.len() == 0
     }
 
     /// Return the reusable capacity available after compaction.
-    public func capacity(&self) -> usize {
-        self.capacityValue
+    public func capacity() -> usize {
+        self.state.capacityValue
     }
 
-    /// Borrow the unread bytes.
-    ///
-    /// The returned span is invalidated by any mutable buffer operation and
-    /// must not outlive the buffer. Returning a span instead of a mutable view
-    /// prevents callers from changing bytes behind the read cursor.
-    public func bytes(&self) -> Span[uint8] {
-        let ptr = if self.len() == 0 {
-            unsafe { self.buffer as *const uint8 }
-        } else {
-            unsafe { self.buffer.add(self.readStart) as *const uint8 }
-        }
-        return Span[uint8].from(ptr, self.len())
+    /// A view of the current unread range. Growth leaves its allocation alive;
+    /// compaction or writes may change bytes in the current allocation.
+    public func bytes() -> Span[uint8] {
+        ptr := unsafe { self.state.storage.data().add(self.state.readStart) as *const uint8 }
+        return unsafe { Span[uint8]::from(ptr, self.len()) }
     }
 
     /// Ensure capacity for at least `minCapacity` unread bytes.
     ///
     /// Existing bytes and the read cursor are preserved. Capacity arithmetic
     /// failures are typed resource errors rather than library panics.
-    public func reserve(&mut self, _ minCapacity: usize) -> Result[(), Error] {
-        if minCapacity <= self.capacityValue {
+    public func reserve(_ minCapacity: usize) -> Result[(), Error] {
+        if minCapacity <= self.state.capacityValue {
             return .ok(())
         }
 
-        let next = match nextBufferCapacity(self.capacityValue, minCapacity) {
+        next := match nextBufferCapacity(self.state.capacityValue, minCapacity) {
             case .some(value) => value
             case .none => return .err(bufferCapacityError())
         }
 
         self.compact()
-        self.buffer = growBuffer[uint8](self.buffer, self.writeEnd, next)
-        self.capacityValue = next
+        unsafe { self.state.storage.reserve(self.state.writeEnd, next) }
+        self.state.capacityValue = next
         return .ok(())
     }
 
     /// Discard all content while retaining allocated capacity.
-    public func reset(&mut self) {
-        self.readStart = 0
-        self.writeEnd = 0
+    public func reset() {
+        self.state.readStart = 0
+        self.state.writeEnd = 0
+    }
+
+    // Advance past `count` unread bytes without copying them anywhere.
+    internal func skip(_ count: usize) {
+        if count > self.len() { std::panic::panic("byte buffer skip exceeds unread bytes") }
+        self.state.readStart += count
+        if self.state.readStart == self.state.writeEnd {
+            self.reset()
+        }
     }
 
     /// Append one byte.
-    public func writeByte(&mut self, _ value: uint8) -> Result[(), Error] {
-        let bytes: [uint8; 1] = [value]
-        match self.write(bytes.asSpan()) {
+    public func writeByte(_ value: uint8) -> Result[(), Error] {
+        var bytes: [uint8; 1] = [value]
+        match self.appendBytes(bytes.asSpan()) {
             case .ok(_) => return .ok(())
             case .err(error) => return .err(error)
         }
     }
 
     /// Append every byte in `value` without requiring valid UTF-8.
-    public func writeString(&mut self, _ value: string) -> Result[(), Error] {
-        let len = std.string.stringLen(value)
+    public func writeString(_ value: string) -> Result[(), Error] {
+        len := std::string::stringLen(value)
         if len == 0 {
             return .ok(())
         }
-        let bytes = Span[uint8].from(std.string.stringData(value), len)
-        match self.write(bytes) {
-            case .ok(_) => return .ok(())
-            case .err(error) => return .err(error)
+        // Safe strings own immutable storage, so they cannot alias this
+        // writable buffer. Span writes still use appendBytes' alias snapshot.
+        self.ensureWritable(len)!
+        destination := unsafe { self.state.storage.data().add(self.state.writeEnd) }
+        // Writers emit a lot of single punctuation.
+        if len == 1 {
+            unsafe { destination.write(std::string::stringData(value).read()) }
+        } else {
+            unsafe { std::string::stringData(value).copyTo(destination, len) }
         }
+        self.state.writeEnd += len
+        return .ok(())
     }
 
-    /// Consume the buffer and transfer its unread storage into a byte list.
-    ///
-    /// A consumed prefix is compacted in place; no final allocation or
-    /// full-buffer copy is performed.
-    public func intoBytes(self) -> List[uint8] {
-        var owned = self
-        owned.compact()
-        if owned.writeEnd == 0 {
-            return List[uint8]()
-        }
-        return __list_from_raw_parts[uint8](
-            owned.buffer,
-            owned.writeEnd,
-            owned.capacityValue,
-        )
+    /// Copy the unread bytes into an independent list, preserving this buffer.
+    public func toBytes() -> List[uint8] {
+        length := self.len()
+        if length == 0 { return List[uint8]::new() }
+        unsafe { __list_copy_bytes(self.state.storage.data().byteAdd(self.state.readStart), length) }
     }
 
-    /// Consume the buffer and transfer its unread storage into a string.
-    /// Invalid UTF-8 bytes are preserved, matching Taro string semantics.
-    public func intoString(self) -> string {
-        var owned = self
-        owned.compact()
-        if owned.writeEnd == 0 {
-            return ""
-        }
-        return std.string.stringFromParts(owned.buffer, owned.writeEnd)
+    /// Copy the unread bytes into an immutable string. Invalid UTF-8 is kept;
+    /// this does not compact, clear or otherwise change the shared buffer.
+    public func toString() -> string {
+        std::string::stringFromBytes(self.bytes())
     }
 
-    func compact(&mut self) {
-        if self.readStart == 0 {
+    // The unread bytes as a string, leaving this buffer empty. The string takes
+    // over the allocation, unless that would pin much more memory than it uses.
+    internal func takeString() -> string {
+        count := self.len()
+        if count == 0 { return "" }
+        if self.state.capacityValue > TAKEN_SLACK_LIMIT && self.state.capacityValue / 2 > count {
+            return self.toString()
+        }
+        unsafe { self.state.storage.publish(self.state.writeEnd) }
+        data := unsafe { self.state.storage.data().add(self.state.readStart) as *const uint8 }
+        result := unsafe { std::string::stringFromParts(data, count) }
+        self.state.storage.detach()
+        self.state.readStart = 0
+        self.state.writeEnd = 0
+        self.state.capacityValue = 0
+        return result
+    }
+
+    func compact() {
+        if self.state.readStart == 0 {
             return
         }
 
-        let unread = self.len()
+        unread := self.len()
         if unread > 0 {
-            let source = unsafe { self.buffer.add(self.readStart) as *const uint8 }
-            source.copyTo(self.buffer, unread)
+            source := unsafe { self.state.storage.data().add(self.state.readStart) as *const uint8 }
+            unsafe { source.copyTo(self.state.storage.data(), unread) }
         }
-        self.readStart = 0
-        self.writeEnd = unread
+        self.state.readStart = 0
+        self.state.writeEnd = unread
     }
 
-    func ensureWritable(&mut self, _ additional: usize) -> Result[(), Error] {
-        let required = match self.len().checkedAdd(additional) {
+    @inline
+    func ensureWritable(_ additional: usize) -> Result[(), Error] {
+        // Existing capacity proves len + additional cannot overflow or exceed
+        // the buffer limit. Keep checked growth and compaction on the slow path.
+        if additional <= self.state.capacityValue - self.state.writeEnd {
+            return .ok(())
+        }
+        return self.growForWrite(additional)
+    }
+
+    func growForWrite(_ additional: usize) -> Result[(), Error] {
+        required := match self.len().checkedAdd(additional) {
             case .some(value) => value
             case .none => return .err(bufferCapacityError())
         }
@@ -224,95 +244,101 @@ impl Buffer {
             return .err(bufferCapacityError())
         }
 
-        // Avoid `writeEnd + additional`, which could itself overflow for a
-        // fabricated extreme span. Subtraction is safe under buffer invariants.
-        if additional <= self.capacityValue - self.writeEnd {
-            return .ok(())
-        }
-
         self.compact()
-        if required <= self.capacityValue {
+        if required <= self.state.capacityValue {
             return .ok(())
         }
         return self.reserve(required)
     }
 
-    func unreadAliasOffset(&self, _ bytes: Span[uint8]) -> usize? {
-        if bytes.len() == 0 || self.len() == 0 {
-            return .none
-        }
+    // Room for `count` more bytes, for a caller to fill and then `commitSpare`. Any
+    // other use of this buffer before that invalidates the span.
+    internal func spare(_ count: usize) -> Result[Span[uint8], Error] {
+        self.ensureWritable(count)!
+        return .ok(unsafe { Span[uint8]::from(self.state.storage.data().add(self.state.writeEnd), count) })
+    }
 
-        let source = unsafe { bytes.at(0) as *const uint8 }
-        let sourceAddress = unsafe { source as usize }
-        let unreadStart = unsafe { self.buffer.add(self.readStart) as usize }
-        if sourceAddress < unreadStart {
-            return .none
-        }
+    // Gives up the allocation of an empty buffer. Earlier views stay valid.
+    internal func releaseStorageIfEmpty() {
+        if self.len() != 0 { return }
+        self.state.storage.detach()
+        self.state.readStart = 0
+        self.state.writeEnd = 0
+        self.state.capacityValue = 0
+    }
 
-        let offset = sourceAddress - unreadStart
-        let unread = self.len()
-        if offset > unread || bytes.len() > (unread - offset) {
-            return .none
+    internal func commitSpare(_ count: usize) {
+        if count > self.state.capacityValue - self.state.writeEnd { std::panic::panic("byte buffer commit exceeds its capacity") }
+        self.state.writeEnd += count
+    }
+
+    func aliasesStorage(_ bytes: Span[uint8]) -> bool {
+        if bytes.len() == 0 || self.state.capacityValue == 0 { return false }
+        source := unsafe { bytes.asPtr() as usize }
+        start := unsafe { self.state.storage.data() as usize }
+        if source < start { return false }
+        offset := source - start
+        return offset < self.state.capacityValue && bytes.len() <= self.state.capacityValue - offset
+    }
+
+    func appendBytes(_ bytes: Span[uint8]) -> Result[usize, Error] {
+        count := bytes.len()
+        if count == 0 { return .ok(0) }
+        var source = bytes
+        // A retained view may include already-consumed slots. Snapshot any
+        // self-alias before compaction can overwrite it, including on growth.
+        if self.aliasesStorage(bytes) {
+            snapshot := unsafe { __list_copy_bytes(bytes.asPtr(), count) }
+            source = snapshot.asSpan()
         }
-        return .some(offset)
+        match self.ensureWritable(count) {
+            case .ok(_) => {}
+            case .err(error) => return .err(error)
+        }
+        unsafe { source.asPtr().copyTo(self.state.storage.data().add(self.state.writeEnd), count) }
+        self.state.writeEnd += count
+        return .ok(count)
     }
 }
 
-impl Reader for Buffer {
-    public func read(&mut self, _ destination: MutableSpan[uint8]) -> Result[usize, Error] {
+conform Buffer to Reader {
+    public func read(_ destination: Span[uint8]) -> Result[usize, Error] {
         if destination.len() == 0 || self.isEmpty() {
             return .ok(0)
         }
 
-        let count = if destination.len() < self.len() {
+        count := if destination.len() < self.len() {
             destination.len()
         } else {
             self.len()
         }
-        let source = unsafe { self.buffer.add(self.readStart) as *const uint8 }
+        source := unsafe { self.state.storage.data().add(self.state.readStart) as *const uint8 }
         var writable = destination
-        let target = unsafe { writable.at(0) as *mut uint8 }
+        target := unsafe { writable.at(0) as *mut uint8 }
         // memmove semantics make even deliberately overlapping reads defined.
-        source.copyTo(target, count)
+        unsafe { source.copyTo(target, count) }
 
-        self.readStart += count
-        if self.readStart == self.writeEnd {
+        self.state.readStart += count
+        if self.state.readStart == self.state.writeEnd {
             self.reset()
         }
         return .ok(count)
     }
 }
 
-impl Writer for Buffer {
-    public func write(&mut self, _ bytes: Span[uint8]) -> Result[usize, Error] {
-        let count = bytes.len()
-        if count == 0 {
-            return .ok(0)
-        }
-
-        // A Span does not own storage, so remember aliases before compaction or
-        // growth. This makes `buffer.write(buffer.bytes())` copy the intended
-        // unread range even when reclaiming a consumed prefix moves the bytes.
-        let aliasOffset = self.unreadAliasOffset(bytes)
-        let originalSource = unsafe { bytes.at(0) as *const uint8 }
-        match self.ensureWritable(count) {
-            case .ok(_) => {}
-            case .err(error) => return .err(error)
-        }
-
-        let source = match aliasOffset {
-            case .some(offset) => unsafe {
-                self.buffer.add(self.readStart + offset) as *const uint8
-            }
-            case .none => originalSource
-        }
-        let target = self.buffer.add(self.writeEnd)
-        source.copyTo(target, count)
-        self.writeEnd += count
-        return .ok(count)
+conform Buffer to Writer {
+    // Preserve the inherent method for callers without Writer in scope.
+    // Concrete lookup selects that method; generic calls reach this witness.
+    @inline
+    public func writeString(_ value: string) -> Result[(), Error] {
+        self.writeString(value)
     }
 
-    public func flush(&mut self) -> Result[(), Error] {
+    public func write(_ bytes: Span[uint8]) -> Result[usize, Error] {
+        self.appendBytes(bytes)
+    }
+
+    public func flush() -> Result[(), Error] {
         return .ok(())
     }
 }

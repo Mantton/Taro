@@ -1,0 +1,4 @@
+error: final/override requires a class instance method
+ -> language_tests/source_files/invalid/future_object_syntax.tr:10:4
+	    override func reset() {}
+	    ^^^^^^^^^^^^^^^^^^^^^^^^

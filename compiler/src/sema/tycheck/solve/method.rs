@@ -3,52 +3,180 @@ use super::{
     InterfaceCallInfo, MethodCallData, Obligation, SolverResult,
 };
 use crate::{
-    hir::Mutability,
     sema::{
         error::TypeError,
         models::{
-            AliasKind, GenericArgument, GenericArguments, InterfaceReference,
-            LabeledFunctionSignature, Ty, TyKind,
+            GenericArgument, GenericArguments, InterfaceReference, LabeledFunctionSignature, Ty,
+            TyKind,
         },
         resolve::models::DefinitionID,
         tycheck::{
             solve::{
                 Adjustment, ApplyArgument, ApplyGoalData, BindOverloadGoalData, DisjunctionBranch,
             },
-            utils::{AutoReference, instantiate::instantiate_ty_with_args},
+            utils::instantiate::instantiate_ty_with_args,
         },
     },
     span::{Span, Spanned, Symbol},
 };
 use rustc_hash::FxHashSet;
 
-struct InterfaceMethodCandidate<'ctx> {
-    call_info: InterfaceCallInfo,
-    candidate_ty: Ty<'ctx>,
-    instantiation_args: Option<GenericArguments<'ctx>>,
-    source: DefinitionID,
+pub(super) struct InterfaceMethodCandidate<'ctx> {
+    pub(super) call_info: InterfaceCallInfo,
+    pub(super) candidate_ty: Ty<'ctx>,
+    pub(super) instantiation_args: Option<GenericArguments<'ctx>>,
+    pub(super) source: DefinitionID,
 }
 
-/// A method candidate with its associated receiver type and adjustments.
-struct MethodCandidate<'ctx> {
-    def_id: DefinitionID,
-    receiver_ty: Ty<'ctx>,
-    /// Cost of auto-reference: None=0, Immutable=1, Mutable=2
-    autoref_cost: u8,
-    matches_expectation: bool,
-    matches_async_preference: bool,
-    output_ref_mutability: Option<Mutability>,
-    deref_steps: usize,
+#[cfg(test)]
+mod concrete_interface_tests {
+    #[test]
+    fn discovery_does_not_require_parameters_absent_from_the_interface_header() {
+        let source = r#"
+interface Source { type Item; }
+struct IntSource {}
+conform IntSource to Source { type Item = int32; }
+interface Read { func count() -> int32 { 7 }; }
+struct Adapter[S] {}
+conform[Item, S: Source[Item = Item]] Adapter[S] to Read {}
+func count(_ value: &Adapter[IntSource]) -> int32 { value.count() }
+func main() {}
+"#;
+        let diagnostics = crate::test_support::analyze_script_diagnostics(source);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn blanket_method_arguments_absent_from_self_are_inferred_from_result() {
+        let source = r#"
+interface Make[T] { static func from(_ value: T) -> Self; }
+interface Convert[T] { func convert() -> T; }
+conform[S, T: Make[S]] S to Convert[T] {
+    func convert() -> T { T::from(self) }
+}
+struct Wrapped { value: int32 }
+struct Other { value: int32 }
+conform Wrapped to Make[int32] { static func from(_ value: int32) -> Wrapped { Wrapped { value } }; }
+conform Other to Make[int32] { static func from(_ value: int32) -> Other { Other { value } }; }
+func generic[S, T: Make[S]](_ value: S) -> T { value.convert() }
+func bounded[S: Convert[int32]](_ value: S) -> int32 { value.convert() }
+func another[S: Convert[int32], T: Make[S]](_ value: S) -> T { value.convert() }
+func main() {
+    var value: Wrapped = 3_i32.convert()
+    var other: Other = 4_i32.convert()
+    var wrapped: Wrapped = generic(6_i32)
+}
+"#;
+        let prefix = source.split("func main()").next().unwrap();
+        for main in [
+            "func main() {}",
+            "func main() { var value: Wrapped = 3_i32.convert(); }",
+            "func main() { var value: Other = 4_i32.convert(); }",
+            "func main() { var value: Wrapped = generic(6_i32); }",
+        ] {
+            let diagnostics =
+                crate::test_support::analyze_script_mir_diagnostics(&format!("{prefix}{main}"));
+            assert!(diagnostics.is_empty(), "{main}: {diagnostics:#?}");
+        }
+        let diagnostics = crate::test_support::analyze_script_diagnostics(
+            &source.replace("var value: Wrapped", "var value: bool"),
+        );
+        assert!(
+            !diagnostics.is_empty(),
+            "an unimplemented destination must fail its conformance"
+        );
+    }
+
+    #[test]
+    fn bounded_static_self_is_fixed_before_associated_result_normalization() {
+        let source = r#"
+enum Attempt[T, E] { case ok(T); case err(E) }
+interface TryMake[S] {
+    type Error
+    static func tryFrom(_ value: S) -> Attempt[Self, Self::Error]
+}
+interface TryConvert[T] { type Error; func tryConvert() -> Attempt[T, Self::Error]; }
+conform[S, T: TryMake[S]] S to TryConvert[T] {
+    type Error = T::Error
+    func tryConvert() -> Attempt[T, Self::Error] { T::tryFrom(self) }
+}
+struct Wrapped { value: int32 }
+conform Wrapped to TryMake[int32] {
+    type Error = bool
+    static func tryFrom(_ value: int32) -> Attempt[Wrapped, bool] { .ok(Wrapped { value }) }
+}
+func generic[S, T: TryMake[S]](_ value: S) -> Attempt[T, T::Error] { T::tryFrom(value) }
+func main() {
+    var result: Attempt[Wrapped, bool] = 4_i32.tryConvert()
+    var genericResult: Attempt[Wrapped, bool] = generic(5_i32)
+}
+"#;
+        let prefix = source.split("func main()").next().unwrap();
+        crate::test_support::analyze_script(
+            &format!("{prefix}func main() {{}}"),
+            |package, gcx| {
+                let find = |name: &str| {
+                    package
+                        .root
+                        .declarations
+                        .iter()
+                        .find(|declaration| declaration.identifier.symbol.as_str() == name)
+                        .unwrap()
+                        .id
+                };
+                let interface = find("TryConvert");
+                let goal = crate::sema::models::InterfaceGoal {
+                    interface_id: interface,
+                    self_ty: gcx.types.int32,
+                    interface_args: gcx.store.interners.intern_generic_args(vec![
+                        crate::sema::models::GenericArgument::Type(gcx.get_type(find("Wrapped"))),
+                    ]),
+                    bindings: &[],
+                    param_env: &[],
+                };
+                let witness = crate::sema::impl_engine::build_conformance_witness(
+                    gcx,
+                    goal,
+                    crate::sema::models::SelectionMode::Typecheck,
+                );
+                assert!(witness.is_ok(), "conversion witness: {witness:#?}");
+            },
+        );
+        for main in [
+            "func main() {}",
+            "func main() { var value: Attempt[Wrapped, bool] = 4_i32.tryConvert(); }",
+            "func main() { var value: Attempt[Wrapped, bool] = generic(5_i32); }",
+        ] {
+            let diagnostics =
+                crate::test_support::analyze_script_mir_diagnostics(&format!("{prefix}{main}"));
+            assert!(diagnostics.is_empty(), "{main}: {diagnostics:#?}");
+        }
+    }
+
+    #[test]
+    fn concrete_blanket_calls_substitute_rhs_as_well_as_self() {
+        let source = r#"
+interface Select[Rhs] { func select(_ other: Rhs) -> Rhs; }
+conform[T] T to Select[T] { func select(_ other: T) -> T { other }; }
+class Base { value: int32 }
+func choose(_ first: Base, _ second: Base) -> Base { first.select(second) }
+struct Box[T] { value: T }
+interface SelectValue[Rhs] { func value(_ other: Rhs) -> Rhs; }
+conform[T] Box[T] to SelectValue[T] { func value(_ other: T) -> T { other }; }
+func unbox(_ first: Box[int32], _ second: int32) -> int32 { first.value(second) }
+func main() {}
+"#;
+        let diagnostics = crate::test_support::analyze_script_diagnostics(source);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
 }
 
 impl<'ctx> ConstraintSolver<'ctx> {
     fn build_adjustments(deref_steps: usize, autoref_cost: u8) -> Vec<Adjustment<'ctx>> {
         let mut adjustments = Vec::with_capacity(deref_steps + usize::from(autoref_cost > 0));
         adjustments.extend((0..deref_steps).map(|_| Adjustment::Dereference));
-        match autoref_cost {
-            1 => adjustments.push(Adjustment::BorrowImmutable),
-            2 => adjustments.push(Adjustment::BorrowMutable),
-            _ => {}
+        if autoref_cost > 0 {
+            adjustments.push(Adjustment::Reference);
         }
         adjustments
     }
@@ -65,10 +193,46 @@ impl<'ctx> ConstraintSolver<'ctx> {
     }
 
     pub fn solve_method_call(&mut self, data: MethodCallData<'ctx>) -> SolverResult<'ctx> {
+        self.solve_method_call_with_interface(data, None)
+    }
+
+    pub(super) fn solve_method_call_with_interface(
+        &mut self,
+        data: MethodCallData<'ctx>,
+        required: Option<crate::hir::StdItem>,
+    ) -> SolverResult<'ctx> {
+        self.solve_restricted_method_call(data, required, None)
+    }
+
+    pub(super) fn solve_native_subscript_call(
+        &mut self,
+        data: MethodCallData<'ctx>,
+        access: crate::compile::context::NativeSubscriptAccess,
+    ) -> SolverResult<'ctx> {
+        self.solve_restricted_method_call(data, None, Some(access))
+    }
+
+    fn solve_restricted_method_call(
+        &mut self,
+        data: MethodCallData<'ctx>,
+        required: Option<crate::hir::StdItem>,
+        native: Option<crate::compile::context::NativeSubscriptAccess>,
+    ) -> SolverResult<'ctx> {
+        self.solve_method_call_at(data, required, native, Vec::new(), Vec::new())
+    }
+
+    fn solve_method_call_at(
+        &mut self,
+        data: MethodCallData<'ctx>,
+        required: Option<crate::hir::StdItem>,
+        native: Option<crate::compile::context::NativeSubscriptAccess>,
+        prefix: Vec<Adjustment<'ctx>>,
+        mut visited: Vec<Ty<'ctx>>,
+    ) -> SolverResult<'ctx> {
+        let required_interface = required.and_then(|item| self.gcx().std_item_def(item));
         let MethodCallData {
             node_id,
             receiver,
-            receiver_can_mut_borrow,
             reciever_node,
             reciever_span,
             is_unsafe_context,
@@ -77,12 +241,17 @@ impl<'ctx> ConstraintSolver<'ctx> {
             result,
             span,
             method_ty,
-            prefer_async,
-            expect_ty,
             ..
         } = &data;
 
         let resolved_receiver = self.structurally_resolve(*receiver);
+        // The receiver may be the unresolved result of an overloaded subscript.
+        // This also applies through reference/pointer layers. Looking up or
+        // auto-referencing it here would admit every matching reference-head
+        // extension and reject unrelated arities before the index can resolve.
+        if self.autoderef(resolved_receiver).any(|ty| ty.is_infer()) {
+            return SolverResult::Deferred;
+        }
         if resolved_receiver.is_error() {
             let obligation = Obligation {
                 location: data.span,
@@ -91,332 +260,209 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return SolverResult::Solved(vec![obligation]);
         }
 
-        let has_unresolved_expectation = match data.expect_ty {
-            None => true,
-            Some(expect) => {
-                let expect = self.structurally_resolve(expect);
-                expect.is_infer() || expect.contains_inference()
-            }
+        let mut receiver_variable = None;
+        let mut branches = Vec::new();
+        let mut seen = FxHashSet::default();
+        // Address-derived bodies call their own declared capability,
+        // including extra capabilities absent from a get-only bound.
+        // The binding still uses ordinary receiver/argument solving.
+        let default_address = if name.symbol.as_str() == "__subscript_address" {
+            self.gcx()
+                .native_subscript_for_accessor(self.current_def)
+                .filter(|(_, entry)| {
+                    entry.getter == Some(self.current_def) && entry.getter_is_default
+                        || entry.setter == Some(self.current_def) && entry.setter_is_default
+                })
+                .and_then(|(_, entry)| entry.address)
+                .filter(|source| {
+                    self.gcx().definition_ident(*source).symbol == name.symbol
+                        && self.gcx().definition_parent(*source).is_some_and(|parent| {
+                            self.gcx().definition_kind(parent) == crate::hir::DefinitionKind::Impl
+                        })
+                })
+        } else {
+            None
         };
-        let needs_output_ref_mutability = has_unresolved_expectation && *receiver_can_mut_borrow;
-        let expect_requires_mut_ref_output = matches!(
-            data.expect_ty.map(|expect| expect.kind()),
-            Some(TyKind::Reference(_, Mutability::Mutable))
-        );
-        let must_read_signature = needs_output_ref_mutability || expect_requires_mut_ref_output;
-        let mut signature_output_cache: Vec<(DefinitionID, Option<Mutability>)> = Vec::new();
-        if must_read_signature {
-            signature_output_cache.reserve(8);
-        }
-
-        let rec_candidates = self.reciever_candidates(*receiver);
-        // Collect ALL candidates from ALL auto-reference modes.
-        let mut all_candidates: Vec<MethodCandidate<'ctx>> =
-            Vec::with_capacity(rec_candidates.len() * 3);
-        for (candidate_ty, deref_steps) in rec_candidates {
+        for (candidate_ty, deref_steps, referenceable) in
+            self.reciever_candidates(*receiver, data.receiver_addressable)
+        {
             let candidate_ty = self.structurally_resolve(candidate_ty);
-            for r in [
-                AutoReference::None,
-                AutoReference::Immutable,
-                AutoReference::Mutable,
-            ] {
-                // Always consider mutable auto-ref during method lookup; an
-                // immutable binding that selects a `&mut self` method produces
-                // a proper "cannot borrow as mutable" diagnostic during MIR
-                // validation instead of a confusing "no such member".
-
-                let receiver_ty = match r {
-                    AutoReference::None => candidate_ty,
-                    AutoReference::Mutable => Ty::new(
-                        TyKind::Reference(candidate_ty, Mutability::Mutable),
-                        self.gcx(),
-                    ),
-                    AutoReference::Immutable => Ty::new(
-                        TyKind::Reference(candidate_ty, Mutability::Immutable),
-                        self.gcx(),
-                    ),
+            for autoref_cost in 0..=u8::from(referenceable) {
+                let receiver_ty = if autoref_cost == 0 {
+                    candidate_ty
+                } else {
+                    Ty::new(TyKind::Reference(candidate_ty), self.gcx())
                 };
-                let autoref_cost = match r {
-                    AutoReference::None => 0,
-                    AutoReference::Immutable => 1,
-                    AutoReference::Mutable => 2,
-                };
-
-                // Handle interface method calls on abstract receivers:
-                // - generic type parameters
-                // - associated type projections (e.g., `T.Iterator`)
-                if matches!(
-                    candidate_ty.kind(),
-                    TyKind::Parameter(_)
-                        | TyKind::Alias {
-                            kind: AliasKind::Projection | AliasKind::Opaque,
-                            ..
-                        }
-                ) {
-                    let bounds = self.bounds_for_type_in_scope(candidate_ty);
-                    if !bounds.is_empty() {
-                        let list = self.gcx().store.arenas.global.alloc_slice_clone(&bounds);
-                        if let Some(result) = self.solve_interface_method_call(
-                            &data,
-                            candidate_ty,
-                            receiver_ty,
-                            list,
-                            deref_steps,
-                            autoref_cost,
-                        ) {
-                            return result;
-                        }
-                    }
-                }
-
-                // Handle interface method calls on boxed existentials
-                if let TyKind::BoxedExistential { interfaces } = candidate_ty.kind() {
-                    if let Some(result) = self.solve_interface_method_call(
-                        &data,
+                let direct = if let Some(source) = default_address {
+                    vec![source]
+                } else {
+                    self.lookup_instance_candidates_method(
                         candidate_ty,
                         receiver_ty,
-                        interfaces,
-                        deref_steps,
-                        autoref_cost,
-                    ) {
-                        return result;
+                        name.symbol,
+                        *span,
+                    )
+                    .unwrap_or_default()
+                };
+                for source in direct {
+                    if native.is_some_and(|access| {
+                        self.gcx()
+                            .native_subscript_for_receiver(source, receiver_ty)
+                            .is_none_or(|(_, entry)| access.method(entry) != Some(source))
+                    }) {
+                        continue;
                     }
-                }
-
-                // Look up instance method candidates
-                let candidates = self.lookup_instance_candidates_method(
-                    candidate_ty,
-                    receiver_ty,
-                    name.symbol,
-                    *span,
-                );
-                let candidates = candidates.unwrap_or_default();
-
-                if candidates.is_empty() {
-                    // Concrete types may satisfy interface requirements via conformance,
-                    // including default interface methods with no concrete impl body.
-                    if let Some(interfaces) = self.concrete_interface_roots(candidate_ty, *span) {
-                        if let Some(result) = self.solve_interface_method_call(
+                    // Operators exclude unrelated inherent declarations.
+                    // Primitive requirements have no source conformance record
+                    // and remain available through their builtin witness.
+                    if required.is_some_and(|item| {
+                        self.gcx().definition_parent(source) != required_interface
+                            || !crate::mir::primitive_operators::supports(
+                                self.gcx(),
+                                receiver_ty,
+                                item,
+                            )
+                    }) {
+                        continue;
+                    }
+                    let source = required.map_or(source, |item| {
+                        crate::mir::primitive_operators::declaration(self.gcx(), item, *span)
+                    });
+                    if data
+                        .selected
+                        .is_some_and(|(selected, _)| selected != source)
+                        || !seen.insert((source, receiver_ty, deref_steps, None))
+                    {
+                        continue;
+                    }
+                    branches.push(
+                        self.method_call_branch(
                             &data,
-                            candidate_ty,
+                            source,
                             receiver_ty,
-                            interfaces,
+                            *receiver_variable
+                                .get_or_insert_with(|| self.icx.next_ty_var(*reciever_span)),
+                            self.gcx().get_type(source),
+                            None,
+                            data.selected.map(|(_, arguments)| arguments),
                             deref_steps,
                             autoref_cost,
-                        ) {
-                            return result;
-                        }
-                    }
-
+                            &prefix,
+                        ),
+                    );
+                }
+                if default_address.is_some() {
                     continue;
                 }
-
-                // Add all candidates with their receiver info
-                for def_id in candidates {
-                    let output_ref_mutability = if must_read_signature {
-                        if let Some((_, cached)) = signature_output_cache
-                            .iter()
-                            .find(|(cached_id, _)| *cached_id == def_id)
-                        {
-                            *cached
-                        } else {
-                            let signature = self.gcx().get_signature(def_id);
-                            let output_ref_mutability = match signature.output.kind() {
-                                TyKind::Reference(_, mutability) => Some(mutability),
-                                _ => None,
-                            };
-                            signature_output_cache.push((def_id, output_ref_mutability));
-                            output_ref_mutability
-                        }
-                    } else {
-                        None
-                    };
-                    let matches_expectation = !expect_requires_mut_ref_output
-                        || output_ref_mutability != Some(Mutability::Immutable);
-
-                    all_candidates.push(MethodCandidate {
-                        def_id,
-                        receiver_ty,
-                        autoref_cost,
-                        matches_expectation,
-                        matches_async_preference: self.gcx().definition_is_async(def_id)
-                            == *prefer_async,
-                        output_ref_mutability,
-                        deref_steps,
-                    });
-                }
-            }
-        }
-
-        // If no expected type is available yet and this call has both mutable- and
-        // immutable-reference return candidates, prefer mutable-reference variants.
-        //
-        // This prevents early commitment to immutable overloads in contexts where
-        // downstream constraints later require `&mut`.
-        if has_unresolved_expectation && *receiver_can_mut_borrow {
-            let has_mut_ref_output = all_candidates
-                .iter()
-                .any(|candidate| candidate.output_ref_mutability == Some(Mutability::Mutable));
-            let has_imm_ref_output = all_candidates
-                .iter()
-                .any(|candidate| candidate.output_ref_mutability == Some(Mutability::Immutable));
-
-            if has_mut_ref_output && has_imm_ref_output {
-                for candidate in &mut all_candidates {
-                    if candidate.output_ref_mutability == Some(Mutability::Immutable) {
-                        candidate.matches_expectation = false;
+                let interfaces = self.method_interfaces(receiver_ty, *span);
+                let Some(interfaces) = interfaces else {
+                    continue;
+                };
+                let (candidates, _) = self.interface_method_candidates(
+                    receiver_ty,
+                    Some(receiver_ty),
+                    interfaces,
+                    name.symbol,
+                    name.span,
+                );
+                for candidate in candidates {
+                    if native.is_some_and(|access| {
+                        self.gcx()
+                            .native_subscript_for_accessor(candidate.source)
+                            .is_none_or(|(_, entry)| access.method(entry) != Some(candidate.source))
+                    }) {
+                        continue;
                     }
+                    if required_interface
+                        .is_some_and(|interface| candidate.call_info.method_interface != interface)
+                    {
+                        continue;
+                    }
+                    if autoref_cost > 0 && self.gcx().definition_is_clone_method(candidate.source)
+                        || data
+                            .selected
+                            .is_some_and(|(source, _)| source != candidate.source)
+                        || !seen.insert((
+                            candidate.source,
+                            receiver_ty,
+                            deref_steps,
+                            candidate.instantiation_args,
+                        ))
+                    {
+                        continue;
+                    }
+                    branches.push(
+                        self.method_call_branch(
+                            &data,
+                            candidate.source,
+                            receiver_ty,
+                            *receiver_variable
+                                .get_or_insert_with(|| self.icx.next_ty_var(*reciever_span)),
+                            candidate.candidate_ty,
+                            Some(candidate.call_info),
+                            data.selected
+                                .map(|(_, arguments)| arguments)
+                                .or(candidate.instantiation_args),
+                            deref_steps,
+                            autoref_cost,
+                            &prefix,
+                        ),
+                    );
                 }
             }
         }
-
-        // If we found any candidates, create a disjunction
-        if !all_candidates.is_empty() {
-            // Check if all candidates have the same receiver type
-            // If so, we can use the simpler approach with a fixed receiver type
-            let first_receiver_ty = all_candidates[0].receiver_ty;
-            let all_same_receiver = all_candidates
-                .iter()
-                .all(|c| c.receiver_ty == first_receiver_ty);
-
-            if all_same_receiver {
-                // Simple case: all candidates use the same receiver type
-                // Use the original approach with BindOverload (not BindMethodOverload)
-                // and record adjustments immediately
-                let first_adjustments = Self::build_adjustments(
-                    all_candidates[0].deref_steps,
-                    all_candidates[0].autoref_cost,
-                );
-
-                let mut branches = Vec::with_capacity(all_candidates.len());
-                for candidate in &all_candidates {
-                    let branch = DisjunctionBranch {
-                        goal: Goal::BindOverload(BindOverloadGoalData {
-                            node_id: *node_id,
-                            var_ty: *method_ty,
-                            candidate_ty: self.gcx().get_type(candidate.def_id),
-                            source: candidate.def_id,
-                            instantiation_args: None,
-                        }),
-                        source: Some(candidate.def_id),
-                        autoref_cost: candidate.autoref_cost,
-                        matches_expectation: candidate.matches_expectation,
-                        matches_async_preference: candidate.matches_async_preference,
-                        deref_steps: candidate.deref_steps,
-                    };
-                    branches.push(branch);
-                }
-
-                let disjunction_goal = Obligation {
-                    location: name.span,
-                    goal: Goal::Disjunction(branches),
-                };
-
-                let args = Self::with_receiver_argument(
-                    arguments,
-                    ApplyArgument {
-                        id: *reciever_node,
-                        label: None,
-                        ty: first_receiver_ty,
-                        span: *reciever_span,
-                    },
-                );
-
-                let apply_goal = Obligation {
-                    location: *span,
-                    goal: Goal::Apply(ApplyGoalData {
-                        call_node_id: *node_id,
-                        call_span: *span,
-                        callee_ty: *method_ty,
-                        callee_source: None,
-                        is_unsafe_context: *is_unsafe_context,
-                        result_ty: *result,
-                        _expect_ty: *expect_ty,
-                        arguments: args,
-                        skip_labels: false,
-                    }),
-                };
-
-                self.record_adjustments(*reciever_node, first_adjustments);
-                return SolverResult::Solved(vec![disjunction_goal, apply_goal]);
-            } else {
-                // Complex case: candidates have different receiver types (different autoref modes)
-                // Use BindMethodOverload which bundles adjustments with each candidate
-
-                // Create a fresh type variable for the receiver that will be constrained
-                // by the selected BindMethodOverload branch.
-                let receiver_ty_var = self.icx.next_ty_var(*reciever_span);
-
-                let mut branches = Vec::with_capacity(all_candidates.len());
-                for candidate in &all_candidates {
-                    let branch = DisjunctionBranch {
-                        goal: Goal::BindMethodOverload(BindMethodOverloadGoalData {
-                            node_id: *node_id,
-                            receiver_node_id: *reciever_node,
-                            var_ty: *method_ty,
-                            candidate_ty: self.gcx().get_type(candidate.def_id),
-                            receiver_ty: candidate.receiver_ty,
-                            receiver_ty_var, // Pass the type variable to be constrained
-                            source: candidate.def_id,
-                            instantiation_args: None,
-                            adjustments: Self::build_adjustments(
-                                candidate.deref_steps,
-                                candidate.autoref_cost,
-                            ),
-                        }),
-                        source: Some(candidate.def_id),
-                        autoref_cost: candidate.autoref_cost,
-                        matches_expectation: candidate.matches_expectation,
-                        matches_async_preference: candidate.matches_async_preference,
-                        deref_steps: candidate.deref_steps,
-                    };
-                    branches.push(branch);
-                }
-
-                let disjunction_goal = Obligation {
-                    location: name.span,
-                    goal: Goal::Disjunction(branches),
-                };
-
-                // Build the Apply goal using the receiver type variable
-                let args = Self::with_receiver_argument(
-                    arguments,
-                    ApplyArgument {
-                        id: *reciever_node,
-                        label: None,
-                        ty: receiver_ty_var,
-                        span: *reciever_span,
-                    },
-                );
-
-                let apply_goal = Obligation {
-                    location: *span,
-                    goal: Goal::Apply(ApplyGoalData {
-                        call_node_id: *node_id,
-                        call_span: *span,
-                        callee_ty: *method_ty,
-                        callee_source: None,
-                        is_unsafe_context: *is_unsafe_context,
-                        result_ty: *result,
-                        _expect_ty: *expect_ty,
-                        arguments: args,
-                        skip_labels: false,
-                    }),
-                };
-
-                // Note: We do NOT record adjustments here!
-                // The BindMethodOverload goal will record the correct adjustments
-                // when the disjunction selects a branch.
-                return SolverResult::Solved(vec![disjunction_goal, apply_goal]);
+        if !branches.is_empty() {
+            // Native overloads are selected from their inputs. An unresolved
+            // key may be produced by another indexed expression; probing now
+            // can constrain it to an unrelated range overload and reject its
+            // actual producer. Numeric literals still receive normal context,
+            // and a single candidate can supply a generic key's expected type.
+            if native.is_some()
+                && branches.len() > 1
+                && arguments
+                    .iter()
+                    .any(|argument| self.structurally_resolve(argument.ty).is_ty_var())
+            {
+                return SolverResult::Deferred;
             }
+            let apply = ApplyGoalData {
+                call_node_id: *node_id,
+                callee_node_id: None,
+                call_span: *span,
+                callee_ty: *method_ty,
+                callee_source: None,
+                is_unsafe_context: *is_unsafe_context,
+                result_ty: *result,
+                arguments: Self::with_receiver_argument(
+                    arguments,
+                    ApplyArgument {
+                        id: *reciever_node,
+                        label: None,
+                        ty: receiver_variable.expect("method candidate receiver"),
+                        span: *reciever_span,
+                    },
+                ),
+                skip_labels: required.is_some(),
+                input_only_selection: required.is_some() || native.is_some(),
+            };
+            return SolverResult::Solved(vec![
+                Obligation {
+                    location: name.span,
+                    goal: Goal::Disjunction(branches),
+                },
+                Obligation {
+                    location: *span,
+                    goal: Goal::Apply(apply),
+                },
+            ]);
         }
 
         // ── Callable field fallback ──────────────────────────────────
         // If no method named `f` was found, check if `f` is a struct field
         // whose type is callable (e.g., `F: Fn[T, T]`).
         // Resolve `self.f(args)` as `(self.f)(args)`.
-        {
-            let mut adjustments = Vec::new();
+        if required.is_none() && native.is_none() {
+            let mut adjustments = prefix.clone();
             let mut prev: Option<Ty<'ctx>> = None;
             for ty in self.autoderef(*receiver) {
                 let ty = self.structurally_resolve(ty);
@@ -446,14 +492,15 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         location: *span,
                         goal: Goal::Apply(ApplyGoalData {
                             call_node_id: *node_id,
+                            callee_node_id: None,
                             call_span: *span,
                             callee_ty: field_ty,
                             callee_source: None,
                             is_unsafe_context: *is_unsafe_context,
                             result_ty: *result,
-                            _expect_ty: *expect_ty,
                             arguments: arguments.clone(),
                             skip_labels: false,
+                            input_only_selection: false,
                         }),
                     };
 
@@ -464,6 +511,43 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     };
 
                     return SolverResult::Solved(vec![eq_goal, apply_goal]);
+                }
+            }
+        }
+
+        if required.is_none() && native.is_none() {
+            let hidden = self.autoderef(*receiver).any(|ty| {
+                self.type_head_from_type(ty)
+                    .is_some_and(|head| self.has_invisible_instance_member(head, name.symbol))
+                    || self
+                        .lookup_field(ty, name.symbol)
+                        .is_some_and(|(field, _)| {
+                            !self
+                                .gcx()
+                                .is_visibility_allowed(field.visibility, self.current_def)
+                        })
+            });
+            if !hidden {
+                match self.custom_deref_fallback(
+                    *receiver,
+                    data.receiver_addressable,
+                    *span,
+                    &prefix,
+                    &mut visited,
+                ) {
+                    Ok(Some((target, prefix, proof))) => {
+                        let mut nested = data.clone();
+                        nested.receiver = target;
+                        nested.receiver_addressable = true;
+                        let mut result =
+                            self.solve_method_call_at(nested, required, native, prefix, visited);
+                        if let SolverResult::Solved(obligations) = &mut result {
+                            obligations.extend(proof);
+                        }
+                        return result;
+                    }
+                    Err(result) => return result,
+                    Ok(None) => {}
                 }
             }
         }
@@ -497,17 +581,24 @@ impl<'ctx> ConstraintSolver<'ctx> {
         return SolverResult::Error(vec![Spanned::new(error, name.span)]);
     }
 
-    fn reciever_candidates(&self, base_ty: Ty<'ctx>) -> Vec<(Ty<'ctx>, usize)> {
-        let mut base = Vec::with_capacity(4);
-        let mut derefs = 0;
-
-        let mut autoderef = self.autoderef(base_ty);
-        while let Some(nx) = autoderef.next() {
-            base.push((nx, derefs));
-            derefs += 1;
+    fn reciever_candidates(
+        &self,
+        base_ty: Ty<'ctx>,
+        mut referenceable: bool,
+    ) -> Vec<(Ty<'ctx>, usize, bool)> {
+        let mut candidates = Vec::with_capacity(4);
+        let mut previous: Option<Ty<'ctx>> = None;
+        for (steps, ty) in self.autoderef(base_ty).enumerate() {
+            if let Some(previous) = previous {
+                referenceable = !matches!(
+                    previous.kind(),
+                    TyKind::Pointer(_, crate::hir::Mutability::Immutable)
+                );
+            }
+            candidates.push((ty, steps, referenceable));
+            previous = Some(ty);
         }
-
-        base
+        candidates
     }
 
     pub fn lookup_instance_candidates_method(
@@ -517,19 +608,19 @@ impl<'ctx> ConstraintSolver<'ctx> {
         name: Symbol,
         span: Span,
     ) -> Option<Vec<DefinitionID>> {
-        let all_candidates = match self.type_head_from_type(candidate) {
-            Some(head) => self.lookup_instance_candidates_visible(head, name),
-            None if matches!(candidate.kind(), TyKind::Parameter(_)) => {
-                self.lookup_blanket_instance_candidates(name)
-            }
-            None => return None,
-        };
+        let autoreferenced = candidate != reciever;
+        let all_candidates = self.lookup_instance_candidates(reciever, name);
         if all_candidates.is_empty() {
             return None;
         }
 
         let mut matching = Vec::with_capacity(all_candidates.len());
         for candidate in all_candidates.into_iter() {
+            // Taking an address must not turn a missing Clone on T into an
+            // identity copy of &T. Reference copies are explicit: (&value).clone().
+            if autoreferenced && self.gcx().definition_is_clone_method(candidate) {
+                continue;
+            }
             let ty = self.gcx().get_type(candidate);
             let fn_reciever = match ty.kind() {
                 TyKind::FnPointer { inputs, .. } => inputs.first().cloned(),
@@ -540,21 +631,55 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 continue;
             };
 
+            let fn_reciever =
+                crate::sema::tycheck::utils::normalize_aliases(self.gcx(), fn_reciever);
             let reciever_head = self.type_head_from_type(reciever);
             let fn_reciever_head = self.type_head_from_type(fn_reciever);
 
-            let matches = match (reciever_head, fn_reciever_head) {
-                (Some(a), Some(b)) => a == b,
-                _ => reciever == fn_reciever,
-            };
+            let matches = fn_reciever.needs_instantiation()
+                || match (reciever_head, fn_reciever_head) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => reciever == fn_reciever,
+                };
 
-            if matches {
+            let inherited = self.gcx().class_ancestry(reciever).iter().any(|ancestor| {
+                self.type_head_from_type(*ancestor) == self.type_head_from_type(fn_reciever)
+            });
+            if matches || inherited {
                 matching.push(candidate);
             }
         }
 
-        self.filter_extension_candidates_in_place(&mut matching, candidate, span);
+        self.filter_extension_candidates_in_place(&mut matching, reciever, span);
         return Some(matching);
+    }
+
+    /// Bounds supplement concrete/blanket conformances; they do not hide them.
+    /// Erased values carry their complete interface set in the value type.
+    pub(super) fn method_interfaces(
+        &self,
+        receiver: Ty<'ctx>,
+        span: Span,
+    ) -> Option<&'ctx [InterfaceReference<'ctx>]> {
+        if let TyKind::BoxedExistential { interfaces } = receiver.kind() {
+            return Some(interfaces);
+        }
+        let mut interfaces = self.bounds_for_type_in_scope(receiver);
+        if let Some(callable) = crate::sema::models::callable_interface_ref(self.gcx(), receiver) {
+            interfaces.push(callable);
+        }
+        if let Some(roots) = self.concrete_interface_roots(receiver, span) {
+            interfaces.extend_from_slice(roots);
+        }
+        let mut seen = FxHashSet::default();
+        interfaces.retain(|interface| seen.insert((interface.id, interface.arguments)));
+        (!interfaces.is_empty()).then(|| {
+            self.gcx()
+                .store
+                .arenas
+                .global
+                .alloc_slice_clone(&interfaces) as &_
+        })
     }
 
     pub(super) fn concrete_interface_roots(
@@ -562,14 +687,25 @@ impl<'ctx> ConstraintSolver<'ctx> {
         self_ty: Ty<'ctx>,
         span: Span,
     ) -> Option<&'ctx [InterfaceReference<'ctx>]> {
-        let head = self.type_head_from_type(self_ty)?;
-        let records = self.gcx().collect_from_databases(|db| {
-            db.conformance_records
-                .values()
-                .filter(|record| record.target == head || record.target.is_blanket())
-                .copied()
-                .collect()
-        });
+        let ancestry = self.gcx().class_ancestry(self_ty);
+        let owners = if ancestry.is_empty() {
+            vec![self_ty]
+        } else {
+            ancestry
+        };
+        let mut records = Vec::new();
+        for owner in owners {
+            let head = self.type_head_from_type(owner);
+            records.extend(self.gcx().collect_from_databases(|db| {
+                db.conformance_records
+                    .values()
+                    .filter(|record| {
+                        head.is_some_and(|head| record.target == head) || record.target.is_blanket()
+                    })
+                    .map(|record| (owner, *record))
+                    .collect::<Vec<_>>()
+            }));
+        }
         if records.is_empty() {
             return None;
         }
@@ -578,20 +714,28 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let mut seen: FxHashSet<InterfaceReference<'ctx>> = FxHashSet::default();
         seen.reserve(records.len());
 
-        for record in records {
+        for (owner, record) in records {
             if !self.visible_traits.is_empty()
                 && !self.visible_traits.contains(&record.interface.id)
             {
                 continue;
             }
 
-            if !self.extension_target_matches(record.extension, self_ty, span) {
+            if !self.extension_target_matches(record.extension, owner, span) {
                 continue;
             }
+            // Every interface argument lives in the extension's coordinates,
+            // not only Self. A blanket `T: Select[T]` must become
+            // `Base: Select[Base]`, never `Base: Select[unbound T]`.
+            let Some(interface) =
+                crate::sema::impl_engine::deduce_conformance_interface(self.gcx(), &record, owner)
+            else {
+                continue;
+            };
             let iface = InterfaceReference {
-                id: record.interface.id,
-                arguments: self.interface_args_with_self(record.interface, self_ty),
-                bindings: record.interface.bindings,
+                id: interface.id,
+                arguments: self.interface_args_with_self(interface, self_ty),
+                bindings: interface.bindings,
             };
             if seen.insert(iface) {
                 interfaces.push(iface);
@@ -611,101 +755,62 @@ impl<'ctx> ConstraintSolver<'ctx> {
         )
     }
 
-    fn solve_interface_method_call(
-        &mut self,
+    fn method_call_branch(
+        &self,
         data: &MethodCallData<'ctx>,
+        source: DefinitionID,
+        receiver: Ty<'ctx>,
+        variable: Ty<'ctx>,
         candidate_ty: Ty<'ctx>,
-        reciever_ty: Ty<'ctx>,
-        interfaces: &'ctx [InterfaceReference<'ctx>],
+        call_info: Option<InterfaceCallInfo>,
+        arguments: Option<GenericArguments<'ctx>>,
         deref_steps: usize,
         autoref_cost: u8,
-    ) -> Option<SolverResult<'ctx>> {
-        let (candidates, object_safety_violation) = self.interface_method_candidates(
-            candidate_ty,
-            reciever_ty,
-            interfaces,
-            data.name.symbol,
-            data.name.span,
-        );
-        if candidates.is_empty() {
-            if object_safety_violation {
-                let error = Spanned::new(
-                    TypeError::NoSuchMember {
-                        name: data.name.symbol,
-                        on: candidate_ty,
-                    },
-                    data.name.span,
-                );
-                return Some(SolverResult::Error(vec![error]));
-            }
-            return None;
-        }
-
-        let mut branches = Vec::with_capacity(candidates.len());
-        for candidate in candidates {
-            branches.push(DisjunctionBranch {
-                goal: Goal::BindInterfaceMethod(BindInterfaceMethodGoalData {
-                    node_id: data.node_id,
-                    var_ty: data.method_ty,
-                    candidate_ty: candidate.candidate_ty,
-                    call_info: candidate.call_info,
-                    instantiation_args: candidate.instantiation_args,
-                }),
-                source: Some(candidate.source),
-                autoref_cost: 0, // Interface method calls don't have autoref ambiguity
-                matches_expectation: false,
-                matches_async_preference: self.gcx().definition_is_async(candidate.source)
-                    == data.prefer_async,
-                deref_steps: 0,
-            });
-        }
-
-        let disjunction_goal = Obligation {
-            location: data.name.span,
-            goal: Goal::Disjunction(branches),
-        };
-
-        let args = Self::with_receiver_argument(
-            &data.arguments,
-            ApplyArgument {
-                id: data.reciever_node,
-                label: None,
-                ty: reciever_ty,
-                span: data.reciever_span,
-            },
-        );
-
-        let apply_goal = Obligation {
-            location: data.span,
-            goal: Goal::Apply(ApplyGoalData {
-                call_node_id: data.node_id,
-                call_span: data.span,
-                callee_ty: data.method_ty,
-                callee_source: None,
-                is_unsafe_context: data.is_unsafe_context,
-                result_ty: data.result,
-                _expect_ty: data.expect_ty,
-                arguments: args,
-                skip_labels: false,
+        prefix: &[Adjustment<'ctx>],
+    ) -> DisjunctionBranch<'ctx> {
+        let binding = match call_info {
+            Some(call_info) => Goal::BindInterfaceMethod(BindInterfaceMethodGoalData {
+                node_id: data.node_id,
+                var_ty: data.method_ty,
+                candidate_ty,
+                call_info,
+                instantiation_args: arguments,
+            }),
+            None => Goal::BindOverload(BindOverloadGoalData {
+                static_owner: None,
+                node_id: data.node_id,
+                var_ty: data.method_ty,
+                candidate_ty,
+                source,
+                instantiation_args: arguments,
             }),
         };
-
-        self.record_adjustments(
-            data.reciever_node,
-            Self::build_adjustments(deref_steps, autoref_cost),
-        );
-        Some(SolverResult::Solved(vec![disjunction_goal, apply_goal]))
+        let mut adjustments = prefix.to_vec();
+        adjustments.extend(Self::build_adjustments(deref_steps, autoref_cost));
+        DisjunctionBranch {
+            goal: Goal::BindMethodOverload(BindMethodOverloadGoalData {
+                binding: Box::new(binding),
+                receiver_node_id: data.reciever_node,
+                receiver_constraint: Some((variable, receiver)),
+                adjustments,
+            }),
+            source: Some(source),
+            autoref_cost,
+            matches_async_preference: self.gcx().definition_is_async(source) == data.prefer_async,
+            deref_steps,
+        }
     }
 
-    fn interface_method_candidates(
+    pub(super) fn interface_method_candidates(
         &mut self,
         self_ty: Ty<'ctx>,
-        reciever_ty: Ty<'ctx>,
+        reciever_ty: Option<Ty<'ctx>>,
         interfaces: &'ctx [InterfaceReference<'ctx>],
         name: Symbol,
         name_span: Span,
     ) -> (Vec<InterfaceMethodCandidate<'ctx>>, bool) {
         let mut out = Vec::with_capacity(interfaces.len().saturating_mul(2));
+        let mut seen = FxHashSet::default();
         let mut object_safety_violation = false;
         let is_existential_dispatch = matches!(self_ty.kind(), TyKind::BoxedExistential { .. });
 
@@ -717,7 +822,16 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 bindings: &[],
             };
 
-            for iface_ref in self.collect_interface_with_supers(root) {
+            // A partial header is a method template. Its missing arguments
+            // are freshened only after selection; do not carry uninstantiated
+            // root parameters into a super-interface's argument coordinates.
+            let interfaces = if root.arguments.len() < self.gcx().generics_of(root.id).total_count()
+            {
+                vec![root]
+            } else {
+                self.collect_interface_with_supers(root)
+            };
+            for iface_ref in interfaces {
                 let Some(requirements) = self.interface_requirements(iface_ref.id) else {
                     continue;
                 };
@@ -765,7 +879,16 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     let candidate_receiver_ty =
                         instantiate_ty_with_args(self.gcx(), candidate_ty, iface_ref.arguments);
 
-                    if !self.receiver_matches_method(reciever_ty, candidate_receiver_ty) {
+                    if reciever_ty.is_some_and(|receiver| {
+                        !self.receiver_matches_method(receiver, candidate_receiver_ty)
+                    }) {
+                        continue;
+                    }
+
+                    // A requirement reached through several super-interface paths
+                    // is still one method. Keep distinct instantiations (including
+                    // RHS types) and unrelated requirements as separate candidates.
+                    if !seen.insert((method.id, iface_ref)) {
                         continue;
                     }
 
@@ -826,6 +949,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let inputs = self.gcx().store.interners.intern_ty_list(inputs);
         Ty::new(
             TyKind::FnPointer {
+                effects: Default::default(),
                 inputs,
                 output: sig.output,
             },

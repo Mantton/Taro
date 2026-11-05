@@ -1,0 +1,7 @@
+public class Counter { value: int32 }
+extend Counter {
+    public init(_ value: int32) { self.value = value }
+    public func read() -> int32 { self.value }
+    public func echo[T](_ value: T) -> T { value }
+    public func reference() -> &int32 { &self.value }
+}

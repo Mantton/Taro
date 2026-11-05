@@ -203,6 +203,9 @@ impl UnifyValue for ConstVarValue {
             | (ConstVarValue::Unknown, known @ ConstVarValue::Param(_))
             | (known @ ConstVarValue::Known(_), ConstVarValue::Unknown)
             | (known @ ConstVarValue::Param(_), ConstVarValue::Unknown) => Ok(*known),
+            (ConstVarValue::Known(a), ConstVarValue::Known(b)) if a == b => {
+                Ok(ConstVarValue::Known(*a))
+            }
             (ConstVarValue::Known(_), ConstVarValue::Known(_)) => {
                 panic!("differing consts should have been resolved first")
             }

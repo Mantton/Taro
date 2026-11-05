@@ -1,0 +1,27 @@
+// Native ownership regression.
+interface Produce { type Output; func produce() -> Self::Output; }
+interface Read { type Output; func read() -> &Self::Output; }
+interface IntRead: Read[Output = int32] {}
+struct Counter { value: int32 }
+conform Counter to Produce {
+    type Output = int32
+    func produce() -> int32 { self.value }
+}
+conform Counter to Read[Output = int32] {
+    type Output = int32
+    func read() -> &int32 { &self.value }
+}
+conform Counter to IntRead {}
+func discard[T: Produce](_ value: &T) { var _ = value.produce() }
+func discardBorrow[T: Read](_ value: &T) { var _ = value.read() }
+func main() {
+    var concrete: Counter = Counter { value: 7_i32 }
+    discard(&concrete)
+    discardBorrow(&concrete)
+    var owned: any Produce[Output = int32] = Counter { value: 7_i32 }
+    discard(&owned)
+    var borrowed: any Read[Output = int32] = Counter { value: 11_i32 }
+    discardBorrow(&borrowed)
+    var inherited: any IntRead = Counter { value: 13_i32 }
+    discardBorrow(&inherited)
+}

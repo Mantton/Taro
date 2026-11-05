@@ -1,5 +1,5 @@
-// A single non-generic initializer supplies contextual argument types.
-// Generic and overloaded initializers do not commit expectations from one candidate.
+// Explicit factory calls supply contextual argument types.
+// Overloaded factories still select candidates through ordinary overload resolution.
 
 enum Left {
     case value(int32)
@@ -15,8 +15,8 @@ struct Single {
     kind: Left;
 }
 
-impl Single {
-    func new(kind: Left) -> Self {
+extend Single {
+    static func new(kind: Left) -> Self {
         return Single { kind }
     }
 }
@@ -25,12 +25,12 @@ struct Multi {
     tag: int32;
 }
 
-impl Multi {
-    func new(left: Left) -> Self {
+extend Multi {
+    static func new(left: Left) -> Self {
         return Multi { tag: 1 }
     }
 
-    func new(right: Right) -> Self {
+    static func new(right: Right) -> Self {
         return Multi { tag: 2 }
     }
 }
@@ -39,45 +39,45 @@ struct Boxed[T] {
     value: T;
 }
 
-impl[T] Boxed[T] {
-    func new(value: T) -> Self {
+extend[T] Boxed[T] {
+    static func new(value: T) -> Self {
         return Boxed[T] { value }
     }
 }
 
 func leftName(_ left: &Left) -> string {
-    match left {
+    match *left {
         case .value(_) => "value"
         case .none => "none"
     }
 }
 
 func main() {
-    // Single candidate: inferred members resolve through the shorthand.
-    let unit = Single(kind: .none)
+    // Single candidate: inferred members resolve through the factory.
+    unit := Single::new(kind: .none)
     assert(leftName(&unit.kind) == "none", "single candidate, unit variant")
 
-    let payload = Single(kind: .value(7))
+    payload := Single::new(kind: .value(7))
     assert(leftName(&payload.kind) == "value", "single candidate, payload variant")
 
-    // The explicit spelling keeps working and agrees with the shorthand.
-    let explicit = Single.new(kind: .value(7))
-    assert(leftName(&explicit.kind) == "value", "explicit new still resolves")
+    // Repeated explicit calls retain the same contextual argument behavior.
+    explicit := Single::new(kind: .value(7))
+    assert(leftName(&explicit.kind) == "value", "explicit factory resolves")
 
-    // Overloaded constructors get no expectation, and still resolve from
+    // Overloaded factories resolve from
     // fully qualified arguments.
-    let viaLeft = Multi(left: Left.value(1))
+    viaLeft := Multi::new(left: Left::value(1))
     assert(viaLeft.tag == 1, "overload picks the Left constructor")
 
-    let viaRight = Multi(right: Right.text("x"))
+    viaRight := Multi::new(right: Right::text("x"))
     assert(viaRight.tag == 2, "overload picks the Right constructor")
 
-    // Generic constructors are skipped by the guard and infer as before.
-    let boxed = Boxed[int32](value: 5)
+    // Generic factories infer their type arguments from arguments and context.
+    boxed := Boxed[int32]::new(value: 5)
     assert(boxed.value == 5, "explicit generic constructor")
 
-    let inferred = Boxed(value: 9)
+    inferred := Boxed::new(value: 9)
     assert(inferred.value == 9, "inferred generic constructor")
 
-    std.print("PASS: constructor argument expectations\n")
+    std::print("PASS: constructor argument expectations\n")
 }

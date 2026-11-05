@@ -1,0 +1,12 @@
+// G22: an uncaught panic escaping async main terminates the program after
+// main's own defers, even while background work is pending.
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: panic: main escapes
+func main() async {
+    var _ = std::task::spawn(() async => {
+        await std::task::sleep(std::time::Duration::fromSeconds(60_u64))
+    })
+    defer { print("main defer\n") }
+    await std::testing::yieldNow()
+    panic("main escapes")
+}

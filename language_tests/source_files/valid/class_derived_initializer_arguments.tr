@@ -1,0 +1,26 @@
+class Base { value: int32; apply: (int32) -> int32 }
+extend Base {
+    init(value: int32 = 7, apply: (int32) -> int32) {
+        self.value = value
+        self.apply = apply
+    }
+}
+class Child: Base { own: int32 = 3 }
+extend Child {
+    init(_ branch: bool) {
+        var offset: int32 = 1
+        if branch {
+            super.init(value: 10 + offset, apply: (value) => value + 2)
+        } else {
+            super.init(apply: (value) => value + 3)
+        }
+        assert(self.own == 3, "defaults ran on the selected base-success path")
+        assert(self.apply(self.value) == (if branch { 13 } else { 10 }), "ordinary argument inference and defaults")
+    }
+}
+func main() {
+    var left: Child = Child(true)
+    var right: Child = Child(false)
+    assert(left.value == 11, "base initializer labels preserve argument order")
+    assert(right.value == 7, "omitted base argument uses its default provider")
+}

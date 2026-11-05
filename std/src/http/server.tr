@@ -1,0 +1,741 @@
+import std::collections::List
+import std::io::AsyncReader
+import std::mem::Span
+import std::net::{SocketAddress, TcpListener, TcpStream}
+import std::result::Result
+import std::time::Instant
+
+const RESPONSE_HEAD_CAPACITY: usize = 256
+// The most a response write gathers at once. Together with the storage's header
+// this stays in the allocator's largest size class rather than taking two pages.
+const WRITE_CHUNK_BYTES: usize = 8128
+// A connection quiet for this long gives back its buffers, and a busy connection
+// keeps them from one request to the next.
+const IDLE_RELEASE_MILLIS: uint64 = 100
+// How many pipelined requests one connection may serve before others get a turn.
+const MAX_EXCHANGES_PER_TURN: usize = 16
+
+final class ServerState {
+    listener: TcpListener
+    options: Options
+    closed: std::sync::atomic::Bool
+    serving: std::sync::atomic::Bool
+    // Every slot ever created, newest first, and those not in use at the moment.
+    newestSlot: std::sync::atomic::Handle[ConnectionSlot]
+    freeSlots: std::sync::atomic::Handle[ConnectionSlot]
+    tls: std::tls::ServerConfig?
+}
+extend ServerState {
+    init(_ listener: TcpListener, _ options: Options) {
+        self.listener = listener
+        self.options = options
+        self.closed = std::sync::atomic::Bool::new(false)
+        self.serving = std::sync::atomic::Bool::new(false)
+        self.tls = .none
+        self.newestSlot = std::sync::atomic::Handle[ConnectionSlot]::new()
+        self.freeSlots = std::sync::atomic::Handle[ConnectionSlot]::new()
+    }
+    // Slots stay in the list for reuse, so it never holds more than the most
+    // connections open at once. Only the accept loop takes slots: a slot can't
+    // leave the free list and return during its exchange here.
+    func claimSlot(_ connection: ConnectionState) -> ConnectionSlot {
+        loop {
+            match self.freeSlots.load() {
+                case .some(slot) => {
+                    if self.freeSlots.compareExchange(.some(slot), slot.nextFree.load()) {
+                        slot.connection.store(.some(connection))
+                        return slot
+                    }
+                }
+                case .none => break
+            }
+        }
+        slot := ConnectionSlot(self.newestSlot.load())
+        slot.connection.store(.some(connection))
+        self.newestSlot.store(.some(slot))
+        return slot
+    }
+    func releaseSlot(_ slot: ConnectionSlot) {
+        slot.connection.store(.none)
+        loop {
+            head := self.freeSlots.load()
+            slot.nextFree.store(head)
+            if self.freeSlots.compareExchange(head, .some(slot)) { return }
+        }
+    }
+    func closeConnections(idleOnly: bool) {
+        var next = self.newestSlot.load()
+        while next.isSome() {
+            slot := next.unwrap()
+            match slot.connection.load() {
+                case .some(connection) => {
+                    if !idleOnly || connection.phase.load() < 2_u8 { connection.close() }
+                }
+                case .none => {}
+            }
+            next = slot.older
+        }
+    }
+}
+
+final class ConnectionSlot {
+    connection: std::sync::atomic::Handle[ConnectionState]
+    nextFree: std::sync::atomic::Handle[ConnectionSlot]
+    older: ConnectionSlot?
+}
+extend ConnectionSlot {
+    init(_ older: ConnectionSlot?) {
+        self.connection = std::sync::atomic::Handle[ConnectionState]::new()
+        self.nextFree = std::sync::atomic::Handle[ConnectionSlot]::new()
+        self.older = older
+    }
+}
+
+/// Shared HTTP listener. serve() owns bounded concurrent exchanges; low-level
+/// accept() callers own their connection lifetimes. Close explicitly.
+public struct Server { state: ServerState }
+extend Server {
+    public static func bind(_ address: SocketAddress) -> Result[Self, Error] {
+        Server::bindWithOptions(address, Options::new())
+    }
+    public static func bindWithOptions(_ address: SocketAddress, _ options: Options) -> Result[Self, Error] {
+        if !options.valid() { return .err(failure(.invalidInput, "invalid HTTP options")) }
+        match TcpListener::bind(address) {
+            case .ok(listener) => return .ok(Server { state: ServerState(listener, options) })
+            case .err(error) => return .err(ioFailure(error))
+        }
+    }
+    /// Borrows the TLS configuration. The caller closes it after the server
+    /// finishes; existing TLS sessions retain their native configuration.
+    public static func bindTLS(_ address: SocketAddress, _ config: std::tls::ServerConfig, options: Options = Options::new()) -> Result[Self, Error] {
+        server := Server::bindWithOptions(address, options)!
+        server.state.tls = .some(config)
+        return .ok(server)
+    }
+    public func localAddress() -> Result[SocketAddress, Error] {
+        match self.state.listener.localAddress() {
+            case .ok(address) => return .ok(address)
+            case .err(error) => return .err(ioFailure(error))
+        }
+    }
+    /// Stop accepting. serve() drains accepted exchanges before it returns.
+    /// Cancelling its task instead cancels and drains those exchanges.
+    public func close() -> Result[(), Error] {
+        if self.state.closed.swap(true) { return .ok(()) }
+        self.state.closeConnections(idleOnly: true)
+        match self.state.listener.close() {
+            case .ok(_) => return .ok(())
+            case .err(error) => return .err(ioFailure(error))
+        }
+    }
+    /// Stop acceptance and drain serving exchanges. On deadline, close every
+    /// registered socket; cancellation remains cooperative for application code.
+    public func shutdown(_ timeout: std::time::Duration) async -> Result[(), Error] {
+        self.close()!
+        started := std::time::Instant::now()
+        while self.state.serving.load() {
+            elapsed := started.elapsed()
+            if elapsed.seconds() > timeout.seconds() || (elapsed.seconds() == timeout.seconds() && elapsed.subsecNanos() >= timeout.subsecNanos()) {
+                self.state.closeConnections(idleOnly: false)
+                return .err(failure(.timeout, "HTTP shutdown deadline exceeded"))
+            }
+            await std::task::sleep(std::time::Duration::fromMillis(1_u64))
+        }
+        return .ok(())
+    }
+    public func accept() async -> Result[Connection, Error] {
+        match await self.acceptConnection() {
+            case .ok(connection) => return .ok(connection)
+            case .err(error) => return .err(ioFailure(error))
+        }
+    }
+    // Keeps the I/O error's kind, which serve() needs to decide whether to go on.
+    func acceptConnection() async -> Result[Connection, std::io::Error] {
+        match await self.state.listener.accept() {
+            case .ok(stream) => {
+                state := ConnectionState(stream.0, self.state.options)
+                state.stream.serverTLS = self.state.tls
+                return .ok(Connection { state })
+            }
+            case .err(error) => return .err(error)
+        }
+    }
+    public func serve[F: std::ops::AsyncFn(&Request) -> Result[Response, Error]](_ callback: F) async -> Result[(), Error] {
+        return await self.serveWith(handler(callback))
+    }
+    /// Routers and middleware use this same contract as function handlers.
+    /// An optional connection cap bounds active tasks and accepted request storage.
+    public func serve(_ handler: any Handler) async -> Result[(), Error] {
+        return await self.serveWith(ErasedHandler { inner: handler })
+    }
+    // Generic so that a function handler is called directly, whereas every copy of
+    // an erased handler goes through the runtime and boxes its value again.
+    func serveWith[H: Handler](_ handler: H) async -> Result[(), Error] {
+        if !self.state.serving.compareExchange(false, true) {
+            return .err(failure(.invalidInput, "HTTP server already has a serving loop"))
+        }
+        defer { var _ = self.close(); self.state.serving.store(false) }
+        return await std::task::withTaskGroup[(), Result[(), Error]]((group: &std::task::TaskGroup[()]) async => {
+            limit := self.state.options.maxConnections
+            // Only a cap needs to hear of each connection that ends. Without one,
+            // finished connections would otherwise wait in the group indefinitely.
+            if limit.isNone() { group.discardResults() }
+            var active: usize = 0
+            var acceptDelayMillis: uint64 = 0_u64
+            loop {
+                if self.state.closed.load() { break }
+                if limit.isSome() && active == limit.unwrap() {
+                    var _ = await group.next()
+                    active -= 1
+                    continue
+                }
+                connection := match await self.acceptConnection() {
+                    case .ok(connection) => {
+                        acceptDelayMillis = 0_u64
+                        connection
+                    }
+                    case .err(error) => {
+                        if self.state.closed.load() { break }
+                        match acceptFailure(error.kind()) {
+                            case .permanent => return .err(ioFailure(error))
+                            case .oneConnection => continue
+                            case .shortage => {
+                                if acceptDelayMillis == 0_u64 {
+                                    std::eprintln(std::sprintf("http: accept failed, retrying: %v", error))
+                                    acceptDelayMillis = MIN_ACCEPT_DELAY_MILLIS
+                                } else if acceptDelayMillis < MAX_ACCEPT_DELAY_MILLIS {
+                                    acceptDelayMillis *= 2_u64
+                                }
+                                await std::task::sleep(std::time::Duration::fromMillis(acceptDelayMillis))
+                                continue
+                            }
+                        }
+                    }
+                }
+                slot := self.state.claimSlot(connection.state)
+                group.spawn(() async => {
+                    defer { self.state.releaseSlot(slot) }
+                    await serveConnection[H](connection, handler, self.state)
+                })
+                if limit.isSome() { active += 1 }
+            }
+            while (await group.next()).isSome() {}
+            return .ok(())
+        })
+    }
+}
+
+const MIN_ACCEPT_DELAY_MILLIS: uint64 = 5
+const MAX_ACCEPT_DELAY_MILLIS: uint64 = 1000
+
+enum AcceptFailure {
+    // The listener itself can't work; waiting won't change that.
+    case permanent
+    // One client went away while queued; the next can be accepted now.
+    case oneConnection
+    // Out of descriptors, memory or buffers, or an unknown cause. Connections
+    // being served may free what's short, so serve() waits and tries again.
+    case shortage
+}
+
+func acceptFailure(_ kind: std::io::ErrorKind) -> AcceptFailure {
+    return match kind {
+        case .closed | .invalidInput | .unsupported => .permanent
+        case .connectionAborted | .connectionReset | .interrupted | .wouldBlock => .oneConnection
+        case _ => .shortage
+    }
+}
+
+struct ErasedHandler { inner: any Handler }
+conform ErasedHandler to Handler {
+    public func handle(_ request: &Request) async -> Result[Response, Error] {
+        return await self.inner.handle(request)
+    }
+}
+
+func serveConnection[H: Handler](_ connection: Connection, _ handler: H, _ server: ServerState) async {
+    defer { connection.close() }
+    var exchangesThisTurn: usize = 0
+    while !server.closed.load() {
+        first := connection.state.requestNow()
+        var request = match if first.isSome() { first.unwrap() } else { await connection.state.awaitRequest() } {
+            case .ok(request) => request
+            case .err(_) => return
+        }
+        incomingBody := request.body
+        // A new request value is created on every exchange. Retaining its
+        // reference never exposes the next request's mutable metadata.
+        defer { var _ = incomingBody.close(); var _ = request.close() }
+        result := await std::task::withTimeout(std::time::Duration::fromMillis(connection.state.options.timeoutMillis), () async => {
+            return await handler.handle(&request)
+        })
+        if server.closed.load() { connection.state.closeAfter.store(true) }
+        match result {
+            case .ok(.ok(response)) => match connection.state.respondNow(response) {
+                case .ok(.none) => {}
+                case .ok(.some(pending)) => { if (await connection.state.awaitResponse(pending)).isErr() { return } }
+                case .err(_) => return
+            }
+            case .ok(.err(_)) => { if (await connection.respond(Response::text(500_u16, "Internal Server Error"))).isErr() { return } }
+            case .err(.timedOut) => { var _ = await connection.respond(Response::text(504_u16, "Gateway Timeout")); return }
+            case .err(.operation(_)) => return
+        }
+        if connection.state.phase.load() == 4_u8 { return }
+        // A pipelined request already here is ready to serve, and giving up the
+        // worker for each one hides from the scheduler how long a batch really waits.
+        exchangesThisTurn += 1
+        if exchangesThisTurn < MAX_EXCHANGES_PER_TURN && !connection.state.input.buffer.isEmpty() { continue }
+        exchangesThisTurn = 0
+        // The peer can't have answered a response just written. Reading now
+        // would find an empty socket and pay a reactor round trip; running other
+        // connections first usually finds the next request already here.
+        await std::task::yieldNow()
+    }
+}
+
+// Copies of Connection share operation state and the socket. SC transitions
+// serialize request/response operations, including close racing an await.
+final class ConnectionState {
+    stream: WireStream
+    options: Options
+    phase: std::sync::atomic::Uint8
+    method: string
+    input: WireInput
+    incoming: IncomingBody?
+    closeAfter: std::sync::atomic::Bool
+    // Reused for each response head; a response owns it until it has been copied.
+    responseHead: std::string::Builder
+}
+extend ConnectionState {
+    init(_ stream: TcpStream, _ options: Options) {
+        self.stream = WireStream(stream)
+        self.options = options
+        self.phase = std::sync::atomic::Uint8::new(0_u8)
+        self.method = ""
+        self.input = WireInput(self.stream)
+        self.incoming = .none
+        self.closeAfter = std::sync::atomic::Bool::new(false)
+        self.responseHead = std::string::Builder::new()
+    }
+    func close() {
+        if self.phase.swap(4_u8) != 4_u8 { var _ = self.stream.close() }
+    }
+
+    // The next request if it takes no waiting, which spares the exchange an async
+    // frame. `.none` means the request is claimed, and awaitRequest must finish it.
+    func requestNow() -> Result[Request, Error]? {
+        if !self.phase.compareExchange(0_u8, 1_u8) { return .some(.err(failure(.closed, "HTTP request already read or connection closed"))) }
+        if !self.stream.isPlain() { return .none }
+        var settled = false
+        defer { if !settled { self.close() } }
+        result := match self.input.availableHead(self.options.maxHeaderBytes) {
+            case .ok(.some(bytes)) => parseRequest(self.input, self.options, bytes)
+            case .ok(.none) => {
+                settled = true
+                return .none
+            }
+            case .err(error) => Result[Request, Error]::err(error)
+        }
+        admitted := self.admitRequest(result)
+        settled = true
+        return .some(admitted)
+    }
+    func awaitRequest() async -> Result[Request, Error] {
+        var settled = false
+        defer { if !settled { self.close() } }
+        result := if self.stream.isPlain() {
+            var waited: Result[Request, Error]? = .none
+            var deadline: Instant? = .none
+            var wakeBy: Instant? = .none
+            var keepingBuffers = self.options.timeoutMillis > IDLE_RELEASE_MILLIS
+            match await self.input.spinForHead(self.options.maxHeaderBytes) {
+                case .ok(.some(bytes)) => waited = .some(parseRequest(self.input, self.options, bytes))
+                case .ok(.none) => {}
+                case .err(error) => waited = .some(.err(error))
+            }
+            while waited.isNone() {
+                if deadline.isNone() {
+                    now := Instant::now()
+                    deadline = .some(now.checkedAdd(std::time::Duration::fromMillis(self.options.timeoutMillis)).unwrap())
+                    if keepingBuffers { wakeBy = .some(now.checkedAdd(std::time::Duration::fromMillis(IDLE_RELEASE_MILLIS)).unwrap()) }
+                }
+                match await self.stream.socket.waitReadableUntil(if keepingBuffers { wakeBy.unwrap() } else { deadline.unwrap() }) {
+                    case .ok(_) => match self.input.availableHead(self.options.maxHeaderBytes) {
+                        case .ok(.some(bytes)) => waited = .some(parseRequest(self.input, self.options, bytes))
+                        case .ok(.none) => {}
+                        case .err(error) => waited = .some(.err(error))
+                    }
+                    case .err(error) if keepingBuffers && error.isKind(.timedOut) => {
+                        keepingBuffers = false
+                        self.input.buffer.releaseStorageIfEmpty()
+                        self.responseHead.releaseStorage()
+                    }
+                    case .err(error) => waited = .some(.err(socketFailure(error)))
+                }
+            }
+            waited.unwrap()
+        } else {
+            await boundedRequest(self)
+        }
+        admitted := self.admitRequest(result)
+        settled = true
+        return admitted
+    }
+    // A failed read ends the connection; a successful one awaits its response.
+    func admitRequest(_ result: Result[Request, Error]) -> Result[Request, Error] {
+        match result {
+            case .ok(request) => {
+                self.method = request.method
+                self.closeAfter.store(self.input.closeRequested)
+                // readRequest installs a private framing source. Keep it apart
+                // from public mutable request.body for safe reuse decisions.
+                self.incoming = self.input.incoming
+                if !self.phase.compareExchange(1_u8, 2_u8) {
+                    self.close()
+                    return .err(failure(.closed, "HTTP connection closed"))
+                }
+                return .ok(request)
+            }
+            case .err(error) => {
+                self.close()
+                return .err(error)
+            }
+        }
+    }
+
+    // Writes the response if it takes no waiting, which spares the exchange an
+    // async frame. `.some` means awaitResponse must finish what is returned.
+    func respondNow(_ response: Response) -> Result[PendingResponse?, Error] {
+        state := self
+        if !state.phase.compareExchange(2_u8, 3_u8) { return .err(failure(.closed, "HTTP response requires one completed request")) }
+        body := response.body
+        var handedOff = false
+        var succeeded = false
+        defer {
+            if !handedOff {
+                if !succeeded { state.close() }
+                var _ = body.close()
+            }
+        }
+        // All validation and serialization happen before suspension, so the
+        // caller's headers needn't be copied. Concurrent mutation by the caller
+        // requires synchronization, like ordinary List.
+        headers := response.headers
+        if headers.len() > state.options.maxHeaders { return .err(failure(.limit, "HTTP response exceeds configured limit")) }
+        if body.isSpent() { return .err(failure(.closed, "HTTP response body was already consumed or closed")) }
+        status := response.status
+        if status < 200_u16 || status > 599_u16 { return .err(failure(.invalidInput, "HTTP response requires a final status from 200 through 599")) }
+        length := body.remainingLength()
+        match length {
+            case .some(size) if size > state.options.maxBodyBytes => return .err(failure(.limit, "HTTP response body exceeds configured limit"))
+            case _ => {}
+        }
+        noContent := status == 204_u16 || status == 205_u16 || status == 304_u16
+        if noContent {
+            // No producer I/O before the response deadline starts. These
+            // statuses require an explicitly known-empty body and never poll it.
+            match length {
+                case .some(0) => {}
+                case _ => return .err(failure(.invalidInput, "this status requires an empty HTTP body"))
+            }
+        }
+        // One buffer sized for common heads; numbers are written in place.
+        var head = state.responseHead
+        head.clear()
+        head.reserve(RESPONSE_HEAD_CAPACITY)
+        if status == 200_u16 {
+            head.writeString("HTTP/1.1 200 Response\r\n")
+        } else {
+            head.writeString("HTTP/1.1 ")
+            std::fmt::appendUnsignedDecimal(&head, status as uint64)
+            head.writeString(" Response\r\n")
+        }
+        var headerIndex: usize = 0
+        while headerIndex < headers.len() {
+            header := headers.at(headerIndex)
+            headerIndex += 1
+            if equalName(header.name, "content-length") || equalName(header.name, "transfer-encoding") || equalName(header.name, "connection") || equalName(header.name, "trailer") || equalName(header.name, "upgrade") {
+                return .err(failure(.invalidInput, "HTTP server controls response framing headers"))
+            }
+        }
+        headers.writeWire(&head, state.options.maxHeaderBytes)!
+        sendBody := state.method != "HEAD" && !noContent
+        var chunked = false
+        if status != 204_u16 && status != 304_u16 {
+            if noContent { head.writeString("Content-Length: 0\r\n") } else {
+                match length {
+                    case .some(size) => {
+                        head.writeString("Content-Length: ")
+                        std::fmt::appendUnsignedDecimal(&head, size as uint64)
+                        head.writeString("\r\n")
+                    }
+                    case .none => {
+                        if sendBody { chunked = true; head.writeString("Transfer-Encoding: chunked\r\n") }
+                    }
+                }
+            }
+        }
+        reusable := match state.incoming {
+            case .some(incoming) => incoming.complete.load() && !incoming.abandoned.load()
+            case .none => true
+        }
+        closeAfter := state.closeAfter.load() || !state.options.keepAlive || !reusable
+        if closeAfter { head.writeString("Connection: close\r\n") }
+        head.writeString("\r\n")
+        if head.len() > state.options.maxHeaderBytes { return .err(failure(.limit, "HTTP response headers exceed configured limit")) }
+        // Only a buffered body is known to run no caller code, and a head this
+        // large is rare enough to take the general path.
+        if !state.stream.isPlain() || !body.isBuffered() || head.len() >= WRITE_CHUNK_BYTES {
+            handedOff = true
+            return .ok(.some(PendingResponse { text: head.toString(), body, sendBody, chunked, closeAfter, progress: .none }))
+        }
+        match beginBufferedWrite(state.stream, head, body, sendBody) {
+            case .ok(progress) if !bufferedWriteFinished(progress, body, sendBody) => {
+                handedOff = true
+                return .ok(.some(PendingResponse { text: "", body, sendBody, chunked, closeAfter, progress: .some(progress) }))
+            }
+            case .ok(_) => {
+                succeeded = true
+                state.finishResponse(closeAfter)!
+                return .ok(.none)
+            }
+            case .err(error) => return .err(error)
+        }
+    }
+    func awaitResponse(_ pending: PendingResponse) async -> Result[(), Error] {
+        var succeeded = false
+        defer {
+            if !succeeded { self.close() }
+            var _ = pending.body.close()
+        }
+        result := match pending.progress {
+            case .some(progress) => await finishBufferedWrite(self, progress, pending.body, pending.sendBody)
+            case .none => await boundedResponse(self, pending.text, pending.body, pending.sendBody, pending.chunked)
+        }
+        match result {
+            case .ok(_) => {
+                succeeded = true
+                return self.finishResponse(pending.closeAfter)
+            }
+            case .err(error) => return .err(error)
+        }
+    }
+    func finishResponse(_ closeAfter: bool) -> Result[(), Error] {
+        if closeAfter { self.close() } else {
+            if !self.phase.compareExchange(3_u8, 0_u8) { return .err(failure(.closed, "HTTP connection closed")) }
+        }
+        return .ok(())
+    }
+}
+
+// A serialized response that has yet to finish reaching the socket.
+struct PendingResponse {
+    // The head, unless a buffered write already took it.
+    text: string
+    body: Body
+    sendBody: bool
+    chunked: bool
+    closeAfter: bool
+    // How far a buffered write got before the socket filled, if one began.
+    progress: BufferedWrite?
+}
+
+/// A persistent HTTP/1.1 connection. Exchanges must be performed in order.
+/// Read/write failures, timeouts and cancellation close the connection. After
+/// a successful request(), call respond() or close(), including handler errors.
+public struct Connection { state: ConnectionState }
+extend Connection {
+    public func close() { self.state.close() }
+    public func request() async -> Result[Request, Error] {
+        match self.state.requestNow() {
+            case .some(result) => return result
+            case .none => return await self.state.awaitRequest()
+        }
+    }
+    public func respond(_ response: Response) async -> Result[(), Error] {
+        match self.state.respondNow(response) {
+            case .ok(.some(pending)) => return await self.state.awaitResponse(pending)
+            case .ok(.none) => return .ok(())
+            case .err(error) => return .err(error)
+        }
+    }
+}
+
+// Deadlines start at the first wait, microseconds into the operation they bound.
+func exchangeDeadline(_ state: ConnectionState) -> Instant {
+    return Instant::now().checkedAdd(std::time::Duration::fromMillis(state.options.timeoutMillis)).unwrap()
+}
+
+// Socket deadlines surface as I/O errors; the public category and text match
+// those of an expired withTimeout.
+func socketFailure(_ error: std::io::Error) -> Error {
+    if error.isKind(.timedOut) { return timeoutFailure(.timedOut) }
+    return ioFailure(error)
+}
+
+func boundedRequest(_ state: ConnectionState) async -> Result[Request, Error] {
+    result := await std::task::withTimeout(std::time::Duration::fromMillis(state.options.timeoutMillis), () async => { match await state.stream.prepare() {
+            case .ok(_) => return await readRequest(state.input, state.options)
+            case .err(error) => return .err(ioFailure(error))
+        } })
+    match result {
+        case .ok(value) => return value
+        case .err(error) => return .err(timeoutFailure(error))
+    }
+}
+
+// A streaming body's producer is arbitrary: it keeps its own task, deadline and
+// panic boundary. TLS has waits of its own, under this same deadline.
+func boundedResponse(_ state: ConnectionState, _ head: string, _ body: Body, _ sendBody: bool, _ chunked: bool) async -> Result[(), Error] {
+    result := await std::task::withTimeout(std::time::Duration::fromMillis(state.options.timeoutMillis), () async => {
+        return await writeResponse(state.stream, head, body, sendBody, chunked, state.options.maxBodyBytes)
+    })
+    match result {
+        case .ok(value) => return value
+        case .err(error) => return .err(timeoutFailure(error))
+    }
+}
+
+// A buffered response on a plain socket usually fits one write that doesn't
+// suspend, so the first attempt needs no frame of its own.
+struct BufferedWrite {
+    filled: usize
+    written: usize
+}
+
+// Appends as much of a buffered body as one write gathers, so that the storage
+// is only as large as the responses this connection sends.
+func gatherBufferedBody(_ out: std::string::Builder, _ body: Body) -> Result[(), Error] {
+    room := WRITE_CHUNK_BYTES - out.len()
+    wanted := match body.remainingLength() {
+        case .some(size) if size < room => size
+        case _ => room
+    }
+    if wanted == 0 { return .ok(()) }
+    match body.readBuffered(out.spare(wanted)) {
+        case .ok(count) => {
+            out.commitSpare(count)
+            return .ok(())
+        }
+        case .err(error) => return .err(ioFailure(error))
+    }
+}
+
+func beginBufferedWrite(_ stream: WireStream, _ out: std::string::Builder, _ body: Body, _ sendBody: bool) -> Result[BufferedWrite, Error] {
+    if sendBody { gatherBufferedBody(out, body)! }
+    filled := out.len()
+    match stream.socket.tryWrite(out.bytes()) {
+        case .ok(0) => return .err(ioFailure(std::io::Error::new(.writeZero).withOperation("write all")))
+        case .ok(count) => return .ok(BufferedWrite { filled, written: count })
+        case .err(error) if error.isKind(.wouldBlock) => return .ok(BufferedWrite { filled, written: 0 })
+        case .err(error) => return .err(ioFailure(error))
+    }
+}
+
+func bufferedWriteFinished(_ progress: BufferedWrite, _ body: Body, _ sendBody: bool) -> bool {
+    if progress.written < progress.filled { return false }
+    if !sendBody { return true }
+    match body.remainingLength() {
+        case .some(0) => return true
+        case _ => return false
+    }
+}
+
+func finishBufferedWrite(_ state: ConnectionState, _ start: BufferedWrite, _ body: Body, _ sendBody: bool) async -> Result[(), Error] {
+    stream := state.stream
+    out := state.responseHead
+    var progress = start
+    var deadline: Instant? = .none
+    loop {
+        while progress.written < progress.filled {
+            match stream.socket.tryWrite(out.bytes().slice(progress.written, progress.filled - progress.written)) {
+                case .ok(0) => return .err(ioFailure(std::io::Error::new(.writeZero).withOperation("write all")))
+                case .ok(count) => progress.written += count
+                case .err(error) if error.isKind(.wouldBlock) => {
+                    if deadline.isNone() { deadline = .some(exchangeDeadline(state)) }
+                    match await stream.socket.waitWritableUntil(deadline.unwrap()) {
+                        case .ok(_) => {}
+                        case .err(error) => return .err(socketFailure(error))
+                    }
+                }
+                case .err(error) => return .err(ioFailure(error))
+            }
+        }
+        if bufferedWriteFinished(progress, body, sendBody) { return .ok(()) }
+        // The body's length was checked against the limit before writing began.
+        out.clear()
+        gatherBufferedBody(out, body)!
+        if out.len() == 0 { return .ok(()) }
+        progress = BufferedWrite { filled: out.len(), written: 0 }
+    }
+}
+
+func writeBytes(_ stream: WireStream, _ bytes: Span[uint8]) async -> Result[(), Error] {
+    match await stream.writeAll(bytes) {
+        case .ok(_) => return .ok(())
+        case .err(error) => return .err(ioFailure(error))
+    }
+}
+func writeText(_ stream: WireStream, _ text: string) async -> Result[(), Error] {
+    return await writeBytes(stream, Span[uint8]::fromString(&text))
+}
+// HTTP chunk sizes are hexadecimal; std's printf currently formats decimal
+// integers only. A bounded nibble formatter avoids extending that API here.
+func chunkSizeLine(_ size: usize) -> string {
+    var digits: [uint8; 16] = [0_u8; 16]
+    var index: usize = 16
+    var remaining = size
+    alphabet := "0123456789abcdef"
+    loop {
+        index -= 1
+        digits[index] = alphabet.byteAt(remaining & 15)
+        remaining >>= 4
+        if remaining == 0 { break }
+    }
+    bytes := unsafe { Span[uint8]::from((&digits as *mut [uint8; 16]) as *mut uint8, 16) }
+    return std::string::stringFromBytes(bytes.slice(index, 16 - index)).concat("\r\n")
+}
+func writeResponse(_ stream: WireStream, _ head: string, _ body: Body, _ sendBody: bool, _ chunked: bool, _ maximum: usize) async -> Result[(), Error] {
+    chunk := std::string::Builder::new()
+    // The field keeps the storage behind this span alive across every wait below.
+    stream.writeChunk = .some(chunk)
+    defer { stream.writeChunk = .none }
+    span := chunk.spare(WRITE_CHUNK_BYTES)
+    var prefix: usize = 0
+    // Only buffered bodies are immediately available. Flush stream headers
+    // before awaiting their producer, including streams with a known length.
+    if sendBody && !chunked && body.isBuffered() && head.byteLen() < span.len() {
+        prefix = head.byteLen()
+        unsafe { std::intrinsic::__intrinsic_memcpy(span.asMutPtr(), std::string::stringData(head), prefix) }
+    } else {
+        (await writeText(stream, head))!
+        if !sendBody { return .ok(()) }
+    }
+    var total: usize = 0
+    loop {
+        into := span.slice(prefix, span.len() - prefix)
+        read := if body.isBuffered() { body.readBuffered(into) } else { await body.read(into) }
+        count := match read {
+            case .ok(count) => count
+            case .err(error) => return .err(ioFailure(error))
+        }
+        if count == 0 && prefix == 0 { break }
+        if count > maximum - total { return .err(failure(.limit, "HTTP response body exceeds configured limit")) }
+        total += count
+        if chunked { (await writeText(stream, chunkSizeLine(count)))! }
+        (await writeBytes(stream, span.slice(0, prefix + count)))!
+        if chunked { (await writeText(stream, "\r\n"))! }
+        prefix = 0
+        if count == 0 { break }
+    }
+    if chunked { (await writeText(stream, "0\r\n\r\n"))! }
+    return .ok(())
+}
+
+// Timeout errors retain a stable public category.
+func timeoutFailure(_ error: std::task::TimeoutError) -> Error {
+    match error {
+        case .timedOut => return failure(.timeout, "HTTP operation timed out")
+        case .operation(_) => return failure(.transport, "HTTP operation task failed")
+    }
+}

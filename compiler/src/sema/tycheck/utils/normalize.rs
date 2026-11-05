@@ -1,19 +1,14 @@
 use crate::sema::tycheck::{
     infer::InferCtx,
     resolve_conformance_witness_with_param_env,
-    utils::{
-        instantiate::{instantiate_constraint_with_args, instantiate_ty_with_args},
-        param_env::ParamEnv,
-    },
-    visit::{TypeSuperVisitable, TypeVisitable, TypeVisitor},
+    utils::{instantiate::instantiate_ty_with_args, param_env::ParamEnv},
 };
 use crate::{
     compile::context::GlobalContext,
     hir::DefinitionID,
     sema::{
         models::{
-            AliasKind, Const, ConstKind, ConstVarID, GenericArgument, GenericArguments, InferTy,
-            InterfaceReference, Ty, TyKind, TyVarID,
+            AliasKind, Const, GenericArgument, GenericArguments, InterfaceReference, Ty, TyKind,
         },
         tycheck::fold::{TypeFoldable, TypeFolder, TypeSuperFoldable},
     },
@@ -74,91 +69,166 @@ struct NormalizeFolder<'a, 'ctx> {
     selection_param_env: OnceCell<&'ctx [crate::sema::models::Constraint<'ctx>]>,
 }
 
-fn collect_fresh_impl_var_ids<'ctx>(
-    args: GenericArguments<'ctx>,
-) -> (Vec<TyVarID>, Vec<ConstVarID>) {
-    let mut ty_vars = Vec::new();
-    let mut const_vars = Vec::new();
-    for arg in args {
-        match arg {
-            GenericArgument::Type(ty) => {
-                if let TyKind::Infer(InferTy::TyVar(id)) = ty.kind() {
-                    ty_vars.push(id);
-                }
-            }
-            GenericArgument::Const(c) => {
-                if let ConstKind::Infer(id) = c.kind {
-                    const_vars.push(id);
-                }
-            }
-        }
-    }
-    (ty_vars, const_vars)
-}
-
-fn arg_contains_any_fresh_var<'ctx>(
-    arg: &GenericArgument<'ctx>,
-    fresh_ty_vars: &[TyVarID],
-    fresh_const_vars: &[ConstVarID],
-) -> bool {
-    struct FreshVars<'a> {
-        types: &'a [TyVarID],
-        constants: &'a [ConstVarID],
-    }
-    impl<'ctx> TypeVisitor<'ctx> for FreshVars<'_> {
-        fn visit_ty(&mut self, ty: Ty<'ctx>) -> bool {
-            matches!(ty.kind(), TyKind::Infer(InferTy::TyVar(id)) if self.types.contains(&id))
-                || ty.super_visit_with(self)
-        }
-        fn visit_const(&mut self, value: Const<'ctx>) -> bool {
-            matches!(value.kind, ConstKind::Infer(id) if self.constants.contains(&id))
-                || value.ty.visit_with(self)
-        }
-    }
-    arg.visit_with(&mut FreshVars {
-        types: fresh_ty_vars,
-        constants: fresh_const_vars,
-    })
-}
-
 impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
     fn gcx(&self) -> GlobalContext<'ctx> {
         self.icx.gcx
     }
+}
 
-    fn refine_impl_args_from_constraints(
-        &self,
-        icx: Rc<InferCtx<'ctx>>,
-        impl_id: DefinitionID,
-        impl_args: GenericArguments<'ctx>,
-    ) {
-        let gcx = self.gcx();
-        let constraints = crate::sema::tycheck::constraints::canonical_constraints_of(gcx, impl_id);
-        if constraints.is_empty() {
-            return;
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        let instantiated: Vec<_> = constraints
-            .into_iter()
-            .map(|constraint| instantiate_constraint_with_args(gcx, constraint.value, impl_args))
-            .collect();
-        let env = ParamEnv::new(instantiated.clone());
-        let unifier = crate::sema::tycheck::utils::unify::TypeUnifier::new(icx.clone());
-
-        // Equalities can unlock each other (e.g. `A == B.C`, `B == Concrete`),
-        // so iterate to a small fixed point.
-        let passes = instantiated.len().max(1) * 2;
-        for _ in 0..passes {
-            for constraint in &instantiated {
-                let crate::sema::models::Constraint::TypeEquality(lhs, rhs) = *constraint else {
-                    continue;
+    #[test]
+    fn projection_bounds_match_the_complete_interface_header() {
+        crate::test_support::analyze_script(
+            "interface Choice[T] { type Output; }\nstruct Value {}\nconform Value to Choice[int32] { type Output = bool; }\nconform Value to Choice[bool] { type Output = int32; }\nfunc main() {}",
+            |package, gcx| {
+                let find = |name: &str| {
+                    package
+                        .root
+                        .declarations
+                        .iter()
+                        .find(|declaration| declaration.identifier.symbol.as_str() == name)
+                        .unwrap()
+                        .id
                 };
+                let choice = find("Choice");
+                let value = gcx.get_type(find("Value"));
+                let output = &gcx.get_interface_requirements(choice).unwrap().types[0];
+                let arguments = |argument| {
+                    gcx.store.interners.intern_generic_args(vec![
+                        GenericArgument::Type(value),
+                        GenericArgument::Type(argument),
+                    ])
+                };
+                let binding = gcx.store.arenas.global.alloc_slice_copy(&[
+                    crate::sema::models::AssociatedTypeBinding {
+                        name: output.name,
+                        ty: gcx.types.bool,
+                    },
+                ]);
+                let env = ParamEnv::new(vec![crate::sema::models::Constraint::Bound {
+                    ty: value,
+                    interface: InterfaceReference {
+                        id: choice,
+                        arguments: arguments(gcx.types.int32),
+                        bindings: binding,
+                    },
+                }]);
+                let projection = Ty::new(
+                    TyKind::Alias {
+                        kind: AliasKind::Projection,
+                        def_id: output.id,
+                        args: arguments(gcx.types.bool),
+                    },
+                    gcx,
+                );
+                assert_eq!(
+                    normalize_ty(Rc::new(InferCtx::new(gcx)), projection, &env),
+                    gcx.types.int32
+                );
+            },
+        );
+    }
 
-                let lhs = normalize_ty(icx.clone(), lhs, &env);
-                let rhs = normalize_ty(icx.clone(), rhs, &env);
-                let _ = unifier.unify(lhs, rhs);
-            }
-        }
+    #[test]
+    fn g30_witness_selection_does_not_import_caller_inference_variables() {
+        crate::test_support::analyze_script(
+            "interface Input { type Item; }\ninterface Output { type Item; }\nstruct Value {}\nconform Value to Input { type Item = int32; }\nstruct Wrapper[T] {}\nconform[T: Input[Item = U], U] Wrapper[T] to Output { type Item = U; }\nfunc main() {}",
+            |package, gcx| {
+                let find = |name: &str| {
+                    package
+                        .root
+                        .declarations
+                        .iter()
+                        .find(|declaration| declaration.identifier.symbol.as_str() == name)
+                        .unwrap()
+                        .id
+                };
+                let input = find("Input");
+                let output = find("Output");
+                let span = gcx.definition_ident(input).span;
+                let icx = Rc::new(InferCtx::new(gcx));
+                let mut unresolved = gcx.types.int32;
+                for _ in 0..8 {
+                    unresolved = icx.next_ty_var(span);
+                }
+                let args = |ty| {
+                    gcx.store
+                        .interners
+                        .intern_generic_args(vec![GenericArgument::Type(ty)])
+                };
+                let env = ParamEnv::new(vec![crate::sema::models::Constraint::Bound {
+                    ty: unresolved,
+                    interface: InterfaceReference {
+                        id: input,
+                        arguments: args(unresolved),
+                        bindings: &[],
+                    },
+                }]);
+                let wrapper = instantiate_ty_with_args(
+                    gcx,
+                    gcx.get_type(find("Wrapper")),
+                    args(gcx.get_type(find("Value"))),
+                );
+                let projection = Ty::new(
+                    TyKind::Alias {
+                        kind: AliasKind::Projection,
+                        def_id: gcx.get_interface_requirements(output).unwrap().types[0].id,
+                        args: args(wrapper),
+                    },
+                    gcx,
+                );
+                assert_eq!(normalize_ty(icx.clone(), projection, &env), gcx.types.int32);
+                super::super::unify::TypeUnifier::new(icx.clone())
+                    .unify(unresolved, gcx.get_type(find("Value")))
+                    .unwrap();
+                assert_eq!(
+                    normalize_ty(icx, projection, &env),
+                    gcx.types.int32,
+                    "a resolved pending requirement must not become an independent caller proof"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn generic_associated_receiver_preserves_declared_element_equality() {
+        crate::test_support::analyze_script(
+            "interface Yield { type Item; func value() -> Self::Item; }\ninterface Source { type Item; type Cursor: Yield[Item = Self::Item]; func cursor() -> Self::Cursor; }\nfunc read[C: Source[Item = int32]](_ source: &C) -> int32 { source.cursor().value() }\nfunc main() {}",
+            |_, _| {},
+        );
+    }
+
+    #[test]
+    fn nested_associated_receiver_normalizes_in_one_pass() {
+        crate::test_support::analyze_script(
+            "interface Leaf { type Item; }\ninterface Root { type Child: Leaf; }\ninterface Inspect: Root { func get() -> Self::Child::Item; }\nstruct LeafValue { value: int32 }\nstruct RootValue { value: LeafValue }\nconform LeafValue to Leaf { type Item = int32; }\nconform RootValue to Root { type Child = LeafValue; }\nfunc main() {}",
+            |package, gcx| {
+                let find = |name: &str| {
+                    package
+                        .root
+                        .declarations
+                        .iter()
+                        .find(|decl| decl.identifier.symbol.as_str() == name)
+                        .unwrap()
+                        .id
+                };
+                let inspect = find("Inspect");
+                let concrete = gcx.get_type(find("RootValue"));
+                let method = gcx.get_interface_requirements(inspect).unwrap().methods[0].id;
+                let output = gcx.get_signature(method).output;
+                let args = gcx
+                    .store
+                    .interners
+                    .intern_generic_args(vec![GenericArgument::Type(concrete)]);
+                let nested = instantiate_ty_with_args(gcx, output, args);
+                let normalized =
+                    normalize_ty(Rc::new(InferCtx::new(gcx)), nested, &ParamEnv::default());
+                assert_eq!(normalized, gcx.types.int32, "{}", normalized.format(gcx));
+            },
+        );
     }
 }
 
@@ -308,11 +378,30 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
         // lazily so types without projections pay no allocation cost and all
         // projections in one normalization pass share the same baseline slice.
         let full_param_env = *self.selection_param_env.get_or_init(|| {
+            use crate::sema::{models::Constraint, tycheck::utils::unresolved::*};
+            // Witness selection owns a separate inference context. Pending
+            // call requirements are not caller proofs and must never enter
+            // that context's variable table, even if they resolve later.
+            let constraints: Vec<_> = self
+                .env
+                .constraints()
+                .into_iter()
+                .filter(|constraint| match *constraint {
+                    Constraint::TypeEquality(left, right) => {
+                        !ty_contains_unresolved_inference(left)
+                            && !ty_contains_unresolved_inference(right)
+                    }
+                    Constraint::Bound { ty, interface } => {
+                        !ty_contains_unresolved_inference(ty)
+                            && !interface_ref_contains_unresolved_inference(interface)
+                    }
+                })
+                .collect();
             self.gcx()
                 .store
                 .arenas
                 .global
-                .alloc_slice_clone(&self.env.constraints())
+                .alloc_slice_clone(&constraints)
         });
         let self_ty = interface.self_ty()?;
         let is_goal_bound = |constraint: &crate::sema::models::Constraint<'ctx>| {
@@ -346,10 +435,16 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
     }
 
     fn resolve_projection(
-        &self,
+        &mut self,
         assoc_id: DefinitionID,
         args: GenericArguments<'ctx>,
     ) -> Option<Ty<'ctx>> {
+        // Resolve an associated receiver before selecting its conformance.
+        // Otherwise Root.Child.Item selects Leaf on the unresolved Root.Child,
+        // then folds Child but never retries Item, exposing a half-normalized
+        // type to one-pass consumers such as MIR assignment validation. Reuse
+        // this folder so recursive projection arguments share its cycle guard.
+        let args = args.fold_with(self);
         let gcx = self.gcx();
         let interface_id = gcx.definition_parent(assoc_id)?;
         let self_arg = args.get(0)?;
@@ -383,62 +478,35 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
             }
         }
 
-        let instantiate_witness = |witness: crate::sema::models::ConformanceWitness<'ctx>| {
-            let witness_ty = witness.type_witnesses.get(&assoc_id)?;
-
-            if let Some(impl_id) = witness.extension_id {
-                // If the witness comes from a concrete implementation, we need to solve for the
-                // implementation's generic parameters by unifying the actual Self type with
-                // the implementation's target type.
-                // e.g. Self = &List[int32] vs ImplTarget = &List[Element]
-                let impl_generics = gcx.generics_of(impl_id);
-                if !impl_generics.is_empty() {
-                    let span = gcx.definition_ident(assoc_id).span;
-                    let target_ty = gcx
-                        .get_impl_target_ty(impl_id)
-                        .unwrap_or_else(|| gcx.get_type(impl_id));
-                    let solve = |icx: Rc<InferCtx<'ctx>>| {
-                        let impl_args = icx.fresh_args_for_def(impl_id, span);
-                        let (fresh_ty_vars, fresh_const_vars) =
-                            collect_fresh_impl_var_ids(impl_args);
-                        let instantiated_target =
-                            instantiate_ty_with_args(gcx, target_ty, impl_args);
-                        let unifier =
-                            crate::sema::tycheck::utils::unify::TypeUnifier::new(icx.clone());
-                        unifier.unify(self_ty, instantiated_target).ok()?;
-                        self.refine_impl_args_from_constraints(icx.clone(), impl_id, impl_args);
-                        let resolved_args = icx.resolve_args_if_possible(impl_args);
-                        // Fresh impl variables must never escape speculative inference.
-                        if resolved_args.iter().any(|arg| {
-                            arg_contains_any_fresh_var(arg, &fresh_ty_vars, &fresh_const_vars)
-                        }) {
-                            return None;
-                        }
-                        Some(instantiate_ty_with_args(gcx, *witness_ty, resolved_args))
-                    };
-                    let solved = if self_ty.contains_inference() {
-                        // Caller-owned variables must participate in a rollback probe.
-                        self.icx.probe(|_| solve(self.icx.clone()))
-                    } else {
-                        // Concrete Self needs only an isolated inference context.
-                        solve(Rc::new(InferCtx::new(gcx)))
-                    };
-                    if solved.is_some() {
-                        return solved;
-                    }
-
-                    // Generic impl witness exists, but impl args could not yet be solved.
-                    // Returning `None` avoids incorrectly instantiating witness types with
-                    // projection args (which are interface args, not impl args).
-                    return None;
-                }
-            }
-
-            Some(instantiate_ty_with_args(gcx, *witness_ty, args))
-        };
-
-        // Strategy 1: Check ParamEnv bounds for the matching interface.
-        if let Some(bound_iface) = self.env.first_bound_for_interface(self_ty, interface_id) {
+        // A type can implement one interface for several argument lists.
+        // Match the complete header, resolving caller variables first, rather
+        // than taking the first bound for Self and the interface name alone.
+        let declared_bound = self
+            .env
+            .bounds_for_type(gcx, self_ty, |bound_ty| {
+                self.icx.resolve_vars_if_possible(bound_ty) == self_ty
+            })
+            .into_iter()
+            .find(|bound| {
+                bound.id == interface_id
+                    && bound.arguments.len() == args.len()
+                    && self
+                        .icx
+                        .resolve_args_if_possible(bound.arguments)
+                        .iter()
+                        .zip(args.iter())
+                        .all(|(left, right)| match (*left, *right) {
+                            (GenericArgument::Type(a), GenericArgument::Type(b)) => {
+                                a == b || self.env.equivalent_types(a).contains(&b)
+                            }
+                            (a, b) => a == b,
+                        })
+            })
+            .map(|bound| InterfaceReference {
+                arguments: args,
+                ..bound
+            });
+        if let Some(bound_iface) = declared_bound {
             // An associated type binding on a generic bound is already the
             // canonical answer. Exact structural lookup is intentional here:
             // an impl-local receiver that only later resolves to this type must
@@ -454,7 +522,7 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
             }
             // Found matching bound - look up type witness from conformance.
             let witness = self.conformance_witness(bound_iface)?;
-            return instantiate_witness(witness);
+            return witness.type_witnesses.get(&assoc_id).copied();
         }
 
         // A generic call constraint may have entered the environment before
@@ -463,11 +531,12 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
         // when it supplies a known binding, but an unresolved binding belongs
         // to impl-argument inference and must fall through to the concrete
         // witness below.
-        if let Some(bound_iface) =
-            self.env
-                .first_bound_for_interface_resolved(self_ty, interface_id, |ty| {
-                    self.icx.resolve_vars_if_possible(ty)
-                })
+        if let Some(bound_iface) = self
+            .env
+            .first_bound_for_interface_resolved(self_ty, interface_id, |ty| {
+                self.icx.resolve_vars_if_possible(ty)
+            })
+            .filter(|bound| self.icx.resolve_args_if_possible(bound.arguments) == args)
         {
             let assoc_name = gcx.definition_ident(assoc_id).symbol;
             if let Some(binding) = bound_iface
@@ -489,6 +558,9 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
             bindings: &[],
         };
         let witness = self.conformance_witness(interface)?;
-        instantiate_witness(witness)
+        // Witness selection has already substituted the selected block's
+        // arguments, including an inherited generic base. Re-instantiating
+        // with projection arguments would rebind an inherited output to Self.
+        witness.type_witnesses.get(&assoc_id).copied()
     }
 }

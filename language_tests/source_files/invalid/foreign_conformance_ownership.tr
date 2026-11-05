@@ -1,0 +1,4 @@
+conform List[int32] to std::ops::PartialEq[List[int32]] {
+    func eq( _ other: List[int32]) -> bool { self.len() == other.len() }
+}
+func main() {}

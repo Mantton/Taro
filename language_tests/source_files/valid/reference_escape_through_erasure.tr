@@ -1,0 +1,12 @@
+// References are GC-managed: a closure erased to `any Fn` may outlive the
+// frame whose local it reads, and the local stays alive (G17, G27f).
+func makeReader() -> any Fn() -> int32 {
+    var count: int32 = 7
+    var reference: &int32 = &count
+    () => *reference
+}
+
+func main() {
+    retained := makeReader()
+    std::printf("%v\n", retained())
+}

@@ -1,0 +1,8 @@
+func main() {
+    var directory: std::sys::fs::RawDir = std::sys::fs::RawDir { handle: 1 }
+    var file: std::sys::fs::RawFile = std::sys::fs::RawFile { lease: 3 }
+    var stream: std::sys::io::RawAsyncStream = std::sys::io::RawAsyncStream { source_id: 1 }
+    var child: std::sys::process::RawChild = std::sys::process::RawChild { handle: 1 }
+    var pipe: std::sys::process::RawPipe = std::sys::process::RawPipe { lease: 3 }
+    var socket: std::sys::net::RawSocket = std::sys::net::RawSocket { fd: 3_i32 }
+}

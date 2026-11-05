@@ -4,6 +4,6 @@ func immediateValue() async -> int32 {
 }
 
 func main() async {
-    let value = await immediateValue()
-    std.assert(value == 7, "async calls must use the lowered constructor body")
+    value := await immediateValue()
+    std::assert(value == 7, "async calls must use the lowered constructor body")
 }

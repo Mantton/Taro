@@ -1,0 +1,7 @@
+import std::task::Task
+import std::mem::MaybeUninit
+func forge() -> Task[string] {
+    var storage: MaybeUninit[Task[string]] = MaybeUninit[Task[string]]::uninit()
+    return storage.value
+}
+func main() {}

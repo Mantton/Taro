@@ -9,18 +9,30 @@ use crate::{
 };
 
 pub fn run(package: &hir::Package, context: GlobalContext) -> CompileResult<()> {
-    let mut actor = Actor { context };
+    let mut actor = Actor {
+        context,
+        classes: vec![],
+    };
     hir::walk_package(&mut actor, package);
+    context.dcx().ok()?;
+    super::class_hierarchy::run(package, context)?;
+    for class in actor.classes {
+        context.ensure_class_payload(context.get_type(class));
+    }
     context.dcx().ok()
 }
 
 struct Actor<'ctx> {
     context: GlobalContext<'ctx>,
+    classes: Vec<hir::DefinitionID>,
 }
 
 impl hir::HirVisitor for Actor<'_> {
     fn visit_declaration(&mut self, node: &hir::Declaration) -> Self::Result {
         if let hir::DeclarationKind::Struct(s) = &node.kind {
+            if s.class_header.is_some() {
+                self.classes.push(node.id);
+            }
             self.collect_struct_fields(node.id, s);
         }
         hir::walk_declaration(self, node)
@@ -109,7 +121,39 @@ impl<'ctx> Actor<'ctx> {
         for field in &node.fields {
             let ty = ctx.lowerer().lower_type(&field.ty);
             let visibility = self.context.definition_visibility(field.def_id);
+            let default_provider = field.default_value.as_ref().map(|expression| {
+                let gcx = self.context;
+                let provider = gcx.allocate_synthetic_id(gcx.package_index());
+                // HIR is arena-owned for the compilation; the visitor borrow
+                // is shorter than that allocation, as for parameter defaults.
+                let expression: &'ctx hir::Expression =
+                    unsafe { std::mem::transmute(&**expression) };
+                gcx.register_default_value_expr(provider, expression);
+                let signature = gcx.store.arenas.function_signatures.alloc(
+                    crate::sema::models::LabeledFunctionSignature {
+                        inputs: vec![],
+                        output: ty,
+                        is_variadic: false,
+                        abi: None,
+                    },
+                );
+                gcx.register_synthetic_definition(
+                    provider,
+                    crate::sema::models::SyntheticDefinition {
+                        kind: crate::sema::models::SyntheticDefinitionKind::Ordinary,
+                        name: gcx.intern_symbol(&format!(
+                            "{}$field_default",
+                            gcx.symbol_text(field.identifier.symbol)
+                        )),
+                        generics: gcx.generics_of(id),
+                        signature,
+                        span: field.span,
+                    },
+                );
+                provider
+            });
             fields.push(StructField {
+                default_provider,
                 name: field.identifier.symbol,
                 ty,
                 mutability: field.mutability,
@@ -118,15 +162,47 @@ impl<'ctx> Actor<'ctx> {
             });
         }
 
+        if self.context.std_item_def(hir::StdItem::ClassHandle) == Some(id) {
+            // NativeOwner extraction and implicit Copy lowering use this exact
+            // private one-word ABI. Reject a malformed std before MIR exists.
+            let valid = class_handle_layout_is_valid(self.context, id, &fields);
+            if !valid {
+                self.context.dcx().emit_error(
+                    "ClassHandle requires one const uint8 pointer field and no generics or defaults".into(),
+                    Some(self.context.definition_ident(id).span),
+                );
+            }
+        }
         let repr = self.parse_struct_repr(id);
         let fields = self.context.store.arenas.global.alloc_slice_clone(&fields);
         let def = StructDefinition {
+            // Class headers can be seeded before their fields are collected.
+            class_info: self
+                .context
+                .try_get_struct_definition(id)
+                .and_then(|definition| definition.class_info),
             adt_def,
+            has_initializer: false,
             repr,
             fields,
         };
         self.context.cache_struct_definition(id, def);
     }
+}
+
+fn class_handle_layout_is_valid(
+    gcx: GlobalContext<'_>,
+    id: hir::DefinitionID,
+    fields: &[StructField<'_>],
+) -> bool {
+    gcx.generics_of(id).total_count() == 0
+        && fields.len() == 1
+        && fields[0].default_provider.is_none()
+        && fields[0].ty
+            == crate::sema::models::Ty::new(
+                crate::sema::models::TyKind::Pointer(gcx.types.uint8, hir::Mutability::Immutable),
+                gcx,
+            )
 }
 
 #[cfg(test)]
@@ -140,6 +216,25 @@ mod tests {
 
     fn has_error_message(diagnostics: &[DiagnosticRecord], needle: &str) -> bool {
         diagnostics.iter().any(|diag| diag.message.contains(needle))
+    }
+
+    #[test]
+    fn class_handle_requires_its_exact_native_accounting_header() {
+        analyze_script(
+            "struct Good { owner: *const uint8 }\nstruct Mutable { owner: *mut uint8 }\nstruct WrongElement { owner: *const int32 }\nstruct Extra { owner: *const uint8; extra: usize }\nstruct Empty {}\nstruct Generic[T] { owner: *const uint8 }\nstruct Defaulted { owner: *const uint8 = unsafe { 0 as *const uint8 } }\nfunc main() {}",
+            |package, gcx| {
+                for declaration in &package.root.declarations {
+                    if !matches!(declaration.kind, DeclarationKind::Struct(_)) {
+                        continue;
+                    }
+                    let definition = gcx.get_struct_definition(declaration.id);
+                    assert_eq!(
+                        class_handle_layout_is_valid(gcx, declaration.id, definition.fields),
+                        declaration.identifier.symbol.as_str() == "Good"
+                    );
+                }
+            },
+        );
     }
 
     #[test]

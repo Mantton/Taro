@@ -1,0 +1,8 @@
+error: type '[CopyOnly; 0]' does not conform to interface 'Clone'
+ -> language_tests/source_files/invalid/array_clone_requires_components.tr:4:24
+	    emptyClone := empty.clone()
+	                        ^^^^^
+error: type '[CopyOnly; 1]' does not conform to interface 'Clone'
+ -> language_tests/source_files/invalid/array_clone_requires_components.tr:6:21
+	    cloned := values.clone()
+	                     ^^^^^

@@ -1,0 +1,85 @@
+import std::ops::{Add, AddAssign}
+
+struct Counter { value: int32 }
+conform Counter to Add[int32] {
+    type Output = int64
+    func add(_ rhs: int32) -> int64 { (self.value as int64) + (rhs as int64) };
+}
+conform int32 to Add[Counter] {
+    type Output = int64
+    func add(_ rhs: Counter) -> int64 { (self as int64) + (rhs.value as int64) };
+}
+conform &Counter to AddAssign[int32] {
+    func addAssign(_ rhs: int32) { self.value += rhs };
+}
+struct Shared { slot: &int32 }
+conform Shared to AddAssign[int32] {
+    func addAssign(_ rhs: int32) { *self.slot += rhs };
+}
+class Object { value: int32 }
+extend Object { init(_ value: int32) { self.value = value }; }
+conform Object to AddAssign[int32] {
+    func addAssign(_ rhs: int32) { self.value += rhs };
+}
+conform &Object to AddAssign[Object] {
+    func addAssign(_ rhs: Object) { *self = rhs };
+}
+static var order: int32 = 0
+static var reads: int32 = 0
+static var destinations: int32 = 0
+static var receivers: int32 = 0
+struct Holder { readonly object: Object; readonly shared: Shared }
+extend Holder {
+    var exposed: Object { get { reads += 1; order = order * 10 + 3; self.object } };
+}
+func rhs(_ value: int32) -> int32 { order = order * 10 + 1; value }
+func destination(_ value: &Counter) -> &Counter {
+    destinations += 1
+    order = order * 10 + 2
+    value
+}
+func receiver(_ value: Object) -> Object { receivers += 1; value }
+func projected[T: Add[int32]](_ value: T) -> T::Output { value + 2_i32 }
+func fixed[T: Add[int32, Output = int64]](_ value: T) -> int64 { value + 2_i32 }
+func main() {
+    var counter = Counter { value: 4 }
+    assert(counter + 2_i32 == 6_i64 && 3_i32 + counter == 7_i64, "each operand order has its own conformance")
+    assert(projected(counter) == 6_i64 && fixed(counter) == 6_i64, "associated outputs in generic calls")
+    var erased: any Add[int32, Output = int64] = counter
+    assert(erased + 2_i32 == 6_i64, "operator syntax dispatches through an erased interface")
+    counter += 2_i32
+    var erasedReference: any AddAssign[int32] = &counter
+    erasedReference += 1_i32
+    assert(counter.value == 7, "reference implementations mutate original storage")
+
+    var number: int32 = 10
+    object := Object(20)
+    alias := object
+    var holder = Holder { object: object, shared: Shared { slot: &number } }
+    holder.object += 4_i32
+    holder.shared += 5_i32
+    receiver(object) += 2_i32
+    assert(object === alias && alias.value == 26 && number == 15 && receivers == 1, "value receivers mutate shared state without assigning readonly slots")
+    reads = 0
+    order = 0
+    holder.exposed += rhs(3)
+    assert(reads == 1 && order == 13 && object.value == 29, "value getter runs once after RHS without a setter")
+    var erasedObject: any AddAssign[int32] = object
+    erasedObject += 1_i32
+    assert(alias.value == 30, "erased class receiver keeps shared object identity")
+
+    var slot = object
+    replacement := Object(99)
+    slot += replacement
+    assert(slot === replacement && object === alias && object !== slot, "explicit reference conformance selects the class handle slot")
+    holder.object += replacement
+    assert(holder.object === replacement, "reference operators follow ordinary methods on readonly stored slots")
+    holder.object.addAssign(object)
+    assert(holder.object === object, "named and operator reference calls have the same receiver semantics")
+    order = 0
+    destinations = 0
+    *destination(&counter) += rhs(2)
+    assert(order == 12 && destinations == 1 && counter.value == 9, "RHS then destination, each evaluated once")
+    std::runtime::collect()
+    assert(counter.value == 9 && number == 15 && alias.value == 30 && slot.value == 99, "operator receivers and references remain rooted")
+}

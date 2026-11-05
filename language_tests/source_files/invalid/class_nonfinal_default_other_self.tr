@@ -1,0 +1,5 @@
+interface Factory {
+    func choose( _ other: Self) -> Self { other }
+}
+class Base: Factory {}
+func main() {}

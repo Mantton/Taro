@@ -1,33 +1,25 @@
+// References are read explicitly; destructuring binds independent writable values.
 func inspect(_ source: &int32) {
-    let &value = source
-    let copied: int32 = value
-    assert(copied == 42, "reference parameter destructuring")
+    var value = *source
+    value += 1
+    assert(value == 43 && *source == 42, "explicit read creates a writable copy")
 }
-
 func identity[T](_ value: T) -> T { value }
-
 func main() {
-    let value = 42
-    let &copy = &value
-    assert(copy == 42, "shared reference binding")
-    let &&twice = &&value
-    assert(twice == 42, "nested reference binding")
-    let (&nested,) = (&value,)
-    assert(nested == 42, "reference inside tuple")
-    let &(first, second) = &(19, 23)
-    assert(first + second == 42, "tuple inside reference")
-    let (&typed,): (&int32,) = (&value,)
-    assert(typed == 42, "annotated tuple")
-    let &fromCall = identity(&value)
-    assert(fromCall == 42, "reference returned by generic call")
-    let (&nestedCall,) = (identity(&value),)
-    assert(nestedCall == 42, "nested reference returned by call")
+    value := 42
+    var copy = *&value
+    var twice = **&&value
+    var (nested,) = (*&value,)
+    var (first, second) = *&(19, 23)
+    var (typed,): (int32,) = (*&value,)
+    var fromCall = *identity(&value)
     var source = 41
-    let &mut snapshot = &mut source
-    assert(snapshot == 41, "mutable reference still copies pointee")
-    var &mutableCopy = &value
-    mutableCopy += 1
-    assert(mutableCopy == 43 && value == 42, "var controls binding mutability")
+    var snapshot = *&source
+    source = 0
+    copy += 1
+    assert(copy == 43 && value == 42, "local edits preserve the source")
+    assert(twice == 42 && nested == 42 && typed == 42 && fromCall == 42, "explicit reference reads")
+    assert(first + second == 42 && snapshot == 41, "destructuring reads values")
     inspect(&value)
-    print("PASS: reference local bindings\n")
+    print("PASS: reference local values\n")
 }

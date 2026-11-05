@@ -1,0 +1,49 @@
+import std::collections::List
+interface Sizer { func size(_ values: &List[int32]) async -> usize; }
+struct Policy {}
+conform Policy to Sizer {
+    func size(_ values: &List[int32]) async -> usize { await std::testing::yieldNow(); values.len() }
+}
+interface Readable { func read() async -> int32; }
+struct Counter { value: int32 }
+conform Counter to Readable {
+    func read() async -> int32 { await std::testing::yieldNow(); self.value }
+}
+func genericRead[T: Readable](_ value: &T) async -> int32 { await value.read() }
+class Document { value: int32 }
+extend Document {
+    init(_ value: int32) { self.value = value }
+    func update() async -> int32 {
+        self.value += 1
+        await std::testing::yieldNow()
+        self.value += 1
+        self.value
+    }
+}
+conform Document to Readable {
+    func read() async -> int32 { await std::testing::yieldNow(); self.value }
+}
+class Draft: Document {}
+conform Draft to Readable {
+    override func read() async -> int32 { await std::testing::yieldNow(); self.value + 100 }
+}
+func main() async {
+    var values: List[int32] = List[int32]::new() // List[int32]; private NoCopy owner.
+    values.append(7)
+    var policy: any Sizer = Policy {} // any Sizer; concrete erased async implementation.
+    assert((await policy.size(&values)) == 1, "erased async method captures a private borrowed argument")
+    values.append(9)
+    var concrete: Counter = Counter { value: 7 } // Counter; NoCopy value.
+    assert((await genericRead(&concrete)) == 7, "generic private receiver")
+    var erased: any Readable = Counter { value: 9 } // any Readable; private owned container.
+    assert((await erased.read()) == 9, "known concrete native async witness")
+    var document: Document = Document(11) // Document; Copy strong handle; fields are shared storage.
+    assert((await document.update()) == 13, "transient field accesses finish between awaits")
+    assert(document.value == 13, "owned object identity is preserved")
+    var derived: Draft = Draft(17) // Draft; inherited designated initializer.
+    var base: Document = derived // Document; Copy handle to the same Draft object.
+    var erasedObject: any Readable = base // any Readable; witness uses stored Base type and dynamic override family.
+    assert((await base.read()) == 117, "direct inherited async dispatch")
+    assert((await genericRead(&base)) == 117, "generic inherited async dispatch")
+    assert((await erasedObject.read()) == 117, "erased inherited async dispatch")
+}

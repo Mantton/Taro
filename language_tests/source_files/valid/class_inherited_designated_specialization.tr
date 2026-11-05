@@ -1,0 +1,11 @@
+// A specialized base initializer constrains the inherited entry too.
+class Base[T] { value: T }
+extend Base[int32] {
+    init() { self.value = 7 }
+}
+final class Child[T]: Base[T] { marker: int32 = 11 }
+func main() {
+    var child: Child[int32] = Child[int32]()
+    assert(child.value == 7, "specialized base payload")
+    assert(child.marker == 11, "derived default after specialized base")
+}

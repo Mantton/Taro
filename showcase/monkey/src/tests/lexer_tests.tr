@@ -1,16 +1,16 @@
-import monkey.ast.endsWithBinding
-import monkey.lexer.Lexer
-import monkey.parser.Parser
-import monkey.token.{TokenTag, TokenKind}
+import monkey::ast::endsWithBinding
+import monkey::lexer::Lexer
+import monkey::parser::Parser
+import monkey::token::{TokenTag, TokenKind}
 
 /// Renders a source as `kind` descriptions, so a test states the whole stream.
 func tokens(_ source: string) -> string {
-    var lexer = Lexer(source)
+    var lexer = Lexer::new(source)
     var out = ""
     var first = true
     loop {
-        let token = lexer.nextToken()
-        if token.kind.tag() == TokenTag.eof {
+        token := lexer.nextToken()
+        if token.kind.tag() == TokenTag::eof {
             break
         }
         if !first {
@@ -23,7 +23,7 @@ func tokens(_ source: string) -> string {
 }
 
 func checkTokens(_ source: string, _ expected: string) {
-    let actual = tokens(source)
+    actual := tokens(source)
     assertEqual(actual, expected, sprintf("%s => %s (want %s)", source, actual, expected))
 }
 
@@ -61,18 +61,18 @@ func identifiersMayContainDigits() {
 
 @test
 func positionsTrackLinesAndColumns() {
-    var lexer = Lexer("let x = 5;\nlet y = 10;")
-    let first = lexer.nextToken()
+    var lexer = Lexer::new("let x = 5;\nlet y = 10;")
+    first := lexer.nextToken()
     assertTrue(first.position.line == 1, "first token is on line 1")
     assertTrue(first.position.column == 1, "first token is at column 1")
 
     // Consume the rest of the first line: x = 5 ;
-    let _ = lexer.nextToken()
-    let _ = lexer.nextToken()
-    let _ = lexer.nextToken()
-    let _ = lexer.nextToken()
+    var _ = lexer.nextToken()
+    var _ = lexer.nextToken()
+    var _ = lexer.nextToken()
+    var _ = lexer.nextToken()
 
-    let second = lexer.nextToken()
+    second := lexer.nextToken()
     assertTrue(second.position.line == 2, "second `let` is on line 2")
     assertTrue(second.position.column == 1, "second `let` is at column 1")
 }
@@ -103,9 +103,9 @@ func bindingsProduceNothingToEcho() {
 }
 
 func programEndsWithBinding(_ source: string) -> bool {
-    var parser = Parser(Lexer(source))
+    var parser = Parser::new(Lexer::new(source))
     match parser.parseProgram() {
-        case .ok(program) => return endsWithBinding(&program)
+        case .ok(program) => return endsWithBinding(program)
         case .err(_) => return false
     }
 }

@@ -1,0 +1,4 @@
+error: constructor can complete with uninitialized fields
+ -> language_tests/source_files/invalid/value_init_missing_field.tr:2:21
+	extend Counter { init() { self.first = 1 } }
+	                     ^^

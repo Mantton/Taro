@@ -1,0 +1,4 @@
+error: conditional bindings use `var` or `case` with `=`, not `:=`
+ -> language_tests/source_files/invalid/conditional_shorthand_binding.tr:2:13
+	    if value := 1 {}
+	             ^^

@@ -1,0 +1,3 @@
+class DecodedBase: std::encoding::Codable { value: int32 }
+class IncompleteDecodedChild: DecodedBase { extra: int32 }
+func main() {}

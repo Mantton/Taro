@@ -1,9 +1,9 @@
-import monkey.ast.{Expression, Statement, Program, HashEntry, PrefixOperator, InfixOperator}
-import monkey.lexer.Lexer
-import monkey.token.{Token, TokenKind, TokenTag, Position}
+import monkey::ast::{Expression, Statement, Program, HashEntry, PrefixOperator, InfixOperator}
+import monkey::lexer::Lexer
+import monkey::token::{Token, TokenKind, TokenTag, Position}
 
 /// Binding power, lowest to highest.
-public enum Precedence: Copy {
+public enum Precedence {
     case lowest
     case equals
     case comparison
@@ -14,8 +14,8 @@ public enum Precedence: Copy {
     case index
 }
 
-impl Precedence {
-    func rank(&self) -> int32 {
+extend Precedence {
+    func rank() -> int32 {
         match self {
             case .lowest => 0
             case .equals => 1
@@ -28,7 +28,7 @@ impl Precedence {
         }
     }
 
-    func isLowerThan(&self, _ other: Precedence) -> bool {
+    func isLowerThan(_ other: Precedence) -> bool {
         return self.rank() < other.rank()
     }
 }
@@ -39,16 +39,11 @@ public struct ParseError {
     public position: Position
 }
 
-/// Moves a subexpression to managed storage so it can be referenced from an
-/// enclosing node. Taro promotes a referenced local when the reference escapes,
-/// which is what lets the tree outlive the call that built it.
-func box(_ expression: Expression) -> &Expression {
-    let boxed = expression
-    return &boxed
-}
+/// Retain a recursive child independently of the parser stack.
+func node(_ expression: Expression) -> &Expression { &expression }
 
 /// Binding power of the operator a token introduces when used infix.
-func infixPrecedence(_ kind: &TokenKind) -> Precedence {
+func infixPrecedence(_ kind: TokenKind) -> Precedence {
     match kind {
         case .equal => .equals
         case .notEqual => .equals
@@ -65,7 +60,7 @@ func infixPrecedence(_ kind: &TokenKind) -> Precedence {
 }
 
 /// The infix operator a token denotes, when it denotes one.
-func infixOperator(_ kind: &TokenKind) -> Optional[InfixOperator] {
+func infixOperator(_ kind: TokenKind) -> Optional[InfixOperator] {
     match kind {
         case .plus => .some(.add)
         case .minus => .some(.subtract)
@@ -79,7 +74,6 @@ func infixOperator(_ kind: &TokenKind) -> Optional[InfixOperator] {
     }
 }
 
-
 /// A Pratt parser for Monkey.
 ///
 /// The Go original registers prefix and infix parse functions in two maps keyed
@@ -90,9 +84,8 @@ func infixOperator(_ kind: &TokenKind) -> Optional[InfixOperator] {
 ///
 /// Recursive descent costs several stack frames per level, and an `Expression`
 /// temporary is wide, so unbounded nesting exhausts the stack. The runtime does
-/// not report stack exhaustion — the process simply dies — so the limit is
-/// enforced here, well below where that happens, and reported as an ordinary
-/// parse error.
+/// reports stack exhaustion fatally, so nesting is checked first and reported
+/// as an ordinary recoverable parse error.
 const MAX_NESTING_DEPTH: usize = 256
 
 public struct Parser {
@@ -103,57 +96,45 @@ public struct Parser {
     depth: usize
 }
 
-impl Parser {
-    public func new(_ lexer: Lexer) -> Self {
-        var source = lexer
-        let first = source.nextToken()
-        let second = source.nextToken()
-        return Parser {
-            lexer: source,
-            current: first,
-            peek: second,
-            errors: List[ParseError](),
-            depth: 0,
-        }
-    }
+extend &Parser {
 
-    func advance(&mut self) {
+    func advance() {
         self.current = self.peek
         self.peek = self.lexer.nextToken()
     }
 
-    func report(&mut self, _ message: string, _ position: Position) {
+    func report(_ message: string, _ position: Position) {
         self.errors.append(ParseError { message, position })
     }
 
-    func currentIs(&self, _ tag: TokenTag) -> bool {
+    func currentIs(_ tag: TokenTag) -> bool {
         return self.current.kind.tag() == tag
     }
 
-    func peekIs(&self, _ tag: TokenTag) -> bool {
+    func peekIs(_ tag: TokenTag) -> bool {
         return self.peek.kind.tag() == tag
     }
 
     /// Advances past `tag`, reporting when the next token is something else.
-    func expect(&mut self, _ tag: TokenTag) -> bool {
+    func expect(_ tag: TokenTag) -> bool {
         if self.peekIs(tag) {
             self.advance()
             return true
         }
-        let message = sprintf(
+        message := sprintf(
             "expected %s, found %s",
             tag.describe(),
             self.peek.kind.describe(),
         )
-        let position = self.peek.position
+        position := self.peek.position
         self.report(message, position)
         return false
     }
 
-    public func parseProgram(&mut self) -> Result[Program, List[ParseError]] {
-        var statements = List[Statement]()
+    public func parseProgram() -> Result[Program, List[ParseError]] {
+        var statements = List[Statement]::new()
 
-        while !self.currentIs(TokenTag.eof) {
+        while !self.currentIs(TokenTag::eof) {
             match self.parseStatement() {
                 case .some(statement) => statements.append(statement)
                 case .none => {}
@@ -162,8 +143,8 @@ impl Parser {
         }
 
         if !self.errors.isEmpty() {
-            var reported = List[ParseError]()
-            for error in &self.errors {
+            var reported = List[ParseError]::new()
+            for error in self.errors {
                 reported.append(ParseError { message: error.message, position: error.position })
             }
             return .err(reported)
@@ -171,7 +152,7 @@ impl Parser {
         return .ok(Program { statements })
     }
 
-    func parseStatement(&mut self) -> Optional[Statement] {
+    func parseStatement() -> Optional[Statement] {
         match self.current.kind {
             case .`let` => return self.parseBind()
             case .`return` => return self.parseProduce()
@@ -179,13 +160,13 @@ impl Parser {
         }
     }
 
-    func parseBind(&mut self) -> Optional[Statement] {
-        let namePosition = self.peek.position
+    func parseBind() -> Optional[Statement] {
+        namePosition := self.peek.position
         var name = ""
         match self.peek.kind {
             case .identifier(text) => name = text
             case _ => {
-                let found = self.peek.kind.describe()
+                found := self.peek.kind.describe()
                 self.report(sprintf("expected identifier after 'let', found %s", found), namePosition)
                 return .none
             }
@@ -197,25 +178,25 @@ impl Parser {
         }
         self.advance()
 
-        let value = self.parseExpression(.lowest)!
-        if self.peekIs(TokenTag.semicolon) {
+        value := self.parseExpression(.lowest)!
+        if self.peekIs(TokenTag::semicolon) {
             self.advance()
         }
         return .some(.bind(name: name, value: value))
     }
 
-    func parseProduce(&mut self) -> Optional[Statement] {
+    func parseProduce() -> Optional[Statement] {
         self.advance()
-        let value = self.parseExpression(.lowest)!
-        if self.peekIs(TokenTag.semicolon) {
+        value := self.parseExpression(.lowest)!
+        if self.peekIs(TokenTag::semicolon) {
             self.advance()
         }
         return .some(.produce(value: value))
     }
 
-    func parseExpressionStatement(&mut self) -> Optional[Statement] {
-        let value = self.parseExpression(.lowest)!
-        if self.peekIs(TokenTag.semicolon) {
+    func parseExpressionStatement() -> Optional[Statement] {
+        value := self.parseExpression(.lowest)!
+        if self.peekIs(TokenTag::semicolon) {
             self.advance()
         }
         return .some(.expression(value: value))
@@ -223,27 +204,34 @@ impl Parser {
 
     /// Pratt loop: parse a prefix form, then absorb infix operators while they
     /// bind more tightly than the caller's precedence.
-    func parseExpression(&mut self, _ precedence: Precedence) -> Optional[Expression] {
+    func parseExpression(_ precedence: Precedence) -> Optional[Expression] {
         if self.depth >= MAX_NESTING_DEPTH {
-            let position = self.current.position
+            position := self.current.position
             self.report("expression nesting is too deep", position)
             return .none
         }
         self.depth += 1
-        let parsed = self.parseNested(precedence)
+        parsed := self.parseNested(precedence)
         self.depth -= 1
         return parsed
     }
 
-    func parseNested(&mut self, _ precedence: Precedence) -> Optional[Expression] {
-        var left = self.parsePrefix()!
+    func parseNested(_ precedence: Precedence) -> Optional[Expression] {
+        first := self.parsePrefix()!
+        return self.parseSuffix(first, precedence)
+    }
 
-        while !self.peekIs(TokenTag.semicolon) && precedence.isLowerThan(infixPrecedence(&self.peek.kind)) {
-            let canContinue = match self.peek.kind {
+    // The suffix loop's temporaries need not occupy native stack while
+    // parsing a nested prefix/group. Preserve the same Pratt order/depth limit.
+    func parseSuffix(_ first: Expression, _ precedence: Precedence) -> Optional[Expression] {
+        var left = first
+
+        while !self.peekIs(TokenTag::semicolon) && precedence.isLowerThan(infixPrecedence(self.peek.kind)) {
+            canContinue := match self.peek.kind {
                 case .leftParen => true
                 case .leftBracket => true
                 case _ => {
-                    match infixOperator(&self.peek.kind) {
+                    match infixOperator(self.peek.kind) {
                         case .some(_) => true
                         case .none => false
                     }
@@ -259,90 +247,101 @@ impl Parser {
         return .some(left)
     }
 
-    func parsePrefix(&mut self) -> Optional[Expression] {
+    // Dispatch on the small tag. Payload construction/error formatting live in
+    // nonrecursive helpers, keeping deep grouped expressions cheap at O0.
+    func parsePrefix() -> Optional[Expression] {
+        match self.current.kind.tag() {
+            case .identifier | .integer | .text => return self.parseAtom()
+            case .boolTrue => return .some(.boolean(true))
+            case .boolFalse => return .some(.boolean(false))
+            case .bang => return self.parseUnary(.not)
+            case .minus => return self.parseUnary(.negate)
+            case .leftParen => return self.parseGrouped()
+            case .branchIf => return self.parseConditional()
+            case .function => return self.parseFunction()
+            case .leftBracket => return self.parseArray()
+            case .leftBrace => return self.parseHash()
+            case _ => return self.missingPrefix()
+        }
+    }
+
+    func parseAtom() -> Optional[Expression] {
         match self.current.kind {
             case .identifier(name) => return .some(.identifier(name))
             case .integer(value) => return .some(.integer(value))
             case .text(value) => return .some(.text(value))
-            case .`true` => return .some(.boolean(true))
-            case .`false` => return .some(.boolean(false))
-            case .bang => return self.parseUnary(.not)
-            case .minus => return self.parseUnary(.negate)
-            case .leftParen => return self.parseGrouped()
-            case .`if` => return self.parseConditional()
-            case .function => return self.parseFunction()
-            case .leftBracket => return self.parseArray()
-            case .leftBrace => return self.parseHash()
-            case _ => {
-                let found = self.current.kind.describe()
-                let position = self.current.position
-                self.report(sprintf("expected an expression, found %s", found), position)
-                return .none
-            }
+            case _ => return .none
         }
     }
 
-    func parseUnary(&mut self, _ op: PrefixOperator) -> Optional[Expression] {
-        self.advance()
-        let operand = self.parseExpression(.prefix)!
-        return .some(.prefix(op: op, operand: box(operand)))
+    func missingPrefix() -> Optional[Expression] {
+        found := self.current.kind.describe()
+        position := self.current.position
+        self.report(sprintf("expected an expression, found %s", found), position)
+        return .none
     }
 
-    func parseGrouped(&mut self) -> Optional[Expression] {
+    func parseUnary(_ op: PrefixOperator) -> Optional[Expression] {
         self.advance()
-        let inner = self.parseExpression(.lowest)!
+        operand := self.parseExpression(.prefix)!
+        return .some(.prefix(op: op, operand: node(operand)))
+    }
+
+    func parseGrouped() -> Optional[Expression] {
+        self.advance()
+        inner := self.parseExpression(.lowest)!
         if !self.expect(.rightParen) {
             return .none
         }
         return .some(inner)
     }
 
-    func parseInfix(&mut self, _ left: Expression) -> Optional[Expression] {
+    func parseInfix(_ left: Expression) -> Optional[Expression] {
         match self.current.kind {
             case .leftParen => return self.parseCall(left)
             case .leftBracket => return self.parseIndex(left)
             case _ => {}
         }
 
-        let op = match infixOperator(&self.current.kind) {
+        op := match infixOperator(self.current.kind) {
             case .some(found) => found
             case .none => {
-                let found = self.current.kind.describe()
-                let position = self.current.position
+                found := self.current.kind.describe()
+                position := self.current.position
                 self.report(sprintf("expected an operator, found %s", found), position)
                 return .none
             }
         }
 
-        let precedence = infixPrecedence(&self.current.kind)
+        precedence := infixPrecedence(self.current.kind)
         self.advance()
-        let right = self.parseExpression(precedence)!
-        return .some(.infix(left: box(left), op: op, right: box(right)))
+        right := self.parseExpression(precedence)!
+        return .some(.infix(left: node(left), op: op, right: node(right)))
     }
 
-    func parseCall(&mut self, _ callee: Expression) -> Optional[Expression] {
-        let arguments = self.parseExpressionList(.rightParen)!
-        return .some(.call(callee: box(callee), arguments: arguments))
+    func parseCall(_ callee: Expression) -> Optional[Expression] {
+        arguments := self.parseExpressionList(.rightParen)!
+        return .some(.call(callee: node(callee), arguments: arguments))
     }
 
-    func parseIndex(&mut self, _ collection: Expression) -> Optional[Expression] {
+    func parseIndex(_ collection: Expression) -> Optional[Expression] {
         self.advance()
-        let index = self.parseExpression(.lowest)!
+        index := self.parseExpression(.lowest)!
         if !self.expect(.rightBracket) {
             return .none
         }
-        return .some(.index(collection: box(collection), index: box(index)))
+        return .some(.index(collection: node(collection), index: node(index)))
     }
 
-    func parseArray(&mut self) -> Optional[Expression] {
-        let elements = self.parseExpressionList(.rightBracket)!
+    func parseArray() -> Optional[Expression] {
+        elements := self.parseExpressionList(.rightBracket)!
         return .some(.array(elements: elements))
     }
 
     /// Parses a comma-separated list, assuming `self.current` is the opening
     /// delimiter, and stops after consuming `closing`.
-    func parseExpressionList(&mut self, _ closing: TokenTag) -> Optional[List[Expression]] {
-        var items = List[Expression]()
+    func parseExpressionList(_ closing: TokenTag) -> Optional[List[Expression]] {
+        var items = List[Expression]::new()
 
         if self.peekIs(closing) {
             self.advance()
@@ -350,13 +349,13 @@ impl Parser {
         }
 
         self.advance()
-        let first = self.parseExpression(.lowest)!
+        first := self.parseExpression(.lowest)!
         items.append(first)
 
-        while self.peekIs(TokenTag.comma) {
+        while self.peekIs(TokenTag::comma) {
             self.advance()
             self.advance()
-            let next = self.parseExpression(.lowest)!
+            next := self.parseExpression(.lowest)!
             items.append(next)
         }
 
@@ -366,20 +365,20 @@ impl Parser {
         return .some(items)
     }
 
-    func parseHash(&mut self) -> Optional[Expression] {
-        var entries = List[HashEntry]()
+    func parseHash() -> Optional[Expression] {
+        var entries = List[HashEntry]::new()
 
-        while !self.peekIs(TokenTag.rightBrace) {
+        while !self.peekIs(TokenTag::rightBrace) {
             self.advance()
-            let key = self.parseExpression(.lowest)!
+            key := self.parseExpression(.lowest)!
             if !self.expect(.colon) {
                 return .none
             }
             self.advance()
-            let value = self.parseExpression(.lowest)!
+            value := self.parseExpression(.lowest)!
             entries.append(HashEntry { key, value })
 
-            if !self.peekIs(TokenTag.rightBrace) && !self.expect(.comma) {
+            if !self.peekIs(TokenTag::rightBrace) && !self.expect(.comma) {
                 return .none
             }
         }
@@ -390,11 +389,11 @@ impl Parser {
         return .some(.hash(entries: entries))
     }
 
-    func parseBlock(&mut self) -> Optional[List[Statement]] {
-        var statements = List[Statement]()
+    func parseBlock() -> Optional[List[Statement]] {
+        var statements = List[Statement]::new()
         self.advance()
 
-        while !self.currentIs(TokenTag.rightBrace) && !self.currentIs(TokenTag.eof) {
+        while !self.currentIs(TokenTag::rightBrace) && !self.currentIs(TokenTag::eof) {
             match self.parseStatement() {
                 case .some(statement) => statements.append(statement)
                 case .none => return .none
@@ -402,31 +401,31 @@ impl Parser {
             self.advance()
         }
 
-        if !self.currentIs(TokenTag.rightBrace) {
-            let position = self.current.position
+        if !self.currentIs(TokenTag::rightBrace) {
+            position := self.current.position
             self.report("expected '}' to close block", position)
             return .none
         }
         return .some(statements)
     }
 
-    func parseConditional(&mut self) -> Optional[Expression] {
+    func parseConditional() -> Optional[Expression] {
         if !self.expect(.leftParen) {
             return .none
         }
         self.advance()
-        let condition = self.parseExpression(.lowest)!
+        condition := self.parseExpression(.lowest)!
         if !self.expect(.rightParen) {
             return .none
         }
         if !self.expect(.leftBrace) {
             return .none
         }
-        let consequence = self.parseBlock()!
+        consequence := self.parseBlock()!
 
-        var alternative = List[Statement]()
+        var alternative = List[Statement]::new()
         var hasAlternative = false
-        if self.peekIs(TokenTag.branchElse) {
+        if self.peekIs(TokenTag::branchElse) {
             self.advance()
             if !self.expect(.leftBrace) {
                 return .none
@@ -436,29 +435,29 @@ impl Parser {
         }
 
         return .some(.conditional(
-            condition: box(condition),
+            condition: node(condition),
             consequence: consequence,
             alternative: alternative,
             hasAlternative: hasAlternative,
         ))
     }
 
-    func parseFunction(&mut self) -> Optional[Expression] {
+    func parseFunction() -> Optional[Expression] {
         if !self.expect(.leftParen) {
             return .none
         }
-        let parameters = self.parseParameters()!
+        parameters := self.parseParameters()!
         if !self.expect(.leftBrace) {
             return .none
         }
-        let body = self.parseBlock()!
+        body := self.parseBlock()!
         return .some(.function(parameters: parameters, body: body))
     }
 
-    func parseParameters(&mut self) -> Optional[List[string]] {
-        var names = List[string]()
+    func parseParameters() -> Optional[List[string]] {
+        var names = List[string]::new()
 
-        if self.peekIs(TokenTag.rightParen) {
+        if self.peekIs(TokenTag::rightParen) {
             self.advance()
             return .some(names)
         }
@@ -467,21 +466,21 @@ impl Parser {
         match self.current.kind {
             case .identifier(name) => names.append(name)
             case _ => {
-                let found = self.current.kind.describe()
-                let position = self.current.position
+                found := self.current.kind.describe()
+                position := self.current.position
                 self.report(sprintf("expected a parameter name, found %s", found), position)
                 return .none
             }
         }
 
-        while self.peekIs(TokenTag.comma) {
+        while self.peekIs(TokenTag::comma) {
             self.advance()
             self.advance()
             match self.current.kind {
                 case .identifier(name) => names.append(name)
                 case _ => {
-                    let found = self.current.kind.describe()
-                    let position = self.current.position
+                    found := self.current.kind.describe()
+                    position := self.current.position
                     self.report(sprintf("expected a parameter name, found %s", found), position)
                     return .none
                 }
@@ -492,5 +491,20 @@ impl Parser {
             return .none
         }
         return .some(names)
+    }
+}
+
+extend Parser {
+    public static func new(_ lexer: Lexer) -> Self {
+        var source = lexer
+        first := source.nextToken()
+        second := source.nextToken()
+        return Parser {
+            lexer: source,
+            current: first,
+            peek: second,
+            errors: List[ParseError]::new(),
+            depth: 0,
+        }
     }
 }

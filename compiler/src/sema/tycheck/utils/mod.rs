@@ -1,15 +1,21 @@
+pub(crate) mod coherence;
 use crate::sema::{
     models::{InferTy, Ty, TyKind},
     resolve::models::TypeHead,
 };
 
 pub(crate) mod arguments;
+pub(crate) mod atomic_handle;
 pub mod autoderef;
 pub mod callable;
 pub mod const_eval;
+pub(crate) mod divergence;
+pub(crate) mod erased_self;
 pub mod generics;
 pub mod instantiate;
 pub(crate) mod literal;
+pub(crate) mod members;
+pub(crate) mod named_fields;
 pub mod normalize;
 pub mod normalize_post_mono;
 pub mod param_env;
@@ -17,15 +23,10 @@ pub mod unify;
 pub mod unresolved;
 
 pub use normalize::{normalize_aliases, normalize_ty};
-pub use normalize_post_mono::normalize_post_monomorphization;
+pub use normalize_post_mono::{
+    normalize_post_monomorphization, try_normalize_post_monomorphization,
+};
 pub use param_env::ParamEnv;
-
-#[derive(Debug)]
-pub enum AutoReference {
-    None,
-    Mutable,
-    Immutable,
-}
 
 pub fn type_head_from_value_ty(ty: Ty<'_>) -> Option<TypeHead> {
     match ty.kind() {
@@ -49,11 +50,12 @@ pub fn type_head_from_value_ty(ty: Ty<'_>) -> Option<TypeHead> {
         )),
         TyKind::Array { .. } => Some(TypeHead::Array),
         TyKind::Adt(def, _) => Some(TypeHead::Nominal(def.id)),
-        TyKind::Reference(_, mutbl) => Some(TypeHead::Reference(mutbl)),
+        TyKind::Reference(_) => Some(TypeHead::Reference),
         TyKind::Pointer(_, mutbl) => Some(TypeHead::Pointer(mutbl)),
         TyKind::Tuple(items) => Some(TypeHead::Tuple(items.len() as u16)),
         TyKind::Closure { closure_def_id, .. } => Some(TypeHead::Closure(closure_def_id)),
-        TyKind::Parameter(_)
+        TyKind::ExistentialSelf(_)
+        | TyKind::Parameter(_)
         | TyKind::Infer(_)
         | TyKind::FnPointer { .. }
         | TyKind::Alias { .. }

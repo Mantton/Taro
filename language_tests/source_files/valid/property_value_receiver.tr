@@ -1,0 +1,6 @@
+struct Record { value: int32 }
+extend Record { var item: int32 { get { self.value += 1; self.value } } }
+func main() {
+    record := Record { value: 7 }
+    assert(record.item == 8 && record.item == 8 && record.value == 7, "a getter on a value target receives a fresh copy")
+}

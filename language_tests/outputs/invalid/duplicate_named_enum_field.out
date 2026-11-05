@@ -1,0 +1,4 @@
+error: duplicate enum payload field `x`
+ -> language_tests/source_files/invalid/duplicate_named_enum_field.tr:2:27
+	    case click { x: int32, x: int32 }
+	                           ^

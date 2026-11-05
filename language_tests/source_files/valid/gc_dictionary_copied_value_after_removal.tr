@@ -1,0 +1,28 @@
+// ENV: TARO_GC_STRESS=1
+// A copied handle value retains its own target after removal and table growth.
+// Dictionary entry storage itself is never exposed by a reference.
+func main() {
+    var rows: [int64: [int64]] = [:]
+    alias := rows
+    var key: int64 = 0
+    while key < 40 {
+        var row: [int64] = []
+        row.append(key * 10)
+        alias.set(key: key, value: row)
+        key += 1
+    }
+    var kept: [int64] = rows.get(&7).unwrap()
+    assert(rows.remove(&7).isSome(), "removal through the original handle")
+    key = 40
+    while key < 80 {
+        var row: [int64] = []
+        row.append(key)
+        rows.set(key: key, value: row)
+        key += 1
+    }
+    assert(kept.len() == 1, "copied row handle retains its target")
+    var first: int64 = *kept.at(0)
+    assert(first == 70, "slot reuse does not retarget a copied value")
+    assert(alias.len() == 79 && !alias.contains(&7), "aliases share entries")
+    print("PASS: copied dictionary values retain their targets\n")
+}

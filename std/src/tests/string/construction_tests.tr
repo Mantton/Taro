@@ -1,0 +1,25 @@
+@test
+func testStringConstructionCopiesMutableByteViews() {
+    var bytes: [uint8; 3] = [97_u8, 0_u8, 98_u8]
+    text := std::string::stringFromBytes(bytes.asSpan())
+    *bytes.at(0) = 122_u8
+    *bytes.at(2) = 120_u8
+    std::testing::assertEqual(text.byteLen(), 3 as usize, "copy has exact view length")
+    std::testing::assertEqual(text.byteAt(0), 97_u8, "mutable source is independent")
+    std::testing::assertEqual(text.byteAt(1), 0_u8, "embedded NUL is retained")
+    std::testing::assertEqual(text.byteAt(2), 98_u8, "all bytes were copied")
+}
+
+@test
+func testRawStringWrappingSharesManagedBytesAndAllowsEmptyNullStorage() {
+    var bytes: [uint8; 1] = [0xff_u8]
+    original := std::string::stringFromBytes(bytes.asSpan())
+    data := std::string::stringData(original)
+    text := unsafe { std::string::stringFromParts(data, 1) }
+    std::testing::assertEqual(text.byteAt(0), 0xff_u8, "raw wrapping preserves invalid UTF-8 too")
+    std::testing::assertEqual(unsafe { std::string::stringData(text) as usize }, unsafe { data as usize }, "raw wrapping is zero-copy")
+    empty := unsafe { std::string::stringFromParts(0 as *const uint8, 0) }
+    std::testing::assertEqual(empty, "", "zero bytes never dereference a null pointer")
+    var noBytes: [uint8] = []
+    std::testing::assertEqual(std::string::stringFromBytes(noBytes.asSpan()), "", "empty checked view")
+}

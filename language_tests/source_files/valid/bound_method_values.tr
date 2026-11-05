@@ -1,0 +1,73 @@
+struct Counter { value: int32 }
+extend Counter {
+
+    func take() -> int32 { self.value }
+
+
+    func echo[T](_ value: T) -> T { value }
+    func labeled(_ amount: int32, scale: int32) -> int32 { self.value + amount * scale }
+    func later() async -> int32 { await std::testing::yieldNow(); self.value }
+}
+interface Read { func read() -> int32; }
+conform Counter to Read {
+    func read() -> int32 { self.value }
+}
+func invoke[F: Fn(int32) -> int32](_ f: F) -> int32 { f(29_i32) }
+func twice[F: Fn() -> int32](_ f: &F) -> int32 { f() + f() }
+func genericRead[T: Read](_ value: &T) -> int32 {
+    read := value.read // Fn borrowing value's receiver
+    twice(&read)
+}
+func make(_ calls: &int32) -> Counter {
+    *calls += 1
+    Counter { value: *calls }
+}
+func main() async {
+    var counter: Counter = Counter { value: 7 }
+    read := counter.read // shared bound method, not a receiver-taking function
+    assert(twice(&read) == 14, "shared receiver can be reused")
+    counter.value = 9 // read's borrow ended at last use
+    var increment = counter.increment // exclusive bound method
+    assert(increment(2) == 11, "first mutable call")
+    assert(increment(3) == 14, "second mutable call")
+    assert(counter.value == 14, "same receiver was mutated")
+    project := counter.valueRef // Fn lending captured receiver storage
+    var saved: &int32 = project()
+    assert(*saved == 14, "borrowed callback result protects receiver")
+    var edit = counter.valueMut // FnMut lending exclusive receiver storage
+    var selected: &int32 = edit()
+    *selected += 1
+    assert(counter.value == 15, "mutable result ends before direct access")
+    counter.value = 14
+    assert(invoke(counter.echo) == 29, "method generic is inferred from callback context")
+    labeled := counter.labeled
+    assert(labeled(2, 3) == 20, "bound signature has no receiver or argument labels")
+    assert(genericRead(&counter) == 28, "abstract interface receiver")
+    var erased: any Read = Counter { value: 19 }
+    erasedRead := erased.read
+    assert(erasedRead() == 19, "erased interface receiver")
+    var calls: int32 = 0
+    temporaryRead := make(&calls).read
+    assert(temporaryRead() == 1 && temporaryRead() == 1, "temporary receiver stays alive")
+    assert(calls == 1, "receiver is evaluated once")
+    later := counter.later // extraction does not require await
+    assert((await later()) == 14, "async bound method")
+    var owned: Counter = Counter { value: 23 }
+    take := owned.take // consumes owned now, FnOnce on call
+    assert(take() == 23, "owned receiver")
+    makeRead := () => counter.read
+    nested := makeRead()
+    assert(nested() == 14, "nested receiver capture")
+}
+
+
+extend &Counter {
+    func increment( _ amount: int32) -> int32 {
+        self.value += amount
+        self.value
+    }
+
+    func valueRef() -> &int32 { &self.value }
+
+    func valueMut() -> &int32 { &self.value }
+}

@@ -1,0 +1,20 @@
+error: `FnMut` was removed; use `Fn`
+ -> language_tests/source_files/invalid/ownership_callable_syntax_removed.tr:1:25
+	func legacy(_ first: any FnMut() -> (), _ second: any FnOnce() -> (), _ third: any AsyncFnMut() -> (), _ fourth: any AsyncFnOnce() -> ()) {}
+	                         ^^^^^
+error: `FnOnce` was removed; use `Fn`
+ -> language_tests/source_files/invalid/ownership_callable_syntax_removed.tr:1:54
+	func legacy(_ first: any FnMut() -> (), _ second: any FnOnce() -> (), _ third: any AsyncFnMut() -> (), _ fourth: any AsyncFnOnce() -> ()) {}
+	                                                      ^^^^^^
+error: `AsyncFnMut` was removed; use `AsyncFn`
+ -> language_tests/source_files/invalid/ownership_callable_syntax_removed.tr:1:83
+	func legacy(_ first: any FnMut() -> (), _ second: any FnOnce() -> (), _ third: any AsyncFnMut() -> (), _ fourth: any AsyncFnOnce() -> ()) {}
+	                                                                                   ^^^^^^^^^^
+error: `AsyncFnOnce` was removed; use `AsyncFn`
+ -> language_tests/source_files/invalid/ownership_callable_syntax_removed.tr:1:117
+	func legacy(_ first: any FnMut() -> (), _ second: any FnOnce() -> (), _ third: any AsyncFnMut() -> (), _ fourth: any AsyncFnOnce() -> ()) {}
+	                                                                                                                     ^^^^^^^^^^^
+error: `move` closures were removed; closures share captured variables
+ -> language_tests/source_files/invalid/ownership_callable_syntax_removed.tr:2:26
+	func main() { callback := move () => {} }
+	                          ^^^^

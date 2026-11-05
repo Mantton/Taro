@@ -1,0 +1,6 @@
+// CHECK_ONLY
+// PACKAGE: g31_orphan_errors
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_COUNT: 3 an uncovered type parameter appears before the first local input type
+// EXPECT_STDERR_COUNT: 2 neither the interface nor a qualifying input type is defined in this package
+// EXPECT_STDERR_NOT_CONTAINS: panicked

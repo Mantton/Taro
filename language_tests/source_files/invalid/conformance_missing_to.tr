@@ -1,0 +1,7 @@
+struct Counter {}
+
+interface Readable {}
+
+conform Counter Readable {}
+
+func main() {}

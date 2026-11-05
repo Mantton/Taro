@@ -1,0 +1,4 @@
+error: async calls require an enclosing `await` expression
+ -> language_tests/source_files/invalid/explicit_factory_async_requires_await.tr:9:33
+	    var box: FactoryBox[int32] = FactoryBox::new(value: 7)
+	                                 ^^^^^^^^^^^^^^^^^^^^^^^^^

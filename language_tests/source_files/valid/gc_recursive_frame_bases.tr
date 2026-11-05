@@ -1,0 +1,27 @@
+// ENV: TARO_GC_STRESS=1
+// The same function occurs at many physical frame positions. A root-position
+// walker must use each frame's own base, and selectors remain current.
+@noinline
+func value(_ number: int32) -> &int32 {
+    var stored = number
+    &stored
+}
+
+@noinline
+func sum(_ depth: int32) -> int32 {
+    live := value(depth)
+    if depth == 0 {
+        std::runtime::collect()
+        assert(*live == 0, "deepest frame retains its local target")
+        return *live
+    }
+    rest := sum(depth - 1)
+    std::runtime::collect()
+    assert(*live == depth, "recursive callers use their own physical root positions")
+    *live + rest
+}
+
+func main() {
+    assert(sum(24) == 300, "every recursive frame survives collection")
+    assert(sum(32) == 528, "later walks read fresh frame positions and selectors")
+}

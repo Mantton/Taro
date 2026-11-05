@@ -1,5 +1,5 @@
 @cfg(family("unix"))
-import std.libc.unix.*
+import std::libc::unix::*
 
 @cfg(family("unix"))
-export std.libc.unix.*
+export std::libc::unix::*

@@ -1,0 +1,100 @@
+import std::convert::Parse
+import std::http::{Body, Error, Options, Request, Response, Server}
+import std::result::Result
+
+struct Message: std::encoding::Codable { message: string }
+struct Record: std::encoding::Codable {
+    id: int32
+    message: string
+}
+struct Metrics: std::encoding::Codable {
+    allocatedBytes: uint64
+    collections: uint64
+    pauseNanos: uint64
+}
+// Identical payload bytes let the stage routes isolate suspension and encoding.
+const RECORDS_JSON: string = "[{\"id\":0,\"message\":\"record 0\"},{\"id\":1,\"message\":\"record 1\"},{\"id\":2,\"message\":\"record 2\"},{\"id\":3,\"message\":\"record 3\"},{\"id\":4,\"message\":\"record 4\"},{\"id\":5,\"message\":\"record 5\"},{\"id\":6,\"message\":\"record 6\"},{\"id\":7,\"message\":\"record 7\"},{\"id\":8,\"message\":\"record 8\"},{\"id\":9,\"message\":\"record 9\"},{\"id\":10,\"message\":\"record 10\"},{\"id\":11,\"message\":\"record 11\"},{\"id\":12,\"message\":\"record 12\"},{\"id\":13,\"message\":\"record 13\"},{\"id\":14,\"message\":\"record 14\"},{\"id\":15,\"message\":\"record 15\"},{\"id\":16,\"message\":\"record 16\"},{\"id\":17,\"message\":\"record 17\"},{\"id\":18,\"message\":\"record 18\"},{\"id\":19,\"message\":\"record 19\"}]"
+func encodeRecords() -> string {
+    var records = std::collections::List[Record]::new()
+    var id: int32 = 0
+    while id < 20 {
+        records.append(Record { id, message: std::sprintf("record %d", id) })
+        id += 1
+    }
+    return std::json::encode(&records).unwrap()
+}
+func recordsResponse(_ encoded: string) -> Response {
+    var response = Response::new(200_u16)
+    response.headers.add("content-type", "application/json").unwrap()
+    response.body = Body::fromString(encoded)
+    return response
+}
+func respond(_ request: &Request) async -> Result[Response, Error] {
+    match request.url {
+        case "/text" => return .ok(Response::text(200_u16, "Hello, World!"))
+        case "/json" => {
+            value := Message { message: "Hello, World!" }
+            encoded := std::json::encode(&value).unwrap()
+            var response = Response::new(200_u16)
+            response.headers.add("content-type", "application/json").unwrap()
+            response.body = Body::fromString(encoded)
+            return .ok(response)
+        }
+        case "/json-static" => {
+            var response = Response::new(200_u16)
+            response.headers.add("content-type", "application/json").unwrap()
+            response.body = Body::fromString("{\"message\":\"Hello, World!\"}")
+            return .ok(response)
+        }
+        case "/stage/static" => return .ok(recordsResponse(RECORDS_JSON))
+        case "/stage/sleep" => {
+            await std::task::sleep(std::time::Duration::fromMillis(1_u64))
+            return .ok(recordsResponse(RECORDS_JSON))
+        }
+        case "/stage/encode" => return .ok(recordsResponse(encodeRecords()))
+        // Full handler: suspend, construct ordinary records, format and encode.
+        case "/app" => {
+            await std::task::sleep(std::time::Duration::fromMillis(1_u64))
+            return .ok(recordsResponse(encodeRecords()))
+        }
+        case "/stats" => {
+            stats := std::runtime::gcStats()
+            value := Metrics { allocatedBytes: stats.allocatedBytes, collections: stats.collections, pauseNanos: stats.totalPauseNanos }
+            var response = Response::new(200_u16)
+            response.headers.add("content-type", "application/json").unwrap()
+            response.body = Body::fromString(std::json::encode(&value).unwrap())
+            return .ok(response)
+        }
+        case _ => return .ok(Response::text(404_u16, "Not Found"))
+    }
+}
+func main() async {
+    args := std::env::args()
+    std::assert(args.len() == 2 || args.len() == 3, "usage: taro-server <port> [diagnostic-lifetime-seconds]; configure TARO_WORKERS explicitly")
+    port := uint16::parse(args.at(1)).unwrap()
+    var options = Options::new()
+    match std::env::get("BENCH_MAX_CONNECTIONS").unwrap() {
+        case .some(limit) => options.maxConnections = .some(usize::parse(limit).unwrap())
+        case .none => {}
+    }
+    address := match std::env::get("BENCH_HOST").unwrap() {
+        case .some("0.0.0.0") => std::net::SocketAddress::unspecified(port)
+        case _ => std::net::SocketAddress::localhost(port)
+    }
+    server := Server::bindWithOptions(address, options).unwrap()
+    defer { var _ = server.close() }
+    if args.len() == 3 {
+        // Bounded, separate diagnostic runs exit normally so the runtime can
+        // report task counts, managed allocation counts and GC phase times.
+        lifetime := uint64::parse(args.at(2)).unwrap()
+        running := std::task::spawn(() async => { return await server.serve(respond) })
+        await std::task::sleep(std::time::Duration::fromSeconds(lifetime))
+        server.close().unwrap()
+        (await running.result()).unwrap().unwrap()
+    } else {
+        match await server.serve(respond) {
+            case .ok(_) => {}
+            case .err(error) => panic(std::sprintf("serve failed: %v", error))
+        }
+    }
+}

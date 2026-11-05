@@ -1,0 +1,7 @@
+func pick() -> int32 { 1 }
+func pick() -> bool { true }
+interface Pick {
+    func pick() -> int32
+    func pick() -> bool
+}
+func main() {}

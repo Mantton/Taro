@@ -1,10 +1,10 @@
 // CHECK_ONLY
 
-func applyAsync[F: AsyncFnOnce(int32) -> int32](_ f: F, _ x: int32) async -> int32 {
+func applyAsync[F: AsyncFn(int32) -> int32](_ f: F, _ x: int32) async -> int32 {
     return await f(x)
 }
 
-func applyZeroAsync[F: AsyncFnOnce() -> int32](_ f: F) async -> int32 {
+func applyZeroAsync[F: AsyncFn() -> int32](_ f: F) async -> int32 {
     return await f()
 }
 
@@ -12,81 +12,81 @@ func applyReusableAsync[F: AsyncFn(int32) -> int32](_ f: F, _ x: int32) async ->
     return await f(x)
 }
 
-func reuseGenericCopy[T: Copy](_ value: T) async -> T {
-    let closure = || async {
-        await std.testing.yieldNow()
+func reuseGenericCopy[T](_ value: T) async -> T {
+    closure := () async => {
+        await std::testing::yieldNow()
         return value
     }
-    let _ = await closure()
+    var _ = await closure()
     return await closure()
 }
 
 func main() async {
-    let captured = 7 as int32
+    captured := 7 as int32
 
-    let zero = || async {
-        await std.testing.yieldNow()
+    zero := () async => {
+        await std::testing::yieldNow()
         return captured * 2
     }
 
-    let unary = |x: int32| async {
-        await std.testing.yieldNow()
+    unary := (x: int32) async => {
+        await std::testing::yieldNow()
         return x + captured
     }
 
-    let sync = || {
+    sync := () => {
         return captured - 1
     }
 
-    let reusable = |x: int32| async {
-        await std.testing.yieldNow()
+    reusable := (x: int32) async => {
+        await std::testing::yieldNow()
         return x + 1
     }
 
-    let reusableCaptured = |x: int32| async {
-        await std.testing.yieldNow()
+    reusableCaptured := (x: int32) async => {
+        await std::testing::yieldNow()
         return x + captured
     }
 
-    let movedCopy = move || async {
-        await std.testing.yieldNow()
+    movedCopy := () async => {
+        await std::testing::yieldNow()
         return captured
     }
 
-    let _ = await applyZeroAsync(zero)
-    let _ = await applyAsync(unary, 5)
-    let _ = await applyReusableAsync(reusable, 5)
-    let _ = await reusableCaptured(1)
-    let _ = await reusableCaptured(2)
-    let _ = await applyReusableAsync(reusableCaptured, 3)
-    let _ = await movedCopy()
-    let _ = await movedCopy()
-    let _ = await reuseGenericCopy(11 as int32)
-    let _ = sync()
+    var _ = await applyZeroAsync(zero)
+    var _ = await applyAsync(unary, 5)
+    var _ = await applyReusableAsync(reusable, 5)
+    var _ = await reusableCaptured(1)
+    var _ = await reusableCaptured(2)
+    var _ = await applyReusableAsync(reusableCaptured, 3)
+    var _ = await movedCopy()
+    var _ = await movedCopy()
+    var _ = await reuseGenericCopy(11 as int32)
+    var _ = sync()
 
-    let spawned = std.task.spawn(|| async {
-        await std.testing.yieldNow()
+    spawned := std::task::spawn(() async => {
+        await std::testing::yieldNow()
         return captured + 1
     })
-    let _ = (await spawned.result()).unwrap()
+    var _ = (await spawned.result()).unwrap()
 
-    let inferredSpawnAwait = std.task.spawn(|| {
-        await std.testing.yieldNow()
+    inferredSpawnAwait := std::task::spawn(() => {
+        await std::testing::yieldNow()
         return captured + 2
     })
-    let _ = (await inferredSpawnAwait.result()).unwrap()
+    var _ = (await inferredSpawnAwait.result()).unwrap()
 
-    let inferredSpawnSyncBody = std.task.spawn(|| {
+    inferredSpawnSyncBody := std::task::spawn(() => {
         return captured + 3
     })
-    let _ = (await inferredSpawnSyncBody.result()).unwrap()
+    var _ = (await inferredSpawnSyncBody.result()).unwrap()
 
-    let _ = await applyZeroAsync(|| {
+    var _ = await applyZeroAsync(() => {
         return captured + 4
     })
 
     for i in 0..=2 {
-        let task = std.task.spawn(|| async { return i })
-        let _ = (await task.result()).unwrap()
+        task := std::task::spawn(() async => { return i })
+        var _ = (await task.result()).unwrap()
     }
 }

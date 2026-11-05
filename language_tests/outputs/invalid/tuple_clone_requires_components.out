@@ -1,0 +1,4 @@
+error: type '(CopyOnly, int32)' does not conform to interface 'Clone'
+ -> language_tests/source_files/invalid/tuple_clone_requires_components.tr:4:23
+	    cloned := original.clone()
+	                       ^^^^^

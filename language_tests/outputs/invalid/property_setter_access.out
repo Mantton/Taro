@@ -1,0 +1,4 @@
+error: computed properties are get-only; use `get { ... }` with implicit self
+ -> language_tests/source_files/invalid/property_setter_access.tr:2:53
+	extend Record { var item: int32 { get { self.value } set(value) { self.value = value } }; }
+	                                                     ^^^

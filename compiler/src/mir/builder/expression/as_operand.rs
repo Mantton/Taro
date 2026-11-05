@@ -13,6 +13,11 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         mut block: BasicBlockId,
         expr_id: ExprId,
     ) -> BlockAnd<Operand<'ctx>> {
+        // Even constants must use their prepared value: recreating a
+        // noncopyable constant would leave the original owner undestroyed.
+        if let Some(operand) = self.prepared_argument_operand(block, expr_id) {
+            return block.and(operand);
+        }
         let expression = &self.thir.exprs[expr_id];
         let category = Category::of(&expression.kind);
 
@@ -24,11 +29,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             Category::Place | Category::Rvalue(RvalueFunc::Into | RvalueFunc::AsRvalue) => {
                 let temp = unpack!(block = self.as_temp(block, expr_id));
                 let place = Place::from_local(temp);
-                if self.is_type_copyable(expression.ty) {
-                    block.and(Operand::Copy(place))
-                } else {
-                    block.and(Operand::Move(place))
-                }
+                block.and(Operand::Copy(place))
             }
         }
     }

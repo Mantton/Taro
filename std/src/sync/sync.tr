@@ -1,10 +1,9 @@
-import std.io.Error
-import std.mem.{MaybeUninit, sizeOf}
-import std.marker.Copy
-import std.optional.Optional
-import std.ops.FnOnce
-import std.panic.panic
-import std.result.Result
+import std::io::Error
+import std::mem::{MaybeUninit, sizeOf}
+import std::optional::Optional
+import std::ops::Fn
+import std::panic::panic
+import std::result::Result
 
 public enum ChannelCreateError {
     case invalidCapacity
@@ -28,14 +27,18 @@ public enum ChannelTryRecvError {
 }
 
 /// Send-only access to shared channel storage.
-public struct Sender[T]: Copy {
-    raw: std.sys.sync.RawChannel
+public struct Sender[T] {
+    internal raw: std::sys::sync::RawChannel
 }
 
 /// Receive-only access to shared channel storage.
-public struct Receiver[T]: Copy {
-    raw: std.sys.sync.RawChannel
+public struct Receiver[T] {
+    internal raw: std::sys::sync::RawChannel
 }
+
+// Raw queue access is serialized and messages move exactly once. Endpoints
+// may cross workers only when the message type is transferable. Their private
+// raw fields cannot be retagged to another T or used to bypass that condition.
 
 /// Create a bounded channel and its directional endpoints.
 public func bounded[T](_ capacity: usize) -> Result[(Sender[T], Receiver[T]), ChannelCreateError] {
@@ -43,12 +46,11 @@ public func bounded[T](_ capacity: usize) -> Result[(Sender[T], Receiver[T]), Ch
         return .err(.invalidCapacity)
     }
 
-    let createRes = std.sys.sync.channelCreate(
-        sizeOf[T](),
-        std.intrinsic.__intrinsic_gc_desc[T](),
+    createRes := unsafe { std::sys::sync::channelCreate(
+        std::intrinsic::__intrinsic_gc_value_descriptor[T](),
         capacity,
         true,
-    )
+    ) }
     match createRes {
         case .ok(raw) => return .ok((Sender[T] { raw }, Receiver[T] { raw }))
         case .err(err) => return .err(.io(err))
@@ -57,28 +59,39 @@ public func bounded[T](_ capacity: usize) -> Result[(Sender[T], Receiver[T]), Ch
 
 /// Create an unbounded channel and its directional endpoints.
 public func unbounded[T]() -> (Sender[T], Receiver[T]) {
-    let createRes = std.sys.sync.channelCreate(
-        sizeOf[T](),
-        std.intrinsic.__intrinsic_gc_desc[T](),
+    createRes := unsafe { std::sys::sync::channelCreate(
+        std::intrinsic::__intrinsic_gc_value_descriptor[T](),
         0,
         false,
-    )
+    ) }
     match createRes {
         case .ok(raw) => return (Sender[T] { raw }, Receiver[T] { raw })
         case .err(_) => panic("failed to create unbounded channel")
     }
 }
 
-impl[T] Sender[T] {
-    public func send(self, _ value: T) async -> Result[(), ChannelSendError] {
-        var slot = MaybeUninit[T].new(value)
+extend[T] Sender[T] {
+    public func send(_ value: T) async -> Result[(), ChannelSendError] {
+        var slot = MaybeUninit[T]::new(value)
+        var transferred: bool = false
+        defer {
+            // Until enqueue commits, this frame still owns the payload.
+            // MaybeUninit suppresses automatic drop, so errors/cancellation
+            // must explicitly recover one initialized owner for cleanup.
+            if !transferred {
+                var remaining: T = unsafe { slot.assumeInitRead() }
+            }
+        }
         loop {
-            let ptr = unsafe { slot.asPtr() as *const uint8 }
-            let sendRes = std.sys.sync.channelTrySend(&self.raw, ptr)
+            ptr := unsafe { slot.asPtr() as *const uint8 }
+            sendRes := unsafe { std::sys::sync::channelTrySend(&self.raw, ptr) }
             match sendRes {
-                case .ok(_) => return .ok(())
+                case .ok(_) => {
+                    transferred = true
+                    return .ok(())
+                }
                 case .err(err) if err.isKind(.wouldBlock) => {
-                    let waitRes = await std.sys.sync.waitChannelSend(&self.raw)
+                    waitRes := await std::sys::sync::waitChannelSend(&self.raw)
                     match waitRes {
                         case .ok(_) => {}
                         case .err(err) if err.isKind(.brokenPipe) => return .err(.closed)
@@ -91,12 +104,21 @@ impl[T] Sender[T] {
         }
     }
 
-    public func trySend(self, _ value: T) -> Result[(), ChannelTrySendError] {
-        var slot = MaybeUninit[T].new(value)
-        let ptr = unsafe { slot.asPtr() as *const uint8 }
-        let sendRes = std.sys.sync.channelTrySend(&self.raw, ptr)
+    public func trySend(_ value: T) -> Result[(), ChannelTrySendError] {
+        var slot = MaybeUninit[T]::new(value)
+        var transferred: bool = false
+        defer {
+            if !transferred {
+                var remaining: T = unsafe { slot.assumeInitRead() }
+            }
+        }
+        ptr := unsafe { slot.asPtr() as *const uint8 }
+        sendRes := unsafe { std::sys::sync::channelTrySend(&self.raw, ptr) }
         match sendRes {
-            case .ok(_) => return .ok(())
+            case .ok(_) => {
+                transferred = true
+                return .ok(())
+            }
             case .err(err) if err.isKind(.wouldBlock) => return .err(.full)
             case .err(err) if err.isKind(.brokenPipe) => return .err(.closed)
             case .err(err) => return .err(.io(err))
@@ -105,22 +127,22 @@ impl[T] Sender[T] {
 
     /// Explicitly close the shared channel. Buffered values remain available
     /// to the receiver; future sends return `.closed`.
-    public func close(self) -> Result[(), Error] {
-        std.sys.sync.channelClose(&self.raw)
+    public func close() -> Result[(), Error] {
+        std::sys::sync::channelClose(&self.raw)
     }
 }
 
-impl[T] Receiver[T] {
-    public func recv(self) async -> Optional[T] {
-        var slot = MaybeUninit[T].uninit()
+extend[T] Receiver[T] {
+    public func recv() async -> Optional[T] {
+        var slot = MaybeUninit[T]::uninit()
 
         loop {
-            let ptr = unsafe { slot.asMutPtr() as *mut uint8 }
-            let recvRes = std.sys.sync.channelTryRecv(&self.raw, ptr)
+            ptr := unsafe { slot.asMutPtr() as *mut uint8 }
+            recvRes := unsafe { std::sys::sync::channelTryRecv(&self.raw, ptr) }
             match recvRes {
                 case .ok(.value) => return .some(unsafe { slot.assumeInitRead() })
                 case .ok(.empty) => {
-                    let waitRes = await std.sys.sync.waitChannelRecv(&self.raw)
+                    waitRes := await std::sys::sync::waitChannelRecv(&self.raw)
                     match waitRes {
                         case .ok(_) => {}
                         case .err(err) if err.isKind(.brokenPipe) => return .none
@@ -133,10 +155,10 @@ impl[T] Receiver[T] {
         }
     }
 
-    public func tryRecv(self) -> Result[Optional[T], ChannelTryRecvError] {
-        var slot = MaybeUninit[T].uninit()
-        let ptr = unsafe { slot.asMutPtr() as *mut uint8 }
-        let recvRes = std.sys.sync.channelTryRecv(&self.raw, ptr)
+    public func tryRecv() -> Result[Optional[T], ChannelTryRecvError] {
+        var slot = MaybeUninit[T]::uninit()
+        ptr := unsafe { slot.asMutPtr() as *mut uint8 }
+        recvRes := unsafe { std::sys::sync::channelTryRecv(&self.raw, ptr) }
         match recvRes {
             case .ok(.value) => return .ok(.some(unsafe { slot.assumeInitRead() }))
             case .ok(.empty) => return .err(.empty)
@@ -144,260 +166,178 @@ impl[T] Receiver[T] {
             case .err(err) => return .err(.io(err))
         }
     }
-
 }
 
+/// A lock and its protected inline value. Use references to share it;
+/// @NoCopy lets `taro vet` diagnose accidental value copies.
+@NoCopy
 public struct Mutex[T] {
-    raw: std.sys.sync.RawMutex
-    value: T
+    internal raw: std::sys::sync::RawMutex
+    internal value: T
 }
 
-public struct MutexGuard[T] {
-    mutex: &Mutex[T]
-    held: bool
-}
-
-impl[T] Mutex[T] {
-    public func new(_ value: T) -> Result[Mutex[T], Error] {
-        let createRes = std.sys.sync.mutexCreate()
-        match createRes {
-            case .ok(raw) => return .ok(Mutex[T] { raw, value })
-            case .err(err) => return .err(err)
-        }
-    }
-
-    public func tryLock(&self) -> Result[MutexGuard[T], Error] {
-        let lockRes = std.sys.sync.mutexTryLock(&self.raw)
-        match lockRes {
-            case .ok(true) => return .ok(MutexGuard[T] { mutex: self, held: true })
-            case .ok(false) => return .err(Error(.wouldBlock).withOperation("mutex try lock"))
-            case .err(err) => return .err(err)
-        }
-    }
-
-    public func lock(&self) async -> Result[MutexGuard[T], Error] {
-        loop {
-            let tryRes = self.tryLock()
-            match tryRes {
-                case .ok(acquired) => return .ok(acquired)
-                case .err(err) if err.isKind(.wouldBlock) => {
-                    let waitRes = await std.sys.sync.waitMutexLock(&self.raw)
-                    match waitRes {
-                        case .ok(_) => {}
-                        case .err(err) => return .err(err)
-                    }
-                }
-                case .err(err) => return .err(err)
-            }
-        }
-    }
-
-    public func withLock[R, F: FnOnce(&mut T) -> R](&self, _ body: F) async -> Result[R, Error] {
-        let lockRes = await self.lock()
-        match lockRes {
-            case .ok(value) => {
-                var acquired = value
-                defer {
-                    match acquired.unlock() {
-                        case .ok(_) => {}
-                        case .err(_) => {}
-                    }
-                }
-
-                let result = body(acquired.value())
-                match acquired.unlock() {
-                    case .ok(_) => return .ok(result)
-                    case .err(err) => return .err(err)
-                }
-            }
-            case .err(err) => return .err(err)
+extend[T] Mutex[T] {
+    public static func new(_ value: T) -> Result[Self, Error] {
+        match std::sys::sync::mutexCreate() {
+            case .ok(raw) => return .ok(Self { raw, value })
+            case .err(error) => return .err(error)
         }
     }
 }
 
-impl[T] MutexGuard[T] {
-    public func value(&mut self) -> &mut T {
-        if !self.held {
-            panic("mutex guard already unlocked")
-        }
-
-        let ptr = unsafe { (&self.mutex.value as *const T) as *mut T }
-        return unsafe { ptr as &mut T }
-    }
-
-    public func unlock(&mut self) -> Result[(), Error] {
-        if !self.held {
-            return .ok(())
-        }
-
-        let result = std.sys.sync.mutexUnlock(&self.mutex.raw)
-        if result.isOk() {
-            self.held = false
-        }
-        result
-    }
-}
-
+/// A lock and its protected inline value. Use references to share it;
+/// @NoCopy lets `taro vet` diagnose accidental value copies.
+@NoCopy
 public struct RwLock[T] {
-    raw: std.sys.sync.RawRwLock
-    value: T
+    internal raw: std::sys::sync::RawRwLock
+    internal value: T
 }
 
-public struct RwLockReadGuard[T] {
-    lock: &RwLock[T]
-    held: bool
-}
-
-public struct RwLockWriteGuard[T] {
-    lock: &RwLock[T]
-    held: bool
-}
-
-impl[T] RwLock[T] {
-    public func new(_ value: T) -> Result[RwLock[T], Error] {
-        let createRes = std.sys.sync.rwlockCreate()
-        match createRes {
-            case .ok(raw) => return .ok(RwLock[T] { raw, value })
-            case .err(err) => return .err(err)
+extend[T] RwLock[T] {
+    public static func new(_ value: T) -> Result[Self, Error] {
+        match std::sys::sync::rwlockCreate() {
+            case .ok(raw) => return .ok(Self { raw, value })
+            case .err(error) => return .err(error)
         }
     }
+}
 
-    public func tryRead(&self) -> Result[RwLockReadGuard[T], Error] {
-        let lockRes = std.sys.sync.rwlockTryRead(&self.raw)
-        match lockRes {
-            case .ok(true) => return .ok(RwLockReadGuard[T] { lock: self, held: true })
-            case .ok(false) => return .err(Error(.wouldBlock).withOperation("rwlock try read"))
-            case .err(err) => return .err(err)
-        }
+extend[T] &Mutex[T] {
+    /// Access protected storage while holding the appropriate lock. The caller
+    /// synchronizes access; references do not become immutable under a read lock.
+    public func value() -> &T { &self.value }
+
+    /// Returns false when another acquisition prevents immediate locking.
+    public func tryLock() -> Result[bool, Error] {
+        std::sys::sync::mutexTryLock(&self.raw)
     }
 
-    public func read(&self) async -> Result[RwLockReadGuard[T], Error] {
+    public func lock() async -> Result[(), Error] {
         loop {
-            let tryRes = self.tryRead()
-            match tryRes {
-                case .ok(acquired) => return .ok(acquired)
-                case .err(err) if err.isKind(.wouldBlock) => {
-                    let waitRes = await std.sys.sync.waitRwLockRead(&self.raw)
-                    match waitRes {
+            match self.tryLock() {
+                case .ok(true) => return .ok(())
+                case .ok(false) => {
+                    match await std::sys::sync::waitMutexLock(&self.raw) {
                         case .ok(_) => {}
-                        case .err(err) => return .err(err)
+                        case .err(error) => return .err(error)
                     }
                 }
-                case .err(err) => return .err(err)
+                case .err(error) => return .err(error)
             }
         }
     }
 
-    public func tryWrite(&self) -> Result[RwLockWriteGuard[T], Error] {
-        let lockRes = std.sys.sync.rwlockTryWrite(&self.raw)
-        match lockRes {
-            case .ok(true) => return .ok(RwLockWriteGuard[T] { lock: self, held: true })
-            case .ok(false) => return .err(Error(.wouldBlock).withOperation("rwlock try write"))
-            case .err(err) => return .err(err)
+    public func unlock() -> Result[(), Error] {
+        std::sys::sync::mutexUnlock(&self.raw)
+    }
+
+    /// Acquires, executes the synchronous callback, and releases on normal
+    /// return or unwind. Suspension is limited to acquisition.
+    public func withLock[R, F: Fn(&T) -> R](_ body: F) async -> Result[R, Error] {
+        match await self.lock() {
+            case .ok(_) => {}
+            case .err(error) => return .err(error)
+        }
+        var held = true
+        defer { if held { var _ = self.unlock() } }
+        result := body(&self.value)
+        held = false
+        released := self.unlock()
+        match released {
+            case .ok(_) => return .ok(result)
+            case .err(error) => return .err(error)
         }
     }
 
-    public func write(&self) async -> Result[RwLockWriteGuard[T], Error] {
+}
+
+extend[T] &RwLock[T] {
+    /// Access protected storage while holding the appropriate lock. The caller
+    /// synchronizes access; references do not become immutable under a read lock.
+    public func value() -> &T { &self.value }
+
+    /// Returns false when another acquisition prevents immediate locking.
+    public func tryReadLock() -> Result[bool, Error] {
+        std::sys::sync::rwlockTryRead(&self.raw)
+    }
+
+    public func readLock() async -> Result[(), Error] {
         loop {
-            let tryRes = self.tryWrite()
-            match tryRes {
-                case .ok(acquired) => return .ok(acquired)
-                case .err(err) if err.isKind(.wouldBlock) => {
-                    let waitRes = await std.sys.sync.waitRwLockWrite(&self.raw)
-                    match waitRes {
+            match self.tryReadLock() {
+                case .ok(true) => return .ok(())
+                case .ok(false) => {
+                    match await std::sys::sync::waitRwLockRead(&self.raw) {
                         case .ok(_) => {}
-                        case .err(err) => return .err(err)
+                        case .err(error) => return .err(error)
                     }
                 }
-                case .err(err) => return .err(err)
+                case .err(error) => return .err(error)
             }
         }
     }
 
-    public func withRead[R, F: FnOnce(&T) -> R](&self, _ body: F) async -> Result[R, Error] {
-        let lockRes = await self.read()
-        match lockRes {
-            case .ok(value) => {
-                var acquired = value
-                defer {
-                    match acquired.unlock() {
+    public func readUnlock() -> Result[(), Error] {
+        std::sys::sync::rwlockUnlockRead(&self.raw)
+    }
+
+    /// Acquires, executes the synchronous callback, and releases on normal
+    /// return or unwind. Suspension is limited to acquisition.
+    public func withRead[R, F: Fn(&T) -> R](_ body: F) async -> Result[R, Error] {
+        match await self.readLock() {
+            case .ok(_) => {}
+            case .err(error) => return .err(error)
+        }
+        var held = true
+        defer { if held { var _ = self.readUnlock() } }
+        result := body(&self.value)
+        held = false
+        released := self.readUnlock()
+        match released {
+            case .ok(_) => return .ok(result)
+            case .err(error) => return .err(error)
+        }
+    }
+
+    /// Returns false when another acquisition prevents immediate locking.
+    public func tryWriteLock() -> Result[bool, Error] {
+        std::sys::sync::rwlockTryWrite(&self.raw)
+    }
+
+    public func writeLock() async -> Result[(), Error] {
+        loop {
+            match self.tryWriteLock() {
+                case .ok(true) => return .ok(())
+                case .ok(false) => {
+                    match await std::sys::sync::waitRwLockWrite(&self.raw) {
                         case .ok(_) => {}
-                        case .err(_) => {}
+                        case .err(error) => return .err(error)
                     }
                 }
-
-                let result = body(acquired.value())
-                match acquired.unlock() {
-                    case .ok(_) => return .ok(result)
-                    case .err(err) => return .err(err)
-                }
+                case .err(error) => return .err(error)
             }
-            case .err(err) => return .err(err)
         }
     }
 
-    public func withWrite[R, F: FnOnce(&mut T) -> R](&self, _ body: F) async -> Result[R, Error] {
-        let lockRes = await self.write()
-        match lockRes {
-            case .ok(value) => {
-                var acquired = value
-                defer {
-                    match acquired.unlock() {
-                        case .ok(_) => {}
-                        case .err(_) => {}
-                    }
-                }
-
-                let result = body(acquired.value())
-                match acquired.unlock() {
-                    case .ok(_) => return .ok(result)
-                    case .err(err) => return .err(err)
-                }
-            }
-            case .err(err) => return .err(err)
-        }
-    }
-}
-
-impl[T] RwLockReadGuard[T] {
-    public func value(&self) -> &T {
-        if !self.held {
-            panic("rwlock read guard already unlocked")
-        }
-        return unsafe { (&self.lock.value as *const T) as &T }
+    public func writeUnlock() -> Result[(), Error] {
+        std::sys::sync::rwlockUnlockWrite(&self.raw)
     }
 
-    public func unlock(&mut self) -> Result[(), Error] {
-        if !self.held {
-            return .ok(())
+    /// Acquires, executes the synchronous callback, and releases on normal
+    /// return or unwind. Suspension is limited to acquisition.
+    public func withWrite[R, F: Fn(&T) -> R](_ body: F) async -> Result[R, Error] {
+        match await self.writeLock() {
+            case .ok(_) => {}
+            case .err(error) => return .err(error)
         }
-
-        let result = std.sys.sync.rwlockUnlockRead(&self.lock.raw)
-        if result.isOk() {
-            self.held = false
+        var held = true
+        defer { if held { var _ = self.writeUnlock() } }
+        result := body(&self.value)
+        held = false
+        released := self.writeUnlock()
+        match released {
+            case .ok(_) => return .ok(result)
+            case .err(error) => return .err(error)
         }
-        result
-    }
-}
-
-impl[T] RwLockWriteGuard[T] {
-    public func value(&mut self) -> &mut T {
-        if !self.held {
-            panic("rwlock write guard already unlocked")
-        }
-        let ptr = unsafe { (&self.lock.value as *const T) as *mut T }
-        return unsafe { ptr as &mut T }
     }
 
-    public func unlock(&mut self) -> Result[(), Error] {
-        if !self.held {
-            return .ok(())
-        }
-
-        let result = std.sys.sync.rwlockUnlockWrite(&self.lock.raw)
-        if result.isOk() {
-            self.held = false
-        }
-        result
-    }
 }

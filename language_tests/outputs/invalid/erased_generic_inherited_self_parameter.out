@@ -1,0 +1,4 @@
+error: type 'any Child' does not conform to interface 'Child'
+ -> language_tests/source_files/invalid/erased_generic_inherited_self_parameter.tr:21:22
+	    var equal: bool = compare(&first, &second)
+	                      ^^^^^^^

@@ -1,0 +1,4 @@
+error: type 'any Readable' does not conform to interface 'Readable'
+ -> language_tests/source_files/invalid/s34_equality_cannot_join_hidden_inputs.tr:8:23
+	    var result: bool = same(&left, &right) // Error: a where equality cannot join separately erased identities.
+	                       ^^^^

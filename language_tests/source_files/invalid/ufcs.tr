@@ -3,11 +3,11 @@
 type int = isize
 
 interface SpeakerByRef {
-    func greet(&self)
+    func greet()
 }
 
 interface SpeakerByMutRef {
-    func increment(&mut self)
+    func increment()
 }
 
 struct Human {
@@ -18,28 +18,26 @@ struct Counter {
     value: int
 }
 
-impl SpeakerByRef for Human {
-    func greet(&self) {
+conform &Human to SpeakerByRef {
+    func greet() {
         print(self.name)
     }
 }
 
-impl SpeakerByMutRef for Counter {
-    func increment(&mut self) {
+conform &Counter to SpeakerByMutRef {
+    func increment() {
         self.value = self.value + 1
     }
 }
 
 func main() {
-    let h = Human { name: "Alice" }
+    h := Human { name: "Alice" }
     var c = Counter { value: 0 }
 
-    // ERROR: Missing & for &self receiver.
-    SpeakerByRef.greet(h)
+    // ERROR: An explicit reference is required by the &Human target.
+    SpeakerByRef::greet(h)
 
-    // ERROR: Missing &mut for &mut self receiver.
-    SpeakerByMutRef.increment(c)
+    // ERROR: An explicit reference is required by the &Counter target.
+    SpeakerByMutRef::increment(c)
 
-    // ERROR: Wrong mutability (& instead of &mut).
-    SpeakerByMutRef.increment(&c)
 }

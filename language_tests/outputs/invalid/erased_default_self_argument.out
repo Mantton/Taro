@@ -1,0 +1,4 @@
+error: cannot call an erased interface method whose arguments or result expose its hidden Self type
+ -> language_tests/source_files/invalid/erased_default_self_argument.tr:9:28
+	    var equal: bool = boxed.same(&other) // The erased Other is not known to be Counter.
+	                            ^^^^

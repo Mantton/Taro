@@ -276,9 +276,30 @@ fn insert_with_closure<'ctx>(
     changed
 }
 
+// A nominal/tuple/array shape is not a fixed type while a nested argument
+// remains abstract. In particular, Base[T] == Base[int32] is a conditional
+// specialization, not a contradiction between two concrete nominal types.
 fn is_concrete(ty: Ty<'_>) -> bool {
-    !matches!(
-        ty.kind(),
-        TyKind::Parameter(_) | TyKind::Infer(_) | TyKind::Alias { .. } | TyKind::Error
-    )
+    use crate::sema::tycheck::visit::{TypeSuperVisitable, TypeVisitable, TypeVisitor};
+    struct Abstract;
+    impl<'ctx> TypeVisitor<'ctx> for Abstract {
+        fn visit_ty(&mut self, ty: Ty<'ctx>) -> bool {
+            matches!(
+                ty.kind(),
+                TyKind::Parameter(_)
+                    | TyKind::Infer(_)
+                    | TyKind::Alias { .. }
+                    | TyKind::ExistentialSelf(_)
+                    | TyKind::Opaque(_)
+                    | TyKind::Error
+            ) || ty.super_visit_with(self)
+        }
+        fn visit_const(&mut self, value: crate::sema::models::Const<'ctx>) -> bool {
+            matches!(
+                value.kind,
+                crate::sema::models::ConstKind::Param(_) | crate::sema::models::ConstKind::Infer(_)
+            ) || value.ty.visit_with(self)
+        }
+    }
+    !ty.visit_with(&mut Abstract)
 }

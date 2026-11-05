@@ -1,0 +1,12 @@
+error: unknown symbol `MutexGuard`
+ -> language_tests/source_files/invalid/sync_guards_removed.tr:2:26
+	    var mutex: std::sync::MutexGuard[int32]
+	                          ^^^^^^^^^^
+error: unknown symbol `RwLockReadGuard`
+ -> language_tests/source_files/invalid/sync_guards_removed.tr:3:27
+	    var reader: std::sync::RwLockReadGuard[int32]
+	                           ^^^^^^^^^^^^^^^
+error: unknown symbol `RwLockWriteGuard`
+ -> language_tests/source_files/invalid/sync_guards_removed.tr:4:27
+	    var writer: std::sync::RwLockWriteGuard[int32]
+	                           ^^^^^^^^^^^^^^^^

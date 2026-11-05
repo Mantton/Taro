@@ -1,0 +1,4 @@
+error: subclass must inherit or implement every required initializer
+ -> language_tests/source_files/invalid/class_decoder_required.tr:2:6
+	class IncompleteDecodedChild: DecodedBase { extra: int32 }
+	      ^^^^^^^^^^^^^^^^^^^^^^

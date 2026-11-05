@@ -1,4 +1,4 @@
-import monkey.token.{Token, TokenKind, Position, keywordKind}
+import monkey::token::{Token, TokenKind, Position, keywordKind}
 
 const BYTE_NUL: uint8 = 0
 const BYTE_TAB: uint8 = 9
@@ -85,37 +85,29 @@ public struct Lexer {
     column: usize
 }
 
-impl Lexer {
-    public func new(_ source: string) -> Self {
-        return Lexer {
-            source,
-            offset: 0,
-            line: 1,
-            column: 1,
-        }
-    }
+extend &Lexer {
 
-    func isAtEnd(&self) -> bool {
+    func isAtEnd() -> bool {
         return self.offset >= self.source.byteLen()
     }
 
-    func peek(&self) -> uint8 {
+    func peek() -> uint8 {
         if self.isAtEnd() { return BYTE_NUL }
         return self.source.byteAt(self.offset)
     }
 
-    func peekNext(&self) -> uint8 {
-        let next = self.offset + 1
+    func peekNext() -> uint8 {
+        next := self.offset + 1
         if next >= self.source.byteLen() { return BYTE_NUL }
         return self.source.byteAt(next)
     }
 
-    func position(&self) -> Position {
+    func position() -> Position {
         return Position { line: self.line, column: self.column }
     }
 
-    func advance(&mut self) -> uint8 {
-        let byte = self.peek()
+    func advance() -> uint8 {
+        byte := self.peek()
         self.offset += 1
         if byte == BYTE_NEWLINE {
             self.line += 1
@@ -126,48 +118,48 @@ impl Lexer {
         return byte
     }
 
-    func skipWhitespace(&mut self) {
+    func skipWhitespace() {
         while !self.isAtEnd() && isWhitespace(self.peek()) {
-            let _ = self.advance()
+            var _ = self.advance()
         }
     }
 
-    func readWhile(&mut self, _ predicate: (uint8) -> bool) -> string {
-        let start = self.offset
+    func readWhile(_ predicate: (uint8) -> bool) -> string {
+        start := self.offset
         while !self.isAtEnd() && predicate(self.peek()) {
-            let _ = self.advance()
+            var _ = self.advance()
         }
         return self.source.sliceBytes(start, self.offset - start)
     }
 
     /// Reads a double-quoted string. An unterminated literal yields the text
     /// found so far; the parser reports the position.
-    func readString(&mut self) -> string {
-        let _ = self.advance() // opening quote
-        let start = self.offset
+    func readString() -> string {
+        var _ = self.advance() // opening quote
+        start := self.offset
         while !self.isAtEnd() && self.peek() != BYTE_QUOTE {
-            let _ = self.advance()
+            var _ = self.advance()
         }
-        let text = self.source.sliceBytes(start, self.offset - start)
+        text := self.source.sliceBytes(start, self.offset - start)
         if !self.isAtEnd() {
-            let _ = self.advance() // closing quote
+            var _ = self.advance() // closing quote
         }
         return text
     }
 
     /// Produces the next token, or `.eof` once the input is exhausted.
-    public func nextToken(&mut self) -> Token {
+    public func nextToken() -> Token {
         self.skipWhitespace()
 
-        let position = self.position()
+        position := self.position()
         if self.isAtEnd() {
             return Token { kind: .eof, position }
         }
 
-        let byte = self.peek()
+        byte := self.peek()
 
         if isLetter(byte) {
-            let text = self.readWhile(isIdentifierContinuation)
+            text := self.readWhile(isIdentifierContinuation)
             match keywordKind(text) {
                 case .some(keyword) => return Token { kind: keyword, position }
                 case .none => return Token { kind: .identifier(text), position }
@@ -175,7 +167,7 @@ impl Lexer {
         }
 
         if isDigit(byte) {
-            let digits = self.readWhile(isDigit)
+            digits := self.readWhile(isDigit)
             return Token { kind: .integer(digitsToInt(digits)), position }
         }
 
@@ -185,19 +177,19 @@ impl Lexer {
 
         // Two-byte operators are checked before their one-byte prefixes.
         if byte == BYTE_ASSIGN && self.peekNext() == BYTE_ASSIGN {
-            let _ = self.advance()
-            let _ = self.advance()
+            var _ = self.advance()
+            var _ = self.advance()
             return Token { kind: .equal, position }
         }
 
         if byte == BYTE_BANG && self.peekNext() == BYTE_ASSIGN {
-            let _ = self.advance()
-            let _ = self.advance()
+            var _ = self.advance()
+            var _ = self.advance()
             return Token { kind: .notEqual, position }
         }
 
-        let _ = self.advance()
-        let kind = singleByteKind(byte)
+        var _ = self.advance()
+        kind := singleByteKind(byte)
         return Token { kind, position }
     }
 }
@@ -221,4 +213,15 @@ func singleByteKind(_ byte: uint8) -> TokenKind {
     if byte == BYTE_LBRACKET { return .leftBracket }
     if byte == BYTE_RBRACKET { return .rightBracket }
     return .illegal(byte as rune)
+}
+
+extend Lexer {
+    public static func new(_ source: string) -> Self {
+        return Lexer {
+            source,
+            offset: 0,
+            line: 1,
+            column: 1,
+        }
+    }
 }

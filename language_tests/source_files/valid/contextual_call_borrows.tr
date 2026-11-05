@@ -1,0 +1,33 @@
+struct Counter { value: int32 }
+struct Editor {}
+
+type Writer = &int32
+
+func increment(_ value: &int32) { *value += 1 }
+func aliasIncrement(_ value: Writer) { *value += 1 }
+func touch[T](_ value: &T) {}
+func choose(_ value: &int32) -> int32 { 1 }
+
+extend Editor {
+    func update(_ value: &int32) { increment(value) }
+    static func apply(_ value: &int32) { increment(value) }
+}
+
+func main() {
+    var counter = Counter { value: 0 } // Counter, an owned noncopyable value.
+    editor := Editor {} // Editor, borrowed by the shared receiver call.
+    increment(&counter.value)
+    touch(&counter)
+    editor.update(&counter.value)
+    Editor::apply(&counter.value)
+    action := increment // (&int32) -> void.
+    action(&counter.value)
+    aliasIncrement(&counter.value)
+    var callback = () => { increment(&counter.value) } // Inferred FnMut.
+    callback()
+    callback()
+    assert(counter.value == 7, "contextual borrows mutate the original storage")
+    assert(choose(&counter.value) == 1, "all references use one overload")
+    reader := &counter.value // &int32, a writable reference.
+    assert(choose(reader) == 1, "saved reference uses the same overload")
+}

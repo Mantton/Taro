@@ -1,0 +1,434 @@
+// A syntax-only contiguous-input prepass. ASCII strings and numbers are scanned
+// without semantic objects. Strings retain checked raw UTF-8 runs and copy only
+// when decoding escapes; Unicode escapes use the production scalar decoder.
+// It models validation-before-construction, not Go's exact scanner internals.
+import std::collections::{Dictionary, List}
+import std::encoding::Decodable
+import std::result::Result
+
+// Complete eight-byte windows only. Explicit little-endian assembly supports
+// unaligned input on every target; callers establish the readable extent.
+@inline
+unsafe func tokenStringWord(_ bytes: *const uint8) -> uint64 {
+    unsafe {
+        (bytes.read() as uint64)
+            | ((bytes.add(1).read() as uint64) << 8)
+            | ((bytes.add(2).read() as uint64) << 16)
+            | ((bytes.add(3).read() as uint64) << 24)
+            | ((bytes.add(4).read() as uint64) << 32)
+            | ((bytes.add(5).read() as uint64) << 40)
+            | ((bytes.add(6).read() as uint64) << 48)
+            | ((bytes.add(7).read() as uint64) << 56)
+    }
+}
+
+// Mycroft byte detection, as used by serde_json's contiguous string reader:
+// https://github.com/serde-rs/json/blob/v1.0.154/src/read.rs
+// Subtraction may mark later lanes after a real match, but the first marked
+// lane is exact. Explicit little-endian loads keep that lane in input order.
+// std arithmetic wraps, including when subtraction borrows out of the word.
+@inline
+func tokenStringSpecials(_ word: uint64) -> uint64 {
+    ones := 0x0101010101010101_u64
+    high := 0x8080808080808080_u64
+    controls := (word - 0x2020202020202020_u64) & ~word
+    quotes := word ^ 0x2222222222222222_u64
+    quoteMatches := (quotes - ones) & ~quotes
+    slashes := word ^ 0x5c5c5c5c5c5c5c5c_u64
+    slashMatches := (slashes - ones) & ~slashes
+    return (controls | quoteMatches | slashMatches | word) & high
+}
+
+// The mask is nonzero; only its first marked byte is used.
+@inline
+func tokenFirstSpecial(_ matches: uint64) -> usize {
+    var bits = matches
+    var index: usize = 0
+    if (bits & 0xffffffff_u64) == 0_u64 {
+        bits >>= 32
+        index += 4
+    }
+    if (bits & 0xffff_u64) == 0_u64 {
+        bits >>= 16
+        index += 2
+    }
+    if (bits & 0xff_u64) == 0_u64 { index += 1 }
+    return index
+}
+
+// Contiguous input has no fallible refill. Keep source positions in locals
+// while scanning, then publish them once; the byte budget bounds every load.
+// Eight spaces are common in pretty JSON. This remains an ordinary polled
+// loop, and CR/tab keep the production byte-based column convention.
+@inline
+func tokenSkipWhitespace(_ input: &StringInput, _ end: usize) {
+    start := input.index
+    if start >= end { return }
+    data := std::string::stringData(input.source)
+    if !isWhitespace(unsafe { data.add(start).read() }) { return }
+    var index = start
+    var line = input.tracker.value.line
+    var column = input.tracker.value.column
+    while index < end {
+        if end - index >= 8 && unsafe { tokenStringWord(data.add(index)) } == 0x2020202020202020_u64 {
+            index += 8
+            column += 8
+            continue
+        }
+        byte := unsafe { data.add(index).read() }
+        if byte == 0x0a_u8 {
+            line += 1
+            column = 1
+        } else if byte == 0x20_u8 || byte == 0x09_u8 || byte == 0x0d_u8 {
+            column += 1
+        } else {
+            break
+        }
+        index += 1
+    }
+    input.index = index
+    input.tracker.value.offset += index - start
+    input.tracker.value.line = line
+    input.tracker.value.column = column
+}
+
+// A nullable class handle keeps the common empty lookup to one word.
+final class TokenKeyLookup {
+    keys: Dictionary[string, bool]
+}
+
+extend TokenKeyLookup {
+    init(_ keys: Dictionary[string, bool]) { self.keys = keys }
+}
+
+// Small objects keep the inline linear check. Promotion is an out-of-line
+// operation only once per wide object, with no per-container reference box.
+@noinline
+func tokenKeyIndex(_ keys: List[string], _ start: usize) -> TokenKeyLookup {
+    var index = Dictionary[string, bool]::new()
+    var slot = start
+    while slot < keys.len() {
+        index.set(key: *keys.at(slot), value: true)
+        slot += 1
+    }
+    return TokenKeyLookup(index)
+}
+
+@inline
+func tokenSeenKey(
+    _ keys: List[string], _ start: usize, _ key: string,
+    _ lookup: TokenKeyLookup?,
+) -> bool {
+    match lookup {
+        case .some(index) => return index.keys.insert(key: key, value: true).isSome()
+        case .none => {}
+    }
+    var index = start
+    while index < keys.len() {
+        if *keys.at(index) == key { return true }
+        index += 1
+    }
+    return false
+}
+
+struct TokenScanner {
+    input: StringInput
+    options: Options
+    end: usize
+    keys: List[string]
+}
+
+extend TokenScanner {
+    static func new(_ source: string, _ options: Options) -> Self {
+        var end = source.byteLen()
+        if end > options.maxInputBytes() { end = options.maxInputBytes() }
+        TokenScanner { input: StringInput::new(source), options, end, keys: List[string]::new() }
+    }
+}
+
+extend &TokenScanner {
+    @inline
+    func byte(_ index: usize) -> uint8 {
+        if index >= self.end { return 0_u8 }
+        return self.input.source.byteAt(index)
+    }
+
+    @inline
+    func advance(_ count: usize) {
+        self.input.index += count
+        self.input.tracker.advanceAscii(count)
+    }
+
+    func failure(_ kind: ErrorKind, _ message: string) -> Error {
+        if self.input.index >= self.end && self.end < self.input.source.byteLen() {
+            return errorAt(.inputLimit, "JSON value exceeds the configured byte limit", self.input.position(), ROOT_PATH)
+        }
+        return errorAt(kind, message, self.input.position(), ROOT_PATH)
+    }
+
+    func whitespace() {
+        tokenSkipWhitespace(&self.input, self.end)
+    }
+
+    func string() -> Result[string, Error] {
+        start := self.input.index
+        if self.byte(start) != ('"' as uint8) {
+            return .err(self.failure(.unexpectedToken, "expected JSON string"))
+        }
+        var index = start + 1
+        var segment = index
+        // Only escapes need writable storage. Valid raw UTF-8 stays in the
+        // immutable input, and escaped strings append whole validated runs.
+        var output: std::string::Builder? = .none
+        data := std::string::stringData(self.input.source)
+        while index < self.end {
+            if self.end - index >= 8 {
+                word := unsafe { tokenStringWord(data.add(index)) }
+                specials := tokenStringSpecials(word)
+                if specials == 0_u64 {
+                    index += 8
+                    continue
+                }
+                index += tokenFirstSpecial(specials)
+            }
+            byte := self.byte(index)
+            if byte == ('"' as uint8) {
+                tail := self.input.source.substring(segment, index - segment)
+                self.advance(index - self.input.index + 1)
+                match output {
+                    case .none => return .ok(tail)
+                    case .some(builder) => {
+                        builder.writeString(tail)
+                        return .ok(builder.toString())
+                    }
+                }
+            }
+            if byte == ('\\' as uint8) {
+                if output.isNone() { output = .some(std::string::Builder::new()) }
+                var builder = output.unwrap()
+                builder.writeString(self.input.source.substring(segment, index - segment))
+                self.advance(index - self.input.index + 1)
+                escapePosition := self.input.position()
+                if self.input.index >= self.end {
+                    return .err(self.failure(.unexpectedEof, "unterminated JSON escape"))
+                }
+                escaped := self.byte(self.input.index)
+                self.advance(1)
+                match escaped {
+                    case 0x22 => builder.writeByte(0x22_u8)
+                    case 0x5c => builder.writeByte(0x5c_u8)
+                    case 0x2f => builder.writeByte(0x2f_u8)
+                    case 0x62 => builder.writeByte(0x08_u8)
+                    case 0x66 => builder.writeByte(0x0c_u8)
+                    case 0x6e => builder.writeByte(0x0a_u8)
+                    case 0x72 => builder.writeByte(0x0d_u8)
+                    case 0x74 => builder.writeByte(0x09_u8)
+                    case 0x75 => writeEscapedUnicode(
+                        &self.input, ParseState::new(self.options, 0), ROOT_PATH,
+                        escapePosition, &builder,
+                    )!
+                    case _ => return .err(errorAt(.invalidEscape, "escape is not defined by JSON", escapePosition, ROOT_PATH))
+                }
+                index = self.input.index
+                segment = index
+                continue
+            }
+            if byte < 0x20_u8 {
+                self.advance(index - self.input.index)
+                return .err(self.failure(.unescapedControlCharacter, "control characters must be escaped in JSON strings"))
+            }
+            if byte >= 0x80_u8 {
+                width := if byte >= 0xc2_u8 && byte <= 0xdf_u8 {
+                    2 as usize
+                } else if byte >= 0xe0_u8 && byte <= 0xef_u8 {
+                    3 as usize
+                } else if byte >= 0xf0_u8 && byte <= 0xf4_u8 {
+                    4 as usize
+                } else {
+                    0 as usize
+                }
+                if width == 0 {
+                    self.advance(index - self.input.index)
+                    return .err(self.failure(.invalidUtf8, "invalid UTF-8 leading byte in JSON string"))
+                }
+                if self.end - index < width {
+                    self.advance(self.end - self.input.index)
+                    return .err(self.failure(.invalidUtf8, "truncated UTF-8 sequence in JSON string"))
+                }
+                second := self.byte(index + 1)
+                if second < 0x80_u8 || second > 0xbf_u8
+                    || (byte == 0xe0_u8 && second < 0xa0_u8)
+                    || (byte == 0xed_u8 && second > 0x9f_u8)
+                    || (byte == 0xf0_u8 && second < 0x90_u8)
+                    || (byte == 0xf4_u8 && second > 0x8f_u8) {
+                    self.advance(index - self.input.index + 1)
+                    return .err(self.failure(.invalidUtf8, "invalid UTF-8 continuation byte in JSON string"))
+                }
+                var continuation: usize = 2
+                while continuation < width {
+                    byte := self.byte(index + continuation)
+                    if byte < 0x80_u8 || byte > 0xbf_u8 {
+                        self.advance(index - self.input.index + continuation)
+                        return .err(self.failure(.invalidUtf8, "invalid UTF-8 continuation byte in JSON string"))
+                    }
+                    continuation += 1
+                }
+                index += width
+                continue
+            }
+            index += 1
+        }
+        self.advance(index - self.input.index)
+        return .err(self.failure(.unexpectedEof, "unterminated JSON string"))
+    }
+
+    func number() -> Result[(), Error] {
+        start := self.input.index
+        var index = start
+        if self.byte(index) == ('-' as uint8) { index += 1 }
+        first := self.byte(index)
+        if first == ('0' as uint8) {
+            index += 1
+            if isDigit(self.byte(index)) {
+                self.advance(index - start)
+                return .err(self.failure(.invalidNumber, "leading zero"))
+            }
+        } else if first >= ('1' as uint8) && first <= ('9' as uint8) {
+            while isDigit(self.byte(index)) { index += 1 }
+        } else {
+            self.advance(index - start)
+            return .err(self.failure(.invalidNumber, "expected integer digit"))
+        }
+        if self.byte(index) == ('.' as uint8) {
+            index += 1
+            if !isDigit(self.byte(index)) {
+                self.advance(index - start)
+                return .err(self.failure(.invalidNumber, "expected fraction digit"))
+            }
+            while isDigit(self.byte(index)) { index += 1 }
+        }
+        exponent := self.byte(index)
+        if exponent == ('e' as uint8) || exponent == ('E' as uint8) {
+            index += 1
+            sign := self.byte(index)
+            if sign == ('+' as uint8) || sign == ('-' as uint8) { index += 1 }
+            if !isDigit(self.byte(index)) {
+                self.advance(index - start)
+                return .err(self.failure(.invalidNumber, "expected exponent digit"))
+            }
+            while isDigit(self.byte(index)) { index += 1 }
+        }
+        self.advance(index - start)
+        if index < self.end && !isNumberTerminator(self.byte(index)) {
+            return .err(self.failure(.invalidNumber, "invalid number suffix"))
+        }
+        if index >= self.end && self.end < self.input.source.byteLen() {
+            return .err(self.failure(.inputLimit, "input limit"))
+        }
+        return .ok(())
+    }
+
+    func literal(_ expected: string) -> Result[(), Error] {
+        // Valid literals contain only ASCII. Keep progress local, as for
+        // numbers, and publish position once instead of once per character.
+        start := self.input.index
+        var index: usize = 0
+        while index < expected.byteLen() {
+            if start + index >= self.end {
+                self.advance(index)
+                return .err(self.failure(.unexpectedEof, "incomplete JSON literal"))
+            }
+            if self.byte(start + index) != expected.byteAt(index) {
+                self.advance(index)
+                return .err(self.failure(.unexpectedToken, "invalid JSON literal"))
+            }
+            index += 1
+        }
+        self.advance(index)
+        return .ok(())
+    }
+
+    func value(_ depth: usize) -> Result[(), Error] {
+        self.whitespace()
+        if self.input.index >= self.end {
+            return .err(self.failure(.unexpectedEof, "expected JSON value"))
+        }
+        byte := self.byte(self.input.index)
+        if byte == ('"' as uint8) { var _ = self.string()!; return .ok(()) }
+        if byte == ('n' as uint8) { return self.literal("null") }
+        if byte == ('t' as uint8) { return self.literal("true") }
+        if byte == ('f' as uint8) { return self.literal("false") }
+        if byte == ('-' as uint8) || isDigit(byte) { return self.number() }
+        object := byte == ('{' as uint8)
+        if !object && byte != ('[' as uint8) {
+            return .err(self.failure(.unexpectedToken, "invalid JSON value"))
+        }
+        if depth >= self.options.maxDepth() {
+            return .err(self.failure(.depthLimit, "nesting depth limit"))
+        }
+        self.advance(1)
+        self.whitespace()
+        closing := if object { '}' as uint8 } else { ']' as uint8 }
+        start := self.keys.len()
+        var count: usize = 0
+        var lookup: TokenKeyLookup? = .none
+        if self.input.index < self.end && self.byte(self.input.index) == closing {
+            self.advance(1)
+            return .ok(())
+        }
+        loop {
+            var key = ""
+            if object {
+                position := self.input.position()
+                key = self.string()!
+                if self.options.duplicateKeys() == DuplicateKeyPolicy::reject {
+                    if count == 32 { lookup = .some(tokenKeyIndex(self.keys, start)) }
+                    if tokenSeenKey(self.keys, start, key, lookup) {
+                        return .err(errorAt(.duplicateKey, "duplicate object key", position, childPathForKey(ROOT_PATH, key)))
+                }
+                self.keys.append(key)
+                }
+                self.whitespace()
+                if self.input.index >= self.end || self.byte(self.input.index) != (':' as uint8) {
+                    return .err(self.failure(.unexpectedToken, "expected ':' after key"))
+                }
+                self.advance(1)
+            }
+            match self.value(depth + 1) {
+                case .ok(_) => {}
+                case .err(error) => {
+                    if object { return .err(errorAtChildKey(error, ROOT_PATH, key)) }
+                    return .err(errorAtChildIndex(error, ROOT_PATH, count))
+                }
+            }
+            count += 1
+            self.whitespace()
+            if self.input.index >= self.end {
+                return .err(self.failure(.unexpectedEof, "unterminated container"))
+            }
+            delimiter := self.byte(self.input.index)
+            if delimiter == closing {
+                self.advance(1)
+                while self.keys.len() > start { var _ = self.keys.pop() }
+                return .ok(())
+            }
+            if delimiter != (',' as uint8) {
+                return .err(self.failure(.unexpectedToken, "expected container separator"))
+            }
+            self.advance(1)
+            self.whitespace()
+        }
+    }
+
+    func document() -> Result[(), Error] {
+        self.value(0)!
+        self.whitespace()
+        if self.input.index >= self.end && self.end < self.input.source.byteLen() {
+            return .err(self.failure(.inputLimit, "input limit"))
+        }
+        if self.input.index != self.input.source.byteLen() {
+            return .err(self.failure(.trailingData, "trailing JSON data"))
+        }
+        return .ok(())
+    }
+}

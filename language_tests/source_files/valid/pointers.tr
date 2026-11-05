@@ -1,27 +1,27 @@
 func testPointerMutWriteArithmetic() {
     var value: int32 = 1
 
-    let ptr: *mut int32 = unsafe { &mut value as *mut int32 }
-    let ptr_add = ptr.add(0)
-    let ptr_sub = ptr_add.sub(0)
-    let ptr_off = ptr_sub.offset(0)
+    var ptr: *mut int32 = unsafe { &value as *mut int32 }
+    ptr_add := ptr.add(0)
+    ptr_sub := ptr_add.sub(0)
+    ptr_off := ptr_sub.offset(0)
 
-    ptr_off.write(42)
+    unsafe { ptr_off.write(42) }
     assert(value == 42, "*mut add/sub/offset chain should stay writable")
-    assert(ptr_off.read() == 42, "read after write should return updated value")
+    assert(unsafe { ptr_off.read() } == 42, "read after write should return updated value")
 }
 
-func storeConstPointer(_ out: *mut *const uint8, _ value: *const uint8) {
-    out.write(value)
+unsafe func storeConstPointer(_ out: *mut *const uint8, _ value: *const uint8) {
+    unsafe { out.write(value) }
 }
 
 func testMutableConstPointerSlot() {
-    let source = "slot"
+    source := "slot"
     var slot: *const uint8 = unsafe { 0 as *const uint8 }
-    let out = unsafe { &mut slot as *mut *const uint8 }
-    storeConstPointer(out, std.string.stringData(source))
+    out := unsafe { &slot as *mut *const uint8 }
+    unsafe { storeConstPointer(out, std::string::stringData(source)) }
 
-    assert(slot.read() == 115_u8, "a mutable slot can replace a const pointer")
+    assert(unsafe { slot.read() } == 115_u8, "a mutable slot can replace a const pointer")
 }
 
 func main() {

@@ -72,6 +72,28 @@ pub fn apply_instance_placement<'ctx>(
     Ok(())
 }
 
+/// For each of `owners`, the locals that may hold its storage address in a
+/// finalized instance body. Stack maps use this to keep such storage rooted.
+/// Placement already summarized this instance's callees; any other callee takes
+/// the conservative effect, which can only add holders.
+pub(crate) fn address_holders<'ctx>(
+    gcx: Gcx<'ctx>,
+    instance: Instance<'ctx>,
+    body: &Body<'ctx>,
+    owners: &FxHashSet<LocalId>,
+) -> CompileResult<FxHashMap<LocalId, Vec<LocalId>>> {
+    let summaries = gcx.store.instance_escape_summaries.borrow();
+    let (graph, ..) = EscapeGraph::build_flow(
+        gcx,
+        body,
+        AnalysisMode::Instance {
+            caller: instance,
+            summaries: &summaries,
+        },
+    )?;
+    Ok(graph.address_holders(owners))
+}
+
 /// Conservative source-async bridge used before coroutine frame construction.
 /// Only address-taken local placement is applied here. Synthesized constructor,
 /// poll, and drop bodies later take the ordinary concrete-instance path.
@@ -129,6 +151,7 @@ struct EscapeGraph {
     terminator_values: FxHashMap<BasicBlockId, usize>,
     allocation_nodes: FxHashMap<AllocationSite, usize>,
     overlapping_allocations: FxHashSet<AllocationSite>,
+    overlapping_bindings: FxHashSet<LocalId>,
     allocation_live_blocks: FxHashMap<AllocationSite, FxHashSet<BasicBlockId>>,
     saturated: bool,
 }
@@ -154,6 +177,26 @@ impl EscapeGraph {
         body: &Body<'ctx>,
         mode: AnalysisMode<'a, 'ctx>,
     ) -> CompileResult<Self> {
+        let (mut graph, in_states, liveness) = Self::build_flow(gcx, body, mode)?;
+        graph.overlapping_bindings =
+            graph.find_overlapping_bindings(gcx, body, mode, &in_states, &liveness);
+        graph.overlapping_allocations =
+            graph.find_overlapping_allocations(body, &in_states, &liveness);
+        graph.allocation_live_blocks =
+            graph.find_allocation_live_blocks(body, &in_states, &liveness);
+        Ok(graph)
+    }
+
+    /// The value-flow edges alone, without the placement-only overlap analyses.
+    fn build_flow<'a, 'ctx>(
+        gcx: Gcx<'ctx>,
+        body: &Body<'ctx>,
+        mode: AnalysisMode<'a, 'ctx>,
+    ) -> CompileResult<(
+        Self,
+        IndexVec<BasicBlockId, FlowState>,
+        crate::mir::analysis::liveness::LivenessResult,
+    )> {
         let mut graph = Self {
             nodes: Vec::new(),
             edges: Vec::new(),
@@ -165,6 +208,7 @@ impl EscapeGraph {
             terminator_values: FxHashMap::default(),
             allocation_nodes: FxHashMap::default(),
             overlapping_allocations: FxHashSet::default(),
+            overlapping_bindings: FxHashSet::default(),
             allocation_live_blocks: FxHashMap::default(),
             saturated: false,
         };
@@ -181,7 +225,7 @@ impl EscapeGraph {
                 let node = graph.push_node(NodeKind::Parameter(local));
                 graph.parameter_nodes.push(node);
                 entry_state[local.index()].insert(node);
-                graph.add_edge(graph.storage(local), node, 1);
+                graph.add_edge(graph.storage(local), node, 0);
             }
         }
 
@@ -215,11 +259,7 @@ impl EscapeGraph {
         let (in_states, reachable) = graph.compute_flow_states(body, entry_state);
         let liveness = crate::mir::analysis::liveness::compute_liveness(body);
         graph.add_flow_edges(gcx, body, mode, &in_states, &reachable, &liveness)?;
-        graph.overlapping_allocations =
-            graph.find_overlapping_allocations(body, &in_states, &liveness);
-        graph.allocation_live_blocks =
-            graph.find_allocation_live_blocks(body, &in_states, &liveness);
-        Ok(graph)
+        Ok((graph, in_states, liveness))
     }
 
     fn push_node(&mut self, kind: NodeKind) -> usize {
@@ -279,7 +319,7 @@ impl EscapeGraph {
         adjustment: i16,
     ) {
         match operand {
-            Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
+            Operand::Copy(place) | Operand::CopyWith(place, _) => {
                 self.add_place_edge(destination, place, state, adjustment)
             }
             Operand::Constant(_) => {}
@@ -305,7 +345,10 @@ impl EscapeGraph {
             // Pointer casts preserve provenance even when their source is an
             // integer-shaped raw representation.
             Rvalue::Cast { operand, .. } => self.add_operand_edge(destination, operand, state, 0),
-            Rvalue::Ref { place, .. } => self.add_place_edge(destination, place, state, -1),
+            Rvalue::CopyValue { source } => self.add_place_edge(destination, source, state, 0),
+            Rvalue::Ref { place, .. } | Rvalue::CleanupAddress { place } => {
+                self.add_place_edge(destination, place, state, -1)
+            }
             Rvalue::UnaryOp { .. }
             | Rvalue::BinaryOp { .. }
             | Rvalue::Discriminant { .. }
@@ -363,8 +406,8 @@ impl EscapeGraph {
             };
 
             let carries_provenance = operand_may_carry_provenance(gcx, body, argument, mode);
-            if effect.heap_capture && carries_provenance {
-                self.add_operand_edge(self.heap, argument, state, 0);
+            if carries_provenance && let Some(deref) = effect.heap_deref {
+                self.add_operand_edge(self.heap, argument, state, i16::from(deref));
             }
             if carries_provenance && let Some(deref) = effect.return_deref {
                 self.add_operand_edge(destination, argument, state, i16::from(deref));
@@ -403,17 +446,13 @@ impl EscapeGraph {
             };
             match &terminator.kind {
                 TerminatorKind::Call {
-                    func,
-                    args,
+                    func: _,
+                    args: _,
                     destination,
                     target,
                     unwind,
                     ..
                 } => {
-                    kill_moved_operand(func, &mut state);
-                    for argument in args {
-                        kill_moved_operand(argument, &mut state);
-                    }
                     let mut normal = state.clone();
                     self.define_terminator_destination(block, destination, &mut normal);
                     propagate_state(
@@ -436,14 +475,14 @@ impl EscapeGraph {
                     }
                 }
                 TerminatorKind::Yield {
-                    value,
+                    value: _,
                     resume_arg,
                     resume,
                     cancel,
+                    no_result,
                     unwind,
                     ..
                 } => {
-                    kill_moved_operand(value, &mut state);
                     let mut resumed = state.clone();
                     self.define_terminator_destination(block, resume_arg, &mut resumed);
                     propagate_state(
@@ -462,6 +501,17 @@ impl EscapeGraph {
                         &mut reachable,
                         &mut worklist,
                     );
+                    // A no-result completion never initializes resume_arg.
+                    // Its preexisting references still reach this branch.
+                    if let Some(no_result) = no_result {
+                        propagate_state(
+                            *no_result,
+                            &cancelled,
+                            &mut in_states,
+                            &mut reachable,
+                            &mut worklist,
+                        );
+                    }
                     if let CallUnwindAction::Cleanup(cleanup) = unwind {
                         propagate_state(
                             *cleanup,
@@ -496,15 +546,16 @@ impl EscapeGraph {
         state: &mut FlowState,
     ) {
         match kind {
-            StatementKind::StorageLive(local) => state[local.index()].clear(),
-            StatementKind::Assign(destination, rvalue) => {
-                kill_moved_rvalue(rvalue, state);
+            StatementKind::StorageLive(local) | StatementKind::StorageDead(local) => {
+                state[local.index()].clear()
+            }
+            StatementKind::Assign(destination, _) => {
                 if let Some(&value) = self.statement_values.get(&(block, statement)) {
                     define_place(destination, value, state);
                 }
             }
-            StatementKind::KeepAlive(operand) => kill_moved_operand(operand, state),
-            StatementKind::SourceScope(_)
+            StatementKind::KeepAlive(_)
+            | StatementKind::SourceScope(_)
             | StatementKind::SetInitialized(_)
             | StatementKind::GcSafepoint(_)
             | StatementKind::Nop
@@ -555,7 +606,7 @@ impl EscapeGraph {
                         .copied();
                     self.add_rvalue_edges(gcx, body, mode, sink, rvalue, &state, allocation);
                     if let Some(&defined) = self.statement_values.get(&(block, statement)) {
-                        self.add_edge(self.storage(destination.local), defined, 1);
+                        self.add_edge(self.storage(destination.local), defined, 0);
                     }
                 }
                 self.transfer_statement_state(block, statement, &value.kind, &mut state);
@@ -609,11 +660,79 @@ impl EscapeGraph {
                     _ => None,
                 };
                 if let Some(destination) = destination {
-                    self.add_edge(self.storage(destination.local), defined, 1);
+                    self.add_edge(self.storage(destination.local), defined, 0);
                 }
             }
         }
         Ok(())
+    }
+
+    /// A source declaration can repeat while references to its previous
+    /// binding remain live entirely within this function. Function escape
+    /// alone cannot justify reusing that binding's stack slot.
+    fn find_overlapping_bindings<'a, 'ctx>(
+        &self,
+        gcx: Gcx<'ctx>,
+        body: &Body<'ctx>,
+        mode: AnalysisMode<'a, 'ctx>,
+        in_states: &IndexVec<BasicBlockId, FlowState>,
+        liveness: &crate::mir::analysis::liveness::LivenessResult,
+    ) -> FxHashSet<LocalId> {
+        use crate::mir::analysis::liveness::MirLocation;
+        let addressed: FxHashSet<_> = self
+            .edges
+            .iter()
+            .flatten()
+            .filter(|edge| {
+                edge.deref < 0 && matches!(self.nodes[edge.target], NodeKind::Storage(_))
+            })
+            .map(|edge| edge.target)
+            .collect();
+        if addressed.is_empty() || self.saturated {
+            return FxHashSet::default();
+        }
+        let carries: Vec<_> = body
+            .locals
+            .indices()
+            .map(|local| local_may_carry_provenance(gcx, body, local, mode))
+            .collect();
+        let mut reaches = FxHashMap::default();
+        let mut overlapping = FxHashSet::default();
+        for (block, data) in body.basic_blocks.iter_enumerated() {
+            if !data.statements.iter().any(|value| {
+                matches!(value.kind,
+                StatementKind::StorageLive(local) if addressed.contains(&self.storage(local)))
+            }) {
+                continue;
+            }
+            let mut state = in_states[block].clone();
+            for (statement, value) in data.statements.iter().enumerate() {
+                if let StatementKind::StorageLive(local) = value.kind {
+                    let storage = self.storage(local);
+                    if addressed.contains(&storage) && !overlapping.contains(&local) {
+                        let live = liveness.live_before(MirLocation::Statement {
+                            block,
+                            index: statement,
+                        });
+                        if live
+                            .iter()
+                            .filter(|alias| carries[alias.index()])
+                            .any(|alias| {
+                                state[alias.index()].iter().any(|&source| {
+                                    *reaches
+                                        .entry((source, storage))
+                                        .or_insert_with(|| self.node_reaches(source, storage))
+                                })
+                            })
+                        {
+                            overlapping.insert(local);
+                        }
+                    }
+                }
+                self.transfer_statement_state(block, statement, &value.kind, &mut state);
+            }
+        }
+        overlapping
     }
 
     /// A stack slot may be reused when the same allocation statement executes
@@ -708,6 +827,56 @@ impl EscapeGraph {
         }
     }
 
+    /// Walks edges backward from each owner's storage, accumulating the same
+    /// dereference distances as `trace_from`. A negative distance at another
+    /// local's storage means that local may hold the owner's address.
+    fn address_holders(&self, owners: &FxHashSet<LocalId>) -> FxHashMap<LocalId, Vec<LocalId>> {
+        let locals = self.storage.len();
+        if self.saturated {
+            let all: Vec<_> = (0..locals).map(LocalId::from_usize).collect();
+            return owners.iter().map(|owner| (*owner, all.clone())).collect();
+        }
+        let mut incoming = vec![Vec::new(); self.nodes.len()];
+        for (node, edges) in self.edges.iter().enumerate() {
+            for edge in edges {
+                incoming[edge.target].push((node, edge.deref));
+            }
+        }
+        owners
+            .iter()
+            .map(|owner| {
+                let start = self.storage(*owner);
+                let mut distance = vec![None; self.nodes.len()];
+                distance[start] = Some(0_i16);
+                let mut queue = VecDeque::from([start]);
+                while let Some(node) = queue.pop_front() {
+                    let current = distance[node].expect("queued node has a distance");
+                    for &(from, deref) in &incoming[node] {
+                        let next = current.saturating_add(deref).clamp(-MAX_DEREF, MAX_DEREF);
+                        if distance[from].is_none_or(|known| next < known) {
+                            distance[from] = Some(next);
+                            queue.push_back(from);
+                        }
+                    }
+                }
+                let holders = self
+                    .nodes
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(node, kind)| match kind {
+                        NodeKind::Storage(local)
+                            if local != owner && distance[node].is_some_and(|d| d < 0) =>
+                        {
+                            Some(*local)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                (*owner, holders)
+            })
+            .collect()
+    }
+
     fn reachable_allocations(&self, start: usize) -> Vec<AllocationSite> {
         let mut seen = FxHashSet::default();
         let mut pending = vec![start];
@@ -746,7 +915,16 @@ impl EscapeGraph {
         let mut queue = VecDeque::from([start]);
 
         while let Some(node) = queue.pop_front() {
-            let current: i16 = distance[node].expect("queued escape node has a distance");
+            let mut current: i16 = distance[node].expect("queued escape node has a distance");
+            // An escaping address keeps this storage alive, but the values
+            // stored inside it escape by value. In particular, loading a
+            // reference through &local must still retain that reference's
+            // target. Storage-to-value edges do not add another dereference.
+            // Keep the negative distance above for placement of the storage
+            // itself, then restart at zero when following its contents.
+            if matches!(self.nodes[node], NodeKind::Storage(_)) {
+                current = current.max(0);
+            }
             for edge in &self.edges[node] {
                 let raw = current.saturating_add(edge.deref);
                 let next = raw.clamp(-MAX_DEREF, MAX_DEREF);
@@ -771,7 +949,7 @@ impl EscapeGraph {
             return InstanceEscapeSummary {
                 params: vec![
                     ParamEscapeSummary {
-                        heap_capture: true,
+                        heap_deref: Some(0),
                         return_deref: Some(0),
                     };
                     self.parameter_nodes.len()
@@ -784,7 +962,9 @@ impl EscapeGraph {
                 .parameter_nodes
                 .iter()
                 .map(|node| ParamEscapeSummary {
-                    heap_capture: heap[*node].is_some_and(|deref| deref >= 0),
+                    heap_deref: heap[*node]
+                        .filter(|deref| *deref >= 0)
+                        .map(|deref| deref as u8),
                     return_deref: returned[*node]
                         .filter(|deref| *deref >= 0)
                         .map(|deref| deref as u8),
@@ -832,6 +1012,7 @@ impl EscapeGraph {
                 NodeKind::Heap | NodeKind::Return | NodeKind::Parameter(_) | NodeKind::Value => {}
             }
         }
+        placement.heap_locals.extend(self.overlapping_bindings);
         placement
             .escaping_alloc_sites
             .extend(self.overlapping_allocations);
@@ -853,7 +1034,7 @@ fn operand_may_carry_provenance<'a, 'ctx>(
     mode: AnalysisMode<'a, 'ctx>,
 ) -> bool {
     match operand {
-        Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
+        Operand::Copy(place) | Operand::CopyWith(place, _) => {
             type_may_carry_provenance(gcx, concrete_place_ty(gcx, body, place, mode))
         }
         Operand::Constant(_) => false,
@@ -883,12 +1064,16 @@ fn concrete_place_ty<'a, 'ctx>(
     place: &Place<'ctx>,
     mode: AnalysisMode<'a, 'ctx>,
 ) -> Ty<'ctx> {
-    let ty = body.place_ty(gcx, place);
     match mode {
-        AnalysisMode::Instance { caller, .. } => instantiate_ty_with_args(gcx, ty, caller.args()),
-        AnalysisMode::AsyncBridge => ty,
+        AnalysisMode::Instance { caller, .. } => body.place_ty_with(gcx, place, |ty| {
+            crate::sema::tycheck::utils::normalize_aliases(
+                gcx,
+                instantiate_ty_with_args(gcx, ty, caller.args()),
+            )
+        }),
+        AnalysisMode::AsyncBridge => body.place_ty(gcx, place),
         #[cfg(test)]
-        AnalysisMode::FixedEffects { .. } => ty,
+        AnalysisMode::FixedEffects { .. } => body.place_ty(gcx, place),
     }
 }
 
@@ -914,6 +1099,7 @@ fn type_may_carry_provenance<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>) -> bool {
                 .iter()
                 .copied()
                 .any(|element| visit(gcx, element, visiting)),
+            TyKind::Adt(_, _) if gcx.is_class_type(ty) => true,
             TyKind::Adt(definition, arguments) => match definition.kind {
                 AdtKind::Struct => {
                     gcx.get_struct_definition(definition.id)
@@ -933,13 +1119,15 @@ fn type_may_carry_provenance<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>) -> bool {
                         .iter()
                         .any(|variant| match variant.kind {
                             EnumVariantKind::Unit => false,
-                            EnumVariantKind::Tuple(fields) => fields.iter().any(|field| {
-                                visit(
-                                    gcx,
-                                    instantiate_ty_with_args(gcx, field.ty, arguments),
-                                    visiting,
-                                )
-                            }),
+                            EnumVariantKind::Tuple(fields) | EnumVariantKind::Struct(fields) => {
+                                fields.iter().any(|field| {
+                                    visit(
+                                        gcx,
+                                        instantiate_ty_with_args(gcx, field.ty, arguments),
+                                        visiting,
+                                    )
+                                })
+                            }
                         })
                 }
             },
@@ -959,7 +1147,8 @@ fn type_may_carry_provenance<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>) -> bool {
                             )
                     })
                 }),
-            TyKind::Alias { .. }
+            TyKind::ExistentialSelf(_)
+            | TyKind::Alias { .. }
             | TyKind::Infer(_)
             | TyKind::Parameter(_)
             | TyKind::Opaque(_)
@@ -992,41 +1181,6 @@ fn define_place(place: &Place<'_>, value: usize, state: &mut FlowState) {
 fn clear_complete_destination(place: &Place<'_>, state: &mut FlowState) {
     if place.projection.is_empty() {
         state[place.local.index()].clear();
-    }
-}
-
-fn kill_moved_operand(operand: &Operand<'_>, state: &mut FlowState) {
-    let moved = match operand {
-        Operand::Move(place) => Some(place),
-        Operand::CopyWith(place, modifiers) if modifiers.take => Some(place),
-        Operand::Copy(_) | Operand::CopyWith(_, _) | Operand::Constant(_) => None,
-    };
-    if let Some(place) = moved
-        && place.projection.is_empty()
-    {
-        state[place.local.index()].clear();
-    }
-}
-
-fn kill_moved_rvalue(rvalue: &Rvalue<'_>, state: &mut FlowState) {
-    match rvalue {
-        Rvalue::Use(operand)
-        | Rvalue::UnaryOp { operand, .. }
-        | Rvalue::Cast { operand, .. }
-        | Rvalue::Repeat { operand, .. } => kill_moved_operand(operand, state),
-        Rvalue::BinaryOp { lhs, rhs, .. } => {
-            kill_moved_operand(lhs, state);
-            kill_moved_operand(rhs, state);
-        }
-        Rvalue::Aggregate { fields, .. } => {
-            for field in fields {
-                kill_moved_operand(field, state);
-            }
-        }
-        Rvalue::Ref { .. }
-        | Rvalue::Discriminant { .. }
-        | Rvalue::Alloc { .. }
-        | Rvalue::Zeroed { .. } => {}
     }
 }
 
@@ -1255,6 +1409,14 @@ fn resolve_direct_callee<'ctx>(
         return None;
     };
     let arguments = instantiate_generic_args(gcx, arguments, caller.args());
+    // An opened call selects a concrete body at run time; its instance with
+    // the erased container as T is only a bridge ABI with no analyzable body.
+    if matches!(
+        crate::sema::lowering::erased_opening::plan(gcx, definition, arguments),
+        Ok(Some(_))
+    ) {
+        return None;
+    }
     Some(resolve_instance(gcx, definition, arguments))
 }
 
@@ -1262,6 +1424,11 @@ fn try_shared_body<'ctx>(gcx: Gcx<'ctx>, instance: Instance<'ctx>) -> Option<&'c
     let InstanceKind::Item(definition) = instance.kind() else {
         return None;
     };
+    // The class factory's placeholder body never runs: the emitted factory
+    // publishes its payload, and every reference in it, to the GC heap.
+    if gcx.is_class_payload_factory(definition) {
+        return None;
+    }
     let packages = gcx.store.mir_packages.borrow();
     packages
         .get(&definition.package())
@@ -1293,11 +1460,11 @@ fn conservative_parameter_effect<'ctx>(
             Ok(match effect {
                 RuntimeParamEscapeEffect::NoCapture => ParamEscapeSummary::default(),
                 RuntimeParamEscapeEffect::Capture => ParamEscapeSummary {
-                    heap_capture: true,
+                    heap_deref: Some(0),
                     return_deref: None,
                 },
                 RuntimeParamEscapeEffect::Return => ParamEscapeSummary {
-                    heap_capture: false,
+                    heap_deref: None,
                     return_deref: Some(0),
                 },
                 RuntimeParamEscapeEffect::CaptureAndReturn => capture_and_return(),
@@ -1318,15 +1485,15 @@ fn conservative_parameter_effect<'ctx>(
             Ok(match effect {
                 RuntimeParamEscapeEffect::NoCapture => ParamEscapeSummary::default(),
                 RuntimeParamEscapeEffect::Capture => ParamEscapeSummary {
-                    heap_capture: true,
+                    heap_deref: Some(0),
                     return_deref: None,
                 },
                 RuntimeParamEscapeEffect::Return => ParamEscapeSummary {
-                    heap_capture: false,
+                    heap_deref: None,
                     return_deref: intrinsic_return_deref(symbol.as_str(), parameter),
                 },
                 RuntimeParamEscapeEffect::CaptureAndReturn => ParamEscapeSummary {
-                    heap_capture: true,
+                    heap_deref: Some(0),
                     return_deref: intrinsic_return_deref(symbol.as_str(), parameter),
                 },
             })
@@ -1337,7 +1504,7 @@ fn conservative_parameter_effect<'ctx>(
 
 fn capture_and_return() -> ParamEscapeSummary {
     ParamEscapeSummary {
-        heap_capture: true,
+        heap_deref: Some(0),
         return_deref: Some(0),
     }
 }
@@ -1391,10 +1558,7 @@ mod allocation_rewrite {
                     span,
                 });
                 body.escape_locals.push(false);
-                let stack_reference_ty = gcx
-                    .store
-                    .interners
-                    .intern_ty(TyKind::Reference(*ty, crate::hir::Mutability::Mutable));
+                let stack_reference_ty = gcx.store.interners.intern_ty(TyKind::Reference(*ty));
                 let stack_reference = body.locals.push(LocalDecl {
                     ty: stack_reference_ty,
                     kind: LocalKind::Temp,
@@ -1479,7 +1643,6 @@ mod allocation_rewrite {
                             kind: StatementKind::Assign(
                                 Place::from_local(stack_reference),
                                 Rvalue::Ref {
-                                    mutable: true,
                                     place: Place::from_local(stack_object),
                                 },
                             ),
@@ -1521,8 +1684,7 @@ mod heapify_rewrite {
 
     use crate::compile::context::Gcx;
     use crate::error::CompileResult;
-    use crate::hir::Mutability;
-    use crate::mir::optimize::MirPass;
+
     use crate::mir::{
         BasicBlockData, BasicBlockId, Body, CopyModifiers, LocalDecl, LocalId, LocalKind, Operand,
         Place, PlaceElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind,
@@ -1531,114 +1693,96 @@ mod heapify_rewrite {
     use index_vec::IndexVec;
     use rustc_hash::FxHashSet;
 
-    pub struct ApplyEscapeAnalysis;
-
     pub(crate) fn apply_heapified_locals<'ctx>(
         gcx: Gcx<'ctx>,
         body: &mut Body<'ctx>,
     ) -> CompileResult<()> {
-        ApplyEscapeAnalysis.run(gcx, body)
-    }
+        let mut heapified: Vec<Option<Ty<'ctx>>> = vec![None; body.locals.len()];
+        let mut param_replacements: Vec<Option<LocalId>> = vec![None; body.locals.len()];
+        let original_local_count = body.locals.len();
 
-    impl<'ctx> MirPass<'ctx> for ApplyEscapeAnalysis {
-        fn name(&self) -> &'static str {
-            "ApplyEscapeAnalysis"
+        for idx in 0..original_local_count {
+            let kind = body.locals[idx].kind;
+            if matches!(kind, LocalKind::Return) {
+                continue;
+            }
+            if body.escape_locals.get(idx).cloned().unwrap_or(false) {
+                let old_ty = body.locals[idx].ty;
+                let span = body.locals[idx].span;
+                let new_ty = gcx.store.interners.intern_ty(TyKind::Reference(old_ty));
+                if matches!(kind, LocalKind::Param) {
+                    let heap_local = body.locals.push(LocalDecl {
+                        ty: new_ty,
+                        kind: LocalKind::Temp,
+                        mutable: true,
+                        name: None,
+                        span,
+                    });
+                    body.escape_locals.push(false);
+                    heapified.push(Some(old_ty));
+                    param_replacements[idx] = Some(heap_local);
+                } else {
+                    body.locals[idx].ty = new_ty;
+                    heapified[idx] = Some(old_ty);
+                }
+            }
         }
 
-        fn run(&mut self, gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
-            let mut heapified: Vec<Option<Ty<'ctx>>> = vec![None; body.locals.len()];
-            let mut param_replacements: Vec<Option<LocalId>> = vec![None; body.locals.len()];
-            let original_local_count = body.locals.len();
-
-            for idx in 0..original_local_count {
-                let kind = body.locals[idx].kind;
-                if matches!(kind, LocalKind::Return) {
-                    continue;
-                }
-                if body.escape_locals.get(idx).cloned().unwrap_or(false) {
-                    let old_ty = body.locals[idx].ty;
-                    let span = body.locals[idx].span;
-                    let new_ty = gcx
-                        .store
-                        .interners
-                        .intern_ty(TyKind::Reference(old_ty, Mutability::Mutable));
-                    if matches!(kind, LocalKind::Param) {
-                        let heap_local = body.locals.push(LocalDecl {
-                            ty: new_ty,
-                            kind: LocalKind::Temp,
-                            mutable: true,
-                            name: None,
-                            span,
-                        });
-                        body.escape_locals.push(false);
-                        heapified.push(Some(old_ty));
-                        param_replacements[idx] = Some(heap_local);
-                    } else {
-                        body.locals[idx].ty = new_ty;
-                        heapified[idx] = Some(old_ty);
-                    }
-                }
-            }
-
-            if heapified.iter().all(|item| item.is_none()) {
-                return Ok(());
-            }
-
-            for bb in body.basic_blocks.iter_mut() {
-                for stmt in &mut bb.statements {
-                    rewrite_statement(stmt, &heapified, &param_replacements);
-                }
-                if let Some(term) = &mut bb.terminator {
-                    rewrite_terminator(term, &heapified, &param_replacements);
-                }
-            }
-
-            rewrite_fresh_heapified_initializations(body, &heapified);
-            let declaration_allocated = materialize_heapified_storage_lives(body, &heapified);
-
-            let span = body.locals[body.return_local].span;
-            let mut allocs: Vec<Statement<'ctx>> = Vec::new();
-            for (idx, ty) in heapified.iter().enumerate() {
-                let Some(old_ty) = ty else { continue };
-                if declaration_allocated[idx] {
-                    continue;
-                }
-                let place = Place::from_local(LocalId::from_raw(idx as u32));
-                allocs.push(Statement {
-                    kind: StatementKind::Assign(place, Rvalue::Alloc { ty: *old_ty }),
-                    span,
-                });
-            }
-
-            let mut param_inits: Vec<Statement<'ctx>> = Vec::new();
-            for (idx, heap_local) in param_replacements.iter().enumerate() {
-                let Some(heap_local) = heap_local else {
-                    continue;
-                };
-                let heap_place = Place {
-                    local: *heap_local,
-                    projection: vec![PlaceElem::Deref],
-                };
-                let param_place = Place::from_local(LocalId::from_raw(idx as u32));
-                param_inits.push(Statement {
-                    kind: StatementKind::Assign(
-                        heap_place,
-                        Rvalue::Use(Operand::Copy(param_place)),
-                    ),
-                    span,
-                });
-            }
-
-            if !allocs.is_empty() || !param_inits.is_empty() {
-                let entry = body.start_block;
-                let statements = &mut body.basic_blocks[entry].statements;
-                let mut insertions = Vec::with_capacity(allocs.len() + param_inits.len());
-                insertions.extend(allocs);
-                insertions.extend(param_inits);
-                statements.splice(0..0, insertions);
-            }
-            Ok(())
+        if heapified.iter().all(|item| item.is_none()) {
+            return Ok(());
         }
+
+        for bb in body.basic_blocks.iter_mut() {
+            for stmt in &mut bb.statements {
+                rewrite_statement(stmt, &heapified, &param_replacements);
+            }
+            if let Some(term) = &mut bb.terminator {
+                rewrite_terminator(term, &heapified, &param_replacements);
+            }
+        }
+
+        rewrite_fresh_heapified_initializations(body, &heapified);
+        let declaration_allocated = materialize_heapified_storage_lives(body, &heapified);
+
+        let span = body.locals[body.return_local].span;
+        let mut allocs: Vec<Statement<'ctx>> = Vec::new();
+        for (idx, ty) in heapified.iter().enumerate() {
+            let Some(old_ty) = ty else { continue };
+            if declaration_allocated[idx] {
+                continue;
+            }
+            let place = Place::from_local(LocalId::from_raw(idx as u32));
+            allocs.push(Statement {
+                kind: StatementKind::Assign(place, Rvalue::Alloc { ty: *old_ty }),
+                span,
+            });
+        }
+
+        let mut param_inits: Vec<Statement<'ctx>> = Vec::new();
+        for (idx, heap_local) in param_replacements.iter().enumerate() {
+            let Some(heap_local) = heap_local else {
+                continue;
+            };
+            let heap_place = Place {
+                local: *heap_local,
+                projection: vec![PlaceElem::Deref],
+            };
+            let param_place = Place::from_local(LocalId::from_raw(idx as u32));
+            param_inits.push(Statement {
+                kind: StatementKind::Assign(heap_place, Rvalue::Use(Operand::Copy(param_place))),
+                span,
+            });
+        }
+
+        if !allocs.is_empty() || !param_inits.is_empty() {
+            let entry = body.start_block;
+            let statements = &mut body.basic_blocks[entry].statements;
+            let mut insertions = Vec::with_capacity(allocs.len() + param_inits.len());
+            insertions.extend(allocs);
+            insertions.extend(param_inits);
+            statements.splice(0..0, insertions);
+        }
+        Ok(())
     }
 
     /// Replaces source binding boundaries with allocations for heapified locals.
@@ -1722,10 +1866,7 @@ mod heapify_rewrite {
                                         destination,
                                         Rvalue::Use(Operand::copy_with(
                                             Place::from_local(tmp_local),
-                                            CopyModifiers {
-                                                init: true,
-                                                take: true,
-                                            },
+                                            CopyModifiers { init: true },
                                         )),
                                     ),
                                     span,
@@ -1777,10 +1918,7 @@ mod heapify_rewrite {
                                     original_destination,
                                     Rvalue::Use(Operand::copy_with(
                                         Place::from_local(tmp_local),
-                                        CopyModifiers {
-                                            init: true,
-                                            take: true,
-                                        },
+                                        CopyModifiers { init: true },
                                     )),
                                 ),
                                 span: term.span,
@@ -1904,21 +2042,22 @@ mod heapify_rewrite {
         param_replacements: &[Option<LocalId>],
     ) {
         match &mut stmt.kind {
-            StatementKind::SourceScope(_)
+            // Keeping a heapified local alive keeps its box, which also keeps
+            // the contents reachable, so the operand is left as written.
+            StatementKind::KeepAlive(_)
+            | StatementKind::SourceScope(_)
             | StatementKind::StorageLive(_)
+            | StatementKind::StorageDead(_)
             | StatementKind::SetInitialized(_) => {}
             StatementKind::Assign(place, rvalue) => {
                 rewrite_place(place, heapified, param_replacements);
                 rewrite_rvalue(rvalue, heapified, param_replacements);
             }
             StatementKind::SetDiscriminant { place, .. } => {
-                // Enum aggregate lowering runs before escape analysis. Once an
+                // Payload enum lowering runs before escape analysis. Once an
                 // address-taken enum local is heapified, its already-lowered tag
                 // write must target the pointee just like an ordinary assignment.
                 rewrite_place(place, heapified, param_replacements);
-            }
-            StatementKind::KeepAlive(operand) => {
-                rewrite_operand(operand, heapified, param_replacements)
             }
             StatementKind::GcSafepoint(_) | StatementKind::Nop => {}
         }
@@ -1939,7 +2078,9 @@ mod heapify_rewrite {
                 rewrite_operand(rhs, heapified, param_replacements);
             }
             Rvalue::Cast { operand, .. } => rewrite_operand(operand, heapified, param_replacements),
-            Rvalue::Ref { place, .. } => rewrite_place(place, heapified, param_replacements),
+            Rvalue::CopyValue { source: place }
+            | Rvalue::CleanupAddress { place }
+            | Rvalue::Ref { place, .. } => rewrite_place(place, heapified, param_replacements),
             Rvalue::Discriminant { place } => rewrite_place(place, heapified, param_replacements),
             Rvalue::Aggregate { fields, .. } => {
                 for field in fields.iter_mut() {
@@ -1959,7 +2100,7 @@ mod heapify_rewrite {
         param_replacements: &[Option<LocalId>],
     ) {
         match operand {
-            Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
+            Operand::Copy(place) | Operand::CopyWith(place, _) => {
                 rewrite_place(place, heapified, param_replacements)
             }
             Operand::Constant(_) => {}
@@ -2061,7 +2202,7 @@ mod tests {
     }
 
     fn reference_ty<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>) -> Ty<'ctx> {
-        Ty::new(TyKind::Reference(ty, Mutability::Immutable), gcx)
+        Ty::new(TyKind::Reference(ty), gcx)
     }
 
     fn pointer_ty<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>) -> Ty<'ctx> {
@@ -2136,7 +2277,6 @@ mod tests {
                     kind: StatementKind::Assign(
                         Place::from_local(reference),
                         Rvalue::Ref {
-                            mutable: false,
                             place: Place::from_local(value),
                         },
                     ),
@@ -2146,7 +2286,6 @@ mod tests {
                 kind: TerminatorKind::Call {
                     func: unit_operand(gcx),
                     args: vec![Operand::Copy(Place::from_local(reference))],
-                    devirt_hint: None,
                     destination: Place::from_local(call_result),
                     target,
                     unwind: CallUnwindAction::Terminate,
@@ -2158,7 +2297,7 @@ mod tests {
                 gcx,
                 &body,
                 &[ParamEscapeSummary {
-                    heap_capture: false,
+                    heap_deref: None,
                     return_deref: None,
                 }],
             );
@@ -2166,13 +2305,58 @@ mod tests {
                 gcx,
                 &body,
                 &[ParamEscapeSummary {
-                    heap_capture: true,
+                    heap_deref: Some(0),
                     return_deref: None,
                 }],
             );
 
             assert!(!noncapturing.heap_locals.contains(&value));
             assert!(capturing.heap_locals.contains(&value));
+        });
+    }
+
+    #[test]
+    fn summaries_record_heap_dereference_depth() {
+        with_test_gcx(|gcx| {
+            for depth in 0..=3 {
+                let mut body = minimal_body(gcx);
+                let mut input_ty = reference_ty(gcx, gcx.types.uint8);
+                for _ in 0..depth {
+                    input_ty = reference_ty(gcx, input_ty);
+                }
+                let parameter = push_parameter(&mut body, input_ty);
+                let span = body.locals[body.return_local].span;
+                let target = return_block(&mut body);
+                let result = push_temp(&mut body, gcx.types.void);
+                body.basic_blocks[body.start_block].terminator = Some(Terminator {
+                    kind: TerminatorKind::Call {
+                        func: unit_operand(gcx),
+                        args: vec![Operand::Copy(Place {
+                            local: parameter,
+                            projection: vec![PlaceElem::Deref; depth],
+                        })],
+                        destination: Place::from_local(result),
+                        target,
+                        unwind: CallUnwindAction::Terminate,
+                    },
+                    span,
+                });
+                let summary = summary_with_effects(
+                    gcx,
+                    &body,
+                    &[ParamEscapeSummary {
+                        heap_deref: Some(0),
+                        return_deref: None,
+                    }],
+                );
+                assert_eq!(
+                    summary.params[0],
+                    ParamEscapeSummary {
+                        heap_deref: Some(depth as u8),
+                        return_deref: None,
+                    }
+                );
+            }
         });
     }
 
@@ -2197,7 +2381,7 @@ mod tests {
             assert_eq!(
                 summary_with_effects(gcx, &direct, &[]).params[0],
                 ParamEscapeSummary {
-                    heap_capture: false,
+                    heap_deref: None,
                     return_deref: Some(0),
                 }
             );
@@ -2222,7 +2406,7 @@ mod tests {
             assert_eq!(
                 summary_with_effects(gcx, &loaded, &[]).params[0],
                 ParamEscapeSummary {
-                    heap_capture: false,
+                    heap_deref: None,
                     return_deref: Some(1),
                 }
             );
@@ -2249,7 +2433,6 @@ mod tests {
                     kind: TerminatorKind::Call {
                         func: unit_operand(gcx),
                         args: vec![Operand::Copy(Place::from_local(joined))],
-                        devirt_hint: None,
                         destination: Place::from_local(call_result),
                         target,
                         unwind: CallUnwindAction::Terminate,
@@ -2290,7 +2473,6 @@ mod tests {
                     kind: StatementKind::Assign(
                         Place::from_local(left_ref),
                         Rvalue::Ref {
-                            mutable: false,
                             place: Place::from_local(left_value),
                         },
                     ),
@@ -2300,7 +2482,6 @@ mod tests {
                     kind: StatementKind::Assign(
                         Place::from_local(right_ref),
                         Rvalue::Ref {
-                            mutable: false,
                             place: Place::from_local(right_value),
                         },
                     ),
@@ -2320,7 +2501,7 @@ mod tests {
                 gcx,
                 &body,
                 &[ParamEscapeSummary {
-                    heap_capture: true,
+                    heap_deref: Some(0),
                     return_deref: None,
                 }],
             );
@@ -2334,7 +2515,7 @@ mod tests {
         with_test_gcx(|gcx| {
             let ref_ty = reference_ty(gcx, gcx.types.int64);
             let return_effect = [ParamEscapeSummary {
-                heap_capture: false,
+                heap_deref: None,
                 return_deref: Some(0),
             }];
 
@@ -2380,7 +2561,6 @@ mod tests {
                         kind: StatementKind::Assign(
                             Place::from_local(destination),
                             Rvalue::Ref {
-                                mutable: false,
                                 place: Place::from_local(stale_value),
                             },
                         ),
@@ -2390,7 +2570,6 @@ mod tests {
                         kind: StatementKind::Assign(
                             Place::from_local(argument),
                             Rvalue::Ref {
-                                mutable: false,
                                 place: Place::from_local(returned_value),
                             },
                         ),
@@ -2401,7 +2580,6 @@ mod tests {
                 kind: TerminatorKind::Call {
                     func: unit_operand(gcx),
                     args: vec![Operand::Copy(Place::from_local(argument))],
-                    devirt_hint: None,
                     destination: Place::from_local(destination),
                     target: normal,
                     unwind: CallUnwindAction::Cleanup(cleanup),
@@ -2444,7 +2622,6 @@ mod tests {
                                 projection: vec![PlaceElem::Field(FieldIndex::from_raw(0), ref_ty)],
                             },
                             Rvalue::Ref {
-                                mutable: false,
                                 place: Place::from_local(existing_value),
                             },
                         ),
@@ -2454,7 +2631,6 @@ mod tests {
                         kind: StatementKind::Assign(
                             Place::from_local(argument),
                             Rvalue::Ref {
-                                mutable: false,
                                 place: Place::from_local(returned_value),
                             },
                         ),
@@ -2465,7 +2641,6 @@ mod tests {
                 kind: TerminatorKind::Call {
                     func: unit_operand(gcx),
                     args: vec![Operand::Copy(Place::from_local(argument))],
-                    devirt_hint: None,
                     destination: Place {
                         local: aggregate,
                         projection: vec![PlaceElem::Field(FieldIndex::from_raw(0), ref_ty)],
@@ -2482,30 +2657,29 @@ mod tests {
     }
 
     #[test]
-    fn moves_and_storage_live_kill_stale_provenance() {
+    fn copied_references_keep_their_original_target_after_rebinding() {
         with_test_gcx(|gcx| {
             let ref_ty = reference_ty(gcx, gcx.types.int64);
             let effect = [ParamEscapeSummary {
-                heap_capture: true,
+                heap_deref: Some(0),
                 return_deref: None,
             }];
 
-            let mut moved_body = minimal_body(gcx);
-            let span = moved_body.locals[moved_body.return_local].span;
-            let first_value = push_user(&mut moved_body, gcx.types.int64);
-            let replacement_value = push_user(&mut moved_body, gcx.types.int64);
-            let source = push_temp(&mut moved_body, ref_ty);
-            let moved = push_temp(&mut moved_body, ref_ty);
-            let result = push_temp(&mut moved_body, gcx.types.void);
-            let target = return_block(&mut moved_body);
-            moved_body.basic_blocks[moved_body.start_block]
+            let mut copied_body = minimal_body(gcx);
+            let span = copied_body.locals[copied_body.return_local].span;
+            let first_value = push_user(&mut copied_body, gcx.types.int64);
+            let replacement_value = push_user(&mut copied_body, gcx.types.int64);
+            let source = push_temp(&mut copied_body, ref_ty);
+            let moved = push_temp(&mut copied_body, ref_ty);
+            let result = push_temp(&mut copied_body, gcx.types.void);
+            let target = return_block(&mut copied_body);
+            copied_body.basic_blocks[copied_body.start_block]
                 .statements
                 .extend([
                     Statement {
                         kind: StatementKind::Assign(
                             Place::from_local(source),
                             Rvalue::Ref {
-                                mutable: false,
                                 place: Place::from_local(first_value),
                             },
                         ),
@@ -2514,7 +2688,7 @@ mod tests {
                     Statement {
                         kind: StatementKind::Assign(
                             Place::from_local(moved),
-                            Rvalue::Use(Operand::Move(Place::from_local(source))),
+                            Rvalue::Use(Operand::Copy(Place::from_local(source))),
                         ),
                         span,
                     },
@@ -2522,25 +2696,23 @@ mod tests {
                         kind: StatementKind::Assign(
                             Place::from_local(source),
                             Rvalue::Ref {
-                                mutable: false,
                                 place: Place::from_local(replacement_value),
                             },
                         ),
                         span,
                     },
                 ]);
-            moved_body.basic_blocks[moved_body.start_block].terminator = Some(Terminator {
+            copied_body.basic_blocks[copied_body.start_block].terminator = Some(Terminator {
                 kind: TerminatorKind::Call {
                     func: unit_operand(gcx),
                     args: vec![Operand::Copy(Place::from_local(moved))],
-                    devirt_hint: None,
                     destination: Place::from_local(result),
                     target,
                     unwind: CallUnwindAction::Terminate,
                 },
                 span,
             });
-            let placement = placement_with_effects(gcx, &moved_body, &effect);
+            let placement = placement_with_effects(gcx, &copied_body, &effect);
             assert!(placement.heap_locals.contains(&first_value));
             assert!(!placement.heap_locals.contains(&replacement_value));
 
@@ -2557,7 +2729,6 @@ mod tests {
                         kind: StatementKind::Assign(
                             Place::from_local(reference),
                             Rvalue::Ref {
-                                mutable: false,
                                 place: Place::from_local(value),
                             },
                         ),
@@ -2572,7 +2743,6 @@ mod tests {
                 kind: TerminatorKind::Call {
                     func: unit_operand(gcx),
                     args: vec![Operand::Copy(Place::from_local(reference))],
-                    devirt_hint: None,
                     destination: Place::from_local(result),
                     target,
                     unwind: CallUnwindAction::Terminate,
@@ -2613,7 +2783,6 @@ mod tests {
                     kind: TerminatorKind::Call {
                         func: unit_operand(gcx),
                         args: vec![Operand::Copy(Place::from_local(aggregate))],
-                        devirt_hint: None,
                         destination: Place::from_local(second_result),
                         target,
                         unwind: CallUnwindAction::Terminate,
@@ -2626,7 +2795,6 @@ mod tests {
                     kind: StatementKind::Assign(
                         Place::from_local(projected_ref),
                         Rvalue::Ref {
-                            mutable: false,
                             place: Place::from_local(projected_value),
                         },
                     ),
@@ -2657,7 +2825,6 @@ mod tests {
                     kind: StatementKind::Assign(
                         Place::from_local(aggregate_ref),
                         Rvalue::Ref {
-                            mutable: false,
                             place: Place::from_local(aggregate_value),
                         },
                     ),
@@ -2679,7 +2846,7 @@ mod tests {
                         Place::from_local(aggregate),
                         Rvalue::Aggregate {
                             kind: AggregateKind::Tuple,
-                            fields: IndexVec::from_vec(vec![Operand::Move(Place::from_local(
+                            fields: IndexVec::from_vec(vec![Operand::Copy(Place::from_local(
                                 aggregate_ptr,
                             ))]),
                         },
@@ -2691,7 +2858,6 @@ mod tests {
                 kind: TerminatorKind::Call {
                     func: unit_operand(gcx),
                     args: vec![Operand::Copy(Place::from_local(projected))],
-                    devirt_hint: None,
                     destination: Place::from_local(first_result),
                     target: second_call,
                     unwind: CallUnwindAction::Terminate,
@@ -2703,7 +2869,7 @@ mod tests {
                 gcx,
                 &body,
                 &[ParamEscapeSummary {
-                    heap_capture: true,
+                    heap_deref: Some(0),
                     return_deref: None,
                 }],
             );
@@ -2739,7 +2905,6 @@ mod tests {
                     kind: StatementKind::Assign(
                         Place::from_local(reference),
                         Rvalue::Ref {
-                            mutable: false,
                             place: Place {
                                 local: allocation,
                                 projection: vec![PlaceElem::Deref],
@@ -2769,8 +2934,7 @@ mod tests {
             body.basic_blocks[body.start_block].terminator = Some(Terminator {
                 kind: TerminatorKind::Call {
                     func: unit_operand(gcx),
-                    args: vec![Operand::Move(Place::from_local(capture))],
-                    devirt_hint: None,
+                    args: vec![Operand::Copy(Place::from_local(capture))],
                     destination: Place::from_local(result),
                     target,
                     unwind: CallUnwindAction::Terminate,
@@ -2782,7 +2946,7 @@ mod tests {
                 gcx,
                 &body,
                 &[ParamEscapeSummary {
-                    heap_capture: true,
+                    heap_deref: Some(0),
                     return_deref: None,
                 }],
             );
@@ -2860,7 +3024,6 @@ mod tests {
                 kind: TerminatorKind::Call {
                     func: unit_operand(gcx),
                     args: vec![Operand::Copy(Place::from_local(pointer))],
-                    devirt_hint: None,
                     destination: Place::from_local(result),
                     target,
                     unwind: CallUnwindAction::Terminate,
@@ -2872,7 +3035,7 @@ mod tests {
                 gcx,
                 &body,
                 &[ParamEscapeSummary {
-                    heap_capture: true,
+                    heap_deref: Some(0),
                     return_deref: None,
                 }],
             );
@@ -2930,11 +3093,11 @@ mod tests {
                 },
                 // Aggregate lowering can leave a dead move before the actual
                 // projected return store. Shared cleanup must discard it
-                // before flow-sensitive provenance consumes the source.
+                // before flow-sensitive provenance follows the source.
                 Statement {
                     kind: StatementKind::Assign(
                         Place::from_local(dead_move),
-                        Rvalue::Use(Operand::Move(Place::from_local(pointer))),
+                        Rvalue::Use(Operand::Copy(Place::from_local(pointer))),
                     ),
                     span,
                 },
@@ -2944,7 +3107,7 @@ mod tests {
                             local: body.return_local,
                             projection: vec![PlaceElem::Field(FieldIndex::from_raw(0), ptr_ty)],
                         },
-                        Rvalue::Use(Operand::Move(Place::from_local(pointer))),
+                        Rvalue::Use(Operand::Copy(Place::from_local(pointer))),
                     ),
                     span,
                 },
@@ -3033,13 +3196,11 @@ mod tests {
                 .iter()
                 .enumerate()
                 .find_map(|(index, statement)| match &statement.kind {
-                    StatementKind::Assign(
-                        destination,
-                        Rvalue::Ref {
-                            place,
-                            mutable: true,
-                        },
-                    ) if place.local == stack_object => Some((index, destination.local)),
+                    StatementKind::Assign(destination, Rvalue::Ref { place })
+                        if place.local == stack_object =>
+                    {
+                        Some((index, destination.local))
+                    }
                     _ => None,
                 })
                 .expect("promoted storage publishes a typed reference");
@@ -3101,13 +3262,11 @@ mod tests {
                 .statements
                 .iter()
                 .find_map(|statement| match &statement.kind {
-                    StatementKind::Assign(
-                        destination,
-                        Rvalue::Ref {
-                            place,
-                            mutable: true,
-                        },
-                    ) if body.locals[place.local].ty == element_ty => Some(destination.local),
+                    StatementKind::Assign(destination, Rvalue::Ref { place })
+                        if body.locals[place.local].ty == element_ty =>
+                    {
+                        Some(destination.local)
+                    }
                     _ => None,
                 })
                 .expect("promoted backing has a typed reference");
@@ -3170,7 +3329,7 @@ mod tests {
         });
         if consume_before_allocation {
             body.basic_blocks[loop_block].statements.push(Statement {
-                kind: StatementKind::KeepAlive(Operand::Move(Place::from_local(carried))),
+                kind: StatementKind::KeepAlive(Operand::Copy(Place::from_local(carried))),
                 span,
             });
         }
@@ -3230,6 +3389,115 @@ mod tests {
     }
 
     #[test]
+    fn a_reference_live_across_rebinding_requires_fresh_storage() {
+        with_test_gcx(|gcx| {
+            for keep_previous in [false, true] {
+                let mut body = minimal_body(gcx);
+                let span = body.locals[body.return_local].span;
+                let condition = push_parameter(&mut body, gcx.types.bool);
+                let outside = push_user(&mut body, gcx.types.int64);
+                let binding = push_user(&mut body, gcx.types.int64);
+                let reference = push_temp(&mut body, reference_ty(gcx, gcx.types.int64));
+                let observed = push_temp(&mut body, gcx.types.int64);
+                let number = |value| {
+                    Rvalue::Use(Operand::Constant(Constant {
+                        ty: gcx.types.int64,
+                        value: ConstantKind::Integer(value),
+                    }))
+                };
+                body.basic_blocks[body.start_block].statements = vec![
+                    Statement {
+                        span,
+                        kind: StatementKind::StorageLive(outside),
+                    },
+                    Statement {
+                        span,
+                        kind: StatementKind::Assign(Place::from_local(outside), number(0)),
+                    },
+                    Statement {
+                        span,
+                        kind: StatementKind::Assign(
+                            Place::from_local(reference),
+                            Rvalue::Ref {
+                                place: Place::from_local(outside),
+                            },
+                        ),
+                    },
+                ];
+                let loop_block = body.basic_blocks.push(BasicBlockData {
+                    note: Some("new binding each iteration".into()),
+                    statements: vec![
+                        Statement {
+                            span,
+                            kind: StatementKind::StorageLive(binding),
+                        },
+                        Statement {
+                            span,
+                            kind: StatementKind::Assign(Place::from_local(binding), number(1)),
+                        },
+                    ],
+                    terminator: None,
+                });
+                if keep_previous {
+                    let mut previous = Place::from_local(reference);
+                    previous.projection.push(PlaceElem::Deref);
+                    body.basic_blocks[loop_block].statements.extend([
+                        Statement {
+                            span,
+                            kind: StatementKind::Assign(
+                                Place::from_local(observed),
+                                Rvalue::Use(Operand::Copy(previous)),
+                            ),
+                        },
+                        Statement {
+                            span,
+                            kind: StatementKind::KeepAlive(Operand::Copy(Place::from_local(
+                                observed,
+                            ))),
+                        },
+                    ]);
+                }
+                body.basic_blocks[loop_block].statements.push(Statement {
+                    span,
+                    kind: StatementKind::Assign(
+                        Place::from_local(reference),
+                        Rvalue::Ref {
+                            place: Place::from_local(binding),
+                        },
+                    ),
+                });
+                let exit = return_block(&mut body);
+                body.basic_blocks[exit].statements.push(Statement {
+                    span,
+                    kind: StatementKind::KeepAlive(Operand::Copy(Place::from_local(reference))),
+                });
+                body.basic_blocks[body.start_block].terminator = Some(Terminator {
+                    span,
+                    kind: TerminatorKind::Goto { target: loop_block },
+                });
+                body.basic_blocks[loop_block].terminator = Some(Terminator {
+                    span,
+                    kind: TerminatorKind::SwitchInt {
+                        discr: Operand::Copy(Place::from_local(condition)),
+                        targets: vec![(0, exit)],
+                        otherwise: loop_block,
+                    },
+                });
+                let placement = placement_with_effects(gcx, &body, &[]);
+                assert_eq!(
+                    placement.heap_locals.contains(&binding),
+                    keep_previous,
+                    "a previous binding is still referenced after the next declaration"
+                );
+                assert!(
+                    !placement.heap_locals.contains(&outside),
+                    "an enclosing single binding can remain on the stack"
+                );
+            }
+        });
+    }
+
+    #[test]
     fn async_bridge_heapifies_referents_live_across_yield() {
         with_test_gcx(|gcx| {
             let mut body = minimal_body(gcx);
@@ -3244,7 +3512,6 @@ mod tests {
                     kind: StatementKind::Assign(
                         Place::from_local(reference),
                         Rvalue::Ref {
-                            mutable: false,
                             place: Place::from_local(value),
                         },
                     ),
@@ -3284,6 +3551,7 @@ mod tests {
                     value: unit_operand(gcx),
                     resume,
                     resume_arg: Place::from_local(resume_arg),
+                    no_result: None,
                     cancel,
                     cancel_complete,
                     unwind: CallUnwindAction::Terminate,
@@ -3299,13 +3567,67 @@ mod tests {
     }
 
     #[test]
+    fn no_result_yield_edge_preserves_preexisting_reference_provenance() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            body.is_async = true;
+            let span = body.locals[body.return_local].span;
+            let reference_ty = reference_ty(gcx, gcx.types.int64);
+            body.locals[body.return_local].ty = reference_ty;
+            let value = push_user(&mut body, gcx.types.int64);
+            let reference = push_temp(&mut body, reference_ty);
+            let resume_arg = push_temp(&mut body, gcx.types.void);
+            body.basic_blocks[body.start_block]
+                .statements
+                .push(Statement {
+                    span,
+                    kind: StatementKind::Assign(
+                        Place::from_local(reference),
+                        Rvalue::Ref {
+                            place: Place::from_local(value),
+                        },
+                    ),
+                });
+            let resume = return_block(&mut body);
+            body.basic_blocks[resume].terminator.as_mut().unwrap().kind =
+                TerminatorKind::Unreachable;
+            let no_result = return_block(&mut body);
+            body.basic_blocks[no_result].statements.push(Statement {
+                span,
+                kind: StatementKind::Assign(
+                    Place::from_local(body.return_local),
+                    Rvalue::Use(Operand::Copy(Place::from_local(reference))),
+                ),
+            });
+            body.basic_blocks[body.start_block].terminator = Some(Terminator {
+                span,
+                kind: TerminatorKind::Yield {
+                    value: unit_operand(gcx),
+                    resume,
+                    resume_arg: Place::from_local(resume_arg),
+                    no_result: Some(no_result),
+                    cancel: resume,
+                    cancel_complete: resume,
+                    unwind: CallUnwindAction::Terminate,
+                },
+            });
+            assert!(
+                placement_with_effects(gcx, &body, &[])
+                    .heap_locals
+                    .contains(&value),
+                "the no-result branch can return a reference to this storage"
+            );
+        });
+    }
+
+    #[test]
     fn unresolved_and_unknown_calls_are_conservative() {
         with_test_gcx(|gcx| {
             assert_eq!(
                 conservative_parameter_effect(gcx, None, 0)
                     .unwrap_or_else(|_| panic!("unknown call effect")),
                 ParamEscapeSummary {
-                    heap_capture: true,
+                    heap_deref: Some(0),
                     return_deref: Some(0),
                 }
             );
@@ -3403,6 +3725,15 @@ mod tests {
                 .insert(instance, finalized);
             assert!(gcx.is_finalized_instance_mir(instance, finalized));
             assert!(!gcx.is_finalized_instance_mir(instance, &body));
+            assert!(!gcx.is_finalized_gc_instance_mir(instance, finalized));
+            let candidate = gcx.store.arenas.mir_bodies.alloc(body.clone());
+            gcx.store
+                .gc_instance_mir_bodies
+                .borrow_mut()
+                .insert(instance, candidate);
+            assert!(gcx.is_finalized_gc_instance_mir(instance, candidate));
+            assert!(!gcx.is_finalized_instance_mir(instance, candidate));
+            assert!(!gcx.is_finalized_gc_instance_mir(instance, finalized));
         });
     }
 }

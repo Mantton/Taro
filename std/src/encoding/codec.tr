@@ -1,15 +1,14 @@
-import std.collections.List
-import std.marker.Copy
-import std.ops.PartialEq
-import std.optional.Optional
-import std.result.Result
+import std::collections::List
+import std::ops::PartialEq
+import std::optional::Optional
+import std::result::Result
 
 /// A format-neutral category for failures reported while converting values.
 ///
 /// Concrete codecs own their error payloads and paths. Keeping only the stable
 /// category here lets JSON retain byte positions and JSONPath while a future
 /// binary codec can report offsets or schema locations appropriate to it.
-public enum CodingErrorKind: Copy, PartialEq {
+public enum CodingErrorKind: PartialEq {
     case typeMismatch
     case missingField
     case invalidValue
@@ -17,8 +16,8 @@ public enum CodingErrorKind: Copy, PartialEq {
     case custom
 }
 
-impl std.fmt.Display for CodingErrorKind {
-    public func display(&self, _ into: &mut std.fmt.Formatter) {
+conform CodingErrorKind to std::fmt::Display {
+    public func display(_ into: &std::fmt::Formatter) {
         match self {
             case .typeMismatch => into.writeString("encoded value has the wrong type")
             case .missingField => into.writeString("required encoded field is missing")
@@ -30,7 +29,7 @@ impl std.fmt.Display for CodingErrorKind {
 }
 
 /// The format-neutral shape visible at a decoder's current position.
-public enum CodingValueKind: Copy, PartialEq {
+public enum CodingValueKind: PartialEq {
     case null
     case boolean
     case number
@@ -47,104 +46,104 @@ public enum CodingValueKind: Copy, PartialEq {
 /// on `Encodable`, not here, keeping this interface usable as a conventional
 /// associated-error contract as Taro's codec surface grows.
 public interface Encoder {
-    type Error: std.error.Error
+    type Error: std::error::Error
 
     /// Construct an error at the encoder's current coding position.
-    func error(&self, _ kind: CodingErrorKind, _ message: string) -> Self.Error
+    func error(_ kind: CodingErrorKind, _ message: string) -> Self::Error
 
-    func encodeNull(&mut self) -> Result[(), Self.Error] {
+    func encodeNull() -> Result[(), Self::Error] {
         return .err(self.error(.invalidValue, "encoder does not support null"))
     }
 
-    func encodeBool(&mut self, _ value: bool) -> Result[(), Self.Error] {
+    func encodeBool(_ value: bool) -> Result[(), Self::Error] {
         return .err(self.error(.invalidValue, "encoder does not support booleans"))
     }
 
-    func encodeInt8(&mut self, _ value: int8) -> Result[(), Self.Error] {
+    func encodeInt8(_ value: int8) -> Result[(), Self::Error] {
         return self.encodeInt64(value as int64)
     }
 
-    func encodeInt16(&mut self, _ value: int16) -> Result[(), Self.Error] {
+    func encodeInt16(_ value: int16) -> Result[(), Self::Error] {
         return self.encodeInt64(value as int64)
     }
 
-    func encodeInt32(&mut self, _ value: int32) -> Result[(), Self.Error] {
+    func encodeInt32(_ value: int32) -> Result[(), Self::Error] {
         return self.encodeInt64(value as int64)
     }
 
-    func encodeInt64(&mut self, _ value: int64) -> Result[(), Self.Error] {
+    func encodeInt64(_ value: int64) -> Result[(), Self::Error] {
         return .err(self.error(.invalidValue, "encoder does not support signed integers"))
     }
 
-    func encodeIsize(&mut self, _ value: isize) -> Result[(), Self.Error] {
+    func encodeIsize(_ value: isize) -> Result[(), Self::Error] {
         return self.encodeInt64(value as int64)
     }
 
-    func encodeUint8(&mut self, _ value: uint8) -> Result[(), Self.Error] {
+    func encodeUint8(_ value: uint8) -> Result[(), Self::Error] {
         return self.encodeUint64(value as uint64)
     }
 
-    func encodeUint16(&mut self, _ value: uint16) -> Result[(), Self.Error] {
+    func encodeUint16(_ value: uint16) -> Result[(), Self::Error] {
         return self.encodeUint64(value as uint64)
     }
 
-    func encodeUint32(&mut self, _ value: uint32) -> Result[(), Self.Error] {
+    func encodeUint32(_ value: uint32) -> Result[(), Self::Error] {
         return self.encodeUint64(value as uint64)
     }
 
-    func encodeUint64(&mut self, _ value: uint64) -> Result[(), Self.Error] {
+    func encodeUint64(_ value: uint64) -> Result[(), Self::Error] {
         return .err(self.error(.invalidValue, "encoder does not support unsigned integers"))
     }
 
-    func encodeUsize(&mut self, _ value: usize) -> Result[(), Self.Error] {
+    func encodeUsize(_ value: usize) -> Result[(), Self::Error] {
         return self.encodeUint64(value as uint64)
     }
 
-    func encodeFloat(&mut self, _ value: float) -> Result[(), Self.Error] {
+    func encodeFloat(_ value: float) -> Result[(), Self::Error] {
         return .err(self.error(.invalidValue, "encoder does not support float values"))
     }
 
-    func encodeDouble(&mut self, _ value: double) -> Result[(), Self.Error] {
+    func encodeDouble(_ value: double) -> Result[(), Self::Error] {
         return .err(self.error(.invalidValue, "encoder does not support double values"))
     }
 
     /// Encode a validated, exact decimal representation without first rounding
     /// through a machine numeric type. Formats without exact decimals may
     /// reject this operation through their concrete error type.
-    func encodeDecimal(&mut self, _ value: string) -> Result[(), Self.Error] {
+    func encodeDecimal(_ value: string) -> Result[(), Self::Error] {
         return .err(self.error(.invalidValue, "encoder does not support exact decimals"))
     }
 
-    func encodeString(&mut self, _ value: string) -> Result[(), Self.Error] {
+    func encodeString(_ value: string) -> Result[(), Self::Error] {
         return .err(self.error(.invalidValue, "encoder does not support strings"))
     }
 
     /// Begin a sequence. `.none` means its final length is not known yet.
-    func beginSequence(&mut self, _ length: usize?) -> Result[(), Self.Error] {
+    func beginSequence(_ length: usize?) -> Result[(), Self::Error] {
         return .err(self.error(.invalidValue, "encoder does not support sequences"))
     }
 
     /// Position the encoder at the next sequence element.
-    func beginElement(&mut self) -> Result[(), Self.Error] {
+    func beginElement() -> Result[(), Self::Error] {
         return .err(self.error(.invalidState, "encoder is not inside a sequence"))
     }
 
-    func endSequence(&mut self) -> Result[(), Self.Error] {
+    func endSequence() -> Result[(), Self::Error] {
         return .err(self.error(.invalidState, "encoder is not inside a sequence"))
     }
 
-    /// Begin a string-keyed object. This is sufficient for derived structs and
+    /// Begin a string-keyed object. This supports derived records and enums and
     /// composes with formats whose native keyed representation is not textual.
-    func beginObject(&mut self, _ length: usize?) -> Result[(), Self.Error] {
+    func beginObject(_ length: usize?) -> Result[(), Self::Error] {
         return .err(self.error(.invalidValue, "encoder does not support objects"))
     }
 
     /// Position the encoder at the value belonging to `name`.
-    func beginField(&mut self, _ name: string) -> Result[(), Self.Error] {
+    func beginField(_ name: string) -> Result[(), Self::Error] {
         return .err(self.error(.invalidState, "encoder is not inside an object"))
     }
 
-    func endObject(&mut self) -> Result[(), Self.Error] {
+    func endObject() -> Result[(), Self::Error] {
         return .err(self.error(.invalidState, "encoder is not inside an object"))
     }
 }
@@ -155,118 +154,134 @@ public interface Encoder {
 /// types. They can be backed by a DOM today or by a direct token stream later
 /// without changing any user conformance or compiler-derived implementation.
 public interface Decoder {
-    type Error: std.error.Error
+    type Error: std::error::Error
 
     /// Construct an error at the decoder's current coding position.
-    func error(&self, _ kind: CodingErrorKind, _ message: string) -> Self.Error
+    func error(_ kind: CodingErrorKind, _ message: string) -> Self::Error
 
     /// Construct a missing-field error beneath the active object position.
     /// Call this before `endObject` so nested decoders retain their container
     /// path. Concrete decoders override it when they can attach that path.
-    func missingField(&self, _ name: string, _ message: string) -> Self.Error {
+    func missingField(_ name: string, _ message: string) -> Self::Error {
         return self.error(.missingField, message)
     }
 
-    func peekKind(&self) -> Result[CodingValueKind, Self.Error]
+    func peekKind() -> Result[CodingValueKind, Self::Error]
 
-    func decodeNull(&mut self) -> Result[(), Self.Error] {
+    func decodeNull() -> Result[(), Self::Error] {
         return .err(self.error(.typeMismatch, "expected null"))
     }
 
-    func decodeBool(&mut self) -> Result[bool, Self.Error] {
+    func decodeBool() -> Result[bool, Self::Error] {
         return .err(self.error(.typeMismatch, "expected a boolean"))
     }
 
-    func decodeInt8(&mut self) -> Result[int8, Self.Error] {
+    func decodeInt8() -> Result[int8, Self::Error] {
         return .err(self.error(.typeMismatch, "expected an int8"))
     }
 
-    func decodeInt16(&mut self) -> Result[int16, Self.Error] {
+    func decodeInt16() -> Result[int16, Self::Error] {
         return .err(self.error(.typeMismatch, "expected an int16"))
     }
 
-    func decodeInt32(&mut self) -> Result[int32, Self.Error] {
+    func decodeInt32() -> Result[int32, Self::Error] {
         return .err(self.error(.typeMismatch, "expected an int32"))
     }
 
-    func decodeInt64(&mut self) -> Result[int64, Self.Error] {
+    func decodeInt64() -> Result[int64, Self::Error] {
         return .err(self.error(.typeMismatch, "expected an int64"))
     }
 
-    func decodeIsize(&mut self) -> Result[isize, Self.Error] {
+    func decodeIsize() -> Result[isize, Self::Error] {
         return .err(self.error(.typeMismatch, "expected an isize"))
     }
 
-    func decodeUint8(&mut self) -> Result[uint8, Self.Error] {
+    func decodeUint8() -> Result[uint8, Self::Error] {
         return .err(self.error(.typeMismatch, "expected a uint8"))
     }
 
-    func decodeUint16(&mut self) -> Result[uint16, Self.Error] {
+    func decodeUint16() -> Result[uint16, Self::Error] {
         return .err(self.error(.typeMismatch, "expected a uint16"))
     }
 
-    func decodeUint32(&mut self) -> Result[uint32, Self.Error] {
+    func decodeUint32() -> Result[uint32, Self::Error] {
         return .err(self.error(.typeMismatch, "expected a uint32"))
     }
 
-    func decodeUint64(&mut self) -> Result[uint64, Self.Error] {
+    func decodeUint64() -> Result[uint64, Self::Error] {
         return .err(self.error(.typeMismatch, "expected a uint64"))
     }
 
-    func decodeUsize(&mut self) -> Result[usize, Self.Error] {
+    func decodeUsize() -> Result[usize, Self::Error] {
         return .err(self.error(.typeMismatch, "expected a usize"))
     }
 
-    func decodeFloat(&mut self) -> Result[float, Self.Error] {
+    func decodeFloat() -> Result[float, Self::Error] {
         return .err(self.error(.typeMismatch, "expected a float"))
     }
 
-    func decodeDouble(&mut self) -> Result[double, Self.Error] {
+    func decodeDouble() -> Result[double, Self::Error] {
         return .err(self.error(.typeMismatch, "expected a double"))
     }
 
     /// Decode an exact decimal representation without rounding it through a
     /// machine numeric type.
-    func decodeDecimal(&mut self) -> Result[string, Self.Error] {
+    func decodeDecimal() -> Result[string, Self::Error] {
         return .err(self.error(.typeMismatch, "expected an exact decimal"))
     }
 
-    func decodeString(&mut self) -> Result[string, Self.Error] {
+    func decodeString() -> Result[string, Self::Error] {
         return .err(self.error(.typeMismatch, "expected a string"))
     }
 
     /// Enter a sequence and return its length when the decoder knows it.
-    func beginSequence(&mut self) -> Result[usize?, Self.Error] {
+    func beginSequence() -> Result[usize?, Self::Error] {
         return .err(self.error(.typeMismatch, "expected a sequence"))
     }
 
     /// Move to the next sequence element, or return `false` at its end.
-    func nextElement(&mut self) -> Result[bool, Self.Error] {
+    func nextElement() -> Result[bool, Self::Error] {
         return .err(self.error(.invalidState, "decoder is not inside a sequence"))
     }
 
-    func endSequence(&mut self) -> Result[(), Self.Error] {
+    func endSequence() -> Result[(), Self::Error] {
         return .err(self.error(.invalidState, "decoder is not inside a sequence"))
     }
 
     /// Enter a string-keyed object and return its field count when known.
-    func beginObject(&mut self) -> Result[usize?, Self.Error] {
+    func beginObject() -> Result[usize?, Self::Error] {
         return .err(self.error(.typeMismatch, "expected an object"))
     }
 
     /// Move to the next field value and return its name, or `.none` at the end.
-    func nextField(&mut self) -> Result[string?, Self.Error] {
+    func nextField() -> Result[string?, Self::Error] {
         return .err(self.error(.invalidState, "decoder is not inside an object"))
+    }
+
+    /// Enter a `{kind, content?}` enum envelope and decode its string tag.
+    /// Field order must not matter. Unknown envelope fields may be skipped.
+    /// Leave the envelope open until `endObject`; the tag stays the active
+    /// coding position so an unknown-variant error points at `kind`.
+    /// A streaming implementation may buffer content encountered before kind.
+    func beginEnum() -> Result[string, Self::Error] {
+        return .err(self.error(.invalidValue, "decoder does not support tagged enums"))
+    }
+
+    /// Select required `content`, or validate its absence for a unit variant.
+    /// Payload shape is checked by the following object/sequence operation.
+    /// After consuming content, `endObject` closes the complete envelope.
+    func beginEnumContent(_ hasPayload: bool) -> Result[(), Self::Error] {
+        return .err(self.error(.invalidState, "decoder is not inside an enum envelope"))
     }
 
     /// Consume an unrecognized value. DOM decoders only need to mark their
     /// selected node consumed, while token-stream decoders advance past the
     /// complete value.
-    func skipValue(&mut self) -> Result[(), Self.Error] {
+    func skipValue() -> Result[(), Self::Error] {
         return .err(self.error(.invalidState, "decoder cannot skip this value"))
     }
 
-    func endObject(&mut self) -> Result[(), Self.Error] {
+    func endObject() -> Result[(), Self::Error] {
         return .err(self.error(.invalidState, "decoder is not inside an object"))
     }
 }
@@ -276,16 +291,55 @@ public interface Decoder {
 /// The method is generic intentionally: Taro monomorphizes generic interface
 /// methods and does not put them in existential witness tables. Normal generic
 /// codec APIs are therefore zero-cost; `any Encodable` is not a supported input.
+@lang("Encodable")
 public interface Encodable {
-    func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error]
+    func encode[E: Encoder](into encoder: E) -> Result[(), E::Error]
 }
 
 /// A value that can construct itself from any statically known format decoder.
+@lang("Decodable")
 public interface Decodable {
-    func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error]
+    static func decode[D: Decoder](from decoder: D) -> Result[Self, D::Error]
 }
 
 /// A type supporting both directions of the format-neutral coding contract.
+///
+/// Structs and enums derive both methods by declaring `: Codable`.
+/// Stored fields use their declaration names and order, and each field must
+/// support the corresponding direction. Generic conformance is conditional
+/// on those field capabilities. Classes can derive `Encodable`: an inherited
+/// encoder retains its original fields, and subclasses may override it. A new
+/// encoder on a non-Encodable base describes only this class's stored fields.
+/// Classes derive decoding through `init[D: Decoder](from decoder: D)` returning
+/// `Result[Self, D::Error]`. This initializer is required on non-final classes;
+/// a handwritten matching designated or convenience initializer takes
+/// precedence over field synthesis.
+/// Decoding allocates a fresh object without calling unrelated custom init.
+/// Subclasses inherit the same codec and decoding initializer when their added
+/// fields have defaults and they declare no designated initializer. Otherwise,
+/// implement the required decoding initializer explicitly; added fields are
+/// never silently added to an inherited codec. A newly Decodable class with a
+/// non-Decodable superclass needs an accessible designated non-fallible init().
+/// Class decoding evaluates stored defaults. Readonly preset fields retain
+/// their defaults and ignore encoded keys; mutable fields are decoded normally.
+/// Missing optionals become none; other missing mutable fields are errors.
+/// Inherited synthesized decoding initializers evaluate subclass defaults
+/// before running the base decoder.
+///
+/// Enums use an adjacent tag: `{"kind":"person","content":{"name":"Ada"}}`.
+/// Unit variants omit `content`; tuple variants use positional arrays, including
+/// labeled and single-element tuples. Struct variants use named object fields.
+/// Tuple lengths are exact. Unknown variants, missing payloads and unexpected
+/// content on unit variants are errors. Envelope field order is immaterial;
+/// unknown envelope and struct-payload fields are skipped. JSON duplicate-key
+/// handling follows the parser's selected policy.
+///
+/// Decoding skips unknown fields. Absent declared optional fields become
+/// `.none`; other absent fields are errors, even when a stored default exists.
+/// Derivation initializes decoded fields directly, without running `init` or
+/// stored default expressions. Declaring the conformance opts into this path.
+/// To customize one direction, derive only the other interface and provide an
+/// explicit `conform` block for the custom direction.
 public type Codable = Encodable & Decodable
 
 /// Invoke an `Encodable` implementation when the concrete source type is only
@@ -293,129 +347,129 @@ public type Codable = Encodable & Decodable
 /// entry point for handwritten codecs.
 public func encode[Source: Encodable, Destination: Encoder](
     _ source: &Source,
-    into encoder: &mut Destination,
-) -> Result[(), Destination.Error] {
+    into encoder: Destination,
+) -> Result[(), Destination::Error] {
     source.encode(into: encoder)
 }
 
 /// Invoke a `Decodable` implementation for an explicitly selected target type.
 public func decode[Target: Decodable, Source: Decoder](
-    from decoder: &mut Source,
-) -> Result[Target, Source.Error] {
-    Target.decode(from: decoder)
+    from decoder: Source,
+) -> Result[Target, Source::Error] {
+    Target::decode(from: decoder)
 }
 
-impl Encodable for () {
-    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] {
+conform () to Encodable {
+    public func encode[E: Encoder](into encoder: E) -> Result[(), E::Error] {
         encoder.encodeNull()
     }
 }
 
-impl Decodable for () {
-    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] {
+conform () to Decodable {
+    public static func decode[D: Decoder](from decoder: D) -> Result[Self, D::Error] {
         decoder.decodeNull()
     }
 }
 
-impl Encodable for bool {
-    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] {
-        encoder.encodeBool(*self)
+conform bool to Encodable {
+    public func encode[E: Encoder](into encoder: E) -> Result[(), E::Error] {
+        encoder.encodeBool(self)
     }
 }
 
-impl Decodable for bool {
-    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] {
+conform bool to Decodable {
+    public static func decode[D: Decoder](from decoder: D) -> Result[Self, D::Error] {
         decoder.decodeBool()
     }
 }
 
-impl Encodable for string {
-    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] {
-        encoder.encodeString(*self)
+conform string to Encodable {
+    public func encode[E: Encoder](into encoder: E) -> Result[(), E::Error] {
+        encoder.encodeString(self)
     }
 }
 
-impl Decodable for string {
-    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] {
+conform string to Decodable {
+    public static func decode[D: Decoder](from decoder: D) -> Result[Self, D::Error] {
         decoder.decodeString()
     }
 }
 
-impl Encodable for int8 {
-    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] { encoder.encodeInt8(*self) }
+conform int8 to Encodable {
+    public func encode[E: Encoder](into encoder: E) -> Result[(), E::Error] { encoder.encodeInt8(self) }
 }
-impl Decodable for int8 {
-    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] { decoder.decodeInt8() }
+conform int8 to Decodable {
+    public static func decode[D: Decoder](from decoder: D) -> Result[Self, D::Error] { decoder.decodeInt8() }
 }
-impl Encodable for int16 {
-    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] { encoder.encodeInt16(*self) }
+conform int16 to Encodable {
+    public func encode[E: Encoder](into encoder: E) -> Result[(), E::Error] { encoder.encodeInt16(self) }
 }
-impl Decodable for int16 {
-    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] { decoder.decodeInt16() }
+conform int16 to Decodable {
+    public static func decode[D: Decoder](from decoder: D) -> Result[Self, D::Error] { decoder.decodeInt16() }
 }
-impl Encodable for int32 {
-    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] { encoder.encodeInt32(*self) }
+conform int32 to Encodable {
+    public func encode[E: Encoder](into encoder: E) -> Result[(), E::Error] { encoder.encodeInt32(self) }
 }
-impl Decodable for int32 {
-    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] { decoder.decodeInt32() }
+conform int32 to Decodable {
+    public static func decode[D: Decoder](from decoder: D) -> Result[Self, D::Error] { decoder.decodeInt32() }
 }
-impl Encodable for int64 {
-    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] { encoder.encodeInt64(*self) }
+conform int64 to Encodable {
+    public func encode[E: Encoder](into encoder: E) -> Result[(), E::Error] { encoder.encodeInt64(self) }
 }
-impl Decodable for int64 {
-    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] { decoder.decodeInt64() }
+conform int64 to Decodable {
+    public static func decode[D: Decoder](from decoder: D) -> Result[Self, D::Error] { decoder.decodeInt64() }
 }
-impl Encodable for isize {
-    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] { encoder.encodeIsize(*self) }
+conform isize to Encodable {
+    public func encode[E: Encoder](into encoder: E) -> Result[(), E::Error] { encoder.encodeIsize(self) }
 }
-impl Decodable for isize {
-    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] { decoder.decodeIsize() }
+conform isize to Decodable {
+    public static func decode[D: Decoder](from decoder: D) -> Result[Self, D::Error] { decoder.decodeIsize() }
 }
-impl Encodable for uint8 {
-    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] { encoder.encodeUint8(*self) }
+conform uint8 to Encodable {
+    public func encode[E: Encoder](into encoder: E) -> Result[(), E::Error] { encoder.encodeUint8(self) }
 }
-impl Decodable for uint8 {
-    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] { decoder.decodeUint8() }
+conform uint8 to Decodable {
+    public static func decode[D: Decoder](from decoder: D) -> Result[Self, D::Error] { decoder.decodeUint8() }
 }
-impl Encodable for uint16 {
-    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] { encoder.encodeUint16(*self) }
+conform uint16 to Encodable {
+    public func encode[E: Encoder](into encoder: E) -> Result[(), E::Error] { encoder.encodeUint16(self) }
 }
-impl Decodable for uint16 {
-    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] { decoder.decodeUint16() }
+conform uint16 to Decodable {
+    public static func decode[D: Decoder](from decoder: D) -> Result[Self, D::Error] { decoder.decodeUint16() }
 }
-impl Encodable for uint32 {
-    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] { encoder.encodeUint32(*self) }
+conform uint32 to Encodable {
+    public func encode[E: Encoder](into encoder: E) -> Result[(), E::Error] { encoder.encodeUint32(self) }
 }
-impl Decodable for uint32 {
-    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] { decoder.decodeUint32() }
+conform uint32 to Decodable {
+    public static func decode[D: Decoder](from decoder: D) -> Result[Self, D::Error] { decoder.decodeUint32() }
 }
-impl Encodable for uint64 {
-    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] { encoder.encodeUint64(*self) }
+conform uint64 to Encodable {
+    public func encode[E: Encoder](into encoder: E) -> Result[(), E::Error] { encoder.encodeUint64(self) }
 }
-impl Decodable for uint64 {
-    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] { decoder.decodeUint64() }
+conform uint64 to Decodable {
+    public static func decode[D: Decoder](from decoder: D) -> Result[Self, D::Error] { decoder.decodeUint64() }
 }
-impl Encodable for usize {
-    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] { encoder.encodeUsize(*self) }
+conform usize to Encodable {
+    public func encode[E: Encoder](into encoder: E) -> Result[(), E::Error] { encoder.encodeUsize(self) }
 }
-impl Decodable for usize {
-    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] { decoder.decodeUsize() }
+conform usize to Decodable {
+    public static func decode[D: Decoder](from decoder: D) -> Result[Self, D::Error] { decoder.decodeUsize() }
 }
-impl Encodable for float {
-    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] { encoder.encodeFloat(*self) }
+conform float to Encodable {
+    public func encode[E: Encoder](into encoder: E) -> Result[(), E::Error] { encoder.encodeFloat(self) }
 }
-impl Decodable for float {
-    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] { decoder.decodeFloat() }
+conform float to Decodable {
+    public static func decode[D: Decoder](from decoder: D) -> Result[Self, D::Error] { decoder.decodeFloat() }
 }
-impl Encodable for double {
-    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] { encoder.encodeDouble(*self) }
+conform double to Encodable {
+    public func encode[E: Encoder](into encoder: E) -> Result[(), E::Error] { encoder.encodeDouble(self) }
 }
-impl Decodable for double {
-    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] { decoder.decodeDouble() }
+conform double to Decodable {
+    public static func decode[D: Decoder](from decoder: D) -> Result[Self, D::Error] { decoder.decodeDouble() }
 }
 
-impl[Wrapped: Encodable] Encodable for Optional[Wrapped] {
-    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] {
+conform[Wrapped: Encodable] Optional[Wrapped] to Encodable {
+    public func encode[E: Encoder](into encoder: E) -> Result[(), E::Error] {
         match self {
             case .some(value) => return value.encode(into: encoder)
             case .none => return encoder.encodeNull()
@@ -423,19 +477,19 @@ impl[Wrapped: Encodable] Encodable for Optional[Wrapped] {
     }
 }
 
-impl[Wrapped: Decodable] Decodable for Optional[Wrapped] {
-    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] {
-        if decoder.peekKind()! == CodingValueKind.null {
+conform[Wrapped: Decodable] Optional[Wrapped] to Decodable {
+    public static func decode[D: Decoder](from decoder: D) -> Result[Self, D::Error] {
+        if decoder.peekKind()! == CodingValueKind::null {
             decoder.decodeNull()!
             return .ok(.none)
         }
-        return .ok(.some(Wrapped.decode(from: decoder)!))
+        return .ok(.some(Wrapped::decode(from: decoder)!))
     }
 }
 
-impl[Element: Encodable] Encodable for List[Element] {
-    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] {
-        let length: usize? = .some(self.len())
+conform[Element: Encodable] List[Element] to Encodable {
+    public func encode[E: Encoder](into encoder: E) -> Result[(), E::Error] {
+        var length: usize? = .some(self.len())
         encoder.beginSequence(length)!
         var index: usize = 0
         while index < self.len() {
@@ -447,17 +501,162 @@ impl[Element: Encodable] Encodable for List[Element] {
     }
 }
 
-impl[Element: Decodable] Decodable for List[Element] {
-    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] {
-        let length = decoder.beginSequence()!
+conform[Element: Decodable] List[Element] to Decodable {
+    public static func decode[D: Decoder](from decoder: D) -> Result[Self, D::Error] {
+        length := decoder.beginSequence()!
         var values = match length {
-            case .some(length) => List[Element](withCapacity: length)
-            case .none => List[Element]()
+            case .some(length) => List[Element]::new(withCapacity: length)
+            case .none => List[Element]::new()
         }
         while decoder.nextElement()! {
-            values.append(Element.decode(from: decoder)!)
+            values.append(Element::decode(from: decoder)!)
         }
         decoder.endSequence()!
         return .ok(values)
     }
+}
+
+// Compiler-generated struct codecs use these ordinary generic operations.
+// Keeping protocol sequencing here leaves synthesis responsible only for the
+// declared fields and their types; all errors and cursor checks stay normal
+// codec operations. These helpers are private, monomorphized and inlineable.
+@inline
+func __derivedEncodeBegin[E: Encoder](_ encoder: E, _ count: usize) -> Result[(), E::Error] {
+    var length: usize? = .some(count)
+    encoder.beginObject(length)
+}
+
+@inline
+func __derivedEncodeField[T: Encodable, E: Encoder](
+    _ value: T, _ encoder: E, _ name: string,
+) -> Result[(), E::Error] {
+    encoder.beginField(name)!
+    value.encode(into: encoder)
+}
+
+@inline
+func __derivedEncodeEnd[E: Encoder](_ encoder: E) -> Result[(), E::Error] {
+    encoder.endObject()
+}
+
+@inline
+func __derivedDecodeBegin[D: Decoder](_ decoder: D) -> Result[(), D::Error] {
+    var _ = decoder.beginObject()!
+    return .ok(())
+}
+
+@inline
+func __derivedDecodeNext[D: Decoder](_ decoder: D) -> Result[string?, D::Error] {
+    decoder.nextField()
+}
+
+@inline
+func __derivedDecodeField[T: Decodable, D: Decoder](
+    _ decoder: D, _ key: string, _ expected: string, _ slot: &T?,
+) -> Result[bool, D::Error] {
+    if key != expected { return .ok(false) }
+    *slot = .some(T::decode(from: decoder)!)
+    return .ok(true)
+}
+
+@inline
+func __derivedDecodeSkip[D: Decoder](_ decoder: D) -> Result[(), D::Error] {
+    decoder.skipValue()
+}
+
+@inline
+func __derivedDecodeRequire[T, D: Decoder](
+    _ slot: T?, _ decoder: D, _ name: string,
+) -> Result[T, D::Error] {
+    match slot {
+        case .some(value) => return .ok(value)
+        case .none => return .err(decoder.missingField(name, "field is required"))
+    }
+}
+
+@inline
+func __derivedDecodeEnd[D: Decoder](_ decoder: D) -> Result[(), D::Error] {
+    decoder.endObject()
+}
+
+// References encode their pointee, not an address. A decoded reference owns
+// fresh escaping storage: ordinary escape analysis promotes the local to the
+// GC heap. Shared identity and cycles require an explicit ID-based codec.
+conform[T: Encodable] &T to Encodable {
+    func encode[E: Encoder](into encoder: E) -> Result[(), E::Error] {
+        (*self).encode(into: encoder)
+    }
+}
+
+conform[T: Decodable] &T to Decodable {
+    static func decode[D: Decoder](from decoder: D) -> Result[Self, D::Error] {
+        var value = T::decode(from: decoder)!
+        return .ok(&value)
+    }
+}
+
+@inline
+func __derivedEncodeEnumBegin[E: Encoder](
+    _ encoder: E, _ kind: string, _ hasPayload: bool,
+) -> Result[(), E::Error] {
+    var count: usize? = .some(if hasPayload { 2 as usize } else { 1 as usize })
+    encoder.beginObject(count)!
+    encoder.beginField("kind")!
+    encoder.encodeString(kind)!
+    if hasPayload { encoder.beginField("content")! }
+    return .ok(())
+}
+
+@inline
+func __derivedEncodeTupleBegin[E: Encoder](_ encoder: E, _ count: usize) -> Result[(), E::Error] {
+    var length: usize? = .some(count)
+    encoder.beginSequence(length)
+}
+
+@inline
+func __derivedEncodeTupleElement[T: Encodable, E: Encoder](_ value: T, _ encoder: E) -> Result[(), E::Error] {
+    encoder.beginElement()!
+    value.encode(into: encoder)
+}
+
+@inline
+func __derivedEncodeTupleEnd[E: Encoder](_ encoder: E) -> Result[(), E::Error] {
+    encoder.endSequence()
+}
+
+@inline
+func __derivedDecodeEnumBegin[D: Decoder](_ decoder: D) -> Result[string, D::Error] {
+    decoder.beginEnum()
+}
+
+@inline
+func __derivedDecodeEnumContent[D: Decoder](_ decoder: D, _ hasPayload: bool) -> Result[(), D::Error] {
+    decoder.beginEnumContent(hasPayload)
+}
+
+@inline
+func __derivedDecodeEnumUnknown[T, D: Decoder](_ decoder: D) -> Result[T, D::Error] {
+    return .err(decoder.error(.invalidValue, "unknown enum variant"))
+}
+
+@inline
+func __derivedDecodeTupleBegin[D: Decoder](_ decoder: D) -> Result[(), D::Error] {
+    var _ = decoder.beginSequence()!
+    return .ok(())
+}
+
+@inline
+func __derivedDecodeTupleElement[T: Decodable, D: Decoder](_ decoder: D) -> Result[T, D::Error] {
+    if !decoder.nextElement()! {
+        return .err(decoder.error(.invalidValue, "enum tuple has too few elements"))
+    }
+    T::decode(from: decoder)
+}
+
+@inline
+func __derivedDecodeTupleEnd[D: Decoder](_ decoder: D) -> Result[(), D::Error] {
+    if decoder.nextElement()! {
+        return .err(decoder.error(.invalidValue, "enum tuple has too many elements"))
+    }
+    decoder.endSequence()
 }

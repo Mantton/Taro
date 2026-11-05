@@ -1,0 +1,10 @@
+func main() {
+    var base: *const () = unsafe { (0x1000 as usize) as *const () }
+    var next: *const () = base.add(7)
+    var previous: *const () = base.sub(3)
+    var offset: *const () = base.offset(-2)
+    assert(unsafe { next as usize } == 0x1000, "zero-sized addition preserves the address")
+    assert(unsafe { previous as usize } == 0x1000, "zero-sized subtraction preserves the address")
+    assert(unsafe { offset as usize } == 0x1000, "zero-sized signed offset preserves the address")
+    print("zero-sized pointer offsets ok\n")
+}

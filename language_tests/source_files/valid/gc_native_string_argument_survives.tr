@@ -1,0 +1,19 @@
+// A produced string passed to a native string bridge stays usable afterwards.
+// GC storage copies the argument without retaining it, so the bridge must not
+// release it after the native call.
+func build(_ prefix: string, _ byte: uint8) -> string {
+    var builder = std::string::Builder::new()
+    builder.writeString(prefix)
+    builder.writeByte(byte)
+    return builder.toString()
+}
+
+func main() {
+    name := build("TARO_GC_BRIDGE_", 0x41_u8)
+    assert(std::env::set(name, "value").isOk(), "set accepts the produced name")
+    assert(name == "TARO_GC_BRIDGE_A", "the argument survives the native call")
+    replacement := build("TARO_GC_OTHER_", 0x42_u8)
+    assert(name == "TARO_GC_BRIDGE_A" && replacement == "TARO_GC_OTHER_B", "freed bytes are not reused")
+    assert(std::env::get(name).unwrap().unwrap() == "value", "get sees the variable")
+    print("PASS: native string arguments survive the bridge\n")
+}

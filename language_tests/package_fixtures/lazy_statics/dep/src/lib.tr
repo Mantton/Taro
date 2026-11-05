@@ -1,0 +1,5 @@
+static var calls: int32 = 0
+func initialize() -> int32 { calls += 1; 7 }
+public static var value: int32 = initialize()
+public func callCount() -> int32 { calls }
+public func read() -> int32 { value }

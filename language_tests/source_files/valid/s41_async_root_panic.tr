@@ -1,0 +1,12 @@
+// TEST
+@test
+@expectPanic("preserved async root panic")
+func rootPanicIsCatchableAfterDrain() async {
+    await std::testing::yieldNow()
+    panic("preserved async root panic")
+}
+@test
+func followingTestStillExecutes() async {
+    await std::testing::yieldNow()
+    assert(true, "harness continues after the expected root panic")
+}

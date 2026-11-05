@@ -1,0 +1,16 @@
+error: type 'InvalidEvent' does not satisfy requirements for interface 'Encodable'
+ -> language_tests/source_files/invalid/derived_enum_codable_field.tr:4:19
+	enum InvalidEvent: Codable {
+	                   ^^^^^^^
+info: missing required method 'encode' with signature '(Self, E) -> Result[(), E.Error]'
+ -> language_tests/source_files/invalid/derived_enum_codable_field.tr:4:19
+	enum InvalidEvent: Codable {
+	                   ^^^^^^^
+error: type 'InvalidEvent' does not satisfy requirements for interface 'Decodable'
+ -> language_tests/source_files/invalid/derived_enum_codable_field.tr:4:19
+	enum InvalidEvent: Codable {
+	                   ^^^^^^^
+info: missing required method 'decode' with signature '(D) -> Result[Self, D.Error]'
+ -> language_tests/source_files/invalid/derived_enum_codable_field.tr:4:19
+	enum InvalidEvent: Codable {
+	                   ^^^^^^^

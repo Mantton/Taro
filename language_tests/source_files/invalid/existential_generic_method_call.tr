@@ -1,16 +1,16 @@
 interface GenericMethod {
-    func id[T](&self, value: T) -> T
+    func id[T]( value: T) -> T
 }
 
 struct GenericMethodImpl {}
 
-impl GenericMethod for GenericMethodImpl {
-    func id[T](&self, value: T) -> T {
+conform GenericMethodImpl to GenericMethod {
+    func id[T]( value: T) -> T {
         value
     }
 }
 
 func main() {
-    let value: any GenericMethod = GenericMethodImpl {}
-    let _ = value.id(1)
+    var value: any GenericMethod = GenericMethodImpl {}
+    var _ = value.id(1)
 }

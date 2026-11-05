@@ -1,0 +1,19 @@
+// Implicit generic opening uses the concrete associated type inside the call.
+static var calls: int32 = 0
+interface Produce {
+    type Output
+    func produce() -> Self::Output
+}
+struct Counter { value: int32 }
+conform Counter to Produce {
+    type Output = int32
+    func produce() -> int32 { calls += 1; self.value }
+}
+func discard[T: Produce](_ value: &T) {
+    var _ = value.produce()
+}
+func main() {
+    var erased: any Produce = Counter { value: 7_i32 }
+    discard(&erased)
+    assert(calls == 1, "opened generic call uses concrete implementation")
+}

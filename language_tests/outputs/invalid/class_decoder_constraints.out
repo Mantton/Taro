@@ -1,0 +1,4 @@
+error: decoding init(from:) must return Result[Self, D::Error] and accept every Decoder without extra constraints
+ -> language_tests/source_files/invalid/class_decoder_constraints.tr:1:18
+	class Restricted: std::encoding::Decodable { value: int32 }
+	                  ^^^^^^^^^^^^^^^^^^^^^^^^

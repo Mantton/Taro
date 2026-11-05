@@ -1,0 +1,47 @@
+struct Payload { value: int32 }
+struct Store {}
+func inspect(_ payload: &Payload) -> int32 { payload.value }
+
+func retain[F: Fn() -> int32](_ callback: F) -> any Fn() -> int32 {
+    callback
+}
+
+func retainMutable[F: Fn() -> int32](_ callback: F) -> any Fn() -> int32 {
+    callback
+}
+
+func independent[T](_ value: T) -> T { value }
+
+extend Store {
+    func retain[F: Fn() -> int32](_ callback: F) -> any Fn() -> int32 {
+        callback
+    }
+}
+
+func main() async {
+    var count: int32 = 7 // int32
+    var first: any Fn() -> int32 = retain(() => count)
+    count = 9
+    assert(first() == 9, "generic callback shares its captured variable")
+
+    var store: Store = Store {}
+    var second: any Fn() -> int32 = store.retain(() => count)
+    count = 10
+    assert(second() == 10, "method callback shares its captured variable")
+
+    var total: int32 = 0
+    var update: any Fn() -> int32 = retainMutable(() => { total += 1; total })
+    assert(update() == 1 && update() == 2, "mutable capture updates the shared variable")
+    assert(total == 2, "the outer binding observes captured writes")
+
+    var payload: Payload = Payload { value: 42 } // noncopyable Payload
+    read := independent(() => inspect(&payload)) // moves Payload into the fresh closure
+    assert(read() == 42 && read() == 42, "owning a noncopyable environment does not make calls consuming")
+
+    task := std::task::spawn(() => {
+        await std::testing::yieldNow()
+        count
+    })
+    assert((await task.result()).unwrap() == 10, "spawn infers asyncness")
+    print("contextual closure captures ok\n")
+}

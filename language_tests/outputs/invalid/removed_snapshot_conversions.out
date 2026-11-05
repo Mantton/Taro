@@ -1,0 +1,8 @@
+error: no member named 'intoString' found on type Builder
+ -> language_tests/source_files/invalid/removed_snapshot_conversions.tr:3:20
+	    var _ = builder.intoString()
+	                    ^^^^^^^^^^
+error: no member named 'intoBytes' found on type Buffer
+ -> language_tests/source_files/invalid/removed_snapshot_conversions.tr:5:19
+	    var _ = buffer.intoBytes()
+	                   ^^^^^^^^^

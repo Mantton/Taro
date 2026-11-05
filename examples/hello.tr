@@ -2,7 +2,7 @@
 // Run with: taro run examples/hello.tr
 
 func main() {
-    let message = "Hello, World!"
-    let x = 42
+    message := "Hello, World!"
+    x := 42
     print(message)
 }

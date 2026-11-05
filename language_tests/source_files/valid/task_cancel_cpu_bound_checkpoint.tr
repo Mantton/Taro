@@ -1,0 +1,22 @@
+// G22: a CPU-bound task never suspends, so it observes cancellation through an
+// explicit isCancelled() checkpoint. The wake that resumes main must not wait
+// behind the spinning task's worker: an idle worker runs it.
+// ENV: TARO_WORKERS=2
+func main() async {
+    spinner := std::task::spawn(() async => {
+        start := std::time::Instant::now()
+        while !std::task::isCancelled() {
+            if start.elapsed().seconds() >= 20_u64 {
+                return "starved: main never resumed to cancel"
+            }
+        }
+        return "observed cancellation"
+    })
+    await std::task::sleep(std::time::Duration::fromMillis(20_u64))
+    spinner.cancel()
+    match await spinner.result() {
+        case .ok(message) => print(std::sprintf("%s\n", message))
+        case .err(.cancelled) => print("cancelled\n")
+        case .err(.panicked(_)) => print("panicked\n")
+    }
+}

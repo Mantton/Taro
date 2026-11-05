@@ -1,6 +1,6 @@
 # JSON verifier
 
-This project certifies Taro's public `std.json` parser and streaming decoder against ten
+This project certifies Taro's public `std::json` parser and streaming decoder against ten
 independently maintained JSON corpora. The selected inputs are pinned by immutable upstream
 revision, license digest, file count, byte count, and a byte-stable tree SHA-256. None of the
 third-party inputs are stored in this repository.

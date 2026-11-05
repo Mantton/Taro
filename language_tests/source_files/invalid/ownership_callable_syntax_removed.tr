@@ -1,0 +1,2 @@
+func legacy(_ first: any FnMut() -> (), _ second: any FnOnce() -> (), _ third: any AsyncFnMut() -> (), _ fourth: any AsyncFnOnce() -> ()) {}
+func main() { callback := move () => {} }

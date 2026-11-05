@@ -1,0 +1,4 @@
+error: duplicate named field `width`
+ -> language_tests/source_files/invalid/named_construction_duplicate_field.tr:2:50
+	func main() { var shape = Shape::rect { width: 1, width: 2 } }
+	                                                  ^^^^^

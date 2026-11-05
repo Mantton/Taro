@@ -1,0 +1,1 @@
+PASS: interleaved argument copies preserve GC values

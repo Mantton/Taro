@@ -1,0 +1,4 @@
+error: decoding init(from:) must be at least as visible as its class
+ -> language_tests/source_files/invalid/class_decoder_visibility.tr:3:12
+	    private init[D: std::encoding::Decoder](from decoder: D) -> Result[Self, D::Error] {
+	            ^^^^

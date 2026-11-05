@@ -1,0 +1,12 @@
+func main() {
+    var calls = 0
+    var blockValue: Optional[int32] = { calls += 1; nil }
+    var branchValue: Optional[int32] = if true { calls += 1; nil } else { nil }
+    var matchValue: Optional[int32] = match 1 {
+        case _ => { calls += 1; nil }
+    }
+    var unsafeValue: Optional[int32] = unsafe { calls += 1; nil }
+    assert(calls == 4, "constructing none preserves block, branch, match and unsafe effects")
+    assert(blockValue.isNone() && branchValue.isNone(), "none in block and branch")
+    assert(matchValue.isNone() && unsafeValue.isNone(), "none in match and unsafe")
+}

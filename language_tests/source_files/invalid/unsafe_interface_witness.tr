@@ -1,0 +1,10 @@
+interface Inspect { func inspect() -> int32; }
+struct Counter { value: int32 }
+conform Counter to Inspect {
+    unsafe func inspect() -> int32 { self.value }
+}
+func generic[T: Inspect](_ value: &T) -> int32 { value.inspect() }
+func main() {
+    var value: Counter = Counter { value: 7 }
+    var observed: int32 = generic(&value)
+}

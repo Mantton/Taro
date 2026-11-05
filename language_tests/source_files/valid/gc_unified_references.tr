@@ -1,0 +1,36 @@
+struct Cell { value: int32 }
+extend Cell {
+    var computed: int32 { get { self.value } };
+}
+final class Holder { value: int32 }
+extend Holder {
+    init(_ value: int32) { self.value = value }
+    func reference() -> &int32 { &self.value }
+}
+func retained() -> &Cell { value := Cell { value: 3 }; &value }
+func replace[T](_ slot: &T, _ value: T) { *slot = value }
+func main() {
+    cell := retained()
+    alias := cell
+    alias.value = 5
+    assert(cell.value == 5, "copied references share retained storage")
+    var nested: Optional[Optional[&Cell]] = .some(.some(cell))
+    nested.unwrap().unwrap().value += 1
+    assert(cell.value == 6, "nested optional references stay writable")
+    computed := &cell.computed
+    *computed = 12
+    assert(*computed == 12 && cell.value == 6, "a referenced getter result has independent retained storage")
+    var array: [int32; 2] = [1, 2]
+    first := &array[0]
+    second := &array[0]
+    *first += 2
+    *second += 3
+    assert(array[0] == 6, "overlapping references address one array element")
+    var list: [int32] = [10, 20]
+    replace(&list[0], 30)
+    assert(list[0] == 30, "native subscripts supply write access")
+    holder := Holder(7)
+    field := holder.reference()
+    *field = 9
+    assert(holder.value == 9, "field projections keep their class object alive")
+}

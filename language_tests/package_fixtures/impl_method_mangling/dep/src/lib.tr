@@ -1,20 +1,20 @@
 public interface AsyncValue {
-    func read(&self) async -> int32
+    func read() async -> int32
 }
 
 public struct RemoteCounter {
     value: int32
 }
 
-impl RemoteCounter {
-    public func read(&self) async -> int32 {
+extend RemoteCounter {
+    public func read() async -> int32 {
         self.value + 1_i32
     }
 }
 
-impl AsyncValue for RemoteCounter {
-    public func read(&self) async -> int32 {
-        let value = self.value
+conform RemoteCounter to AsyncValue {
+    public func read() async -> int32 {
+        value := self.value
         return value + 2_i32
     }
 }

@@ -1,0 +1,8 @@
+error: no member named 'clone' found on type Plain
+ -> language_tests/source_files/invalid/reference_clone_requires_explicit.tr:4:20
+	    copied := value.clone()
+	                    ^^^^^
+error: no member named 'clone' found on type Plain
+ -> language_tests/source_files/invalid/reference_clone_requires_explicit.tr:5:18
+	    copyMethod := value.clone
+	                  ^^^^^^^^^^^

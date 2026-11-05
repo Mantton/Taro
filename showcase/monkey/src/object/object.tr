@@ -1,13 +1,13 @@
-import monkey.ast.{Statement, renderStatement}
-import monkey.code.Instructions
-import std.hash.{Hashable, Hasher}
+import monkey::ast::{Statement, renderStatement}
+import monkey::code::Instructions
+import std::hash::{Hashable, Hasher}
 
 /// The kind of a value, without its payload.
 ///
 /// Error messages name types, and naming them from a closed set means a new
 /// object kind cannot be described as `""` by an overlooked branch. The spellings
 /// match Monkey's, so diagnostics read the same as the reference implementation.
-public enum ObjectKind: Copy, PartialEq {
+public enum ObjectKind: PartialEq {
     case null
     case integer
     case boolean
@@ -22,8 +22,8 @@ public enum ObjectKind: Copy, PartialEq {
     case closure
 }
 
-impl ObjectKind {
-    public func describe(&self) -> string {
+extend ObjectKind {
+    public func describe() -> string {
         match self {
             case .null => "NULL"
             case .integer => "INTEGER"
@@ -52,8 +52,8 @@ public enum HashKey {
     case text(string)
 }
 
-impl HashKey {
-    public func kind(&self) -> ObjectKind {
+extend HashKey {
+    public func kind() -> ObjectKind {
         match self {
             case .integer(_) => .integer
             case .boolean(_) => .boolean
@@ -66,33 +66,33 @@ impl HashKey {
     /// Because the payload is kept rather than hashed away, rendering a hash
     /// does not need the reference implementation's parallel `HashPair` table
     /// holding the original keys.
-    public func toObject(&self) -> Object {
+    public func toObject() -> Object {
         match self {
-            case .integer(value) => .integer(*value)
-            case .boolean(value) => .boolean(*value)
-            case .text(value) => .text(*value)
+            case .integer(value) => .integer(value)
+            case .boolean(value) => .boolean(value)
+            case .text(value) => .text(value)
         }
     }
 }
 
-impl PartialEq for HashKey {
-    public func eq(&self, _ other: &HashKey) -> bool {
+conform HashKey to PartialEq {
+    public func eq(_ other: HashKey) -> bool {
         match self {
             case .integer(lhs) => {
                 match other {
-                    case .integer(rhs) => *lhs == *rhs
+                    case .integer(rhs) => lhs == rhs
                     case _ => false
                 }
             }
             case .boolean(lhs) => {
                 match other {
-                    case .boolean(rhs) => *lhs == *rhs
+                    case .boolean(rhs) => lhs == rhs
                     case _ => false
                 }
             }
             case .text(lhs) => {
                 match other {
-                    case .text(rhs) => *lhs == *rhs
+                    case .text(rhs) => lhs == rhs
                     case _ => false
                 }
             }
@@ -100,8 +100,8 @@ impl PartialEq for HashKey {
     }
 }
 
-impl Hashable for HashKey {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {
+conform HashKey to Hashable {
+    public func hash[H: Hasher]( into hasher: H) {
         // The kind is mixed in first so `1` and `true` cannot collide.
         //
         // `combine` takes one generic argument, so the cast is the only thing
@@ -111,11 +111,11 @@ impl Hashable for HashKey {
         match self {
             case .integer(value) => {
                 hasher.combine(0 as uint8)
-                hasher.combine(*value)
+                hasher.combine(value)
             }
             case .boolean(value) => {
                 hasher.combine(1 as uint8)
-                hasher.combine(*value)
+                hasher.combine(value)
             }
             case .text(value) => {
                 hasher.combine(2 as uint8)
@@ -130,12 +130,12 @@ impl Hashable for HashKey {
 /// The environment is held by reference, so a binding added after the literal is
 /// evaluated is still visible from the body. That is what makes `let f = fn(n) {
 /// f(n - 1) }` able to find `f`.
-/// The parameters and body refer into the syntax tree rather than copying it,
-/// which is what the reference implementation's `*ast.BlockStatement` does.
+/// Parameter and body lists share the parsed syntax; closure creation needs no
+/// recursive copy.
 public struct Function {
-    public parameters: &List[string]
-    public body: &List[Statement]
-    public env: &mut Environment
+    public parameters: List[string]
+    public body: List[Statement]
+    public env: &Environment
 }
 
 /// A function the compiler has turned into instructions.
@@ -160,11 +160,9 @@ public struct Closure {
 
 /// A value.
 ///
-/// Aggregates are held by reference so that copying an `Object` stays cheap and
-/// sharing matches Monkey's semantics, where the reference implementation passes
-/// `*Array`, `*Hash` and `*Function` pointers around. Monkey never mutates an
-/// array or hash in place — `push` produces a new array — so the references are
-/// immutable.
+/// Scalars copy directly. References give arrays, hashes and functions shared
+/// identity, matching Monkey. `push` constructs an independent array; ordinary
+/// assignment and argument passing share the original aggregate.
 public enum Object {
     case null
     case integer(int64)
@@ -178,62 +176,14 @@ public enum Object {
     case closure(&Closure)
 }
 
-/// Moves an array's elements to managed storage so an `Object` can refer to them.
-public func boxArray(_ elements: List[Object]) -> &List[Object] {
-    let boxed = elements
-    return &boxed
-}
-
-/// Moves a hash's entries to managed storage so an `Object` can refer to them.
-public func boxHash(_ entries: Dictionary[HashKey, Object]) -> &Dictionary[HashKey, Object] {
-    let boxed = entries
-    return &boxed
-}
-
-/// Moves a function to managed storage so an `Object` can refer to it.
-public func boxFunction(_ function: Function) -> &Function {
-    let boxed = function
-    return &boxed
-}
-
-/// Moves a compiled function to managed storage so an `Object` can refer to it.
-public func boxCompiledFunction(_ function: CompiledFunction) -> &CompiledFunction {
-    let boxed = function
-    return &boxed
-}
-
-/// Moves a closure to managed storage so an `Object` can refer to it.
-public func boxClosure(_ closure: Closure) -> &Closure {
-    let boxed = closure
-    return &boxed
-}
-
-/// Compare managed object identity without comparing or copying its contents.
+/// Reference identity is distinct from structural equality. References keep
+/// these nonmoving GC objects alive; comparing their addresses never reads raw memory.
 func sameReference[T](_ left: &T, _ right: &T) -> bool {
     return unsafe { ((left as *const T) as usize) == ((right as *const T) as usize) }
 }
 
-impl Clone for Object {
-    /// Copies the value, sharing rather than duplicating aggregates.
-    @inline
-    public func clone(&self) -> Self {
-        match self {
-            case .null => .null
-            case .integer(value) => .integer(*value)
-            case .boolean(value) => .boolean(*value)
-            case .text(value) => .text(*value)
-            case .array(elements) => .array(*elements)
-            case .hash(entries) => .hash(*entries)
-            case .function(function) => .function(*function)
-            case .builtin(builtin) => .builtin(*builtin)
-            case .compiledFunction(function) => .compiledFunction(*function)
-            case .closure(closure) => .closure(*closure)
-        }
-    }
-}
-
-impl Object {
-    public func kind(&self) -> ObjectKind {
+extend Object {
+    public func kind() -> ObjectKind {
         match self {
             case .null => .null
             case .integer(_) => .integer
@@ -250,20 +200,20 @@ impl Object {
 
     /// Monkey's truthiness: only `false` and `null` are falsey. Every integer,
     /// including `0`, is truthy.
-    public func isTruthy(&self) -> bool {
+    public func isTruthy() -> bool {
         match self {
             case .null => false
-            case .boolean(value) => *value
+            case .boolean(value) => value
             case _ => true
         }
     }
 
     /// The value as a hash key, when its kind admits one.
-    public func toHashKey(&self) -> Optional[HashKey] {
+    public func toHashKey() -> Optional[HashKey] {
         match self {
-            case .integer(value) => .some(.integer(*value))
-            case .boolean(value) => .some(.boolean(*value))
-            case .text(value) => .some(.text(*value))
+            case .integer(value) => .some(.integer(value))
+            case .boolean(value) => .some(.boolean(value))
+            case .text(value) => .some(.text(value))
             case _ => .none
         }
     }
@@ -273,7 +223,7 @@ impl Object {
     /// Scalars compare by value. Aggregates and functions compare by identity,
     /// matching the reference implementation's pointer comparison: aliases are
     /// equal, while independently created objects remain distinct.
-    public func equals(&self, _ other: &Object) -> bool {
+    public func equals(_ other: Object) -> bool {
         match self {
             case .null => {
                 match other {
@@ -283,55 +233,55 @@ impl Object {
             }
             case .integer(lhs) => {
                 match other {
-                    case .integer(rhs) => return *lhs == *rhs
+                    case .integer(rhs) => return lhs == rhs
                     case _ => return false
                 }
             }
             case .boolean(lhs) => {
                 match other {
-                    case .boolean(rhs) => return *lhs == *rhs
+                    case .boolean(rhs) => return lhs == rhs
                     case _ => return false
                 }
             }
             case .text(lhs) => {
                 match other {
-                    case .text(rhs) => return *lhs == *rhs
+                    case .text(rhs) => return lhs == rhs
                     case _ => return false
                 }
             }
             case .builtin(lhs) => {
                 match other {
-                    case .builtin(rhs) => return *lhs == *rhs
+                    case .builtin(rhs) => return lhs == rhs
                     case _ => return false
                 }
             }
             case .array(lhs) => {
                 match other {
-                    case .array(rhs) => return sameReference(*lhs, *rhs)
+                    case .array(rhs) => return sameReference(lhs, rhs)
                     case _ => return false
                 }
             }
             case .hash(lhs) => {
                 match other {
-                    case .hash(rhs) => return sameReference(*lhs, *rhs)
+                    case .hash(rhs) => return sameReference(lhs, rhs)
                     case _ => return false
                 }
             }
             case .function(lhs) => {
                 match other {
-                    case .function(rhs) => return sameReference(*lhs, *rhs)
+                    case .function(rhs) => return sameReference(lhs, rhs)
                     case _ => return false
                 }
             }
             case .compiledFunction(lhs) => {
                 match other {
-                    case .compiledFunction(rhs) => return sameReference(*lhs, *rhs)
+                    case .compiledFunction(rhs) => return sameReference(lhs, rhs)
                     case _ => return false
                 }
             }
             case .closure(lhs) => {
                 match other {
-                    case .closure(rhs) => return sameReference(*lhs, *rhs)
+                    case .closure(rhs) => return sameReference(lhs, rhs)
                     case _ => return false
                 }
             }
@@ -339,15 +289,15 @@ impl Object {
     }
 
     /// How the value prints, as `puts` and the REPL show it.
-    public func inspect(&self) -> string {
+    public func inspect() -> string {
         match self {
             case .null => return "null"
-            case .integer(value) => return sprintf("%v", *value)
+            case .integer(value) => return sprintf("%v", value)
             case .boolean(value) => {
-                if *value { return "true" }
+                if value { return "true" }
                 return "false"
             }
-            case .text(value) => return *value
+            case .text(value) => return value
             case .array(elements) => {
                 var out = ""
                 var first = true
@@ -373,7 +323,7 @@ impl Object {
                 var first = true
                 for name in function.parameters {
                     if !first { names = names + ", " }
-                    names = names + *name
+                    names = names + name
                     first = false
                 }
                 var body = ""

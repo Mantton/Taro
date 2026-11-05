@@ -1,0 +1,38 @@
+// G57: `keepAlive` keeps a value a reported root until the call, after its
+// last ordinary use, at every optimization level. Without it the collector
+// reclaims the value as soon as the program stops using it.
+import std::weak::Weak
+extern "C" {
+    unsafe func __gc__test_probe_create(_ target: *const uint8) -> *mut uint8
+    unsafe func __gc__test_collect_probe_is_live(_ probe: *mut uint8) -> bool
+}
+struct Owner { value: int32 }
+
+func collect() {
+    probe := unsafe { __gc__test_probe_create(0 as *const uint8) }
+    var _ = unsafe { __gc__test_collect_probe_is_live(probe) }
+}
+
+@noinline
+func withoutKeepAlive() -> bool {
+    owner := Owner { value: 1 }
+    weak := Weak[Owner]::new(&owner)
+    collect()
+    return weak.value().isSome()
+}
+
+@noinline
+func withKeepAlive() -> bool {
+    owner := Owner { value: 1 }
+    weak := Weak[Owner]::new(&owner)
+    collect()
+    alive := weak.value().isSome()
+    std::runtime::keepAlive(owner)
+    return alive
+}
+
+func main() {
+    var without: string = if withoutKeepAlive() { "alive" } else { "collected" }
+    var with: string = if withKeepAlive() { "alive" } else { "collected" }
+    std::printf("without keepAlive: %s\nwith keepAlive: %s\n", without, with)
+}

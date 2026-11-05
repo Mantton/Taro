@@ -5,8 +5,8 @@
 // stdout snapshot also ensures `eprintf` does not accidentally write there.
 
 func main() {
-    var reader = std.io.BufReader(std.io.stdin())
-    let line = match reader.readLine() {
+    var reader = std::io::BufReader::new(std::io::stdin())
+    line := match reader.readLine() {
         case .ok(.some(value)) => value
         case .ok(.none) => {
             assert(false, "expected a line on stdin")
@@ -18,6 +18,6 @@ func main() {
         }
     }
 
-    std.printf("stdin=%s", line)
-    std.eprintf("answer=%v\n", 42)
+    std::printf("stdin=%s", line)
+    std::eprintf("answer=%v\n", 42)
 }

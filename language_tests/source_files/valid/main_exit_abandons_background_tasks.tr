@@ -1,0 +1,37 @@
+// G44: a standalone program exits once `main` and its own defers return.
+// Background tasks are neither cancelled nor drained: neither a task that
+// never yields nor one sleeping past exit keeps the process alive, and their
+// defers never run. Before G44 the root's completion cancelled every task and
+// waited for them, so the spinning task hung the child process forever.
+// ENV: TARO_WORKERS=2
+
+func runChild() async {
+    var _ = std::task::spawn(() async => {
+        defer { print("sleeper defer ran\n") }
+        await std::task::sleep(std::time::Duration::fromSeconds(30_u64))
+        return 0_i32
+    })
+    var _ = std::task::spawn(() async => {
+        var spins: uint64 = 0
+        while true { spins += 1 }
+        return 1_i32
+    })
+    defer { print("child main defer ran\n") }
+    await std::testing::yieldNow()
+    print("child main done\n")
+}
+
+func main() async {
+    arguments := std::env::args()
+    if arguments.len() > 1 && arguments.at(1) == "child" {
+        await runChild()
+        return
+    }
+
+    started := std::time::Instant::now()
+    output := (await std::process::Command::new(arguments.at(0), "child").outputAsync()).unwrap()
+    var prompt: string = if started.elapsed().seconds() < 20 { "yes" } else { "no" }
+    var status: string = if output.status().success() { "success" } else { "failure" }
+    print(std::string::stringFromBytes(output.stdout().asSpan()))
+    std::printf("child exit: %s, exited promptly: %s\n", status, prompt)
+}

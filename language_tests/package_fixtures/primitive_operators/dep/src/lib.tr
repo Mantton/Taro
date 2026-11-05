@@ -1,0 +1,9 @@
+import std::ops::Add
+public func add[T: Add[Output = T]](_ a: &T, _ b: &T) -> T { *a + *b }
+public func erased(_ value: int32) -> any Add[int32, Output = int32] { value }
+public func display(_ value: int32) -> any std::fmt::Display { value }
+public func instantiate() -> int32 {
+    var first: int32 = 3
+    var second: int32 = 4
+    add(&first, &second)
+}

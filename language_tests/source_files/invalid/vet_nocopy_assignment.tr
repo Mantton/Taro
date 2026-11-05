@@ -1,0 +1,6 @@
+// VET
+func main() {
+    var mutex = std::sync::Mutex[int32]::new(0).unwrap()
+    copied := mutex
+    var _ = &copied
+}

@@ -1,0 +1,26 @@
+// G30: array iteration copies the inline source and yields values (D9).
+class Item { value: int32 }
+extend Item { init(_ value: int32) { self.value = value }; }
+
+func main() {
+    var values: [Item; 2] = [Item(7), Item(9)]
+    iterator := values.iter()
+    *values.at(0) = Item(100)
+    first := iterator.next().unwrap()
+    assert(first.value == 7, "iterator keeps its copied array after source replacement")
+    first.value = 8
+    assert(iterator.next().unwrap().value == 9, "iterator retains the other GC handle")
+    assert(iterator.next().isNone() && iterator.next().isNone(), "exhaustion is permanent")
+    assert(values.at(0).value == 100, "the source keeps its replaced handle")
+
+    var numbers: [int32; 2] = [1, 2]
+    reference := &numbers
+    var total = 0
+    for number in *reference {
+        number += 10
+        total += number
+    }
+    assert(total == 23 && *numbers.at(0) == 1, "explicit reads and writable bindings copy values")
+    var empty: [int32; 0] = []
+    assert(empty.iter().next().isNone(), "empty arrays are exhausted immediately")
+}

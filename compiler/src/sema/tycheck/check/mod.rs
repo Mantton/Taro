@@ -2,11 +2,13 @@ use crate::{
     compile::context::Gcx,
     error::CompileResult,
     hir::{self, DefinitionID, HirVisitor},
-    sema::tycheck::results::TypeCheckResults,
+    sema::tycheck::{lower::TypeLowerer, results::TypeCheckResults},
 };
 use std::{cell::RefCell, rc::Rc};
 
 mod checker;
+mod convenience;
+mod dynamic_self;
 mod gather;
 mod node;
 
@@ -26,7 +28,11 @@ pub fn run<'ctx>(
         package,
     );
     context.dcx().ok()?;
+    convenience::validate(package, context, &results);
+    context.dcx().ok()?;
     drop(results);
+    dynamic_self::run(package, context, &mut actor.results.borrow_mut());
+    context.dcx().ok()?;
     Ok(std::mem::take(&mut *actor.results.borrow_mut()))
 }
 
@@ -109,6 +115,16 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
             _ => {}
         }
         hir::walk_declaration(self, declaration);
+    }
+
+    fn visit_field_definition(&mut self, field: &hir::FieldDefinition) {
+        if let Some(expression) = &field.default_value {
+            let checker = checker::Checker::new(self.context, field.def_id, self.results.clone());
+            let ty = super::lower::DefTyLoweringCtx::new(field.def_id, self.context)
+                .lowerer()
+                .lower_type(&field.ty);
+            checker.top_level_check(expression, Some(ty));
+        }
     }
 
     fn visit_function(

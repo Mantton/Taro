@@ -1,0 +1,192 @@
+import std::sync::atomic::{Int8, Uint8, Int16, Uint16, Int32, Uint32, Int64, Uint64, Usize, Bool, Reference, Handle}
+import std::testing::{assertEqual, assertTrue}
+
+@test
+func scalarOperations() {
+    a := Int8::new(127)
+    assertEqual(a.add(1), -128_i8, "add wraps and returns new value")
+    b := Uint8::new(255)
+    assertEqual(b.add(1), 0_u8, "unsigned add wraps")
+    c := Int16::new(10)
+    assertTrue(c.compareExchange(10, 20), "CAS succeeds")
+    assertTrue(!c.compareExchange(10, 30), "CAS failure preserves slot")
+    assertEqual(c.swap(3), 20_i16, "swap returns old value")
+    d := Uint16::new()
+    d.store(17)
+    assertEqual(d.load(), 17_u16, "store/load")
+    e := Int32::new()
+    assertEqual(e.add(5), 5_i32, "int32 add")
+    f := Uint32::new()
+    assertEqual(f.add(6), 6_u32, "uint32 add")
+    g := Int64::new()
+    assertEqual(g.add(7), 7_i64, "int64 add")
+    h := Uint64::new()
+    assertEqual(h.add(8), 8_u64, "uint64 add")
+    i := Usize::new()
+    assertEqual(i.add(9), 9 as usize, "usize add")
+    flag := Bool::new()
+    assertTrue(!flag.load(), "false initially")
+    assertTrue(flag.compareExchange(false, true), "bool CAS")
+    assertTrue(flag.swap(false), "bool swap returns old value")
+}
+
+@test
+func concurrentIncrements() async {
+    counter := Int32::new()
+    shared := &counter
+    first := std::task::spawn(() async => {
+        var i = 0
+        while i < 512 { shared.add(1); i += 1 }
+    })
+    second := std::task::spawn(() async => {
+        var i = 0
+        while i < 512 { shared.add(1); i += 1 }
+    })
+    (await first.result()).unwrap()
+    (await second.result()).unwrap()
+    assertEqual(counter.load(), 1024_i32, "increments are not lost")
+}
+
+@noinline
+func storedLocal(_ slot: &Reference[int32], _ value: int32) {
+    local := value
+    slot.store(.some(&local))
+}
+
+@noinline
+func constructedLocal() -> Reference[int32] {
+    local := 41_i32
+    Reference[int32]::new(.some(&local))
+}
+
+@noinline
+func churnAtomicStack() {
+    // Materialize and overwrite returned frames; stale stack targets must fail.
+    var slots: [int32; 128] = [-17_i32; 128]
+    slots = std::hint::blackBox(slots)
+    assertEqual(slots[127], -17_i32, "stack churn remains observable")
+}
+
+@test
+func tracedReferenceSnapshots() {
+    slot := constructedLocal()
+    churnAtomicStack()
+    std::runtime::collect()
+    snapshot := slot.load().unwrap()
+    assertEqual(*snapshot, 41_i32, "constructor promotes and traces local")
+    storedLocal(&slot, 42)
+    churnAtomicStack()
+    std::runtime::collect()
+    current := slot.load().unwrap()
+    assertEqual(*current, 42_i32, "store promotes and traces local")
+    assertTrue(!slot.compareExchange(.some(snapshot), .none), "CAS compares identity")
+    assertTrue(slot.compareExchange(.some(current), .none), "CAS clears current identity")
+    std::runtime::collect()
+    assertEqual(*snapshot, 41_i32, "old loaded references remain strong")
+    assertEqual(*current, 42_i32, "clearing does not invalidate snapshots")
+    assertTrue(slot.load().isNone(), "slot is empty")
+    slot.store(.some(snapshot))
+    assertEqual(*slot.swap(.none).unwrap(), 41_i32, "swap returns strong old target")
+}
+
+@test
+func concurrentReferencePublication() async {
+    slot := Reference[int32]::new()
+    published := Bool::new()
+    target := &slot
+    flag := &published
+    writer := std::task::spawn(() async => {
+        storedLocal(target, 99)
+        flag.store(true)
+    })
+    while !published.load() { await std::testing::yieldNow() }
+    assertEqual(*slot.load().unwrap(), 99_i32, "SC flag publishes target")
+    (await writer.result()).unwrap()
+}
+
+
+final class SnapshotConfig { name: string }
+extend SnapshotConfig { init(_ name: string) { self.name = name } }
+final class SnapshotHolder { current: Handle[SnapshotConfig] }
+extend SnapshotHolder { init() { self.current = Handle[SnapshotConfig]::new() } }
+
+@noinline
+func publishClassSnapshot(_ holder: SnapshotHolder) {
+    var config = SnapshotConfig("published")
+    holder.current.store(.some(config))
+    config = SnapshotConfig("changed variable")
+    assertEqual(config.name, "changed variable", "publisher handle was reassigned")
+}
+
+@test
+func classHandleSnapshots() {
+    holder := SnapshotHolder()
+    assertTrue(holder.current.load().isNone(), "empty class slot")
+    publishClassSnapshot(holder)
+    churnAtomicStack()
+    std::runtime::collect()
+    first := holder.current.load().unwrap()
+    assertEqual(first.name, "published", "slot snapshots the object, not publisher variable")
+    second := SnapshotConfig("next")
+    assertTrue(!holder.current.compareExchange(.some(second), .none), "different objects fail identity CAS")
+    assertTrue(holder.current.compareExchange(.some(first), .some(second)), "matching object CAS")
+    current := holder.current.load().unwrap()
+    assertEqual(current.name, "next", "CAS publishes next object")
+    old := holder.current.swap(.none).unwrap()
+    std::runtime::collect()
+    assertEqual(old.name, "next", "swapped object remains strong")
+    assertEqual(first.name, "published", "old loaded snapshot remains strong")
+    assertTrue(holder.current.load().isNone(), "swap clears slot")
+}
+
+@test
+func concurrentClassSnapshotPublication() async {
+    holder := SnapshotHolder()
+    ready := Bool::new()
+    flag := &ready
+    writer := std::task::spawn(() async => {
+        publishClassSnapshot(holder)
+        flag.store(true)
+    })
+    while !ready.load() { await std::testing::yieldNow() }
+    assertEqual(holder.current.load().unwrap().name, "published", "SC publication snapshots class")
+    (await writer.result()).unwrap()
+}
+
+@test
+func classHandleOperationsDoNotAllocateSnapshotBoxes() {
+    value := SnapshotConfig("stable")
+    slot := Handle[SnapshotConfig]::new(.some(value))
+    std::runtime::collect()
+    before := std::runtime::gcStats().allocatedBytes
+    var i = 0_i32
+    while i < 64 {
+        slot.store(.some(value))
+        std::hint::blackBox(slot.load())
+        std::hint::blackBox(slot.swap(.some(value)))
+        std::hint::blackBox(slot.compareExchange(.some(value), .some(value)))
+        i += 1
+    }
+    after := std::runtime::gcStats().allocatedBytes
+    assertEqual(after, before, "class snapshots need no allocation per operation")
+}
+
+class SnapshotBase {}
+extend SnapshotBase {
+    init() {}
+    func number() -> int32 { 1 }
+}
+class SnapshotChild: SnapshotBase {}
+extend SnapshotChild {
+    override func number() -> int32 { 2 }
+}
+
+@test
+func classHandleKeepsDynamicClassMetadata() {
+    var base: SnapshotBase = SnapshotChild()
+    slot := Handle[SnapshotBase]::new(.some(base))
+    std::runtime::collect()
+    loaded := slot.load().unwrap()
+    assertEqual(loaded.number(), 2_i32, "snapshot preserves derived dispatch")
+    assertTrue(slot.compareExchange(.some(base), .none), "base and derived views retain object identity")
+}

@@ -1,0 +1,33 @@
+// Constructor parameters live in the shaped source extension's environment.
+interface Marker {}
+struct Box[T] { value: T }
+conform[T] Box[T] to Marker {}
+class Base[T] { value: T; tags: usize; flag: bool }
+extend[U] Base[Box[U]] {
+    init[Tag, const N: usize](_ value: Box[U], tag: [Tag; N], flag: bool = true) {
+        self.value = value
+        self.tags = N
+        self.flag = flag
+    }
+    func get() -> &Box[U] { &self.value }
+}
+class Child[T: Marker]: Base[T] { count: int32 = 11 }
+final class Grandchild[T: Marker]: Child[T] { extra: int32 = 13 }
+func forward[T](_ value: Box[T]) -> Grandchild[Box[T]] {
+    Grandchild[Box[T]](value, tag: [true, false])
+}
+class Defaults[T] { values: List[T] }
+extend[T] Defaults[T] {
+    init(_ values: List[T] = []) { self.values = values }
+}
+final class DefaultChild[T]: Defaults[T] {}
+func main() {
+    var child: Grandchild[Box[List[string]]] = forward(Box[List[string]] { value: ["left", "right"] })
+    var payload: &Box[List[string]] = child.get()
+    assert(payload.value[1] == "right", "noncopyable shaped generic payload")
+    assert(child.tags == 2, "own const parameter stays independent of class arguments")
+    assert(child.flag, "default provider has the source extension's coordinates")
+    assert(child.count + child.extra == 24, "derived defaults use their own nominal coordinates")
+    var defaults: DefaultChild[string] = DefaultChild[string]()
+    assert(defaults.values.len() == 0, "generic noncopyable default argument")
+}

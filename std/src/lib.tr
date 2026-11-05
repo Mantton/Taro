@@ -1,38 +1,39 @@
-import std.ffi
-import std.error
-import std.io
-import std.fs
-import std.path
-import std.net
-import std.bytes
-import std.encoding
-import std.json
-import std.bench
-import std.hint
-import std.time
-import std.fmt
-import std.default
-import std.mem.Span
-import std.panic.{panic, todo}
+import std::ffi
+import std::error
+import std::io
+import std::fs
+import std::path
+import std::net
+import std::http
+import std::bytes
+import std::encoding
+import std::json
+import std::bench
+import std::hint
+import std::time
+import std::fmt
+import std::default
+import std::mem::Span
+import std::panic::{panic, todo}
 
 @cfg(family("unix"))
 public func print(_ s: string) {
-    let len = std.string.stringLen(s)
+    len := std::string::stringLen(s)
     if len == 0 {
         return
     }
-    let data = std.string.stringData(s)
-    let _ = std.io.writeStdout(data, len)
+    data := std::string::stringData(s)
+    var _ = std::io::writeStdout(data, len)
 }
 
 @cfg(family("unix"))
 public func eprint(_ s: string) {
-    let len = std.string.stringLen(s)
+    len := std::string::stringLen(s)
     if len == 0 {
         return
     }
-    let data = std.string.stringData(s)
-    let _ = std.io.writeStderr(data, len)
+    data := std::string::stringData(s)
+    var _ = std::io::writeStderr(data, len)
 }
 
 @cfg(family("windows"))
@@ -50,16 +51,20 @@ public func println(_ s: string) {
     print("\n")
 }
 
-func renderFormat(_ format: string, _ args: Span[any std.fmt.Display]) -> string {
-    std.fmt.formatPrintf(format, args)
+public func sprintf[Value: std::fmt::Formattable](_ format: string, _ value: Value) -> string {
+    std::fmt::formatPrintfOne(format, value)
 }
 
-public func sprintf(_ format: string, _ args: any std.fmt.Display...) -> string {
-    renderFormat(format, args)
+public func sprintf(_ format: string, _ args: any std::fmt::Display...) -> string {
+    std::fmt::formatPrintf(format, args)
 }
 
-public func printf(_ format: string, _ args: any std.fmt.Display...) {
-    let rendered = renderFormat(format, args)
+public func printf[Value: std::fmt::Formattable](_ format: string, _ value: Value) {
+    print(std::fmt::formatPrintfOne(format, value))
+}
+
+public func printf(_ format: string, _ args: any std::fmt::Display...) {
+    rendered := std::fmt::formatPrintf(format, args)
     print(rendered)
 }
 
@@ -68,8 +73,12 @@ public func eprintln(_ s: string) {
     eprint("\n")
 }
 
-public func eprintf(_ format: string, _ args: any std.fmt.Display...) {
-    let rendered = renderFormat(format, args)
+public func eprintf[Value: std::fmt::Formattable](_ format: string, _ value: Value) {
+    eprint(std::fmt::formatPrintfOne(format, value))
+}
+
+public func eprintf(_ format: string, _ args: any std::fmt::Display...) {
+    rendered := std::fmt::formatPrintf(format, args)
     eprint(rendered)
 }
 

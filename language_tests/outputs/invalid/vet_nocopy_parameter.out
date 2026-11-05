@@ -1,0 +1,5 @@
+Checking – vet_nocopy_parameter
+warning: @NoCopy parameter 'state' is passed by value; use a reference
+ -> language_tests/source_files/invalid/vet_nocopy_parameter.tr:4:13
+	func inspect(_ state: State) -> int32 { state.value }
+	             ^^^^^^^^^^^^^^

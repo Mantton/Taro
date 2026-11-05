@@ -1,0 +1,4 @@
+import std::sync::atomic::Handle
+interface Config: std::marker::AnyObject {}
+func inspect(_ value: Handle[any Config]) {}
+func main() {}

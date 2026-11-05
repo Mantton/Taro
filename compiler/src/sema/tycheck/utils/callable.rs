@@ -1,6 +1,6 @@
 use crate::{
     compile::context::Gcx,
-    hir::{DefinitionID, Mutability},
+    hir::DefinitionID,
     sema::{
         impl_engine::ref_ops::{collect_interface_with_superfaces, interface_ref_with_self},
         models::{
@@ -27,31 +27,15 @@ impl<'ctx> ExistentialCallable<'ctx> {
         ))
     }
 
-    pub fn receiver_mutability(self) -> Option<Mutability> {
-        match self.kind {
-            ClosureKind::Fn | ClosureKind::AsyncFn => Some(Mutability::Immutable),
-            ClosureKind::FnMut | ClosureKind::AsyncFnMut => Some(Mutability::Mutable),
-            ClosureKind::FnOnce | ClosureKind::AsyncFnOnce => None,
-        }
-    }
-
     pub fn is_async(self) -> bool {
-        matches!(
-            self.kind,
-            ClosureKind::AsyncFn | ClosureKind::AsyncFnMut | ClosureKind::AsyncFnOnce
-        )
+        self.kind == ClosureKind::AsyncFn
     }
 
     pub fn method_id(self, gcx: Gcx<'ctx>) -> Option<DefinitionID> {
-        let name = match self.receiver_mutability() {
-            Some(Mutability::Immutable) => "call",
-            Some(Mutability::Mutable) => "callMut",
-            None => "callOnce",
-        };
         gcx.get_interface_requirements(self.interface.id)?
             .methods
             .iter()
-            .find(|method| gcx.symbol_eq(method.name, name))
+            .find(|method| gcx.symbol_eq(method.name, "call"))
             .map(|method| method.id)
     }
 }
@@ -68,7 +52,7 @@ pub fn select_existential_callable<'ctx>(
     gcx: Gcx<'ctx>,
     mut ty: Ty<'ctx>,
 ) -> Result<Option<ExistentialCallable<'ctx>>, ()> {
-    while let TyKind::Reference(inner, _) = ty.kind() {
+    while let TyKind::Reference(inner) = ty.kind() {
         ty = inner;
     }
     let TyKind::BoxedExistential { interfaces } = ty.kind() else {

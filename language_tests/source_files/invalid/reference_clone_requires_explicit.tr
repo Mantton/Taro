@@ -1,0 +1,6 @@
+struct Plain { value: int32 }
+func main() {
+    value := Plain { value: 1 }
+    copied := value.clone()
+    copyMethod := value.clone
+}

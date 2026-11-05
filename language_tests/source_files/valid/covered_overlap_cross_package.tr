@@ -1,0 +1,5 @@
+// CHECK_ONLY
+// PACKAGE: g31_overlap_errors
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_COUNT: 2 conflicting conformance
+// EXPECT_STDERR_NOT_CONTAINS: panicked

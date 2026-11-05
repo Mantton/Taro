@@ -1,0 +1,4 @@
+error: fallible convenience init returns initialized self automatically; use a bare return for success or return .err(error) for failure
+ -> language_tests/source_files/invalid/fallible_convenience_result.tr:5:8
+	        return .ok(Record(7))
+	        ^^^^^^^^^^^^^^^^^^^^^

@@ -1,61 +1,54 @@
-import std.optional.Optional
-import std.ops.Fn
-import std.cmp.Ord
+import std::optional::Optional
+import std::ops::Fn
+import std::cmp::Ord
+import std::collections::List
 
 /// Interface for types that can yield a sequence of values.
 ///
 /// An Iterator produces a sequence of values one at a time via the `next` method.
 /// When the iterator is exhausted, `next` returns `.none`.
+/// Standard iterator cursors share their traversal state when copied. Obtain
+/// a fresh iterator from the source collection for an independent traversal.
 ///
 /// Example:
 /// ```
 /// var iter = list.iter()
-/// while let value = iter.next() {
+/// while var value = iter.next() {
 ///     print(value)
 /// }
 /// ```
 @lang("Iterator")
 public interface Iterator {
     type Element
-    func next(&mut self) -> Optional[Self.Element]
+    func next() -> Optional[Self::Element]
 
     /// Creates an iterator that yields `(index, item)` pairs.
-    func enumerate(self) -> EnumerateIterator[Self.Element, Self] {
-        return EnumerateIterator[Self.Element, Self] { inner: self, index: 0 as usize }
-    }
-
-    /// Creates an iterator that transforms each element using a function.
-    func map[Out, F: Fn[Self.Element, Out]](self, _ f: F) -> MapIterator[Self.Element, Out, Self, F] {
-        return MapIterator[Self.Element, Out, Self, F] { inner: self, f: f }
-    }
-
-    /// Creates an iterator that yields only elements satisfying a predicate.
-    func filter[F: Fn[&Self.Element, bool]](self, _ predicate: F) -> FilterIterator[Self.Element, Self, F] {
-        return FilterIterator[Self.Element, Self, F] { inner: self, predicate: predicate }
+    func enumerate() -> EnumerateIterator[Self::Element, Self] {
+        return EnumerateIterator[Self::Element, Self]( inner: self, index: 0 as usize )
     }
 
     /// Creates an iterator that yields at most `n` elements.
-    func take(self, _ n: usize) -> TakeIterator[Self.Element, Self] {
-        return TakeIterator[Self.Element, Self] { inner: self, remaining: n }
+    func take(_ n: usize) -> TakeIterator[Self::Element, Self] {
+        return TakeIterator[Self::Element, Self]( inner: self, remaining: n )
     }
 
     /// Creates an iterator that skips the first `n` elements.
-    func skip(self, _ n: usize) -> SkipIterator[Self.Element, Self] {
-        return SkipIterator[Self.Element, Self] { inner: self, remaining: n }
+    func skip(_ n: usize) -> SkipIterator[Self::Element, Self] {
+        return SkipIterator[Self::Element, Self]( inner: self, remaining: n )
     }
 
     /// Creates an iterator that pairs elements from this iterator with another iterator.
-    func zip[B, Other: Iterator[Element = B]](self, _ other: Other) -> ZipIterator[Self.Element, B, Self, Other] {
-        return ZipIterator[Self.Element, B, Self, Other] { a: self, b: other }
+    func zip[B, Other: Iterator[Element = B]](_ other: Other) -> ZipIterator[Self::Element, B, Self, Other] {
+        return ZipIterator[Self::Element, B, Self, Other] { a: self, b: other }
     }
 
     /// Creates an iterator that yields elements from this iterator, and then from another iterator.
-    func chain[Other: Iterator[Element = Self.Element]](self, _ other: Other) -> ChainIterator[Self.Element, Self, Other] {
-        return ChainIterator[Self.Element, Self, Other] {
+    func chain[Other: Iterator[Element = Self::Element]](_ other: Other) -> ChainIterator[Self::Element, Self, Other] {
+        return ChainIterator[Self::Element, Self, Other](
             a: self,
             b: other,
             state: false,
-        }
+        )
     }
 
     /// Creates an iterator that flattens an iterator of iterables.
@@ -63,40 +56,40 @@ public interface Iterator {
         Item,
         InnerIter: Iterator[Element = Item],
         InnerIterable: Iterable[Element = Item, Iterator = InnerIter],
-    ](self) -> FlattenIterator[Item, InnerIter, InnerIterable, Self] where Self.Element == InnerIterable {
-        return FlattenIterator[Item, InnerIter, InnerIterable, Self] { outer: self, inner: .none }
+]() -> FlattenIterator[Item, InnerIter, InnerIterable, Self] where Self::Element == InnerIterable {
+        return FlattenIterator[Item, InnerIter, InnerIterable, Self]( outer: self, inner: .none )
     }
 
     /// Creates an iterator that skips early elements, yielding only every `step` elements.
-    func stepBy(self, _ step: usize) -> StepByIterator[Self.Element, Self] {
-        return StepByIterator[Self.Element, Self] {
+    func stepBy(_ step: usize) -> StepByIterator[Self::Element, Self] {
+        return StepByIterator[Self::Element, Self](
             inner: self,
             step: step - 1, // Store step - 1 because we want to skip `step-1` items between yields
             first_take: true,
-        }
+        )
     }
 
     /// Creates an iterator that yields elements based on a predicate until it returns false.
-    func takeWhile[F: Fn[&Self.Element, bool]](self, _ predicate: F) -> TakeWhileIterator[Self.Element, F, Self] {
-        return TakeWhileIterator[Self.Element, F, Self] {
+    func takeWhile[F: Fn[&Self::Element, bool]](_ predicate: F) -> TakeWhileIterator[Self::Element, F, Self] {
+        return TakeWhileIterator[Self::Element, F, Self](
             inner: self,
             predicate: predicate,
             is_done: false,
-        }
+        )
     }
 
     /// Creates an iterator that skips elements based on a predicate until it returns false, then yields the rest.
-    func skipWhile[F: Fn[&Self.Element, bool]](self, _ predicate: F) -> SkipWhileIterator[Self.Element, F, Self] {
-        return SkipWhileIterator[Self.Element, F, Self] {
+    func skipWhile[F: Fn[&Self::Element, bool]](_ predicate: F) -> SkipWhileIterator[Self::Element, F, Self] {
+        return SkipWhileIterator[Self::Element, F, Self](
             inner: self,
             predicate: predicate,
             is_done_skipping: false,
-        }
+        )
     }
 
     /// Creates an iterator that can peek ahead at the next element without consuming it.
-    func peekable(self) -> PeekableIterator[Self.Element, Self] {
-        return PeekableIterator[Self.Element, Self] { inner: self, peeked: .none }
+    func peekable() -> PeekableIterator[Self::Element, Self] {
+        return PeekableIterator[Self::Element, Self]( inner: self, peeked: .none )
     }
 }
 
@@ -104,13 +97,13 @@ public interface Iterator {
 @lang("AsyncIterator")
 public interface AsyncIterator {
     type Element
-    func next(&mut self) async -> Optional[Self.Element]
+    func next() async -> Optional[Self::Element]
 }
 
 /// Interface for types that can be constructed from an iterator.
 public interface FromIterator {
     type Element
-    func fromIter[I: Iterator[Element = Self.Element]](_ iter: &mut I) -> Self
+    static func fromIter[I: Iterator[Element = Self::Element]](_ iter: &I) -> Self
 }
 
 /// Interface for types that can be converted into an Iterator.
@@ -126,7 +119,7 @@ public interface FromIterator {
 /// ```
 /// var iter = Iterable.iter(collection)
 /// loop {
-///     match Iterator.next(&mut iter) {
+///     match Iterator::next(iter) {
 ///         case .some(item) => { /* body */ }
 ///         case .none => break
 ///     }
@@ -134,18 +127,35 @@ public interface FromIterator {
 /// ```
 @lang("Iterable")
 public interface Iterable {
-    type Iterator: Iterator[Element = Self.Element]
+    type Iterator: Iterator[Element = Self::Element]
     type Element
-    func iter(self) -> Self.Iterator
+    func iter() -> Self::Iterator
 
-    /// Consumes this iterable and collects items into a destination type.
-    func collect[B: FromIterator[Element = Self.Element]](self) -> B {
-        var iter = self.iter()
-        return B.fromIter(&mut iter)
+    /// Evaluates the transform now and stores its results in a new List.
+    func map[Out, F: Fn[Self::Element, Out]](_ f: F) -> List[Out] {
+        var result = List[Out]::new()
+        for item in self { result.append(f(item)) }
+        return result
     }
 
-    /// Consumes the iterator, counting the number of elements.
-    func count(self) -> usize {
+    /// Evaluates the predicate now, copying accepted values into a new List.
+    func filter[F: Fn[Self::Element, bool]](_ predicate: F) -> List[Self::Element] {
+        var result = List[Self::Element]::new()
+        for item in self { if predicate(item) { result.append(item) } }
+        return result
+    }
+
+    /// Retains this source and defers transformations until traversal.
+    func lazy() -> Lazy[Self::Element, Self] { Lazy[Self::Element, Self] { source: self } }
+
+    /// Traverses this iterable and collects items into a destination type.
+    func collect[B: FromIterator[Element = Self::Element]]() -> B {
+        var iter = self.iter()
+        return B::fromIter(&iter)
+    }
+
+    /// Traverses this iterable, counting the number of elements.
+    func count() -> usize {
         var iter = self.iter()
         var n: usize = 0
         loop {
@@ -156,10 +166,10 @@ public interface Iterable {
         }
     }
 
-    /// Consumes the iterator, returning the last element.
-    func last(self) -> Optional[Self.Element] {
+    /// Traverses this iterable and returns its last element value.
+    func last() -> Optional[Self::Element] {
         var iter = self.iter()
-        var result: Optional[Self.Element] = .none
+        var result: Optional[Self::Element] = .none
         loop {
             match iter.next() {
                 case .some(v) => result = .some(v)
@@ -169,7 +179,7 @@ public interface Iterable {
     }
 
     /// Returns the nth element (0-indexed), consuming all preceding elements.
-    func nth(self, _ n: usize) -> Optional[Self.Element] {
+    func nth(_ n: usize) -> Optional[Self::Element] {
         var iter = self.iter()
         var i: usize = 0
         loop {
@@ -185,7 +195,7 @@ public interface Iterable {
         }
     }
     /// Tests if every element of the iterator matches a predicate.
-    func allSatisfy[F: Fn[&Self.Element, bool]](self, _ predicate: F) -> bool {
+    func allSatisfy[F: Fn[&Self::Element, bool]](_ predicate: F) -> bool {
         var iter = self.iter()
         var predicate = predicate
         loop {
@@ -201,7 +211,7 @@ public interface Iterable {
     }
 
     /// Tests if any element of the iterator matches a predicate.
-    func anySatisfy[F: Fn[&Self.Element, bool]](self, _ predicate: F) -> bool {
+    func anySatisfy[F: Fn[&Self::Element, bool]](_ predicate: F) -> bool {
         var iter = self.iter()
         var predicate = predicate
         loop {
@@ -217,7 +227,7 @@ public interface Iterable {
     }
 
     /// Searches for an element satisfying the predicate, returning the first match.
-    func find[F: Fn[&Self.Element, bool]](self, _ predicate: F) -> Optional[Self.Element] {
+    func find[F: Fn[&Self::Element, bool]](_ predicate: F) -> Optional[Self::Element] {
         var iter = self.iter()
         var predicate = predicate
         loop {
@@ -233,7 +243,7 @@ public interface Iterable {
     }
 
     /// Searches for the index of the first element satisfying the predicate.
-    func position[F: Fn[&Self.Element, bool]](self, _ predicate: F) -> Optional[usize] {
+    func position[F: Fn[&Self::Element, bool]](_ predicate: F) -> Optional[usize] {
         var iter = self.iter()
         var predicate = predicate
         var i: usize = 0
@@ -250,8 +260,8 @@ public interface Iterable {
         }
     }
 
-    /// Folds every element into an accumulator by applying a closure.
-    func fold[B, F: Fn[(B, Self.Element), B]](self, _ initial: B, _ f: F) -> B {
+    /// Traverses this iterable, updating an accumulator with each value.
+    func fold[B, F: Fn[(B, Self::Element), B]](_ initial: B, _ f: F) -> B {
         var iter = self.iter()
         var f = f
         var acc = initial
@@ -266,7 +276,7 @@ public interface Iterable {
     }
 
     /// Calls a closure on each element of the iterator.
-    func forEach[F: Fn[Self.Element, ()]](self, _ f: F) {
+    func forEach[F: Fn[Self::Element, ()]](_ f: F) {
         var iter = self.iter()
         var f = f
         loop {
@@ -278,7 +288,7 @@ public interface Iterable {
     }
 
     /// Reduces the elements to a single one, by repeatedly applying a reducing operation.
-    func reduce[F: Fn[(Self.Element, Self.Element), Self.Element]](self, _ f: F) -> Optional[Self.Element] {
+    func reduce[F: Fn[(Self::Element, Self::Element), Self::Element]](_ f: F) -> Optional[Self::Element] {
         var iter = self.iter()
         var f = f
         match iter.next() {
@@ -296,7 +306,7 @@ public interface Iterable {
     }
 
     /// Returns the minimum element of an iterator.
-    func min(self) -> Optional[Self.Element] where Self.Element: Ord {
+    func min() -> Optional[Self::Element] where Self::Element: Ord {
         var iter = self.iter()
         match iter.next() {
             case .none => return .none
@@ -305,7 +315,7 @@ public interface Iterable {
                 loop {
                     match iter.next() {
                         case .some(v) => {
-                            if v.lt(&min_val) {
+                            if v.lt(min_val) {
                                 min_val = v
                             }
                         }
@@ -317,7 +327,7 @@ public interface Iterable {
     }
 
     /// Returns the maximum element of an iterator.
-    func max(self) -> Optional[Self.Element] where Self.Element: Ord {
+    func max() -> Optional[Self::Element] where Self::Element: Ord {
         var iter = self.iter()
         match iter.next() {
             case .none => return .none
@@ -326,7 +336,7 @@ public interface Iterable {
                 loop {
                     match iter.next() {
                         case .some(v) => {
-                            if v.gt(&max_val) {
+                            if v.gt(max_val) {
                                 max_val = v
                             }
                         }
@@ -336,24 +346,30 @@ public interface Iterable {
             }
         }
     }
-
 }
 
 // ─── Enumerate ──────────────────────────────────────────────────────
 
 /// Iterator adapter that yields `(index, item)` pairs.
-public struct EnumerateIterator[Item, Inner: Iterator[Element = Item]] {
+public final class EnumerateIterator[Item, Inner: Iterator[Element = Item]] {
     inner: Inner
     index: usize
 }
 
-impl[Item, Inner: Iterator[Element = Item]] Iterator for EnumerateIterator[Item, Inner] {
+extend[Item, Inner: Iterator[Element = Item]] EnumerateIterator[Item, Inner] {
+    init(inner: Inner, index: usize) {
+        self.inner = inner
+        self.index = index
+    }
+}
+
+conform[Item, Inner: Iterator[Element = Item]] EnumerateIterator[Item, Inner] to Iterator {
     type Element = (usize, Item)
 
-    public func next(&mut self) -> Optional[Self.Element] {
+    public func next() -> Optional[Self::Element] {
         match self.inner.next() {
             case .some(item) => {
-                let i = self.index
+                i := self.index
                 self.index += 1
                 return .some((i, item))
             }
@@ -372,21 +388,16 @@ impl[Item, Inner: Iterator[Element = Item]] Iterator for EnumerateIterator[Item,
 /// ```
 @lang("AsyncIterable")
 public interface AsyncIterable {
-    type Iterator: AsyncIterator[Element = Self.Element]
+    type Iterator: AsyncIterator[Element = Self::Element]
     type Element
-    func iter(self) -> Self.Iterator
+    func iter() -> Self::Iterator
 }
 
-impl[Item, Inner: Iterator[Element = Item]] Iterable for EnumerateIterator[Item, Inner] {
+conform[Item, Inner: Iterator[Element = Item]] EnumerateIterator[Item, Inner] to Iterable {
     type Iterator = EnumerateIterator[Item, Inner]
     type Element = (usize, Item)
 
-    public func iter(self) -> Self.Iterator {
-        return EnumerateIterator[Item, Inner] {
-            inner: self.inner,
-            index: self.index,
-        }
-    }
+    public func iter() -> Self::Iterator { return self }
 }
 
 /// Iterable adapter that yields `(index, item)` pairs.
@@ -394,19 +405,73 @@ public struct Enumerate[Source: Iterable] {
     source: Source
 }
 
-impl[Item, Inner: Iterator[Element = Item], Source: Iterable[Iterator = Inner]] Iterable for Enumerate[Source] {
-    type Iterator = EnumerateIterator[Item, Inner]
-    type Element = (usize, Item)
+conform[Source: Iterable] Enumerate[Source] to Iterable {
+    type Iterator = EnumerateIterator[Source::Element, Source::Iterator]
+    type Element = (usize, Source::Element)
 
-    public func iter(self) -> Self.Iterator {
-        let inner = self.source.iter()
-        return EnumerateIterator[Item, Inner] { inner: inner, index: 0 as usize }
+    public func iter() -> Self::Iterator {
+        inner := self.source.iter()
+        return EnumerateIterator[Source::Element, Source::Iterator]( inner: inner, index: 0 as usize )
     }
 }
 
 /// Create an iterable adapter that yields `(index, item)` pairs.
 public func enumerate[Source: Iterable](_ source: Source) -> Enumerate[Source] {
     return Enumerate[Source] { source: source }
+}
+
+// ─── Explicit lazy sources ──────────────────────────────────────────
+
+/// A source plus deferred transformations. Collection sources create a fresh
+/// cursor per traversal; iterator sources retain their existing shared progress.
+/// This stores ordinary values: handles alias, inline values are copied, and
+/// callback captures follow the language's usual reference-capture rules.
+public struct Lazy[Item, Source: Iterable[Element = Item]] {
+    internal source: Source
+}
+
+conform[Item, Source: Iterable[Element = Item]] Lazy[Item, Source] to Iterable {
+    type Element = Item
+    type Iterator = Source::Iterator
+    public func iter() -> Self::Iterator { self.source.iter() }
+}
+
+extend[Item, Source: Iterable[Element = Item]] Lazy[Item, Source] {
+    public func map[Out, F: Fn[Item, Out]](_ f: F) -> Lazy[Out, MapIterable[Item, Source, Out, F]] {
+        Lazy[Out, MapIterable[Item, Source, Out, F]] {
+            source: MapIterable[Item, Source, Out, F] { source: self.source, f: f },
+        }
+    }
+
+    public func filter[F: Fn[Item, bool]](_ predicate: F) -> Lazy[Item, FilterIterable[Item, Source, F]] {
+        Lazy[Item, FilterIterable[Item, Source, F]] {
+            source: FilterIterable[Item, Source, F] { source: self.source, predicate: predicate },
+        }
+    }
+
+    /// Materializes this traversal. Repeated calls traverse again; no cache.
+    public func collect() -> List[Item] {
+        var result = List[Item]::new()
+        for item in self.source { result.append(item) }
+        return result
+    }
+}
+
+/// Adapts an explicit cursor without creating an independent traversal.
+public struct IteratorSequence[I: Iterator] {
+    internal cursor: I
+}
+
+conform[I: Iterator] IteratorSequence[I] to Iterable {
+    type Element = I::Element
+    type Iterator = I
+    public func iter() -> I { self.cursor }
+}
+
+/// Supplies an Iterable surface to a generic Iterator. Standard iterator copies
+/// share progress, so repeated traversal continues from its current position.
+public func fromIterator[I: Iterator](_ cursor: I) -> IteratorSequence[I] {
+    IteratorSequence[I] { cursor: cursor }
 }
 
 // ─── Map ────────────────────────────────────────────────────────────
@@ -417,10 +482,10 @@ public struct MapIterator[Item, Out, Inner: Iterator[Element = Item], F: Fn[Item
     f: F
 }
 
-impl[Item, Out, Inner: Iterator[Element = Item], F: Fn[Item, Out]] Iterator for MapIterator[Item, Out, Inner, F] {
+conform[Item, Out, Inner: Iterator[Element = Item], F: Fn[Item, Out]] MapIterator[Item, Out, Inner, F] to Iterator {
     type Element = Out
 
-    public func next(&mut self) -> Optional[Self.Element] {
+    public func next() -> Optional[Self::Element] {
         match self.inner.next() {
             case .some(item) => return .some(self.f(item))
             case .none => return .none
@@ -428,11 +493,11 @@ impl[Item, Out, Inner: Iterator[Element = Item], F: Fn[Item, Out]] Iterator for 
     }
 }
 
-impl[Item, Out, Inner: Iterator[Element = Item], F: Fn[Item, Out]] Iterable for MapIterator[Item, Out, Inner, F] {
+conform[Item, Out, Inner: Iterator[Element = Item], F: Fn[Item, Out]] MapIterator[Item, Out, Inner, F] to Iterable {
     type Iterator = MapIterator[Item, Out, Inner, F]
     type Element = Out
 
-    public func iter(self) -> Self.Iterator {
+    public func iter() -> Self::Iterator {
         return MapIterator[Item, Out, Inner, F] {
             inner: self.inner,
             f: self.f,
@@ -440,43 +505,42 @@ impl[Item, Out, Inner: Iterator[Element = Item], F: Fn[Item, Out]] Iterable for 
     }
 }
 
-/// Iterable adapter that transforms each element.
+/// Iterable adapter that creates a fresh mapping cursor for each traversal.
 public struct MapIterable[Item, Source: Iterable[Element = Item], Out, F: Fn[Item, Out]] {
     source: Source
     f: F
 }
 
-impl[Item, Out, Inner: Iterator[Element = Item], Source: Iterable[Iterator = Inner, Element = Item], F: Fn[Item, Out]] Iterable for MapIterable[Item, Source, Out, F] {
-    type Iterator = MapIterator[Item, Out, Inner, F]
+conform[Item, Source: Iterable[Element = Item], Out, F: Fn[Item, Out]] MapIterable[Item, Source, Out, F] to Iterable {
+    type Iterator = MapIterator[Item, Out, Source::Iterator, F]
     type Element = Out
 
-    public func iter(self) -> Self.Iterator {
-        let inner = self.source.iter()
-        return MapIterator[Item, Out, Inner, F] { inner: inner, f: self.f }
+    public func iter() -> Self::Iterator {
+        MapIterator[Item, Out, Source::Iterator, F] { inner: self.source.iter(), f: self.f }
     }
 }
 
-/// Create an iterable adapter that transforms each element.
-public func map[Item, Source: Iterable[Element = Item], Out, F: Fn[Item, Out]](_ source: Source, _ f: F) -> MapIterable[Item, Source, Out, F] {
-    return MapIterable[Item, Source, Out, F] { source: source, f: f }
+/// Eagerly transforms a source into a new List.
+public func map[Item, Source: Iterable[Element = Item], Out, F: Fn[Item, Out]](_ source: Source, _ f: F) -> List[Out] {
+    return source.map(f)
 }
 
 // ─── Filter ─────────────────────────────────────────────────────────
 
 /// Iterator adapter that yields only elements satisfying a predicate.
-public struct FilterIterator[Item, Inner: Iterator[Element = Item], F: Fn[&Item, bool]] {
+public struct FilterIterator[Item, Inner: Iterator[Element = Item], F: Fn[Item, bool]] {
     inner: Inner
     predicate: F
 }
 
-impl[Item, Inner: Iterator[Element = Item], F: Fn[&Item, bool]] Iterator for FilterIterator[Item, Inner, F] {
+conform[Item, Inner: Iterator[Element = Item], F: Fn[Item, bool]] FilterIterator[Item, Inner, F] to Iterator {
     type Element = Item
 
-    public func next(&mut self) -> Optional[Self.Element] {
+    public func next() -> Optional[Self::Element] {
         loop {
             match self.inner.next() {
                 case .some(item) => {
-                    if self.predicate(&item) {
+                    if self.predicate(item) {
                         return .some(item)
                     }
                 }
@@ -486,11 +550,11 @@ impl[Item, Inner: Iterator[Element = Item], F: Fn[&Item, bool]] Iterator for Fil
     }
 }
 
-impl[Item, Inner: Iterator[Element = Item], F: Fn[&Item, bool]] Iterable for FilterIterator[Item, Inner, F] {
+conform[Item, Inner: Iterator[Element = Item], F: Fn[Item, bool]] FilterIterator[Item, Inner, F] to Iterable {
     type Iterator = FilterIterator[Item, Inner, F]
     type Element = Item
 
-    public func iter(self) -> Self.Iterator {
+    public func iter() -> Self::Iterator {
         return FilterIterator[Item, Inner, F] {
             inner: self.inner,
             predicate: self.predicate,
@@ -498,39 +562,45 @@ impl[Item, Inner: Iterator[Element = Item], F: Fn[&Item, bool]] Iterable for Fil
     }
 }
 
-/// Iterable adapter that yields only elements satisfying a predicate.
-public struct FilterIterable[Item, Source: Iterable[Element = Item], F: Fn[&Item, bool]] {
+/// Iterable adapter that creates a fresh filtering cursor for each traversal.
+public struct FilterIterable[Item, Source: Iterable[Element = Item], F: Fn[Item, bool]] {
     source: Source
     predicate: F
 }
 
-impl[Item, Inner: Iterator[Element = Item], Source: Iterable[Iterator = Inner, Element = Item], F: Fn[&Item, bool]] Iterable for FilterIterable[Item, Source, F] {
-    type Iterator = FilterIterator[Item, Inner, F]
+conform[Item, Source: Iterable[Element = Item], F: Fn[Item, bool]] FilterIterable[Item, Source, F] to Iterable {
+    type Iterator = FilterIterator[Item, Source::Iterator, F]
     type Element = Item
 
-    public func iter(self) -> Self.Iterator {
-        let inner = self.source.iter()
-        return FilterIterator[Item, Inner, F] { inner: inner, predicate: self.predicate }
+    public func iter() -> Self::Iterator {
+        FilterIterator[Item, Source::Iterator, F] { inner: self.source.iter(), predicate: self.predicate }
     }
 }
 
-/// Create an iterable adapter that yields only elements satisfying a predicate.
-public func filter[Item, Source: Iterable[Element = Item], F: Fn[&Item, bool]](_ source: Source, _ predicate: F) -> FilterIterable[Item, Source, F] {
-    return FilterIterable[Item, Source, F] { source: source, predicate: predicate }
+/// Eagerly copies accepted source values into a new List.
+public func filter[Item, Source: Iterable[Element = Item], F: Fn[Item, bool]](_ source: Source, _ predicate: F) -> List[Item] {
+    return source.filter(predicate)
 }
 
 // ─── Take ───────────────────────────────────────────────────────────
 
 /// Iterator adapter that yields at most `n` elements.
-public struct TakeIterator[Item, Inner: Iterator[Element = Item]] {
+public final class TakeIterator[Item, Inner: Iterator[Element = Item]] {
     inner: Inner
     remaining: usize
 }
 
-impl[Item, Inner: Iterator[Element = Item]] Iterator for TakeIterator[Item, Inner] {
+extend[Item, Inner: Iterator[Element = Item]] TakeIterator[Item, Inner] {
+    init(inner: Inner, remaining: usize) {
+        self.inner = inner
+        self.remaining = remaining
+    }
+}
+
+conform[Item, Inner: Iterator[Element = Item]] TakeIterator[Item, Inner] to Iterator {
     type Element = Item
 
-    public func next(&mut self) -> Optional[Self.Element] {
+    public func next() -> Optional[Self::Element] {
         if self.remaining == 0 {
             return .none
         }
@@ -539,16 +609,11 @@ impl[Item, Inner: Iterator[Element = Item]] Iterator for TakeIterator[Item, Inne
     }
 }
 
-impl[Item, Inner: Iterator[Element = Item]] Iterable for TakeIterator[Item, Inner] {
+conform[Item, Inner: Iterator[Element = Item]] TakeIterator[Item, Inner] to Iterable {
     type Iterator = TakeIterator[Item, Inner]
     type Element = Item
 
-    public func iter(self) -> Self.Iterator {
-        return TakeIterator[Item, Inner] {
-            inner: self.inner,
-            remaining: self.remaining,
-        }
-    }
+    public func iter() -> Self::Iterator { return self }
 }
 
 /// Iterable adapter that yields at most `n` elements.
@@ -557,13 +622,13 @@ public struct TakeIterable[Source: Iterable] {
     n: usize
 }
 
-impl[Item, Inner: Iterator[Element = Item], Source: Iterable[Iterator = Inner, Element = Item]] Iterable for TakeIterable[Source] {
-    type Iterator = TakeIterator[Item, Inner]
-    type Element = Item
+conform[Source: Iterable] TakeIterable[Source] to Iterable {
+    type Iterator = TakeIterator[Source::Element, Source::Iterator]
+    type Element = Source::Element
 
-    public func iter(self) -> Self.Iterator {
-        let inner = self.source.iter()
-        return TakeIterator[Item, Inner] { inner: inner, remaining: self.n }
+    public func iter() -> Self::Iterator {
+        inner := self.source.iter()
+        return TakeIterator[Source::Element, Source::Iterator]( inner: inner, remaining: self.n )
     }
 }
 
@@ -575,15 +640,22 @@ public func take[Source: Iterable](_ source: Source, _ n: usize) -> TakeIterable
 // ─── Skip ───────────────────────────────────────────────────────────
 
 /// Iterator adapter that skips the first `n` elements.
-public struct SkipIterator[Item, Inner: Iterator[Element = Item]] {
+public final class SkipIterator[Item, Inner: Iterator[Element = Item]] {
     inner: Inner
     remaining: usize
 }
 
-impl[Item, Inner: Iterator[Element = Item]] Iterator for SkipIterator[Item, Inner] {
+extend[Item, Inner: Iterator[Element = Item]] SkipIterator[Item, Inner] {
+    init(inner: Inner, remaining: usize) {
+        self.inner = inner
+        self.remaining = remaining
+    }
+}
+
+conform[Item, Inner: Iterator[Element = Item]] SkipIterator[Item, Inner] to Iterator {
     type Element = Item
 
-    public func next(&mut self) -> Optional[Self.Element] {
+    public func next() -> Optional[Self::Element] {
         while self.remaining > 0 {
             self.remaining -= 1
             match self.inner.next() {
@@ -595,16 +667,11 @@ impl[Item, Inner: Iterator[Element = Item]] Iterator for SkipIterator[Item, Inne
     }
 }
 
-impl[Item, Inner: Iterator[Element = Item]] Iterable for SkipIterator[Item, Inner] {
+conform[Item, Inner: Iterator[Element = Item]] SkipIterator[Item, Inner] to Iterable {
     type Iterator = SkipIterator[Item, Inner]
     type Element = Item
 
-    public func iter(self) -> Self.Iterator {
-        return SkipIterator[Item, Inner] {
-            inner: self.inner,
-            remaining: self.remaining,
-        }
-    }
+    public func iter() -> Self::Iterator { return self }
 }
 
 /// Iterable adapter that skips the first `n` elements.
@@ -613,13 +680,13 @@ public struct SkipIterable[Source: Iterable] {
     n: usize
 }
 
-impl[Item, Inner: Iterator[Element = Item], Source: Iterable[Iterator = Inner, Element = Item]] Iterable for SkipIterable[Source] {
-    type Iterator = SkipIterator[Item, Inner]
-    type Element = Item
+conform[Source: Iterable] SkipIterable[Source] to Iterable {
+    type Iterator = SkipIterator[Source::Element, Source::Iterator]
+    type Element = Source::Element
 
-    public func iter(self) -> Self.Iterator {
-        let inner = self.source.iter()
-        return SkipIterator[Item, Inner] { inner: inner, remaining: self.n }
+    public func iter() -> Self::Iterator {
+        inner := self.source.iter()
+        return SkipIterator[Source::Element, Source::Iterator]( inner: inner, remaining: self.n )
     }
 }
 
@@ -636,10 +703,10 @@ public struct ZipIterator[A, B, IA: Iterator[Element = A], IB: Iterator[Element 
     b: IB
 }
 
-impl[A, B, IA: Iterator[Element = A], IB: Iterator[Element = B]] Iterator for ZipIterator[A, B, IA, IB] {
+conform[A, B, IA: Iterator[Element = A], IB: Iterator[Element = B]] ZipIterator[A, B, IA, IB] to Iterator {
     type Element = (A, B)
 
-    public func next(&mut self) -> Optional[Self.Element] {
+    public func next() -> Optional[Self::Element] {
         match self.a.next() {
             case .some(va) => {
                 match self.b.next() {
@@ -652,11 +719,11 @@ impl[A, B, IA: Iterator[Element = A], IB: Iterator[Element = B]] Iterator for Zi
     }
 }
 
-impl[A, B, IA: Iterator[Element = A], IB: Iterator[Element = B]] Iterable for ZipIterator[A, B, IA, IB] {
+conform[A, B, IA: Iterator[Element = A], IB: Iterator[Element = B]] ZipIterator[A, B, IA, IB] to Iterable {
     type Iterator = ZipIterator[A, B, IA, IB]
     type Element = (A, B)
 
-    public func iter(self) -> Self.Iterator {
+    public func iter() -> Self::Iterator {
         return ZipIterator[A, B, IA, IB] {
             a: self.a,
             b: self.b,
@@ -670,14 +737,14 @@ public struct ZipIterable[SA: Iterable, SB: Iterable] {
     b: SB
 }
 
-impl[A, B, IA: Iterator[Element = A], IB: Iterator[Element = B], SA: Iterable[Iterator = IA, Element = A], SB: Iterable[Iterator = IB, Element = B]] Iterable for ZipIterable[SA, SB] {
-    type Iterator = ZipIterator[A, B, IA, IB]
-    type Element = (A, B)
+conform[SA: Iterable, SB: Iterable] ZipIterable[SA, SB] to Iterable {
+    type Iterator = ZipIterator[SA::Element, SB::Element, SA::Iterator, SB::Iterator]
+    type Element = (SA::Element, SB::Element)
 
-    public func iter(self) -> Self.Iterator {
-        let ia = self.a.iter()
-        let ib = self.b.iter()
-        return ZipIterator[A, B, IA, IB] { a: ia, b: ib }
+    public func iter() -> Self::Iterator {
+        ia := self.a.iter()
+        ib := self.b.iter()
+        return ZipIterator[SA::Element, SB::Element, SA::Iterator, SB::Iterator] { a: ia, b: ib }
     }
 }
 
@@ -689,16 +756,24 @@ public func zip[SA: Iterable, SB: Iterable](_ a: SA, _ b: SB) -> ZipIterable[SA,
 // ─── Chain ────────────────────────────────────────────────────────────
 
 /// Iterator that yields elements from two iterators sequentially.
-public struct ChainIterator[Item, A: Iterator[Element = Item], B: Iterator[Element = Item]] {
+public final class ChainIterator[Item, A: Iterator[Element = Item], B: Iterator[Element = Item]] {
     a: A
     b: B
     state: bool
 }
 
-impl[Item, A: Iterator[Element = Item], B: Iterator[Element = Item]] Iterator for ChainIterator[Item, A, B] {
+extend[Item, A: Iterator[Element = Item], B: Iterator[Element = Item]] ChainIterator[Item, A, B] {
+    init(a: A, b: B, state: bool) {
+        self.a = a
+        self.b = b
+        self.state = state
+    }
+}
+
+conform[Item, A: Iterator[Element = Item], B: Iterator[Element = Item]] ChainIterator[Item, A, B] to Iterator {
     type Element = Item
 
-    func next(&mut self) -> Optional[Self.Element] {
+    func next() -> Optional[Self::Element] {
         if !self.state {
             match self.a.next() {
                 case .some(v) => return .some(v)
@@ -711,17 +786,11 @@ impl[Item, A: Iterator[Element = Item], B: Iterator[Element = Item]] Iterator fo
     }
 }
 
-impl[Item, A: Iterator[Element = Item], B: Iterator[Element = Item]] Iterable for ChainIterator[Item, A, B] {
+conform[Item, A: Iterator[Element = Item], B: Iterator[Element = Item]] ChainIterator[Item, A, B] to Iterable {
     type Iterator = ChainIterator[Item, A, B]
     type Element = Item
 
-    public func iter(self) -> Self.Iterator {
-        return ChainIterator[Item, A, B] {
-            a: self.a,
-            b: self.b,
-            state: self.state,
-        }
-    }
+    public func iter() -> Self::Iterator { return self }
 }
 
 /// Iterable adapter that yields elements from two iterables sequentially.
@@ -730,29 +799,30 @@ public struct ChainIterable[Item, A: Iterable[Element = Item], B: Iterable[Eleme
     b: B
 }
 
-impl[
+conform[
     Item,
     AIter: Iterator[Element = Item],
     BIter: Iterator[Element = Item],
     A: Iterable[Iterator = AIter, Element = Item],
     B: Iterable[Iterator = BIter, Element = Item],
-] Iterable for ChainIterable[Item, A, B] {
+] ChainIterable[Item, A, B] to Iterable {
     type Element = Item
     type Iterator = ChainIterator[Item, AIter, BIter]
 
-    public func iter(self) -> Self.Iterator {
-        return ChainIterator[Item, AIter, BIter] {
+    public func iter() -> Self::Iterator {
+        return ChainIterator[Item, AIter, BIter](
             a: self.a.iter(),
             b: self.b.iter(),
             state: false,
-        }
+        )
     }
 }
 
 // ─── Flatten ────────────────────────────────────────────────────────────
 
-/// Iterator that flattens an iterator of iterables.
-public struct FlattenIterator[
+/// Iterator that flattens independent iterables and elements.
+/// Lending elements cannot be cached while their source iterator advances.
+public final class FlattenIterator[
     Item,
     InnerIter: Iterator[Element = Item],
     InnerIterable: Iterable[Element = Item, Iterator = InnerIter],
@@ -762,15 +832,27 @@ public struct FlattenIterator[
     inner: Optional[InnerIter]
 }
 
-impl[
+extend[
     Item,
     InnerIter: Iterator[Element = Item],
     InnerIterable: Iterable[Element = Item, Iterator = InnerIter],
     OuterIter: Iterator[Element = InnerIterable],
-] Iterator for FlattenIterator[Item, InnerIter, InnerIterable, OuterIter] {
+] FlattenIterator[Item, InnerIter, InnerIterable, OuterIter] {
+    init(outer: OuterIter, inner: Optional[InnerIter]) {
+        self.outer = outer
+        self.inner = inner
+    }
+}
+
+conform[
+    Item,
+    InnerIter: Iterator[Element = Item],
+    InnerIterable: Iterable[Element = Item, Iterator = InnerIter],
+    OuterIter: Iterator[Element = InnerIterable],
+] FlattenIterator[Item, InnerIter, InnerIterable, OuterIter] to Iterator {
     type Element = Item
 
-    func next(&mut self) -> Optional[Self.Element] {
+    func next() -> Optional[Self::Element] {
         loop {
             match self.inner.take() {
                 case .some(inner_iter) => {
@@ -798,21 +880,16 @@ impl[
     }
 }
 
-impl[
+conform[
     Item,
     InnerIter: Iterator[Element = Item],
     InnerIterable: Iterable[Element = Item, Iterator = InnerIter],
     OuterIter: Iterator[Element = InnerIterable],
-] Iterable for FlattenIterator[Item, InnerIter, InnerIterable, OuterIter] {
+] FlattenIterator[Item, InnerIter, InnerIterable, OuterIter] to Iterable {
     type Iterator = FlattenIterator[Item, InnerIter, InnerIterable, OuterIter]
     type Element = Item
 
-    public func iter(self) -> Self.Iterator {
-        return FlattenIterator[Item, InnerIter, InnerIterable, OuterIter] {
-            outer: self.outer,
-            inner: self.inner,
-        }
-    }
+    public func iter() -> Self::Iterator { return self }
 }
 
 public struct FlattenIterable[
@@ -825,37 +902,45 @@ public struct FlattenIterable[
     source: Source
 }
 
-impl[
+conform[
     Item,
     InnerIter: Iterator[Element = Item],
     InnerIterable: Iterable[Element = Item, Iterator = InnerIter],
     OuterIter: Iterator[Element = InnerIterable],
     Source: Iterable[Element = InnerIterable, Iterator = OuterIter],
-] Iterable for FlattenIterable[Item, InnerIter, InnerIterable, OuterIter, Source] {
+] FlattenIterable[Item, InnerIter, InnerIterable, OuterIter, Source] to Iterable {
     type Element = Item
     type Iterator = FlattenIterator[Item, InnerIter, InnerIterable, OuterIter]
 
-    public func iter(self) -> Self.Iterator {
-        return FlattenIterator[Item, InnerIter, InnerIterable, OuterIter] {
+    public func iter() -> Self::Iterator {
+        return FlattenIterator[Item, InnerIter, InnerIterable, OuterIter](
             outer: self.source.iter(),
             inner: .none,
-        }
+        )
     }
 }
 
 // ─── StepBy ────────────────────────────────────────────────────────────
 
 /// Iterator that skips elements, yielding every `step` elements.
-public struct StepByIterator[Item, Inner: Iterator[Element = Item]] {
+public final class StepByIterator[Item, Inner: Iterator[Element = Item]] {
     inner: Inner
     step: usize
     first_take: bool
 }
 
-impl[Item, Inner: Iterator[Element = Item]] Iterator for StepByIterator[Item, Inner] {
+extend[Item, Inner: Iterator[Element = Item]] StepByIterator[Item, Inner] {
+    init(inner: Inner, step: usize, first_take: bool) {
+        self.inner = inner
+        self.step = step
+        self.first_take = first_take
+    }
+}
+
+conform[Item, Inner: Iterator[Element = Item]] StepByIterator[Item, Inner] to Iterator {
     type Element = Item
 
-    func next(&mut self) -> Optional[Self.Element] {
+    func next() -> Optional[Self::Element] {
         if self.first_take {
             self.first_take = false
             return self.inner.next()
@@ -875,17 +960,11 @@ impl[Item, Inner: Iterator[Element = Item]] Iterator for StepByIterator[Item, In
     }
 }
 
-impl[Item, Inner: Iterator[Element = Item]] Iterable for StepByIterator[Item, Inner] {
+conform[Item, Inner: Iterator[Element = Item]] StepByIterator[Item, Inner] to Iterable {
     type Iterator = StepByIterator[Item, Inner]
     type Element = Item
 
-    public func iter(self) -> Self.Iterator {
-        return StepByIterator[Item, Inner] {
-            inner: self.inner,
-            step: self.step,
-            first_take: self.first_take,
-        }
-    }
+    public func iter() -> Self::Iterator { return self }
 }
 
 /// Iterable adapter that skips elements, yielding every `step` elements.
@@ -894,36 +973,44 @@ public struct StepByIterable[Item, InnerIter: Iterator[Element = Item], Source: 
     step: usize
 }
 
-impl[
+conform[
     Item,
     InnerIter: Iterator[Element = Item],
     Source: Iterable[Element = Item, Iterator = InnerIter],
-] Iterable for StepByIterable[Item, InnerIter, Source] {
+] StepByIterable[Item, InnerIter, Source] to Iterable {
     type Element = Item
     type Iterator = StepByIterator[Item, InnerIter]
 
-    public func iter(self) -> Self.Iterator {
-        return StepByIterator[Item, InnerIter] {
+    public func iter() -> Self::Iterator {
+        return StepByIterator[Item, InnerIter](
             inner: self.source.iter(),
             step: self.step - 1, // Store step - 1 because we want to skip `step-1` items between yields
             first_take: true,
-        }
+        )
     }
 }
 
 // ─── TakeWhile ────────────────────────────────────────────────────────────
 
 /// Iterator that yields elements while a predicate returns true.
-public struct TakeWhileIterator[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] {
+public final class TakeWhileIterator[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] {
     inner: Inner
     predicate: F
     is_done: bool
 }
 
-impl[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] Iterator for TakeWhileIterator[Item, F, Inner] {
+extend[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] TakeWhileIterator[Item, F, Inner] {
+    init(inner: Inner, predicate: F, is_done: bool) {
+        self.inner = inner
+        self.predicate = predicate
+        self.is_done = is_done
+    }
+}
+
+conform[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] TakeWhileIterator[Item, F, Inner] to Iterator {
     type Element = Item
 
-    func next(&mut self) -> Optional[Self.Element] {
+    func next() -> Optional[Self::Element] {
         if self.is_done {
             return .none
         }
@@ -945,17 +1032,11 @@ impl[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] Iterator for Tak
     }
 }
 
-impl[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] Iterable for TakeWhileIterator[Item, F, Inner] {
+conform[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] TakeWhileIterator[Item, F, Inner] to Iterable {
     type Iterator = TakeWhileIterator[Item, F, Inner]
     type Element = Item
 
-    public func iter(self) -> Self.Iterator {
-        return TakeWhileIterator[Item, F, Inner] {
-            inner: self.inner,
-            predicate: self.predicate,
-            is_done: self.is_done,
-        }
-    }
+    public func iter() -> Self::Iterator { return self }
 }
 
 /// Iterable adapter that yields elements from an iterable while a predicate returns true.
@@ -964,37 +1045,45 @@ public struct TakeWhileIterable[Item, F: Fn[&Item, bool], InnerIter: Iterator[El
     predicate: F
 }
 
-impl[
+conform[
     Item,
     F: Fn[&Item, bool],
     InnerIter: Iterator[Element = Item],
     Source: Iterable[Element = Item, Iterator = InnerIter],
-] Iterable for TakeWhileIterable[Item, F, InnerIter, Source] {
+] TakeWhileIterable[Item, F, InnerIter, Source] to Iterable {
     type Element = Item
     type Iterator = TakeWhileIterator[Item, F, InnerIter]
 
-    public func iter(self) -> Self.Iterator {
-        return TakeWhileIterator[Item, F, InnerIter] {
+    public func iter() -> Self::Iterator {
+        return TakeWhileIterator[Item, F, InnerIter](
             inner: self.source.iter(),
             predicate: self.predicate,
             is_done: false,
-        }
+        )
     }
 }
 
 // ─── SkipWhile ────────────────────────────────────────────────────────────
 
 /// Iterator that skips elements based on a predicate, yielding the rest.
-public struct SkipWhileIterator[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] {
+public final class SkipWhileIterator[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] {
     inner: Inner
     predicate: F
     is_done_skipping: bool
 }
 
-impl[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] Iterator for SkipWhileIterator[Item, F, Inner] {
+extend[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] SkipWhileIterator[Item, F, Inner] {
+    init(inner: Inner, predicate: F, is_done_skipping: bool) {
+        self.inner = inner
+        self.predicate = predicate
+        self.is_done_skipping = is_done_skipping
+    }
+}
+
+conform[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] SkipWhileIterator[Item, F, Inner] to Iterator {
     type Element = Item
 
-    func next(&mut self) -> Optional[Self.Element] {
+    func next() -> Optional[Self::Element] {
         if self.is_done_skipping {
             return self.inner.next()
         }
@@ -1016,17 +1105,11 @@ impl[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] Iterator for Ski
     }
 }
 
-impl[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] Iterable for SkipWhileIterator[Item, F, Inner] {
+conform[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] SkipWhileIterator[Item, F, Inner] to Iterable {
     type Iterator = SkipWhileIterator[Item, F, Inner]
     type Element = Item
 
-    public func iter(self) -> Self.Iterator {
-        return SkipWhileIterator[Item, F, Inner] {
-            inner: self.inner,
-            predicate: self.predicate,
-            is_done_skipping: self.is_done_skipping,
-        }
-    }
+    public func iter() -> Self::Iterator { return self }
 }
 
 /// Iterable adapter that skips elements based on a predicate, yielding the rest.
@@ -1035,36 +1118,43 @@ public struct SkipWhileIterable[Item, F: Fn[&Item, bool], InnerIter: Iterator[El
     predicate: F
 }
 
-impl[
+conform[
     Item,
     F: Fn[&Item, bool],
     InnerIter: Iterator[Element = Item],
     Source: Iterable[Element = Item, Iterator = InnerIter],
-] Iterable for SkipWhileIterable[Item, F, InnerIter, Source] {
+] SkipWhileIterable[Item, F, InnerIter, Source] to Iterable {
     type Element = Item
     type Iterator = SkipWhileIterator[Item, F, InnerIter]
 
-    public func iter(self) -> Self.Iterator {
-        return SkipWhileIterator[Item, F, InnerIter] {
+    public func iter() -> Self::Iterator {
+        return SkipWhileIterator[Item, F, InnerIter](
             inner: self.source.iter(),
             predicate: self.predicate,
             is_done_skipping: false,
-        }
+        )
     }
 }
 
 // ─── Peekable ────────────────────────────────────────────────────────────
 
 /// Iterator that can peek ahead at the next element without consuming it.
-public struct PeekableIterator[Item, Inner: Iterator[Element = Item]] {
+public final class PeekableIterator[Item, Inner: Iterator[Element = Item]] {
     inner: Inner
     peeked: Optional[Item]
 }
 
-impl[Item, Inner: Iterator[Element = Item]] Iterator for PeekableIterator[Item, Inner] {
+extend[Item, Inner: Iterator[Element = Item]] PeekableIterator[Item, Inner] {
+    init(inner: Inner, peeked: Optional[Item]) {
+        self.inner = inner
+        self.peeked = peeked
+    }
+}
+
+conform[Item, Inner: Iterator[Element = Item]] PeekableIterator[Item, Inner] to Iterator {
     type Element = Item
 
-    func next(&mut self) -> Optional[Self.Element] {
+    func next() -> Optional[Self::Element] {
         match self.peeked.take() {
             case .some(v) => return .some(v)
             case .none => return self.inner.next()
@@ -1072,34 +1162,21 @@ impl[Item, Inner: Iterator[Element = Item]] Iterator for PeekableIterator[Item, 
     }
 }
 
-impl[Item, Inner: Iterator[Element = Item]] Iterable for PeekableIterator[Item, Inner] {
+conform[Item, Inner: Iterator[Element = Item]] PeekableIterator[Item, Inner] to Iterable {
     type Iterator = PeekableIterator[Item, Inner]
     type Element = Item
 
-    public func iter(self) -> Self.Iterator {
-        return PeekableIterator[Item, Inner] {
-            inner: self.inner,
-            peeked: self.peeked,
-        }
-    }
+    public func iter() -> Self::Iterator { return self }
 }
 
-impl[Item, Inner: Iterator[Element = Item]] PeekableIterator[Item, Inner] {
-    /// Returns a reference to the next element without consuming it.
-    public func peek(&mut self) -> Optional[&Item] {
+extend[Item, Inner: Iterator[Element = Item]] PeekableIterator[Item, Inner] {
+    /// Returns a copy of the next element without consuming it.
+    /// Inline values are independent; handle-typed elements still share targets.
+    public func peek() -> Optional[Item] {
         if self.peeked.isNone() {
             self.peeked = self.inner.next()
         }
-
-        var result: Optional[&Item] = .none
-        let peek_ref = &self.peeked
-        match peek_ref {
-            case .some(v) => {
-                result = .some(v)
-            }
-            case .none => {}
-        }
-        return result
+        self.peeked
     }
 }
 
@@ -1108,18 +1185,18 @@ public struct PeekableIterable[Item, InnerIter: Iterator[Element = Item], Source
     source: Source
 }
 
-impl[
+conform[
     Item,
     InnerIter: Iterator[Element = Item],
     Source: Iterable[Element = Item, Iterator = InnerIter],
-] Iterable for PeekableIterable[Item, InnerIter, Source] {
+] PeekableIterable[Item, InnerIter, Source] to Iterable {
     type Element = Item
     type Iterator = PeekableIterator[Item, InnerIter]
 
-    public func iter(self) -> Self.Iterator {
-        return PeekableIterator[Item, InnerIter] {
+    public func iter() -> Self::Iterator {
+        return PeekableIterator[Item, InnerIter](
             inner: self.source.iter(),
             peeked: .none,
-        }
+        )
     }
 }

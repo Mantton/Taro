@@ -1,0 +1,4 @@
+func main() {
+    var data: *mut uint8 = unsafe { 0 as *mut uint8 }
+    var _ = std::libc::read(-1_i32, data, 1)
+}

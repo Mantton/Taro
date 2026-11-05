@@ -1,0 +1,24 @@
+// ENV: TARO_WORKERS=4
+// A reference to a copied payload remains valid when the source variant changes.
+struct PointerCell { pointer: *const uint8 }
+struct Links { left: &PointerCell; right: &PointerCell }
+enum Slot { case full(Links); case bits(uint64, uint64, uint64, uint64) }
+struct View { stale: &Links; alive: &int32 }
+func links(_ slot: &Slot) -> &Links {
+    match *slot {
+        case .full(item) => &item
+        case _ => panic("not full")
+    }
+}
+func main() async {
+    var left: PointerCell = PointerCell { pointer: unsafe { 0 as *const uint8 } }
+    var right: PointerCell = PointerCell { pointer: unsafe { 0 as *const uint8 } }
+    var keep: int32 = 19
+    var slot: Slot = .full(Links { left: &left, right: &right })
+    var view: View = View { stale: links(&slot), alive: &keep }
+    assert(unsafe { view.stale.left.pointer as usize } == 0, "last stale use")
+    slot = .bits(1_u64, 1_u64, 1_u64, 1_u64)
+    await std::testing::yieldNow()
+    assert(*view.alive == 19, "live field after suspension")
+    assert(unsafe { view.stale.left.pointer as usize } == 0, "copied payload remains valid across replacement and suspension")
+}

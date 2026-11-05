@@ -1,0 +1,13 @@
+func main() {
+    var units: [()] = [(), ()]
+    var first: &() = (&units).at(0)
+    var _: () = *first
+    var last: &() = units.at(1)
+    *last = ()
+    var _: () = *last
+    var fixed: [(); 2] = [(), ()]
+    var _: () = *fixed.at(0)
+    var edit: &() = fixed.at(1)
+    *edit = ()
+    print("zero-sized collection elements ok\n")
+}

@@ -1,0 +1,4 @@
+error: Expected exactly 1 argument, but 0 were provided
+ -> language_tests/source_files/invalid/class_convenience_missing_default.tr:6:33
+	func main() { var child: Child = Child() }
+	                                 ^^^^^^^

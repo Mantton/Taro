@@ -1,0 +1,8 @@
+import remote::{AnyMarker, Marker, Envelope, EnvelopeAlias}
+struct Local {}
+// This legal orphan header overlaps the dependency's universal conformance.
+conform int32 to AnyMarker[Local] {}
+// Imported aliases do not introduce a second conformance identity.
+conform Envelope[Local] to Marker[Local, int32] {}
+conform EnvelopeAlias[Local] to Marker[Local, int32] {}
+func main() {}

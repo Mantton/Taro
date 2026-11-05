@@ -1,0 +1,17 @@
+import std::collections::Array
+struct View { value: &int32 }
+struct MutableView { value: &int32 }
+func main() {
+    var number: int32 = 7
+    var values: Array[View, 1] = [View { value: &number }]
+    assert(*values.at(0).value == 7, "Array alias permits dependent elements")
+    match values.get(0) {
+        case .some(value) => assert(*value.value == 7, "get preserves view dependencies")
+        case .none => std::panic::panic("missing view")
+    }
+    var mutable: int32 = 9
+    var mutableValues: [MutableView; 1] = [MutableView { value: &mutable }]
+    var element: &MutableView = mutableValues.at(0)
+    *element.value += 1
+    assert(mutable == 10, "mutable accessor reborrows an existing dependent element")
+}

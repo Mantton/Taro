@@ -1,18 +1,18 @@
-import adex_iris.config.ReferenceConfig
-import adex_iris.data.{Dataset, Fold}
-import adex_iris.model.Network
-import adex_iris.random.Random
-import std.collections.List
+import adex_iris::config::ReferenceConfig
+import adex_iris::data::{Dataset, Fold}
+import adex_iris::model::Network
+import adex_iris::random::Random
+import std::collections::List
 
 func copyIndices(_ source: &List[usize]) -> List[usize] {
-    var result = List[usize](withCapacity: source.len())
+    var result = List[usize]::new(withCapacity: source.len())
     var index: usize = 0
-    while index < source.len() { result.append(*source.at(index)); index += 1 }
+    while index < source.len() { result.append(source[index]); index += 1 }
     return result
 }
 
 func countAsDouble(_ value: usize) -> double {
-    return double.parse(sprintf("%d", value)).unwrap()
+    return double::parse(sprintf("%d", value)).unwrap()
 }
 
 public struct FoldMetrics {
@@ -25,13 +25,13 @@ public struct FoldMetrics {
     public finite: bool
 }
 
-impl FoldMetrics {
-    public func accuracy(&self) -> double {
+extend FoldMetrics {
+    public func accuracy() -> double {
         return countAsDouble(self.correct) / countAsDouble(self.testingSamples)
     }
 
-    public func confusion(&self, _ actual: usize, _ predicted: usize) -> usize {
-        return *self.confusionValue.at(actual * 3 + predicted)
+    public func confusion( _ actual: usize, _ predicted: usize) -> usize {
+        return self.confusionValue[actual * 3 + predicted]
     }
 }
 
@@ -41,22 +41,22 @@ public func trainFold(
     _ foldIndex: usize,
     _ config: &ReferenceConfig,
 ) -> FoldMetrics {
-    var network = Network.initialized(53269_u64 + foldIndex as uint64, config)
-    let scaler = fold.scaler()
+    var network = Network::initialized(53269_u64 + foldIndex as uint64, config)
+    scaler := fold.scaler()
     var order = copyIndices(fold.training())
-    var random = Random.seeded(53269_u64 + foldIndex as uint64)
+    var random = Random::seeded(53269_u64 + foldIndex as uint64)
     var finalLoss = 0.0
     var allFinite = true
     var epoch: usize = 0
     while epoch < config.epochs() {
-        random.shuffle(&mut order)
+        random.shuffle(&order)
         var position: usize = 0
         var epochLoss = 0.0
         while position < order.len() {
             network.zeroGradients()
             var batchCount: usize = 0
             while batchCount < config.batchSize() && position < order.len() {
-                let result = network.runSample(dataset.sample(*order.at(position)), scaler, config, true)
+                result := network.runSample(dataset.sample(order[position]), scaler, config, true)
                 epochLoss += result.loss
                 if !result.finite { allFinite = false }
                 batchCount += 1
@@ -69,16 +69,16 @@ public func trainFold(
         epoch += 1
     }
 
-    var confusion = List[usize](withCapacity: 9)
+    var confusion = List[usize]::new(withCapacity: 9)
     var cell: usize = 0
     while cell < 9 { confusion.append(0); cell += 1 }
     var correct: usize = 0
     var position: usize = 0
     while position < fold.testing().len() {
-        let sample = dataset.sample(*fold.testing().at(position))
-        let result = network.runSample(sample, scaler, config, false)
+        sample := dataset.sample(fold.testing()[position])
+        result := network.runSample(sample, scaler, config, false)
         if result.prediction == sample.label().index() { correct += 1 }
-        *confusion.at(sample.label().index() * 3 + result.prediction) += 1
+        confusion[sample.label().index() * 3 + result.prediction] += 1
         if !result.finite { allFinite = false }
         position += 1
     }
@@ -101,13 +101,13 @@ public struct CrossValidationMetrics {
     public finite: bool
 }
 
-impl CrossValidationMetrics {
-    public func folds(&self) -> &List[FoldMetrics] { return &self.foldsValue }
-    public func accuracy(&self) -> double {
+extend CrossValidationMetrics {
+    public func folds() -> &List[FoldMetrics] { return &self.foldsValue }
+    public func accuracy() -> double {
         return countAsDouble(self.correct) / countAsDouble(self.samples)
     }
-    public func confusion(&self, _ actual: usize, _ predicted: usize) -> usize {
-        return *self.confusionValue.at(actual * 3 + predicted)
+    public func confusion( _ actual: usize, _ predicted: usize) -> usize {
+        return self.confusionValue[actual * 3 + predicted]
     }
 }
 
@@ -117,8 +117,8 @@ public func crossValidate(
     _ selectedFold: usize?,
     _ config: &ReferenceConfig,
 ) -> CrossValidationMetrics {
-    var metrics = List[FoldMetrics]()
-    var confusion = List[usize](withCapacity: 9)
+    var metrics = List[FoldMetrics]::new()
+    var confusion = List[usize]::new(withCapacity: 9)
     var cell: usize = 0
     while cell < 9 { confusion.append(0); cell += 1 }
     var correct: usize = 0
@@ -132,7 +132,7 @@ public func crossValidate(
             case .none => {}
         }
         if shouldRun {
-            let result = trainFold(dataset, folds.at(foldIndex), foldIndex, config)
+            result := trainFold(dataset, &folds[foldIndex], foldIndex, config)
             correct += result.correct
             samples += result.testingSamples
             if !result.finite { allFinite = false }
@@ -140,8 +140,8 @@ public func crossValidate(
             while actual < 3 {
                 var predicted: usize = 0
                 while predicted < 3 {
-                    let index = actual * 3 + predicted
-                    *confusion.at(index) += result.confusion(actual, predicted)
+                    index := actual * 3 + predicted
+                    confusion[index] += result.confusion(actual, predicted)
                     predicted += 1
                 }
                 actual += 1

@@ -1,0 +1,4 @@
+error: expected string, found &string
+ -> language_tests/source_files/invalid/dictionary_reference_key_removed.tr:4:20
+	    value := values[&key]
+	                    ^^^^

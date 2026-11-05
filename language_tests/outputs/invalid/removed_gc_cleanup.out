@@ -1,0 +1,4 @@
+error: unknown symbol `addCleanup`
+ -> language_tests/source_files/invalid/removed_gc_cleanup.tr:1:39
+	func main() { removed := std::runtime::addCleanup(1, (), () => {}) }
+	                                       ^^^^^^^^^^

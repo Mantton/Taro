@@ -5,15 +5,15 @@ struct Foo[T, V] {
     b: V
 }
 
-impl[T] Foo[T, string] {
-    func getB(&self) -> string {
+extend[T] Foo[T, string] {
+    func getB() -> string {
         self.b
     }
 }
 
 func main() {
-    let a = Foo { a: 'A', b: "B" }
-    let b = a.getB()
+    a := Foo { a: 'A', b: "B" }
+    b := a.getB()
     assert(b == "B", "partial extension method call")
-    std.print("PASS: Partial extension working\n")
+    std::print("PASS: Partial extension working\n")
 }

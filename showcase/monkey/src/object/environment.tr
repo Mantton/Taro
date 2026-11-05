@@ -1,47 +1,34 @@
-/// A scope: names bound here, plus the scope this one was created inside.
-///
-/// Environments are shared, never copied. A function literal stores the
-/// environment it was defined in by reference, so a binding introduced after the
-/// literal was evaluated is still visible from the body — which is what lets a
-/// function refer to itself.
+/// A shared scope. Functions retain a reference so later bindings and recursive
+/// closure cycles remain visible; the collector reclaims unreachable cycles.
 public struct Environment {
     store: Dictionary[string, Object]
-    outer: Optional[&mut Environment]
+    outer: Optional[&Environment]
 }
 
-/// Moves an environment to managed storage so it can be shared.
-///
-/// Every closure created inside a call keeps its defining environment alive, and
-/// an environment holding closures that hold environments is an ordinary cycle,
-/// which the collector reclaims once the whole group is unreachable.
-public func boxEnvironment(_ environment: Environment) -> &mut Environment {
-    var boxed = environment
-    return &mut boxed
+extend Environment {
+    public static func new() -> &Self {
+        scope := Self { store: Dictionary[string, Object]::new(), outer: .none }
+        return &scope
+    }
+
+    public static func enclosedBy(_ outer: &Environment) -> &Self {
+        scope := Self { store: Dictionary[string, Object]::new(), outer: .some(outer) }
+        return &scope
+    }
 }
 
-impl Environment {
-    /// The global scope.
-    public func new() -> Self {
-        return Environment { store: Dictionary[string, Object](), outer: .none }
-    }
-
-    /// A scope nested inside `outer`, as a call creates for its parameters.
-    public func enclosedBy(_ outer: &mut Environment) -> Self {
-        return Environment { store: Dictionary[string, Object](), outer: .some(outer) }
-    }
-
-    /// Binds `name` in this scope, shadowing any outer binding.
-    public func define(&mut self, _ name: string, _ value: Object) {
+extend &Environment {
+    /// Binds `name` here, shadowing any outer binding.
+    public func define(_ name: string, _ value: Object) {
         self.store.set(key: name, value: value)
     }
 
-    /// Finds `name` here or in an enclosing scope.
-    public func lookup(&self, _ name: string) -> Optional[Object] {
+    public func lookup(_ name: string) -> Optional[Object] {
         match self.store.get(&name) {
-            case .some(found) => return .some(found.clone())
+            case .some(found) => return .some(found)
             case .none => {}
         }
-        match &self.outer {
+        match self.outer {
             case .some(outer) => return outer.lookup(name)
             case .none => return .none
         }

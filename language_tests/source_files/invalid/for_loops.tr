@@ -4,9 +4,9 @@ struct NotIterable {
 }
 
 func main() {
-    let n = NotIterable { x: 1 }
+    n := NotIterable { x: 1 }
     // Should fail because NotIterable doesn't implement Iterable
     for i in n {
-        std.print(i)
+        std::print(i)
     }
 }

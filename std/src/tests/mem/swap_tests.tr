@@ -1,0 +1,18 @@
+@test
+func swapUsesOrdinaryCopiesIncludingAliasedAndEmptyValues() {
+    var left: int32 = 1
+    var right: int32 = 2
+    std::mem::swap(&left, &right)
+    std::testing::assertTrue(left == 2 && right == 1, "swap distinct values")
+    std::mem::swap(&left, &left)
+    std::testing::assertEqual(left, 2, "swap aliased references")
+    var a: () = ()
+    var b: () = ()
+    std::mem::swap(&a, &b)
+    var first: [int32] = [1]
+    var second: [int32] = [2]
+    alias := first
+    std::mem::swap(&first, &second)
+    first[0] = 3
+    std::testing::assertTrue(alias[0] == 1 && second[0] == 1 && first[0] == 3, "swap handles preserves identity")
+}

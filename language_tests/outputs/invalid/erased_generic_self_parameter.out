@@ -1,0 +1,4 @@
+error: type 'any Same' does not conform to interface 'Same'
+ -> language_tests/source_files/invalid/erased_generic_self_parameter.tr:18:22
+	    var equal: bool = compare(&first, &second)
+	                      ^^^^^^^

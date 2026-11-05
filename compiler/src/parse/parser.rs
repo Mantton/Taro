@@ -2,18 +2,19 @@ use crate::{
     ast::{
         self, AnonConst, AssociatedDeclaration, AssociatedDeclarationKind, Attribute, AttributeArg,
         AttributeArgs, AttributeList, BinaryOperator, Block, CfgExpr, ClosureExpression,
-        ComputedProperty, ConformanceConstraint, Conformances, Constant, Declaration,
-        DeclarationKind, Enum, EnumCase, Expression, ExpressionArgument, ExpressionField,
-        ExpressionKind, FieldDefinition, ForStatement, Function, FunctionDeclaration,
-        FunctionParameter, FunctionPrototype, FunctionSignature, GenericBound, GenericBounds,
-        GenericRequirement, GenericRequirementList, GenericWhereClause, Generics, Identifier,
-        IfExpression, Impl, Interface, Label, Literal, Local, MapPair, MatchArm, MatchExpression,
-        ModuleDecl, Mutability, Namespace, NamespaceDeclaration, NamespaceDeclarationKind, NodeID,
-        Path, PathNode, PathSegment, Pattern, PatternBindingCondition, PatternKind, PatternPath,
-        RequiredTypeConstraint, SelfKind, Statement, StatementKind, StaticVariable, Struct,
-        StructLiteral, Type, TypeAlias, TypeArgument, TypeArguments, TypeKind, TypeParameter,
-        TypeParameterKind, TypeParameters, UnaryOperator, UseTree, UseTreeKind, UseTreeNestedItem,
-        UseTreePath, Variant, VariantKind, Visibility, VisibilityLevel,
+        ComputedProperty, ConformanceConstraint, Conformances, Constant, ConstructorPath,
+        Declaration, DeclarationKind, Enum, EnumCase, Expression, ExpressionArgument,
+        ExpressionField, ExpressionKind, FieldDefinition, ForStatement, Function,
+        FunctionDeclaration, FunctionParameter, FunctionPrototype, FunctionSignature, GenericBound,
+        GenericBounds, GenericRequirement, GenericRequirementList, GenericWhereClause, Generics,
+        Identifier, IfExpression, Impl, Interface, Label, Literal, Local, MapPair, MatchArm,
+        MatchExpression, ModuleDecl, Mutability, Namespace, NamespaceDeclaration,
+        NamespaceDeclarationKind, NodeID, Path, PathNode, PathSegment, Pattern,
+        PatternBindingCondition, PatternKind, RequiredTypeConstraint, Statement, StatementKind,
+        StaticVariable, Struct, StructLiteral, Type, TypeAlias, TypeArgument, TypeArguments,
+        TypeKind, TypeParameter, TypeParameterKind, TypeParameters, UnaryOperator, UseTree,
+        UseTreeKind, UseTreeNestedItem, UseTreePath, Variant, VariantKind, Visibility,
+        VisibilityLevel,
     },
     diagnostics::DiagCtx,
     error::ReportedError,
@@ -162,6 +163,7 @@ fn parse_file(
 }
 
 type R<V> = Result<V, Spanned<ParserError>>;
+mod subscript;
 #[derive(Clone, Copy)]
 struct ParserCheckpoint {
     cursor: usize,
@@ -459,10 +461,14 @@ impl Parser {
                 match token.value {
                     Token::Function
                     | Token::Struct
+                    | Token::Class
+                    | Token::Final
                     | Token::Enum
                     | Token::Interface
                     | Token::Namespace
                     | Token::Impl
+                    | Token::Extend
+                    | Token::Conform
                     | Token::Export
                     | Token::Import
                     | Token::Type
@@ -479,29 +485,38 @@ impl Parser {
     }
 
     fn synchronize_statement(&mut self) {
+        let mut braces = 0usize;
         while !self.is_at_end() {
-            if self.eat(Token::Semicolon) {
-                return;
-            }
-
-            if let Some(token) = self.current() {
-                match token.value {
-                    Token::Let
-                    | Token::Var
-                    | Token::If
-                    | Token::Return
-                    | Token::For
-                    | Token::While
-                    | Token::Defer
-                    | Token::Guard
-                    | Token::Match
-                    | Token::RBrace => return,
-                    _ => {
-                        self.bump();
-                    }
+            match self.current_token() {
+                Token::LBrace => {
+                    braces += 1;
+                    self.bump();
                 }
-            } else {
-                break;
+                Token::RBrace if braces != 0 => {
+                    braces -= 1;
+                    self.bump();
+                }
+                Token::RBrace => return,
+                Token::Semicolon if braces == 0 => {
+                    self.bump();
+                    return;
+                }
+                Token::Let
+                | Token::Var
+                | Token::If
+                | Token::Return
+                | Token::For
+                | Token::While
+                | Token::Defer
+                | Token::Guard
+                | Token::Match
+                    if braces == 0 =>
+                {
+                    return;
+                }
+                _ => {
+                    self.bump();
+                }
             }
         }
     }
@@ -637,11 +652,12 @@ impl Parser {
             if self.matches(Token::RBrace) {
                 break;
             }
-            let mut parsed = action(self)?.into_iter();
-            let first = parsed
-                .next()
-                .ok_or_else(|| self.err_at_current(ParserError::ExpectedDeclaration))?;
-            decls.push(first);
+            let reported = self.errors.len();
+            let mut parsed = action(self)?.into_iter().peekable();
+            // A removed declaration form reports its own error and yields nothing.
+            if parsed.peek().is_none() && self.errors.len() == reported {
+                return Err(self.err_at_current(ParserError::ExpectedDeclaration));
+            }
             decls.extend(parsed);
         }
         self.expect(Token::RBrace)?;
@@ -662,11 +678,128 @@ impl Parser {
                 visibility,
                 fn_mode.req_body,
             )?;
-            self.expect_semi()?;
+            self.eat(Token::Semicolon);
             return Ok(declarations);
         }
-        let declaration =
+        let mut is_final = false;
+        let mut is_override = false;
+        let mut is_required = false;
+        let mut is_convenience = false;
+        while self.matches(Token::Final)
+            || self.matches(Token::Override)
+            || self.matches_contextual_identifier("required")
+            || self.matches_contextual_identifier("convenience")
+        {
+            let modifier = self.current_token().clone();
+            let span = self.lo_span();
+            self.bump();
+            let flag = if modifier == Token::Final {
+                &mut is_final
+            } else if modifier == Token::Override {
+                &mut is_override
+            } else if matches!(&modifier, Token::Identifier { value } if value == "required") {
+                &mut is_required
+            } else {
+                &mut is_convenience
+            };
+            if *flag {
+                self.emit_error(ParserError::DuplicateMethodModifier, span);
+            }
+            *flag = true;
+        }
+        if self.matches(Token::Deinit) {
+            // The collector reclaims memory; explicit close() releases resources.
+            // Skip the old body so one diagnostic covers the declaration.
+            let span = self.lo_span();
+            self.emit_error(ParserError::DeinitRemoved, span);
+            self.bump();
+            if self.matches(Token::LBrace) {
+                self.parse_block()?;
+            }
+            self.eat(Token::Semicolon);
+            return Ok(vec![]);
+        }
+        if self.matches(Token::Init) {
+            if !fn_mode.req_body {
+                return Err(self.err_at_current(ParserError::LifecycleRequiresExtension));
+            }
+            if is_final {
+                return Err(self.err_at_current(ParserError::InvalidLifecycleModifier));
+            }
+            return self.parse_lifecycle_declaration(
+                start_span,
+                attributes,
+                visibility,
+                is_override,
+                is_required,
+                is_convenience,
+            );
+        }
+        if is_required || is_convenience {
+            return Err(self.err_at_current(ParserError::InvalidLifecycleModifier));
+        }
+        if self.matches_contextual_identifier("subscript") {
+            return self.parse_native_subscript(
+                start_span,
+                attributes,
+                visibility,
+                fn_mode.req_body,
+                is_final,
+                is_override,
+            );
+        }
+        // Associated instance methods have an implicit Self value. The extension
+        // target decides whether Self is a value, storage reference, or class.
+        let is_static = self.matches(Token::Static)
+            && (self.next_matches(1, Token::Function) || self.next_matches(1, Token::Unsafe));
+        if is_static {
+            self.bump();
+        }
+        if (is_final || is_override)
+            && (!self.matches(Token::Function) && !self.matches(Token::Unsafe) || is_static)
+        {
+            return Err(self.err_at_current(ParserError::InvalidMethodModifier));
+        }
+        let mut declaration =
             self.parse_declaration_body(start_span, attributes, visibility, fn_mode)?;
+        if let Some(declaration) = &mut declaration {
+            if let DeclarationKind::Function(function) = &mut declaration.kind {
+                function.is_final = is_final;
+                function.is_override = is_override;
+                let receiver = function
+                    .signature
+                    .prototype
+                    .inputs
+                    .iter()
+                    .find(|parameter| self.symbol_eq(parameter.name.symbol, "self"));
+                if is_static {
+                    if let Some(receiver) = receiver {
+                        self.emit_error(ParserError::StaticFunctionHasReceiver, receiver.span);
+                    }
+                } else if receiver.is_none() {
+                    let span = declaration.identifier.span;
+                    let self_type = Type {
+                        id: self.next_id(),
+                        span,
+                        kind: TypeKind::ImplicitSelf,
+                    };
+                    let receiver = FunctionParameter {
+                        id: self.next_id(),
+                        attributes: vec![],
+                        label: None,
+                        name: Identifier {
+                            symbol: self.intern_symbol("self"),
+                            span,
+                        },
+                        annotated_type: Box::new(self_type),
+                        default_value: None,
+                        is_variadic: false,
+                        span,
+                    };
+                    function.signature.prototype.inputs.insert(0, receiver);
+                }
+            }
+        }
         Ok(declaration
             .and_then(|decl| {
                 self.convert_declaration(decl, ParserError::DissallowedAssociatedDeclaration)
@@ -675,224 +808,243 @@ impl Parser {
             .collect())
     }
 
-    fn parse_computed_property_associated(
+    fn parse_lifecycle_declaration(
         &mut self,
-        start_span: Span,
+        start: Span,
         attributes: AttributeList,
         visibility: Visibility,
-        accessor_bodies_required: bool,
+        is_override: bool,
+        is_required: bool,
+        is_convenience: bool,
+    ) -> R<Vec<AssociatedDeclaration>> {
+        let keyword_span = self.lo_span();
+        self.expect(Token::Init)?;
+        // Construction is package-visible unless explicitly exported. Other
+        // associated declarations keep their existing visibility defaults.
+        let visibility = if visibility.level == ast::VisibilityLevel::Inherent {
+            ast::Visibility {
+                level: ast::VisibilityLevel::Internal,
+                ..visibility
+            }
+        } else {
+            visibility
+        };
+        let kind = {
+            let mut function = self.parse_fn(FnParseMode { req_body: true }, false)?;
+            if function.is_async {
+                self.emit_error(
+                    ParserError::InvalidInitializerSignature,
+                    function.signature.span,
+                );
+            }
+            for parameter in &function.signature.prototype.inputs {
+                if self.symbol_eq(parameter.name.symbol, "self") {
+                    self.emit_error(ParserError::InitializerReceiver, parameter.span);
+                }
+            }
+            function.is_override = is_override;
+            // Private, initially uninitialized storage, never a caller receiver.
+            // Ordinary init uses result storage directly; fallible init keeps
+            // this storage separate from its returned Result.
+            let self_name = Identifier {
+                symbol: self.intern_symbol("self"),
+                span: keyword_span,
+            };
+            let self_local = Local {
+                id: self.next_id(),
+                mutability: Mutability::Mutable,
+                pattern: Pattern {
+                    id: self.next_id(),
+                    span: keyword_span,
+                    kind: PatternKind::Identifier(self_name),
+                },
+                ty: Some(Box::new(Type {
+                    id: self.next_id(),
+                    span: keyword_span,
+                    kind: TypeKind::ImplicitSelf,
+                })),
+                initializer: None,
+                is_shorthand: false,
+            };
+            let self_stmt = Statement {
+                id: self.next_id(),
+                span: keyword_span,
+                kind: StatementKind::Variable(self_local),
+            };
+            function
+                .block
+                .as_mut()
+                .expect("initializer body")
+                .statements
+                .insert(0, self_stmt);
+            if function.signature.prototype.output.is_none() {
+                function.signature.prototype.output = Some(Box::new(Type {
+                    id: self.next_id(),
+                    span: keyword_span,
+                    kind: TypeKind::ImplicitSelf,
+                }));
+            }
+            AssociatedDeclarationKind::Initializer(ast::Initializer {
+                function,
+                is_required,
+                is_convenience,
+            })
+        };
+        let span = start.to(self.hi_span());
+        // Like method declarations, a braced lifecycle body is complete
+        // without a trailing semicolon, including before the extension's `}`.
+        self.eat(Token::Semicolon);
+        Ok(vec![Declaration {
+            id: self.next_id(),
+            kind,
+            span,
+            visibility,
+            attributes,
+            identifier: Identifier {
+                symbol: self.intern_symbol("init"),
+                span: keyword_span,
+            },
+        }])
+    }
+
+    fn implicit_self_parameter(&mut self, span: Span) -> FunctionParameter {
+        FunctionParameter {
+            id: self.next_id(),
+            attributes: vec![],
+            label: None,
+            name: Identifier {
+                symbol: self.intern_symbol("self"),
+                span,
+            },
+            annotated_type: Box::new(Type {
+                id: self.next_id(),
+                span,
+                kind: TypeKind::ImplicitSelf,
+            }),
+            default_value: None,
+            is_variadic: false,
+            span,
+        }
+    }
+
+    fn parse_computed_property_associated(
+        &mut self,
+        start: Span,
+        attributes: AttributeList,
+        visibility: Visibility,
+        body_required: bool,
     ) -> R<Vec<AssociatedDeclaration>> {
         self.expect(Token::Var)?;
         let identifier = self.parse_identifier()?;
         self.expect(Token::Colon)?;
         let ty = self.parse_type()?;
-
-        let (getter_decl, setter_decl) = self.parse_computed_property_accessors(
-            identifier,
-            visibility,
-            accessor_bodies_required,
-        )?;
-
-        let property = ComputedProperty {
-            ty,
-            getter_id: getter_decl.id,
-            setter_id: setter_decl.as_ref().map(|declaration| declaration.id),
-        };
-
-        let declaration = Declaration {
-            id: self.next_id(),
-            span: start_span.to(self.hi_span()),
-            identifier,
-            kind: AssociatedDeclarationKind::Property(property),
-            visibility,
-            attributes,
-        };
-
-        let mut declarations = vec![declaration, getter_decl];
-        declarations.extend(setter_decl);
-        Ok(declarations)
-    }
-
-    fn parse_computed_property_accessors(
-        &mut self,
-        property_identifier: Identifier,
-        visibility: Visibility,
-        accessor_bodies_required: bool,
-    ) -> R<(AssociatedDeclaration, Option<AssociatedDeclaration>)> {
         self.expect(Token::LBrace)?;
-
-        let getter_ident =
-            self.make_hidden_property_accessor_identifier(&property_identifier, "get");
-        let setter_ident =
-            self.make_hidden_property_accessor_identifier(&property_identifier, "set");
-
         let mut getter = None;
-        let mut setter = None;
-
+        let reported = self.errors.len();
         while !self.matches(Token::RBrace) && !self.is_at_end() {
             while self.eat(Token::Semicolon) {}
             if self.matches(Token::RBrace) {
                 break;
             }
-
-            if self.matches_contextual_identifier("get") {
-                if getter.is_some() {
-                    return Err(self.err_at_current(ParserError::DuplicateComputedPropertyAccessor));
-                }
-                getter = Some(self.parse_computed_property_accessor(
-                    getter_ident,
-                    visibility,
-                    accessor_bodies_required,
-                )?);
-            } else if self.matches_contextual_identifier("set") {
-                if setter.is_some() {
-                    return Err(self.err_at_current(ParserError::DuplicateComputedPropertyAccessor));
-                }
-                setter = Some(self.parse_computed_property_accessor(
-                    setter_ident,
-                    visibility,
-                    accessor_bodies_required,
-                )?);
-            } else {
-                return Err(self.err_at_current(ParserError::ExpectedComputedPropertyAccessor));
+            if !self.matches_contextual_identifier("get") {
+                self.emit_error(
+                    ParserError::ExpectedComputedPropertyAccessor,
+                    self.lo_span(),
+                );
+                self.discard_computed_property_accessors();
+                break;
             }
-        }
-
-        self.expect(Token::RBrace)?;
-
-        let Some(getter) = getter else {
-            return Err(Spanned::new(
-                ParserError::MissingComputedPropertyGetter,
-                property_identifier.span,
-            ));
-        };
-
-        Ok((getter, setter))
-    }
-
-    fn parse_computed_property_accessor(
-        &mut self,
-        hidden_name: Identifier,
-        visibility: Visibility,
-        body_required: bool,
-    ) -> R<AssociatedDeclaration> {
-        let lo = self.lo_span();
-        let accessor = self.parse_identifier()?;
-        let is_setter = self.symbol_eq(accessor.symbol, "set");
-        debug_assert!(is_setter || self.symbol_eq(accessor.symbol, "get"));
-
-        let inputs = self.parse_function_parameters()?;
-        let signature_valid = if is_setter {
-            self.is_valid_computed_property_setter_inputs(&inputs)
-        } else {
-            inputs.len() == 1 && self.is_valid_computed_property_getter_input(&inputs[0])
-        };
-        if !signature_valid {
-            let error = if is_setter {
-                ParserError::InvalidComputedPropertySetterSignature
-            } else {
-                ParserError::InvalidComputedPropertyGetterSignature
-            };
-            return Err(Spanned::new(error, accessor.span));
-        }
-
-        let is_async = self.eat(Token::Async);
-        if is_setter && is_async {
-            return Err(Spanned::new(
-                ParserError::AsyncComputedPropertySetterNotAllowed,
-                accessor.span,
-            ));
-        }
-
-        if self.eat(Token::RArrow) {
-            let _ = self.parse_type()?;
-            if is_setter {
-                return Err(Spanned::new(
-                    ParserError::InvalidComputedPropertySetterSignature,
+            if getter.is_some() {
+                self.emit_error(
+                    ParserError::DuplicateComputedPropertyAccessor,
+                    self.lo_span(),
+                );
+                self.discard_computed_property_accessors();
+                break;
+            }
+            let accessor = self.parse_identifier()?;
+            if matches!(
+                self.current_token(),
+                Token::LParen | Token::Async | Token::RArrow
+            ) {
+                self.emit_error(
+                    ParserError::ComputedPropertyAccessorSignatureRemoved,
                     accessor.span,
-                ));
+                );
+                self.discard_computed_property_accessors();
+                break;
             }
+            let block = if self.matches(Token::LBrace) {
+                Some(self.parse_block()?)
+            } else if body_required {
+                self.emit_error(ParserError::FunctionBodyRequired, self.lo_span());
+                self.discard_computed_property_accessors();
+                break;
+            } else {
+                None
+            };
+            let receiver = self.implicit_self_parameter(accessor.span);
+            getter = Some(Declaration {
+                id: self.next_id(),
+                span: accessor.span.to(self.hi_span()),
+                identifier: self.make_hidden_property_accessor_identifier(&identifier),
+                visibility,
+                attributes: vec![],
+                kind: AssociatedDeclarationKind::Function(Function {
+                    generics: Generics {
+                        type_parameters: None,
+                        where_clause: None,
+                    },
+                    signature: FunctionSignature {
+                        span: accessor.span,
+                        prototype: FunctionPrototype {
+                            inputs: vec![receiver],
+                            output: None,
+                        },
+                    },
+                    block,
+                    is_unsafe: false,
+                    is_async: false,
+                    is_final: false,
+                    is_override: false,
+                    abi: None,
+                }),
+            });
         }
-
-        let block = if self.matches(Token::LBrace) {
-            Some(self.parse_block()?)
-        } else if body_required {
-            return Err(self.err_at_current(ParserError::FunctionBodyRequired));
-        } else {
-            None
+        self.expect(Token::RBrace)?;
+        if self.errors.len() != reported {
+            return Ok(vec![]);
+        }
+        let Some(getter) = getter else {
+            self.emit_error(ParserError::MissingComputedPropertyGetter, identifier.span);
+            return Ok(vec![]);
         };
-
-        let signature = FunctionSignature {
-            span: accessor.span.to(self.hi_span()),
-            prototype: FunctionPrototype {
-                inputs,
-                output: None,
-            },
-        };
-
-        let function = Function {
-            generics: Generics {
-                type_parameters: None,
-                where_clause: None,
-            },
-            signature,
-            block,
-            is_unsafe: false,
-            is_async,
-            abi: None,
-        };
-
-        Ok(Declaration {
+        let declaration = Declaration {
             id: self.next_id(),
-            span: lo.to(self.hi_span()),
-            identifier: hidden_name,
-            kind: AssociatedDeclarationKind::Function(function),
+            span: start.to(self.hi_span()),
+            identifier,
             visibility,
-            attributes: vec![],
-        })
-    }
-
-    fn is_valid_computed_property_setter_inputs(&self, inputs: &[FunctionParameter]) -> bool {
-        if inputs.len() != 2 {
-            return false;
-        }
-
-        let receiver = &inputs[0];
-        if !self.symbol_eq(receiver.name.symbol, "self") {
-            return false;
-        }
-        if receiver.default_value.is_some() || receiver.is_variadic {
-            return false;
-        }
-
-        let is_mut_self = match &receiver.annotated_type.kind {
-            TypeKind::Reference(inner, mutability) => {
-                *mutability == Mutability::Mutable && matches!(&inner.kind, TypeKind::ImplicitSelf)
-            }
-            _ => false,
+            attributes,
+            kind: AssociatedDeclarationKind::Property(ComputedProperty {
+                ty,
+                getter_id: getter.id,
+            }),
         };
-
-        if !is_mut_self {
-            return false;
-        }
-
-        let value = &inputs[1];
-        value.default_value.is_none() && !value.is_variadic
+        Ok(vec![declaration, getter])
     }
 
-    fn is_valid_computed_property_getter_input(&self, input: &FunctionParameter) -> bool {
-        if !self.symbol_eq(input.name.symbol, "self") {
-            return false;
-        }
-
-        if input.default_value.is_some() || input.is_variadic {
-            return false;
-        }
-
-        match &input.annotated_type.kind {
-            TypeKind::ImplicitSelf => true,
-            TypeKind::Reference(inner, _) => matches!(&inner.kind, TypeKind::ImplicitSelf),
-            _ => false,
+    /// Error recovery only: discard an unsupported accessor's token tree while
+    /// leaving the property's closing brace for its declaration parser.
+    fn discard_computed_property_accessors(&mut self) {
+        let mut depth = 0usize;
+        while !self.is_at_end() {
+            match self.current_token() {
+                Token::LBrace => depth += 1,
+                Token::RBrace if depth == 0 => break,
+                Token::RBrace => depth -= 1,
+                _ => {}
+            }
+            self.bump();
         }
     }
 
@@ -903,20 +1055,10 @@ impl Parser {
         }
     }
 
-    fn make_hidden_property_accessor_identifier(
-        &mut self,
-        property_identifier: &Identifier,
-        accessor_kind: &str,
-    ) -> Identifier {
-        let symbol = self.intern_symbol(&format!(
-            "__prop_{}_{}",
-            accessor_kind,
-            property_identifier.symbol.as_ref()
-        ));
-
+    fn make_hidden_property_accessor_identifier(&mut self, property: &Identifier) -> Identifier {
         Identifier {
-            span: property_identifier.span,
-            symbol,
+            symbol: self.intern_symbol(&format!("__prop_get_{}", property.symbol.as_str())),
+            span: property.span,
         }
     }
 
@@ -943,9 +1085,13 @@ impl Parser {
         let token = self.current_token();
         let (identifier, kind) = match token {
             Token::Struct => self.parse_struct_declaration()?,
+            Token::Class | Token::Final => self.parse_class_declaration()?,
             Token::Enum => self.parse_enum_declaration()?,
             Token::Interface => self.parse_interface()?,
             Token::Var | Token::Let => {
+                return Err(self.err_at_current(ParserError::TopLevelVariableMustBeStatic));
+            }
+            Token::Identifier { .. } if self.next_matches(1, Token::ColonEq) => {
                 return Err(self.err_at_current(ParserError::TopLevelVariableMustBeStatic));
             }
             Token::Static => self.parse_static_variable_decl()?,
@@ -961,7 +1107,9 @@ impl Parser {
             Token::Extern => self.parse_extern_declaration()?,
             Token::Type => self.parse_type_declaration()?,
             Token::Function | Token::Unsafe => self.parse_function_declaration_kind(mode)?,
-            Token::Impl => (Identifier::emtpy(self.file.id), self.parse_impl()?),
+            Token::Extend | Token::Conform | Token::Impl => {
+                (Identifier::emtpy(self.file.id), self.parse_impl()?)
+            }
             Token::Namespace => self.parse_namespace()?,
 
             _ => return Ok(None),
@@ -1087,9 +1235,17 @@ impl Parser {
         let path = self.parse_use_tree_path()?;
 
         let kind = if self.eat(Token::DotStar) {
+            self.emit_error(
+                ParserError::QualifiedPathSeparator,
+                self.previous().unwrap().span,
+            );
             UseTreeKind::Glob
-        } else if self.eat(Token::Dot) {
-            self.parse_use_tree_nested()?
+        } else if self.eat_path_separator() {
+            if self.eat(Token::Star) {
+                UseTreeKind::Glob
+            } else {
+                self.parse_use_tree_nested()?
+            }
         } else {
             UseTreeKind::Simple {
                 alias: self.parse_use_tree_alias()?,
@@ -1112,10 +1268,11 @@ impl Parser {
         loop {
             let identifier = self.parse_identifier()?;
             nodes.push(identifier);
-            let is_coupler = (self.matches(Token::Dot) && self.next_matches(1, Token::LBrace))
+            let is_coupler = ((self.matches(Token::ColonColon) || self.matches(Token::Dot))
+                && (self.next_matches(1, Token::LBrace) || self.next_matches(1, Token::Star)))
                 || self.matches(Token::DotStar);
 
-            if is_coupler || !self.eat(Token::Dot) {
+            if is_coupler || !self.eat_path_separator() {
                 break;
             } else {
                 continue;
@@ -1181,13 +1338,13 @@ impl Parser {
 impl Parser {
     fn parse_static_variable_decl(&mut self) -> R<(Identifier, DeclarationKind)> {
         self.expect(Token::Static)?;
-        let mutability = if self.eat(Token::Let) {
-            Mutability::Immutable
-        } else if self.eat(Token::Var) {
-            Mutability::Mutable
-        } else {
-            return Err(self.err_at_current(ParserError::ExpectedStaticLetOrVar));
-        };
+        if self.matches(Token::Let) {
+            self.emit_error(ParserError::LetRemoved(None), self.lo_span());
+            self.bump();
+        } else if !self.eat(Token::Var) {
+            return Err(self.err_at_current(ParserError::ExpectedStaticVar));
+        }
+        let mutability = Mutability::Mutable;
 
         let identifier = self.parse_identifier()?;
         if !self.eat(Token::Colon) {
@@ -1269,7 +1426,7 @@ impl Parser {
                     path: PathNode { id, path },
                 }];
                 loop {
-                    bounds.push(self.parse_generic_bound()?);
+                    bounds.extend(self.parse_generic_bound()?);
                     if !self.eat(Token::Amp) {
                         break;
                     }
@@ -1302,23 +1459,32 @@ impl Parser {
 }
 
 impl Parser {
-    /// Parses an impl block
-    /// - `impl T { ... }` - inherent impl
-    /// - `impl I for T { ... }` - trait impl
+    /// Parse `extend T` or `conform T to I`, preserving the common semantic
+    /// implementation node. Legacy impl syntax is recovered only for a targeted
+    /// error; it never produces an accepted source file.
     fn parse_impl(&mut self) -> R<DeclarationKind> {
-        self.expect(Token::Impl)?;
+        let legacy = self.matches(Token::Impl);
+        let conformance = self.matches(Token::Conform);
+        let keyword_span = self.lo_span();
+        self.bump();
+        if legacy {
+            self.emit_error(ParserError::LegacyImplDeclaration, keyword_span);
+        }
         let type_parameters = self.parse_type_parameters()?;
 
-        // Parse the first type
         let first_type = self.parse_type()?;
 
-        // Check if this is a trait impl (has `for` keyword)
-        let (interface, target) = if self.eat(Token::For) {
-            // `impl Interface for Type { ... }`
+        let (interface, target) = if conformance {
+            if !self.matches_contextual_identifier("to") {
+                return Err(self.err_at_current(ParserError::ExpectedConformanceTo));
+            }
+            self.bump();
+            let interface = self.parse_type()?;
+            (Some(interface), first_type)
+        } else if legacy && self.eat(Token::For) {
             let target = self.parse_type()?;
             (Some(first_type), target)
         } else {
-            // `impl Type { ... }` - inherent impl
             (None, first_type)
         };
 
@@ -1327,6 +1493,16 @@ impl Parser {
         let declarations = self.parse_declaration_list(|p| {
             p.parse_associated_declaration(FnParseMode { req_body: true })
         })?;
+        if interface.is_some() {
+            for declaration in &declarations {
+                if matches!(declaration.kind, AssociatedDeclarationKind::Initializer(_)) {
+                    self.emit_error(
+                        ParserError::LifecycleRequiresExtension,
+                        declaration.identifier.span,
+                    );
+                }
+            }
+        }
 
         let generics = Generics {
             type_parameters,
@@ -1365,6 +1541,28 @@ impl Parser {
         };
         let s = DeclarationKind::Struct(s);
         Ok((identifier, s))
+    }
+
+    fn parse_class_declaration(&mut self) -> R<(Identifier, DeclarationKind)> {
+        let is_final = self.eat(Token::Final);
+        self.expect(Token::Class)?;
+        let identifier = self.parse_identifier()?;
+        let type_parameters = self.parse_type_parameters()?;
+        let conformances = self.parse_conformances()?;
+        let where_clause = self.parse_generic_where_clause()?;
+        let fields = self.parse_field_definitions(Delimiter::Brace)?;
+        Ok((
+            identifier,
+            DeclarationKind::Class(ast::Class {
+                generics: Generics {
+                    type_parameters,
+                    where_clause,
+                },
+                fields,
+                conformances,
+                is_final,
+            }),
+        ))
     }
 
     fn parse_enum_declaration(&mut self) -> R<(Identifier, DeclarationKind)> {
@@ -1432,6 +1630,12 @@ impl Parser {
                     symbol: self.intern_symbol(symbol),
                 };
                 self.bump();
+                if matches!(
+                    v.symbol.as_str(),
+                    "FnMut" | "FnOnce" | "AsyncFnMut" | "AsyncFnOnce"
+                ) {
+                    self.emit_error(ParserError::RemovedCallableKind(v.symbol), span);
+                }
                 return Ok(v);
             }
             _ => {
@@ -1471,7 +1675,20 @@ impl Parser {
         }
     }
 
-    fn parse_mutability(&mut self) -> Mutability {
+    fn parse_reference_modifier(&mut self) {
+        let error = if self.eat(Token::Const) {
+            Some(ParserError::ReferenceConstModifier)
+        } else if self.eat(Token::Mut) {
+            Some(ParserError::MutableReferenceRemoved)
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            self.emit_error(error, self.previous().unwrap().span);
+        }
+    }
+
+    fn parse_pointer_mutability(&mut self) -> Mutability {
         if self.eat(Token::Mut) {
             Mutability::Mutable
         } else if self.eat(Token::Const) {
@@ -1775,6 +1992,8 @@ impl Parser {
             VisibilityLevel::Public
         } else if self.eat(Token::Private) {
             VisibilityLevel::Private
+        } else if self.eat(Token::Internal) {
+            VisibilityLevel::Internal
         } else {
             VisibilityLevel::Inherent
         };
@@ -1791,6 +2010,12 @@ impl Parser {
     fn parse_field_definition(&mut self) -> R<FieldDefinition> {
         let lo = self.lo_span();
         let visibility = self.parse_visibility()?;
+        // `weak` remains a valid field/module name when followed by `:`.
+        if self.matches_contextual_identifier("weak") && !self.next_matches(1, Token::Colon) {
+            let span = self.lo_span();
+            self.emit_error(ParserError::WeakStorageRemoved, span);
+            self.bump();
+        }
 
         let mutability = if self.eat(Token::Readonly) {
             Mutability::Immutable
@@ -1802,8 +2027,14 @@ impl Parser {
         self.expect(Token::Colon)?;
 
         let ty = self.parse_type()?;
+        let default_value = if self.eat(Token::Assign) {
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
         let fd = FieldDefinition {
             id: self.next_id(),
+            default_value,
             visibility,
             label: None,
             identifier,
@@ -1816,7 +2047,18 @@ impl Parser {
     }
 
     fn parse_field_definitions(&mut self, delim: Delimiter) -> R<Vec<FieldDefinition>> {
-        self.parse_delimiter_sequence(delim, Token::Semicolon, |p| p.parse_field_definition())
+        self.expect(delim.open())?;
+        let mut fields = Vec::new();
+        while !self.matches(delim.close()) {
+            fields.push(self.parse_field_definition()?);
+            if self.eat(Token::Comma) {
+                self.eat(Token::Semicolon);
+            } else if !self.eat(Token::Semicolon) {
+                break;
+            }
+        }
+        self.expect(delim.close())?;
+        Ok(fields)
     }
 }
 
@@ -1856,8 +2098,40 @@ impl Parser {
     fn parse_variant_kind(&mut self) -> R<VariantKind> {
         match self.current_token() {
             Token::LParen => self.parse_tuple_variant(),
+            Token::LBrace => self.parse_struct_variant(),
             _ => Ok(VariantKind::Unit),
         }
+    }
+
+    fn parse_struct_variant(&mut self) -> R<VariantKind> {
+        self.expect(Token::LBrace)?;
+        let mut fields = vec![];
+        let mut names = std::collections::HashSet::new();
+        while self.eat(Token::Semicolon) {}
+        while !self.matches(Token::RBrace) && !self.is_at_end() {
+            let mut field = self.parse_field_definition()?;
+            self.check_enum_payload_visibility(&field.visibility);
+            if !names.insert(field.identifier.symbol) {
+                self.emit_error(
+                    ParserError::DuplicateEnumPayloadField(field.identifier.symbol),
+                    field.identifier.span,
+                );
+            }
+            field.label = Some(Label {
+                identifier: field.identifier,
+                span: field.identifier.span,
+            });
+            fields.push(field);
+            if self.matches(Token::RBrace) {
+                break;
+            }
+            if !(self.eat(Token::Comma) || self.eat(Token::Semicolon)) {
+                return Err(self.err_at_current(ParserError::ExpectedEnumPayloadSeparator));
+            }
+            while self.eat(Token::Semicolon) {}
+        }
+        self.expect(Token::RBrace)?;
+        Ok(VariantKind::Struct(fields))
     }
 
     fn parse_tuple_variant(&mut self) -> R<VariantKind> {
@@ -1869,9 +2143,18 @@ impl Parser {
         Ok(k)
     }
 
+    /// A payload is exposed through its variant; field-level visibility would
+    /// otherwise be parsed and silently discarded by constructor collection.
+    fn check_enum_payload_visibility(&mut self, visibility: &Visibility) {
+        if visibility.level != VisibilityLevel::Inherent {
+            self.emit_error(ParserError::EnumPayloadVisibility, visibility.span);
+        }
+    }
+
     fn parse_tuple_variant_field(&mut self) -> R<FieldDefinition> {
         let lo = self.lo_span();
         let vis = self.parse_visibility()?;
+        self.check_enum_payload_visibility(&vis);
 
         let mutability = if self.eat(Token::Readonly) {
             Mutability::Immutable
@@ -1884,6 +2167,7 @@ impl Parser {
 
         let def = FieldDefinition {
             id: self.next_id(),
+            default_value: None,
             visibility: vis,
             label,
             mutability,
@@ -1969,13 +2253,20 @@ impl Parser {
             self.expect_amp()?; // eat '&' symbol
         }
         let is_pointer = matches!(k, Token::Star);
-        let mutability = self.parse_mutability();
+        let mutability = if is_pointer {
+            self.parse_pointer_mutability()
+        } else {
+            {
+                self.parse_reference_modifier();
+                Mutability::Immutable
+            }
+        };
         let ty = self.parse_type()?;
 
         let kind = if is_pointer {
             TypeKind::Pointer(ty, mutability)
         } else {
-            TypeKind::Reference(ty, mutability)
+            TypeKind::Reference(ty)
         };
 
         Ok(kind)
@@ -2024,7 +2315,7 @@ impl Parser {
     }
 
     fn parse_collection_type(&mut self) -> R<TypeKind> {
-        // Parses [T], [T;N], [T:V], [T as V].Member[X]
+        // Parses [T], [T; N], [T; ..], and [T: V].
         // eat opening bracket
         self.expect(Token::LBracket)?;
         let ty = self.parse_type()?;
@@ -2035,10 +2326,14 @@ impl Parser {
             let value = self.parse_type()?;
             TypeKind::Dictionary { key: ty, value }
         } else if self.eat(Token::Semicolon) {
-            let len = self.parse_anon_const()?;
-            TypeKind::Array {
-                size: len,
-                element: ty,
+            if self.eat(Token::DotDot) {
+                TypeKind::Slice(ty)
+            } else {
+                let len = self.parse_anon_const()?;
+                TypeKind::Array {
+                    size: len,
+                    element: ty,
+                }
             }
         } else {
             return Err(self.err_at_current(ParserError::InvalidCollectionType));
@@ -2058,6 +2353,37 @@ impl Parser {
 
 // Generics
 impl Parser {
+    /// Parse the shared bracket grammar without guessing from a following `(`.
+    /// Failed lookahead restores diagnostics and split tokens. When both parses
+    /// survive, reserve the first parse's IDs before constructing the second.
+    fn parse_bracket_suffix(
+        &mut self,
+    ) -> R<(Option<TypeArguments>, Option<Vec<ExpressionArgument>>)> {
+        let start = self.checkpoint();
+        let type_parse = self.parse_type_arguments();
+        let type_end = self.cursor;
+        let type_nodes = self.next_index.borrow().next_index;
+        let type_ok = type_parse.is_ok() && self.errors.len() == start.errors;
+        self.restore(start);
+        if type_ok {
+            self.next_index.borrow_mut().next_index = type_nodes;
+        }
+        let expression_parse = self.parse_expression_argument_list(Delimiter::Bracket);
+        if let Ok(index) = expression_parse {
+            if !type_ok {
+                return Ok((None, Some(index)));
+            }
+            if self.cursor == type_end && self.errors.len() == start.errors {
+                return Ok((Some(type_parse.unwrap()), Some(index)));
+            }
+        }
+        self.restore(start);
+        // Reparse the selected grammar so token splits and IDs agree with the
+        // retained tree, even when the speculative expression consumed farther.
+        self.parse_type_arguments()
+            .map(|arguments| (Some(arguments), None))
+    }
+
     fn parse_type_arguments(&mut self) -> R<TypeArguments> {
         let lo = self.lo_span();
         let arguments = self.parse_delimiter_sequence(Delimiter::Bracket, Token::Comma, |p| {
@@ -2195,13 +2521,19 @@ impl Parser {
 impl Parser {
     fn parse_generic_bounds(&mut self) -> R<GenericBounds> {
         let bounds = self.parse_sequence(Token::Amp, |p| p.parse_generic_bound())?;
-        Ok(bounds)
+        Ok(bounds.into_iter().flatten().collect())
     }
 
-    fn parse_generic_bound(&mut self) -> R<GenericBound> {
-        Ok(GenericBound {
-            path: self.parse_path_node()?,
-        })
+    /// A removed `!Bound` relaxation is reported and dropped.
+    fn parse_generic_bound(&mut self) -> R<Option<GenericBound>> {
+        let lo = self.lo_span();
+        let relaxed = self.eat(Token::Bang);
+        let path = self.parse_path_node()?;
+        if relaxed {
+            self.emit_error(ParserError::RelaxedBoundRemoved, lo.to(self.hi_span()));
+            return Ok(None);
+        }
+        Ok(Some(GenericBound { path }))
     }
 }
 
@@ -2254,9 +2586,13 @@ impl Parser {
     fn parse_conformances(&mut self) -> R<Option<Conformances>> {
         if self.eat(Token::Colon) {
             let lo = self.lo_span();
-            let bounds = self.parse_sequence(Token::Comma, |this| this.parse_path_node())?;
+            let entries = self.parse_sequence(Token::Comma, |this| this.parse_generic_bound())?;
             let node = Conformances {
-                bounds,
+                bounds: entries
+                    .into_iter()
+                    .flatten()
+                    .map(|bound| bound.path)
+                    .collect(),
                 span: lo.to(self.hi_span()),
             };
             Ok(Some(node))
@@ -2311,7 +2647,7 @@ impl Parser {
     fn parse_pattern_kind(&mut self) -> R<PatternKind> {
         match self.current_token() {
             Token::LParen => self.parse_pattern_tuple_kind(),
-            Token::Amp | Token::AmpAmp => self.parse_ref_pattern(),
+            Token::Amp | Token::AmpAmp => self.reject_reference_pattern(),
             Token::Underscore => {
                 self.bump();
                 Ok(PatternKind::Wildcard)
@@ -2323,7 +2659,7 @@ impl Parser {
                 self.bump();
                 Ok(PatternKind::Rest)
             }
-            Token::Dot | Token::Identifier { .. } => self.parse_pattern_path_kind(),
+            Token::Dot | Token::Identifier { .. } => self.parse_constructor_path_kind(),
             _ => {
                 // A pattern literal may have a unary minus, but `|` separates
                 // alternatives here rather than forming a bitwise expression.
@@ -2352,28 +2688,71 @@ impl Parser {
         Ok(PatternKind::Tuple(pats, lo.to(self.hi_span())))
     }
 
-    fn parse_ref_pattern(&mut self) -> R<PatternKind> {
+    fn reject_reference_pattern(&mut self) -> R<PatternKind> {
+        let span = self.lo_span();
         self.expect_amp()?;
-        let mutability = self.parse_mutability();
-        let pattern = self.parse_pattern()?;
-        Ok(PatternKind::Reference {
-            pattern: Box::new(pattern),
-            mutability,
-        })
+        self.emit_error(ParserError::ReferencePatternRemoved, span);
+        self.parse_reference_modifier();
+        Ok(self.parse_pattern()?.kind)
     }
 
-    fn parse_pattern_path_kind(&mut self) -> R<PatternKind> {
+    fn parse_constructor_path_kind(&mut self) -> R<PatternKind> {
         // Cannot Possibly be a path pattern
         if matches!(self.current_token(), Token::Identifier { .. })
-            && !(self.next_matches(1, Token::Dot) | self.next_matches(1, Token::LParen))
+            && !(self.next_matches(1, Token::ColonColon)
+                || self.next_matches(1, Token::Dot)
+                || self.next_matches(1, Token::LParen)
+                || self.next_matches(1, Token::LBrace)
+                || self.next_matches(1, Token::LBracket))
         {
             let ident = self.parse_identifier()?;
             return Ok(PatternKind::Identifier(ident));
         }
 
-        let path = self.parse_pattern_path()?;
+        let path = self.parse_constructor_path()?;
 
         match self.current_token() {
+            Token::LBrace => {
+                let lo = self.lo_span();
+                let mut rest = false;
+                let mut names = std::collections::HashSet::new();
+                let fields = self
+                    .parse_delimiter_sequence(Delimiter::Brace, Token::Comma, |p| {
+                        if p.eat(Token::DotDot) {
+                            if rest {
+                                p.emit_error(ParserError::InvalidNamedPatternRest, p.hi_span());
+                            }
+                            rest = true;
+                            return Ok(None);
+                        }
+                        if rest {
+                            p.emit_error(ParserError::InvalidNamedPatternRest, p.lo_span());
+                        }
+                        let name = p.parse_identifier()?;
+                        if !names.insert(name.symbol) {
+                            p.emit_error(ParserError::DuplicateNamedField(name.symbol), name.span);
+                        }
+                        let pattern = if p.eat(Token::Colon) {
+                            p.parse_pattern()?
+                        } else {
+                            Pattern {
+                                id: p.next_id(),
+                                span: name.span,
+                                kind: PatternKind::Identifier(name),
+                            }
+                        };
+                        Ok(Some(ast::NamedPatternField { name, pattern }))
+                    })?
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                Ok(PatternKind::PathNamed {
+                    path,
+                    fields,
+                    rest,
+                    field_span: lo.to(self.hi_span()),
+                })
+            }
             Token::LParen => {
                 let lo = self.lo_span();
 
@@ -2395,20 +2774,20 @@ impl Parser {
         }
     }
     // Parse:
-    //   .Case         => PatternPathHead::Inferred
-    //   A(.B)*        => PatternPathHead::Qualifed
-    pub fn parse_pattern_path(&mut self) -> R<PatternPath> {
+    //   .Case         => ConstructorPathHead::Inferred
+    //   A(::B)*       => ConstructorPathHead::Qualified
+    pub fn parse_constructor_path(&mut self) -> R<ConstructorPath> {
         // Shorthand: `.Case`
         let lo = self.lo_span();
         if self.eat(Token::Dot) {
             let name = self.parse_identifier()?;
             let span = lo.to(self.hi_span());
-            return Ok(PatternPath::Inferred { name, span });
+            return Ok(ConstructorPath::Inferred { name, span });
         }
 
-        // Full: A(.B)*
+        // Full: A(::B)*
         let path = self.parse_path()?;
-        Ok(PatternPath::Qualified { path })
+        Ok(ConstructorPath::Qualified { path })
     }
 }
 
@@ -2417,15 +2796,20 @@ impl Parser {
     fn parse_block(&mut self) -> R<Block> {
         let lo = self.lo_span();
         let mut has_declarations = false;
-        let statements =
-            self.with_restrictions(self.restrictions - Restrictions::NO_STRUCT_LITERALS, |p| {
+        let statements = self.with_restrictions(
+            self.restrictions
+                - (Restrictions::NO_STRUCT_LITERALS
+                    | Restrictions::ALLOW_BINDING_CONDITION
+                    | Restrictions::STOP_CONDITION_CONNECTORS),
+            |p| {
                 p.parse_block_sequence(|p| {
                     let s = p.parse_statement()?;
                     has_declarations =
                         has_declarations || matches!(s.kind, StatementKind::Declaration(..));
                     Ok(s)
                 })
-            })?;
+            },
+        )?;
 
         Ok(Block {
             id: self.next_id(),
@@ -2458,6 +2842,14 @@ impl Parser {
     }
 
     fn parse_statement_kind(&mut self, label: Option<Label>) -> R<StatementKind> {
+        // A label followed by `name :=` would otherwise silently parse a
+        // mistyped `value: Type := initializer` as a different variable.
+        if label.is_some()
+            && matches!(self.current_token(), Token::Identifier { .. })
+            && self.next_matches(1, Token::ColonEq)
+        {
+            return Err(self.err_at_current(ParserError::TypedShorthandDeclaration));
+        }
         match self.current_token() {
             Token::Loop | Token::While | Token::For => {}
             _ => self.warn_improper_label_position(label),
@@ -2465,6 +2857,15 @@ impl Parser {
 
         match self.current_token() {
             Token::Let | Token::Var => self.parse_local_statement(),
+            Token::Identifier { value }
+                if value == "weak"
+                    && (self.next_matches(1, Token::Var) || self.next_matches(1, Token::Let)) =>
+            {
+                self.parse_local_statement()
+            }
+            Token::Identifier { .. } if self.next_matches(1, Token::ColonEq) => {
+                self.parse_shorthand_local_statement()
+            }
             Token::Loop => self.parse_loop_stmt(label),
             Token::While => self.parse_while_stmt(label),
             Token::For => self.parse_for_stmt(label),
@@ -2480,14 +2881,8 @@ impl Parser {
                     }
                 }
 
-                // is expr
                 let expr = self.parse_expression()?;
                 return Ok(StatementKind::Expression(expr));
-
-                // invalid stmt
-                // let msg = format!("expected statement found {}", self.current_token());
-                // let span = self.current_token_span();
-                // Err(SpannedMessage::new(msg, span))
             }
         }
     }
@@ -2501,16 +2896,20 @@ impl Parser {
 
 impl Parser {
     fn parse_local(&mut self) -> R<Local> {
-        // let | var <binding_pattern> <type_annotation>? <initializer_clause>?
+        // var <binding_pattern> <type_annotation>? <initializer_clause>?
         // type_annotation = : <type>
         // initializer_clause: = <expr>
-        let mutability = if self.eat(Token::Let) {
-            Mutability::Immutable
-        } else if self.eat(Token::Var) {
-            Mutability::Mutable
+        if self.matches_contextual_identifier("weak") {
+            let span = self.lo_span();
+            self.emit_error(ParserError::WeakStorageRemoved, span);
+            self.bump();
+        }
+        let removed_let = self.matches(Token::Let).then(|| self.lo_span());
+        if removed_let.is_none() {
+            self.expect(Token::Var)?;
         } else {
-            unreachable!("expected `let` | `var` token")
-        };
+            self.bump();
+        }
 
         let pattern = self.parse_pattern()?;
         if !matches!(
@@ -2518,7 +2917,7 @@ impl Parser {
             PatternKind::Identifier(..)
                 | PatternKind::Wildcard
                 | PatternKind::Tuple(..)
-                | PatternKind::Reference { .. }
+                | PatternKind::PathNamed { .. }
         ) {
             return Err(Spanned::new(
                 ParserError::DisallowedLocalBindingPattern,
@@ -2538,9 +2937,18 @@ impl Parser {
             None
         };
 
+        if let Some(span) = removed_let {
+            // Suggest the shorthand only where it can replace the declaration.
+            let shorthand = match (&pattern.kind, &ty, &initializer) {
+                (PatternKind::Identifier(name), None, Some(_)) => Some(name.symbol),
+                _ => None,
+            };
+            self.emit_error(ParserError::LetRemoved(shorthand), span);
+        }
+
         let local = Local {
             id: self.next_id(),
-            mutability,
+            mutability: Mutability::Mutable,
             pattern,
             ty,
             initializer,
@@ -2549,6 +2957,25 @@ impl Parser {
 
         Ok(local)
     }
+    fn parse_shorthand_local_statement(&mut self) -> R<StatementKind> {
+        let identifier = self.parse_identifier()?;
+        self.expect(Token::ColonEq)?;
+        let initializer = self.parse_expression()?;
+        let pattern = Pattern {
+            id: self.next_id(),
+            span: identifier.span,
+            kind: PatternKind::Identifier(identifier),
+        };
+        Ok(StatementKind::Variable(Local {
+            id: self.next_id(),
+            mutability: Mutability::Mutable,
+            pattern,
+            ty: None,
+            initializer: Some(initializer),
+            is_shorthand: true,
+        }))
+    }
+
     fn parse_local_statement(&mut self) -> R<StatementKind> {
         let local = self.parse_local()?;
         Ok(StatementKind::Variable(local))
@@ -2564,9 +2991,7 @@ impl Parser {
 
     fn parse_while_stmt(&mut self, label: Option<Label>) -> R<StatementKind> {
         self.expect(Token::While)?;
-        let while_restrictions =
-            Restrictions::ALLOW_BINDING_CONDITION | Restrictions::NO_STRUCT_LITERALS;
-        let condition = self.with_restrictions(while_restrictions, |p| p.parse_expression())?;
+        let condition = self.parse_condition()?;
         let block = self.parse_block()?;
 
         Ok(StatementKind::While {
@@ -2640,16 +3065,31 @@ impl Parser {
 
     fn parse_defer_stmt(&mut self) -> R<StatementKind> {
         self.expect(Token::Defer)?;
-        let block = self.parse_block()?;
+        let block = if self.matches(Token::LBrace) {
+            self.parse_block()?
+        } else {
+            // Exactly `defer { expression }`: capture/evaluation timing and
+            // cleanup control-flow rules remain owned by ordinary block lowering.
+            let expression = self.parse_expression()?;
+            let span = expression.span;
+            Block {
+                id: self.next_id(),
+                statements: vec![Statement {
+                    id: self.next_id(),
+                    kind: StatementKind::Expression(expression),
+                    span,
+                }],
+                span,
+                has_declarations: false,
+            }
+        };
         Ok(StatementKind::Defer(block))
     }
 
     fn parse_guard_stmt(&mut self) -> R<StatementKind> {
         self.expect(Token::Guard)?;
 
-        let if_restrictions =
-            Restrictions::ALLOW_BINDING_CONDITION | Restrictions::NO_STRUCT_LITERALS;
-        let condition = self.with_restrictions(if_restrictions, |p| p.parse_expression())?;
+        let condition = self.parse_condition()?;
 
         self.expect(Token::Else)?;
         let block = self.parse_block()?;
@@ -2771,16 +3211,17 @@ impl Parser {
             if self.matches(Token::RBrace) {
                 break;
             }
+            let start = self.cursor;
             match parse_action(self) {
                 Ok(item) => items.push(item),
                 Err(e) => {
                     self.emit_error(e.value, e.span);
                     self.synchronize_statement();
-                    // If synchronization left us on a token that is not a closing brace
-                    // but we failed to parse anything, we need to ensure we make progress
-                    // so we don't infinitely loop on bad tokens. The `parse_action` usually
-                    // consumes tokens, but if it didn't, or we sync'd to the same bad token:
-                    // (This is primarily handled by synchronize_statement inherently advancing if it doesn't match).
+                    // A recognized restart token can itself be invalid in this
+                    // context. Never retry it indefinitely without consuming it.
+                    if self.cursor == start && !self.matches(Token::RBrace) && !self.is_at_end() {
+                        self.bump();
+                    }
                 }
             }
 
@@ -2835,7 +3276,20 @@ impl Parser {
 // Expressions
 impl Parser {
     fn parse_expression(&mut self) -> R<Box<Expression>> {
-        self.parse_assignment_expr()
+        // Nested grouped/call expressions have their normal operator grammar.
+        // A binding initializer opts into the connector boundary explicitly.
+        let expression = self.with_restrictions(
+            self.restrictions - Restrictions::STOP_CONDITION_CONNECTORS,
+            Self::parse_assignment_expr,
+        )?;
+        if self.matches(Token::ColonEq)
+            && self
+                .restrictions
+                .contains(Restrictions::ALLOW_BINDING_CONDITION)
+        {
+            return Err(self.err_at_current(ParserError::ConditionalShorthandBinding));
+        }
+        Ok(expression)
     }
 
     fn parse_anon_const(&mut self) -> R<AnonConst> {
@@ -2976,7 +3430,11 @@ impl Parser {
         // a || b
         let mut expr = self.parse_bool_and_expr()?;
 
-        while matches!(self.current_token(), Token::BarBar) {
+        while !self
+            .restrictions
+            .contains(Restrictions::STOP_CONDITION_CONNECTORS)
+            && matches!(self.current_token(), Token::BarBar)
+        {
             expr = self.build_binary_expr(expr, |p| p.parse_bool_and_expr())?;
         }
 
@@ -2986,7 +3444,11 @@ impl Parser {
         // a && b
         let mut expr = self.parse_comparison_expr()?;
 
-        while matches!(self.current_token(), Token::AmpAmp) {
+        while !self
+            .restrictions
+            .contains(Restrictions::STOP_CONDITION_CONNECTORS)
+            && matches!(self.current_token(), Token::AmpAmp)
+        {
             expr = self.build_binary_expr(expr, |p| p.parse_comparison_expr())?;
         }
 
@@ -2998,7 +3460,14 @@ impl Parser {
 
         while matches!(
             self.current_token(),
-            Token::LChevron | Token::RChevron | Token::Geq | Token::Leq | Token::Neq | Token::Eql
+            Token::LChevron
+                | Token::RChevron
+                | Token::Geq
+                | Token::Leq
+                | Token::Neq
+                | Token::Eql
+                | Token::IdentityEql
+                | Token::IdentityNeq
         ) {
             expr = self.build_binary_expr(expr, |p| p.parse_bit_or_expr())?;
         }
@@ -3166,12 +3635,9 @@ impl Parser {
             }
             Token::Amp | Token::AmpAmp => {
                 self.expect_amp()?;
-                let mutability = self.parse_mutability();
+                self.parse_reference_modifier();
                 let expr = self.parse_prefix_expr()?;
-                return Ok(self.build_expr(
-                    ExpressionKind::Reference(expr, mutability),
-                    lo.to(self.hi_span()),
-                ));
+                return Ok(self.build_expr(ExpressionKind::Reference(expr), lo.to(self.hi_span())));
             }
             Token::Minus => {
                 self.bump();
@@ -3195,7 +3661,6 @@ impl Parser {
         is_optional_chain: &mut bool,
     ) -> R<Box<Expression>> {
         let mut pre_consumed_dot = false;
-        let mut seen_type_arguments = false;
         loop {
             let mut lo = self.lo_span();
 
@@ -3203,22 +3668,24 @@ impl Parser {
                 lo = self.previous().unwrap().span;
             }
 
-            // parsing dot expr: `foo.<expr>`
-            if self.eat(Token::Dot) || pre_consumed_dot {
+            let qualified = self.eat(Token::ColonColon);
+            // `.` selects an instance member; `::` selects a namespace/type member.
+            if qualified || self.eat(Token::Dot) || pre_consumed_dot {
                 pre_consumed_dot = false; // reset for next iter
                 // parsing tuple index: `foo.<integer>`
-                if matches!(
-                    self.current_token(),
-                    Token::Integer {
-                        base: Base::Decimal,
-                        ..
-                    }
-                ) {
+                if !qualified
+                    && matches!(
+                        self.current_token(),
+                        Token::Integer {
+                            base: Base::Decimal,
+                            ..
+                        }
+                    )
+                {
                     let c = self.parse_literal()?;
                     let k = ExpressionKind::TupleAccess(expr, AnonConst { value: c });
                     let span = lo.to(self.hi_span());
                     expr = self.build_expr(k, span);
-                    seen_type_arguments = false;
                     continue;
                 }
 
@@ -3227,35 +3694,36 @@ impl Parser {
                 let kind = ExpressionKind::Member {
                     target: expr,
                     name: self.parse_member_identifier()?,
+                    qualified,
                 };
                 let span = lo.to(self.hi_span());
                 expr = self.build_expr(kind, span);
-                seen_type_arguments = false;
                 continue;
             }
 
-            // specialize: `Foo[T]`
+            // Both generic arguments and value subscripts use brackets. Keep
+            // both syntactic interpretations until the receiver is resolved.
             if self.matches(Token::LBracket) {
-                if seen_type_arguments {
-                    self.emit_error(ParserError::ExtraTypeArguments, self.lo_span());
-                    return Err(self.err_at_current(ParserError::ExtraTypeArguments));
-                }
-
-                let args = self.parse_type_arguments()?;
-                let kind = ExpressionKind::Specialize {
-                    target: expr,
-                    type_arguments: args,
+                let lo = expr.span;
+                let (type_arguments, index) = self.parse_bracket_suffix()?;
+                let kind = match type_arguments {
+                    Some(type_arguments) => ExpressionKind::Specialize {
+                        target: expr,
+                        type_arguments,
+                        index,
+                    },
+                    None => ExpressionKind::Index {
+                        target: expr,
+                        index: index.expect("expression-only bracket suffix"),
+                    },
                 };
-                let span = lo.to(self.hi_span());
-                expr = self.build_expr(kind, span);
-                seen_type_arguments = true;
+                expr = self.build_expr(kind, lo.to(self.hi_span()));
                 continue;
             }
 
             // parsing call expr: `foo(<expr_arguments>)`
             if self.matches(Token::LParen) {
                 expr = self.parse_call_expr(expr)?;
-                seen_type_arguments = false;
                 continue;
             }
 
@@ -3272,7 +3740,6 @@ impl Parser {
 
                 // The dot is part of the `?.` token, so continue parsing the member/tuple access
                 pre_consumed_dot = true;
-                seen_type_arguments = false;
                 continue;
             }
 
@@ -3280,7 +3747,6 @@ impl Parser {
                 let span = expr.span.to(self.hi_span());
                 let kind = ExpressionKind::Propagate(expr);
                 expr = self.build_expr(kind, span);
-                seen_type_arguments = false;
                 continue;
             }
 
@@ -3289,7 +3755,6 @@ impl Parser {
             if self.cursor == before {
                 break;
             }
-            seen_type_arguments = false;
         }
 
         Ok(expr)
@@ -3313,6 +3778,72 @@ impl Parser {
 }
 
 impl Parser {
+    fn parse_binding_initializer(&mut self) -> R<Box<Expression>> {
+        self.with_restrictions(
+            self.restrictions | Restrictions::STOP_CONDITION_CONNECTORS,
+            Self::parse_assignment_expr,
+        )
+    }
+
+    fn parse_condition(&mut self) -> R<Box<Expression>> {
+        use ast::AstVisitor;
+        struct Validate {
+            permitted: bool,
+            invalid: Option<Span>,
+        }
+        impl AstVisitor for Validate {
+            type Result = ();
+            fn visit_expression(&mut self, expression: &Expression) {
+                if self.invalid.is_some() {
+                    return;
+                }
+                let permitted = self.permitted;
+                match &expression.kind {
+                    // These expressions establish their own condition/binding
+                    // scopes, validated when their syntax is parsed.
+                    ExpressionKind::Closure(_)
+                    | ExpressionKind::If(_)
+                    | ExpressionKind::Block(_)
+                    | ExpressionKind::UnsafeBlock(_)
+                    | ExpressionKind::Match(_) => {}
+                    ExpressionKind::PatternBinding(binding)
+                    | ExpressionKind::OptionalPatternBinding(binding) => {
+                        if !permitted {
+                            self.invalid = Some(expression.span);
+                            return;
+                        }
+                        self.permitted = false;
+                        self.visit_expression(&binding.expression);
+                    }
+                    ExpressionKind::Binary(BinaryOperator::BoolAnd, _, _) if permitted => {
+                        ast::walk_expression(self, expression);
+                    }
+                    _ => {
+                        self.permitted = false;
+                        ast::walk_expression(self, expression);
+                    }
+                }
+                self.permitted = permitted;
+            }
+        }
+        let condition = self.with_restrictions(
+            Restrictions::ALLOW_BINDING_CONDITION | Restrictions::NO_STRUCT_LITERALS,
+            Self::parse_expression,
+        )?;
+        let mut validator = Validate {
+            permitted: true,
+            invalid: None,
+        };
+        validator.visit_expression(&condition);
+        if let Some(span) = validator.invalid {
+            return Err(Spanned::new(
+                ParserError::InvalidBindingConditionPosition,
+                span,
+            ));
+        }
+        Ok(condition)
+    }
+
     fn parse_pattern_binding_condition(&mut self) -> R<Box<Expression>> {
         if !self
             .restrictions
@@ -3324,10 +3855,13 @@ impl Parser {
         let lo = self.lo_span();
         // case <pattern> = <expr>
         self.expect(Token::Case)?;
+        self.eat(Token::Var);
         let pattern = self.parse_pattern()?;
+        if self.matches(Token::ColonEq) {
+            return Err(self.err_at_current(ParserError::ConditionalShorthandBinding));
+        }
         self.expect(Token::Assign)?;
-        let expression =
-            self.with_restrictions(Restrictions::NO_STRUCT_LITERALS, |p| p.parse_expression())?;
+        let expression = self.parse_binding_initializer()?;
 
         let span = lo.to(self.hi_span());
         let p = PatternBindingCondition {
@@ -3350,8 +3884,13 @@ impl Parser {
         }
 
         let lo = self.lo_span();
-        // let <ident> = <expr>
-        self.expect(Token::Let)?;
+        // var <ident> = <expr>, or shorthand optional unwrapping.
+        if self.matches(Token::Let) {
+            self.emit_error(ParserError::LetRemoved(None), self.lo_span());
+            self.bump();
+        } else {
+            self.expect(Token::Var)?;
+        }
         let identifier = self.parse_identifier()?;
         let pattern = Pattern {
             id: self.next_id(),
@@ -3359,8 +3898,11 @@ impl Parser {
             kind: PatternKind::Identifier(identifier),
         };
 
+        if self.matches(Token::ColonEq) {
+            return Err(self.err_at_current(ParserError::ConditionalShorthandBinding));
+        }
         let expression = if self.eat(Token::Assign) {
-            self.parse_expression()?
+            self.parse_binding_initializer()?
         } else {
             self.build_expr(ExpressionKind::Identifier(identifier), identifier.span)
         };
@@ -3389,84 +3931,81 @@ impl Parser {
 }
 
 impl Parser {
-    fn parse_closure_expression(&mut self) -> R<Box<Expression>> {
-        self.parse_closure_expression_with_move(false, self.lo_span())
-    }
-
-    fn parse_closure_expression_with_move(
-        &mut self,
-        is_move: bool,
-        lo: Span,
-    ) -> R<Box<Expression>> {
-        // |a| {} | || -> int {} | |x| async { await ok() } | |x| async -> int { ... }
-        let mut prototype = self.parse_closure_prototype()?;
-
-        let is_async = self.eat(Token::Async);
-
-        // Allow return type after `async`: |x| async -> int32 { ... }
-        if is_async && prototype.output.is_none() {
-            if self.eat(Token::RArrow) {
+    /// Try only the header speculatively. Once `=>` is consumed, body errors
+    /// belong to the closure rather than triggering tuple-expression fallback.
+    fn try_parse_arrow_closure(&mut self, lo: Span) -> R<Option<Box<Expression>>> {
+        let checkpoint = self.checkpoint();
+        let header: R<(FunctionSignature, bool)> = (|| {
+            let mut prototype = self.parse_closure_prototype()?;
+            let is_async = self.eat(Token::Async);
+            if is_async && prototype.output.is_none() && self.eat(Token::RArrow) {
                 prototype.output = Some(self.parse_type()?);
             }
-        }
-
-        let signature = FunctionSignature {
-            prototype,
-            span: lo.to(self.hi_span()),
+            let signature = FunctionSignature {
+                prototype,
+                span: lo.to(self.hi_span()),
+            };
+            self.expect(Token::EqArrow)?;
+            Ok((signature, is_async))
+        })();
+        let (signature, is_async) = match header {
+            Ok(header) => header,
+            Err(_) => {
+                self.restore(checkpoint);
+                return Ok(None);
+            }
         };
 
-        let body = if is_async {
-            self.parse_block_expression()?
-        } else {
-            self.parse_expression()?
-        };
-
+        // A closure establishes its own condition and struct-literal context.
+        let body = self.with_restrictions(
+            self.restrictions
+                - (Restrictions::ALLOW_BINDING_CONDITION
+                    | Restrictions::STOP_CONDITION_CONNECTORS
+                    | Restrictions::NO_STRUCT_LITERALS),
+            |parser| {
+                if is_async {
+                    parser.parse_block_expression()
+                } else {
+                    parser.parse_expression()
+                }
+            },
+        )?;
+        let span = lo.to(self.hi_span());
         let closure = ClosureExpression {
             signature,
             is_async,
-            is_move,
             body,
-            span: lo.to(self.hi_span()),
+            span,
         };
-
-        let kind = ExpressionKind::Closure(closure);
-        let expr = self.build_expr(kind, lo);
-        Ok(expr)
+        Ok(Some(
+            self.build_expr(ExpressionKind::Closure(closure), span),
+        ))
     }
 
     fn try_parse_move_closure_expression(&mut self) -> R<Option<Box<Expression>>> {
         if !self.matches_contextual_identifier("move") {
             return Ok(None);
         }
-
         let checkpoint = self.checkpoint();
         let lo = self.lo_span();
         self.bump();
-
-        if !matches!(self.current_token(), Token::Bar | Token::BarBar) {
+        if !self.matches(Token::LParen) {
             self.restore(checkpoint);
             return Ok(None);
         }
-
-        match self.parse_closure_expression_with_move(true, lo) {
-            Ok(expr) => Ok(Some(expr)),
-            Err(_) => {
-                self.restore(checkpoint);
-                Ok(None)
-            }
+        let closure = self.try_parse_arrow_closure(lo)?;
+        if closure.is_none() {
+            self.restore(checkpoint);
+        } else {
+            self.emit_error(ParserError::MoveClosureRemoved, lo);
         }
+        Ok(closure)
     }
 
     fn parse_closure_prototype(&mut self) -> R<FunctionPrototype> {
-        let inputs = if self.eat(Token::BarBar) {
-            Vec::new()
-        } else {
-            let params = self.parse_delimiter_sequence(Delimiter::Bar, Token::Comma, |p| {
-                p.parse_closure_parameter()
-            })?;
-            params
-        };
-
+        let inputs = self.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, |p| {
+            p.parse_closure_parameter()
+        })?;
         let output = if self.eat(Token::RArrow) {
             Some(self.parse_type()?)
         } else {
@@ -3658,20 +4197,26 @@ impl Parser {
             }
             Token::Identifier { .. } => self.parse_identifier_expression(),
             Token::Dot => self.parse_inferred_member_expression(),
-            Token::LParen => self.parse_tuple_expr(),
+            Token::LParen => {
+                if let Some(closure) = self.try_parse_arrow_closure(self.lo_span())? {
+                    Ok(closure)
+                } else {
+                    self.parse_tuple_expr()
+                }
+            }
             Token::LBracket => self.with_restrictions(
                 self.restrictions - Restrictions::NO_STRUCT_LITERALS,
                 Self::parse_collection_expr,
             ),
             Token::Case => self.parse_pattern_binding_condition(),
-            Token::Let => self.parse_optional_binding_condition(),
+            Token::Let | Token::Var => self.parse_optional_binding_condition(),
             Token::Return => self.parse_return_expression(),
             Token::Break => self.parse_break_expression(),
             Token::Continue => self.parse_continue_expression(),
             Token::Unsafe => self.parse_unsafe_block_expression(),
             Token::Await => self.parse_await_expression(),
             Token::LBrace => self.parse_block_expression(),
-            Token::Bar | Token::BarBar => self.parse_closure_expression(),
+            Token::Bar | Token::BarBar => Err(self.err_at_current(ParserError::LegacyPipeClosure)),
             Token::Underscore => {
                 if !self.restrictions.contains(Restrictions::ALLOW_WILDCARD) {
                     self.emit_error(ParserError::DisallowedWildcardExpression, self.lo_span());
@@ -3704,9 +4249,11 @@ impl Parser {
     }
 
     fn parse_expression_argument_list(&mut self, delim: Delimiter) -> R<Vec<ExpressionArgument>> {
-        self.with_restrictions(self.restrictions - Restrictions::NO_STRUCT_LITERALS, |p| {
-            p.parse_delimiter_sequence(delim, Token::Comma, |p| p.parse_expression_argument())
-        })
+        self.with_restrictions(
+            self.restrictions
+                - (Restrictions::NO_STRUCT_LITERALS | Restrictions::STOP_CONDITION_CONNECTORS),
+            |p| p.parse_delimiter_sequence(delim, Token::Comma, |p| p.parse_expression_argument()),
+        )
     }
 
     fn parse_expression_argument(&mut self) -> R<ExpressionArgument> {
@@ -3765,9 +4312,7 @@ impl Parser {
         self.expect(Token::If)?;
 
         // Conditions
-        let if_restrictions =
-            Restrictions::ALLOW_BINDING_CONDITION | Restrictions::NO_STRUCT_LITERALS;
-        let condition = self.with_restrictions(if_restrictions, |p| p.parse_expression())?;
+        let condition = self.parse_condition()?;
 
         // Then - Block
         let then_block = self.parse_block()?;
@@ -3996,6 +4541,7 @@ impl Parser {
             ExpressionKind::Member {
                 target: std_expr,
                 name: sprintf_identifier,
+                qualified: true,
             },
             span,
         );
@@ -4099,6 +4645,8 @@ impl Parser {
             generics,
             is_unsafe,
             is_async,
+            is_final: false,
+            is_override: false,
             abi: None,
         };
 
@@ -4180,26 +4728,16 @@ impl Parser {
         lo: Span,
         attributes: AttributeList,
     ) -> R<FunctionParameter> {
-        let (kind, mutability) = if self.eat_amp() {
-            (SelfKind::Reference, self.parse_mutability())
-        } else {
-            (SelfKind::Copy, Mutability::Immutable)
-        };
+        let referenced = self.eat_amp();
+        if referenced {
+            self.parse_reference_modifier();
+        }
         let ident = self.parse_self()?;
-
-        let self_ty = Type {
+        self.emit_error(ParserError::ExplicitReceiverRemoved, lo);
+        let ty = Type {
             id: self.next_id(),
             span: ident.span,
             kind: TypeKind::ImplicitSelf,
-        };
-
-        let ty = match kind {
-            SelfKind::Copy => self_ty,
-            SelfKind::Reference => Type {
-                id: self.next_id(),
-                span: ident.span,
-                kind: TypeKind::Reference(Box::new(self_ty), mutability),
-            },
         };
 
         Ok(FunctionParameter {
@@ -4227,12 +4765,12 @@ impl Parser {
 
 impl Parser {
     fn is_callable_shorthand_name(&self, symbol: Symbol) -> bool {
-        self.symbol_eq(symbol, "Fn")
-            || self.symbol_eq(symbol, "FnMut")
-            || self.symbol_eq(symbol, "FnOnce")
-            || self.symbol_eq(symbol, "AsyncFn")
-            || self.symbol_eq(symbol, "AsyncFnMut")
-            || self.symbol_eq(symbol, "AsyncFnOnce")
+        // Removed categories retain only parsing recovery, so the declaration
+        // diagnostic identifies the old name without unrelated arrow errors.
+        matches!(
+            symbol.as_str(),
+            "Fn" | "AsyncFn" | "FnMut" | "FnOnce" | "AsyncFnMut" | "AsyncFnOnce"
+        )
     }
 
     fn parse_callable_type_arguments(&mut self) -> R<TypeArguments> {
@@ -4256,6 +4794,22 @@ impl Parser {
         })
     }
 
+    /// Recover a legacy separator only to produce a precise migration diagnostic.
+    /// Recording the error still rejects the entire source file.
+    fn eat_path_separator(&mut self) -> bool {
+        if self.eat(Token::ColonColon) {
+            true
+        } else if self.eat(Token::Dot) {
+            self.emit_error(
+                ParserError::QualifiedPathSeparator,
+                self.previous().unwrap().span,
+            );
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn parse_path(&mut self) -> R<Path> {
         let start_span = self.lo_span();
 
@@ -4263,7 +4817,7 @@ impl Parser {
         loop {
             let segment = self.parse_path_segment()?;
             segments.push(segment);
-            if self.eat(Token::Dot) {
+            if self.eat_path_separator() {
                 continue;
             } else {
                 break;
@@ -4314,7 +4868,7 @@ impl Parser {
     /// - `ExpressionKind::Identifier` → single-segment path
     /// - `ExpressionKind::Member { target, name }` → recurse, append segment
     /// - `ExpressionKind::Specialize { target, type_arguments }` → recurse, add type args to last segment
-    fn expr_to_path(&self, expr: &Expression) -> Option<Path> {
+    fn expr_to_path(&mut self, expr: &Expression) -> Option<Path> {
         match &expr.kind {
             ExpressionKind::Identifier(identifier) => {
                 let segment = PathSegment {
@@ -4328,7 +4882,21 @@ impl Parser {
                     segments: vec![segment],
                 })
             }
-            ExpressionKind::Member { target, name } => {
+            ExpressionKind::Member {
+                target,
+                name,
+                qualified,
+            } => {
+                if !qualified {
+                    self.emit_error(
+                        ParserError::QualifiedPathSeparator,
+                        Span {
+                            start: target.span.end,
+                            end: name.span.start,
+                            file: expr.span.file,
+                        },
+                    );
+                }
                 let mut path = self.expr_to_path(target)?;
                 let segment = PathSegment {
                     id: self.next_index.borrow_mut().next(),
@@ -4343,6 +4911,7 @@ impl Parser {
             ExpressionKind::Specialize {
                 target,
                 type_arguments,
+                ..
             } => {
                 let mut path = self.expr_to_path(target)?;
                 // Add type arguments to the last segment
@@ -4378,8 +4947,16 @@ impl Parser {
         }
 
         // Try to convert the expression to a path
-        let Some(path) = self.expr_to_path(&expr) else {
-            return Err(Spanned::new(ParserError::ExpectedPathExpression, expr.span));
+        let path = if let ExpressionKind::InferredMember { name } = &expr.kind {
+            ConstructorPath::Inferred {
+                name: *name,
+                span: expr.span,
+            }
+        } else {
+            let Some(path) = self.expr_to_path(&expr) else {
+                return Err(Spanned::new(ParserError::ExpectedPathExpression, expr.span));
+            };
+            ConstructorPath::Qualified { path }
         };
 
         // Parse the struct literal with the converted path
@@ -4388,6 +4965,9 @@ impl Parser {
     }
 
     fn looks_like_struct_literal(&self) -> bool {
+        if self.next_matches(1, Token::DotDot) {
+            return true;
+        }
         if !matches!(self.next(1), Some(Token::Identifier { .. })) {
             return false;
         }
@@ -4408,18 +4988,45 @@ impl Parser {
                     )))
     }
 
-    fn parse_struct_literal(&mut self, path: Path, span: Span) -> R<Box<Expression>> {
-        let fields = self.parse_expression_field_list()?;
-        let literal = StructLiteral { path, fields };
+    fn parse_struct_literal(&mut self, path: ConstructorPath, span: Span) -> R<Box<Expression>> {
+        let (fields, base) = self.parse_expression_field_list()?;
+        let literal = StructLiteral { path, fields, base };
         let kind = ExpressionKind::StructLiteral(literal);
         let span = span.to(self.hi_span());
         Ok(self.build_expr(kind, span))
     }
 
-    fn parse_expression_field_list(&mut self) -> R<Vec<ExpressionField>> {
-        self.parse_delimiter_sequence(Delimiter::Brace, Token::Comma, |p| {
-            p.parse_expression_field()
-        })
+    fn parse_expression_field_list(
+        &mut self,
+    ) -> R<(Vec<ExpressionField>, Option<Box<Expression>>)> {
+        let mut base = None;
+        let entries = self.parse_delimiter_sequence(Delimiter::Brace, Token::Comma, |p| {
+            if base.is_some() {
+                p.emit_error(ParserError::StructUpdateBaseMustBeLast, p.lo_span());
+            }
+            if p.eat(Token::DotDot) {
+                base = Some(p.parse_expression()?);
+                Ok(None)
+            } else {
+                p.parse_expression_field().map(Some)
+            }
+        })?;
+        let fields: Vec<_> = entries.into_iter().flatten().collect();
+        let mut names = std::collections::HashSet::new();
+        for field in &fields {
+            let name = match (&field.label, &field.expression.kind) {
+                (Some(label), _) => label.identifier,
+                (None, ExpressionKind::Identifier(name)) => *name,
+                _ => {
+                    self.emit_error(ParserError::InvalidFieldShorthand, field.span);
+                    continue;
+                }
+            };
+            if !names.insert(name.symbol) {
+                self.emit_error(ParserError::DuplicateNamedField(name.symbol), name.span);
+            }
+        }
+        Ok((fields, base))
     }
 
     fn parse_expression_field(&mut self) -> R<ExpressionField> {
@@ -4457,6 +5064,8 @@ impl Parser {
             Token::Shl => Some(BinaryOperator::BitShl),
             Token::Shr => Some(BinaryOperator::BitShr),
 
+            Token::IdentityEql => Some(BinaryOperator::IdentityEql),
+            Token::IdentityNeq => Some(BinaryOperator::IdentityNeq),
             Token::Eql => Some(BinaryOperator::Eql),
             Token::Neq => Some(BinaryOperator::Neq),
             Token::Geq => Some(BinaryOperator::Geq),
@@ -4488,12 +5097,39 @@ impl Parser {
 }
 
 #[derive(Debug)]
-enum ParserError {
-    #[allow(unused)]
+pub(crate) enum ParserError {
     Expected(Token, Token),
     ExpectedIdentifier,
     ExpectedCfgIdentifier,
     ExpectedSemiColon,
+    QualifiedPathSeparator,
+    LegacyImplDeclaration,
+    ExpectedConformanceTo,
+    StaticFunctionHasReceiver,
+    DuplicateMethodModifier,
+    InvalidMethodModifier,
+    LifecycleRequiresExtension,
+    InvalidLifecycleModifier,
+    InvalidInitializerSignature,
+    InitializerReceiver,
+    WeakStorageRemoved,
+    ConditionalShorthandBinding,
+    TypedShorthandDeclaration,
+    ReferenceConstModifier,
+    MutableReferenceRemoved,
+    ExplicitReceiverRemoved,
+    ReferencePatternRemoved,
+    MoveClosureRemoved,
+    RemovedCallableKind(Symbol),
+    LegacyPipeClosure,
+    EnumPayloadVisibility,
+    DuplicateEnumPayloadField(Symbol),
+    DuplicateNamedField(Symbol),
+    StructUpdateBaseMustBeLast,
+    InvalidNamedPatternRest,
+    InvalidFieldShorthand,
+    ExpectedEnumPayloadSeparator,
+    InvalidBindingConditionPosition,
     ExpectedDeclaration,
     ExpectedTopLevelDeclaration,
     TopLevelVariableMustBeStatic,
@@ -4505,7 +5141,9 @@ enum ParserError {
     ExpectedElseBlock,
     ExpectedExpression,
     InvalidCollectionType,
-    ExpectedStaticLetOrVar,
+    ExpectedStaticVar,
+    LetRemoved(Option<Symbol>),
+    RelaxedBoundRemoved,
     MissingStaticTypeAnnotation,
     MissingStaticInitializer,
     DissallowedAssociatedDeclaration,
@@ -4528,22 +5166,19 @@ enum ParserError {
     DisallowedStructLiteral,
     ExpectedPathExpression,
     ExpectedComputedPropertyAccessor,
+    ComputedPropertyAccessorSignatureRemoved,
+    InvalidSubscriptSignature,
+    InvalidSubscriptAccessor,
+    DuplicateSubscriptAccessor,
+    MissingSubscriptRead,
     MissingComputedPropertyGetter,
     DuplicateComputedPropertyAccessor,
-    InvalidComputedPropertyGetterSignature,
-    InvalidComputedPropertySetterSignature,
-    AsyncComputedPropertySetterNotAllowed,
-    ExtraTypeArguments,
     UnsafeModifierRequiresFunction,
     UnsafeAttributeRemoved,
-    UnexpectedSemicolonInList {
-        context: &'static str,
-    },
+    DeinitRemoved,
+    UnexpectedSemicolonInList { context: &'static str },
     DuplicateModuleDecl,
-    ModuleDeclNameMismatch {
-        declared: String,
-        expected: String,
-    },
+    ModuleDeclNameMismatch { declared: String, expected: String },
     ModuleDeclInRoot,
 }
 
@@ -4552,18 +5187,49 @@ impl Display for ParserError {
         use ParserError::*;
         match self {
             Expected(expected, found) => {
-                // Using debug here so we don't require Token: Display
-                write!(f, "expected token {:?}, found {:?}", expected, found)
+                write!(f, "expected `{expected}`, found `{found}`")
             }
             ExpectedIdentifier => f.write_str("expected identifier"),
             ExpectedCfgIdentifier => {
                 f.write_str("expected 'cfg' following '#' in configuration expression")
             }
             ExpectedSemiColon => f.write_str("expected ';'"),
+            QualifiedPathSeparator => f.write_str("qualified paths require `::` instead of `.`"),
+            LegacyImplDeclaration => f.write_str(
+                "implementation declarations use `extend Type` or `conform Type to Interface`",
+            ),
+            ExplicitReceiverRemoved => f.write_str("self is implicit; declare storage receivers with `extend &T` or `conform &T to I`"),
+            ReferencePatternRemoved => f.write_str("reference patterns were removed; bind values in matches or dereference local initializers"),
+            MoveClosureRemoved => f.write_str("`move` closures were removed; closures share captured variables"),
+            RemovedCallableKind(name) => write!(f, "`{name}` was removed; use `{}`", if name.as_str().starts_with("Async") { "AsyncFn" } else { "Fn" }),
+            MutableReferenceRemoved => f.write_str("safe references use `&`; `&mut` has been removed"),
+            ReferenceConstModifier => f.write_str("`&const T` is removed; write `&T`"),
+            EnumPayloadVisibility => f.write_str("enum payload fields inherit the variant’s visibility; remove the field visibility modifier"),
+            DuplicateEnumPayloadField(name) => write!(f, "duplicate enum payload field `{name}`"),
+            DuplicateNamedField(name) => write!(f, "duplicate named field `{name}`"),
+            StructUpdateBaseMustBeLast => write!(f, "a struct update base must appear once and at the end"),
+            InvalidNamedPatternRest => write!(f, "`..` must appear once, at the end of a named pattern"),
+            InvalidFieldShorthand => write!(f, "field shorthand requires a single identifier"),
+            ExpectedEnumPayloadSeparator => {
+                f.write_str("expected a comma or newline between enum payload fields")
+            }
+            TypedShorthandDeclaration => f.write_str(
+                "shorthand declarations do not take type annotations; use `var name: Type = value`",
+            ),
+            ConditionalShorthandBinding => {
+                f.write_str("conditional bindings use `var` or `case` with `=`, not `:=`")
+            }
+            InvalidBindingConditionPosition => {
+                f.write_str("binding conditions must be standalone or joined with `&&`")
+            }
+            StaticFunctionHasReceiver => {
+                f.write_str("a static function cannot declare a self receiver")
+            }
+            ExpectedConformanceTo => f.write_str("expected `to` after the conformance target type"),
             ExpectedDeclaration => f.write_str("expected declaration"),
             ExpectedTopLevelDeclaration => f.write_str("expected top-level declaration"),
             TopLevelVariableMustBeStatic => f.write_str(
-                "top-level and namespace variables must use `static let` or `static var`",
+                "top-level and namespace variables must use `static var`",
             ),
             ExpectedType => f.write_str("expected type"),
             ExpectedInterfaceSetMember => {
@@ -4575,7 +5241,14 @@ impl Display for ParserError {
             ExpectedElseBlock => f.write_str("expected 'else' block"),
             ExpectedExpression => f.write_str("expected expression"),
             InvalidCollectionType => f.write_str("invalid collection type"),
-            ExpectedStaticLetOrVar => f.write_str("expected `let` or `var` after `static`"),
+            ExpectedStaticVar => f.write_str("expected `var` after `static`"),
+            LetRemoved(Some(name)) => {
+                write!(f, "`let` was removed; declare this as `{name} := ...`")
+            }
+            LetRemoved(None) => f.write_str("`let` was removed; write `var` instead"),
+            RelaxedBoundRemoved => f.write_str(
+                "`!` bounds were removed; every type is escapable, so delete this bound",
+            ),
             MissingStaticTypeAnnotation => {
                 f.write_str("static declarations require an explicit type annotation")
             }
@@ -4604,22 +5277,38 @@ impl Display for ParserError {
                 "expected a path expression (identifier, member access, or type specialization)",
             ),
             ExpectedComputedPropertyAccessor => {
-                f.write_str("expected computed property accessor `get` or `set`")
+                f.write_str("computed properties are get-only; use `get { ... }` with implicit self")
             }
+            InvalidSubscriptSignature => f.write_str("subscript requires one or more fixed index parameters, no defaults or variadics, and an element type"),
+            InvalidSubscriptAccessor => f.write_str("expected `get`, `set(value)`, or `address` with implicit self and a synchronous body"),
+            DuplicateSubscriptAccessor => f.write_str("duplicate subscript accessor"),
+            MissingSubscriptRead => f.write_str("subscript must provide get or address; setter-only declarations are not supported"),
             MissingComputedPropertyGetter => f.write_str("computed property must declare a getter"),
             DuplicateComputedPropertyAccessor => {
                 f.write_str("duplicate computed property accessor")
             }
-            InvalidComputedPropertyGetterSignature => {
-                f.write_str("invalid getter signature; expected `get(self|&self|&mut self)`")
-            }
-            InvalidComputedPropertySetterSignature => f.write_str(
-                "invalid setter signature; expected `set(&mut self, value: T)` with no return",
+            ComputedPropertyAccessorSignatureRemoved => f.write_str("computed getters use `get { ... }` with implicit self; receiver parameters, async and result annotations are not supported"),
+            WeakStorageRemoved => f.write_str(
+                "`weak` storage was removed; store a `std::weak::Weak[T]` and read it with `value()`",
             ),
-            AsyncComputedPropertySetterNotAllowed => {
-                f.write_str("computed property setter cannot be async")
+            LifecycleRequiresExtension => f.write_str("init declarations belong in extend blocks"),
+            InvalidLifecycleModifier => f.write_str("invalid init modifier combination"),
+            DeinitRemoved => f.write_str(
+                "`deinit` was removed; the garbage collector reclaims memory, so release resources with an explicit method such as `close()`",
+            ),
+            InvalidInitializerSignature => {
+                f.write_str("init must be synchronous")
             }
-            ExtraTypeArguments => f.write_str("extra type arguments provided"),
+            InitializerReceiver => f.write_str(
+                "init has implicit initializing self; do not declare a receiver parameter",
+            ),
+            LegacyPipeClosure => f.write_str(
+                "closures use `(parameters) => body`; pipe closures are no longer supported",
+            ),
+            DuplicateMethodModifier => f.write_str("duplicate class method modifier"),
+            InvalidMethodModifier => {
+                f.write_str("final/override require an instance function declaration")
+            }
             UnsafeModifierRequiresFunction => {
                 f.write_str("`unsafe` can only be applied to function declarations")
             }
@@ -4657,8 +5346,6 @@ enum Delimiter {
     Brace,
     /// `[ ... ]`
     Bracket,
-    /// `| ... |`
-    Bar,
 }
 
 impl Delimiter {
@@ -4667,7 +5354,6 @@ impl Delimiter {
             Delimiter::Parenthesis => Token::LParen,
             Delimiter::Brace => Token::LBrace,
             Delimiter::Bracket => Token::LBracket,
-            Delimiter::Bar => Token::Bar,
         }
     }
 
@@ -4676,7 +5362,6 @@ impl Delimiter {
             Delimiter::Parenthesis => Token::RParen,
             Delimiter::Brace => Token::RBrace,
             Delimiter::Bracket => Token::RBracket,
-            Delimiter::Bar => Token::Bar,
         }
     }
 }
@@ -4684,14 +5369,21 @@ impl Delimiter {
 fn is_generic_type_disambiguating_token(token: &Token) -> bool {
     use Token::*;
 
+    // `to` is contextual so ordinary parameter/local names can still use it.
+    if matches!(token, Identifier { value } if value == "to") {
+        return true;
+    }
     if matches!(
         token,
         &RParen
             | &RBracket
             | &Bar
+            | &EqArrow
+            | &Async
             | &LBrace
             | &RBrace
             | &Dot
+            | &ColonColon
             | &Comma
             | &Amp
             | &Semicolon
@@ -4703,7 +5395,7 @@ fn is_generic_type_disambiguating_token(token: &Token) -> bool {
             | &Assign
             | &As
             | &RChevron
-            | &For // For `impl Interface[T] for Type` syntax
+            | &For // Recovery for a rejected legacy implementation header.
             | &Where // For `func foo() -> T[U] where ...` syntax
     ) {
         return true;
@@ -4723,6 +5415,7 @@ bitflags::bitflags! {
         const ALLOW_WILDCARD = 1 << 1;
         const ALLOW_REST_PATTERN = 1 << 2;
         const NO_STRUCT_LITERALS = 1 << 3;
+        const STOP_CONDITION_CONNECTORS = 1 << 4;
     }
 }
 
@@ -4758,6 +5451,25 @@ mod tests {
     }
 
     #[test]
+    fn removed_mutable_references_report_one_deliberate_diagnostic() {
+        for source in [
+            "func edit(_ value: &mut int32) {}",
+            "extend Counter { func edit(&mut self) {} }",
+            "func main() { value := 1; alias := &mut value }",
+        ] {
+            let errors = parse_decls(source).unwrap_err();
+            assert_eq!(
+                errors
+                    .iter()
+                    .filter(|error| matches!(error.value, ParserError::MutableReferenceRemoved))
+                    .count(),
+                1,
+                "{errors:?}"
+            );
+        }
+    }
+
+    #[test]
     fn nested_generic_types_parse_once() {
         assert_nested_types_parse_once("Box[", "]");
     }
@@ -4790,6 +5502,60 @@ mod tests {
         assert_eq!(param.attributes.len(), 1);
         assert_eq!(param.attributes[0].identifier.symbol.as_str(), "marker");
         assert_eq!(param.span.start.offset, 7);
+    }
+
+    #[test]
+    fn qualified_and_instance_members_retain_distinct_syntax() {
+        let expr = parse_expr_str("library\n::Counter[int]\n::new().value");
+        let ExpressionKind::Member {
+            target, qualified, ..
+        } = &expr.kind
+        else {
+            panic!("expected instance field access");
+        };
+        assert!(!qualified);
+        let ExpressionKind::Call(callee, _) = &target.kind else {
+            panic!("expected constructor call");
+        };
+        assert!(matches!(
+            callee.kind,
+            ExpressionKind::Member {
+                qualified: true,
+                ..
+            }
+        ));
+        let ty = parse_type_str("library::Container[library::Element]");
+        let TypeKind::Nominal(path) = &ty.kind else {
+            panic!("expected nominal type")
+        };
+        assert_eq!(path.segments.len(), 2);
+    }
+
+    #[test]
+    fn qualified_import_forms_and_wildcard_asi() {
+        let source =
+            "import std::collections::{List, Dictionary as Map}\nexport std::task::*\nfunc f() {}";
+        let decls = parse_decls(source).expect("qualified imports should parse");
+        assert_eq!(decls.len(), 3);
+        assert!(
+            matches!(&decls[1].kind, DeclarationKind::Export(tree) if matches!(tree.kind, UseTreeKind::Glob))
+        );
+    }
+
+    #[test]
+    fn dotted_imports_and_type_paths_are_rejected() {
+        for source in [
+            "import std.collections.List",
+            "type Item = library.Element",
+            "func f() { value := library.Element {}; }",
+        ] {
+            let errors = parse_decls(source).expect_err("legacy qualified syntax must be rejected");
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| matches!(error.value, ParserError::QualifiedPathSeparator))
+            );
+        }
     }
 
     fn parser(input: &str) -> Parser {
@@ -4860,7 +5626,7 @@ mod tests {
             "if [Flag { enabled: true }].at(0).enabled {}",
             "if values.get(Key { index: 0 }) {}",
             "if { Flag { enabled: true }.enabled } {}",
-            "if accept(|| { Flag { enabled: true } }) {}",
+            "if accept(() => { Flag { enabled: true } }) {}",
             "if f\"{Flag { enabled: true }.enabled}\" == \"true\" {}",
             "match (Flag { enabled: true }) { case value => {}; }",
         ] {
@@ -4953,6 +5719,13 @@ mod tests {
     }
 
     #[test]
+    fn comma_separated_fields_do_not_break_following_declarations() {
+        let declarations = parse_decls("struct Inner { value: int32 }\nstruct Outer { inner: Inner, tag: string, }\nfunc main() {}")
+            .expect("comma-separated fields");
+        assert_eq!(declarations.len(), 3);
+    }
+
+    #[test]
     fn test_struct_readonly_fields() {
         let decl = parse_one_decl("struct Config { readonly value: int32; }");
         match &decl.kind {
@@ -4987,14 +5760,14 @@ mod tests {
 
     #[test]
     fn test_interface_declaration() {
-        let decl = parse_one_decl("interface Drawable { func draw(&self); }");
+        let decl = parse_one_decl("interface Drawable { func draw(); }");
         assert!(matches!(&decl.kind, DeclarationKind::Interface(i) if i.declarations.len() == 1));
     }
 
     #[test]
     fn test_interface_conformances() {
         let decl = parse_one_decl(
-            "interface Comparable: Equatable { func compare(&self, other: &Self) -> int32; }",
+            "interface Comparable: Equatable { func compare( other: &Self) -> int32; }",
         );
         match &decl.kind {
             DeclarationKind::Interface(i) => assert!(i.conformances.is_some()),
@@ -5030,13 +5803,13 @@ mod tests {
 
     #[test]
     fn test_import_declaration() {
-        let decl = parse_one_decl("import std.io.*");
+        let decl = parse_one_decl("import std::io::*");
         assert!(matches!(&decl.kind, DeclarationKind::Import(_)));
     }
 
     #[test]
     fn test_import_nested() {
-        let decl = parse_one_decl("import std.{io, fs, net}");
+        let decl = parse_one_decl("import std::{io, fs, net}");
         match &decl.kind {
             DeclarationKind::Import(tree) => {
                 assert!(
@@ -5050,16 +5823,493 @@ mod tests {
     #[test]
     fn test_impl_declaration() {
         // Test inherent impl
-        let decl = parse_one_decl("impl int32 { const VALUE: int32 = 0; }");
+        let decl = parse_one_decl("extend int32 { const VALUE: int32 = 0; }");
         assert!(
             matches!(&decl.kind, DeclarationKind::Impl(impl_block) if impl_block.declarations.len() == 1 && impl_block.interface.is_none())
         );
 
         // Test trait impl
-        let decl = parse_one_decl("impl Hashable for Point { func hash() -> int64 { 0 }; }");
+        let decl =
+            parse_one_decl("conform Point to Hashable { static func hash() -> int64 { 0 }; }");
         assert!(
             matches!(&decl.kind, DeclarationKind::Impl(impl_block) if impl_block.interface.is_some())
         );
+    }
+
+    #[test]
+    fn conformance_target_precedes_interface_and_keeps_generic_arguments() {
+        let declaration = parse_one_decl(
+            "conform[T: Copy] Box[T] to Readable[T] where T: Clone { func read() {}; }",
+        );
+        let DeclarationKind::Impl(implementation) = declaration.kind else {
+            panic!("expected implementation node");
+        };
+        let TypeKind::Nominal(target) = &implementation.target.kind else {
+            panic!("expected nominal target");
+        };
+        let TypeKind::Nominal(interface) = &implementation.interface.as_ref().unwrap().kind else {
+            panic!("expected nominal interface");
+        };
+        assert_eq!(target.segments[0].identifier.symbol.as_str(), "Box");
+        assert_eq!(interface.segments[0].identifier.symbol.as_str(), "Readable");
+        assert!(target.segments[0].arguments.is_some());
+        assert!(implementation.generics.where_clause.is_some());
+        let ty = parse_type_str("library::Wrapper[int32]::Item");
+        assert!(matches!(ty.kind, TypeKind::Nominal(path) if path.segments[1].arguments.is_some()));
+        parse_one_decl("func pass(_ to: int32) -> int32 { to }");
+    }
+
+    #[test]
+    fn g29_implicit_receivers_use_the_declared_target() {
+        for target in ["Counter", "&Counter"] {
+            let declaration = parse_one_decl(&format!(
+                "extend {target} {{ func read(_ scale: int32) -> int32 {{ self.value * scale }}; static func make() {{}}; }}"
+            ));
+            let DeclarationKind::Impl(implementation) = declaration.kind else {
+                panic!("extension")
+            };
+            let AssociatedDeclarationKind::Function(method) = &implementation.declarations[0].kind
+            else {
+                panic!("method")
+            };
+            assert!(
+                matches!(
+                    method.signature.prototype.inputs[0].annotated_type.kind,
+                    TypeKind::ImplicitSelf
+                ),
+                "{target}: receiver must be Self, not &Self"
+            );
+            assert_eq!(
+                method.signature.prototype.inputs[1].name.symbol.as_str(),
+                "scale"
+            );
+            let AssociatedDeclarationKind::Function(method) = &implementation.declarations[1].kind
+            else {
+                panic!("static method")
+            };
+            assert!(method.signature.prototype.inputs.is_empty());
+        }
+    }
+
+    #[test]
+    fn static_functions_reject_every_explicit_receiver_mode() {
+        for receiver in ["self", "&self", "&self"] {
+            let source = format!("extend Counter {{ static func bad({receiver}) {{}}; }}");
+            let errors = parse_decls(&source).expect_err("static receivers must be rejected");
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| matches!(e.value, ParserError::StaticFunctionHasReceiver))
+            );
+        }
+        assert!(parse_decls("static func free() {}").is_err());
+    }
+
+    #[test]
+    fn local_shorthand_normalizes_to_an_inferred_mutable_declaration() {
+        let DeclarationKind::Function(function) =
+            parse_one_decl("func f() { value\n:=\n1; value = 2; }").kind
+        else {
+            panic!("function")
+        };
+        let block = function.block.unwrap();
+        let StatementKind::Variable(local) = &block.statements[0].kind else {
+            panic!("local")
+        };
+        assert_eq!(local.mutability, Mutability::Mutable);
+        assert!(local.is_shorthand);
+        assert!(local.ty.is_none());
+        assert!(local.initializer.is_some());
+        assert!(matches!(local.pattern.kind, PatternKind::Identifier(_)));
+        for source in [
+            "value := 1",
+            "func f() { value :=; }",
+            "func f() { var value := 1; }",
+            "func f() { value: int32 := 1; }",
+        ] {
+            assert!(parse_decls(source).is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn conditional_bindings_accept_writable_value_patterns() {
+        for source in [
+            "if var value = optional {}",
+            "if case var .some(value) = optional {}",
+            "if case .some(value) = optional {}",
+        ] {
+            let expression = parse_expr_str(source);
+            let ExpressionKind::If(condition) = &expression.kind else {
+                panic!("if")
+            };
+            assert!(matches!(
+                condition.condition.kind,
+                ExpressionKind::OptionalPatternBinding(_) | ExpressionKind::PatternBinding(_)
+            ));
+        }
+        parse_one_decl(
+            "func f() { while var value = next() {}; guard var value = optional else { return; }; }",
+        );
+    }
+
+    #[test]
+    fn let_reports_removed_syntax_with_a_replacement() {
+        let messages = |source: &str| -> Vec<String> {
+            parse_decls(source)
+                .expect_err("`let` is removed")
+                .into_iter()
+                .map(|error| error.value.to_string())
+                .collect()
+        };
+        assert_eq!(
+            messages("func f() { let total = 1 }"),
+            ["`let` was removed; declare this as `total := ...`"]
+        );
+        for source in [
+            "func f() { let total: int32 = 1 }",
+            "func f() { let (a, b) = (1, 2) }",
+            "func f() { let later: int32; later = 1 }",
+            "func f(o: Optional[int32]) { if let v = o {} }",
+            "static let LIMIT: int32 = 1",
+        ] {
+            assert_eq!(
+                messages(source),
+                ["`let` was removed; write `var` instead"],
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn binding_initializers_stop_before_condition_connectors_but_not_nested_operators() {
+        let expression = parse_expr_str("if var value = produce(true && false) && value > 0 {}");
+        let ExpressionKind::If(condition) = &expression.kind else {
+            panic!("if")
+        };
+        let ExpressionKind::Binary(BinaryOperator::BoolAnd, left, _) = &condition.condition.kind
+        else {
+            panic!("conjunction")
+        };
+        let ExpressionKind::OptionalPatternBinding(binding) = &left.kind else {
+            panic!("binding")
+        };
+        assert!(matches!(
+            binding.expression.kind,
+            ExpressionKind::Call(_, _)
+        ));
+        parse_expr_str("if var first = a && var second = b && first == second {}");
+        parse_expr_str("if predicate(() => { if var value = optional {}; true }) {}");
+        parse_expr_str("if { if true {}; true } {}");
+    }
+
+    #[test]
+    fn conditional_shorthand_and_non_conjunctive_binding_positions_are_rejected() {
+        for source in [
+            "if value := optional {}",
+            "if var value := optional {}",
+            "if case .some(value) := optional {}",
+        ] {
+            let errors = parse_expr_err(source);
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| matches!(e.value, ParserError::ConditionalShorthandBinding)),
+                "{source}: {errors:?}"
+            );
+        }
+        for source in [
+            "if var value = optional || true {}",
+            "if !(var value = optional) {}",
+            "if predicate(var value = optional) {}",
+            "if (var value = optional) {}",
+        ] {
+            let errors = parse_expr_err(source);
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| matches!(e.value, ParserError::InvalidBindingConditionPosition)),
+                "{source}: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejected_condition_recovers_through_its_nested_body() {
+        let errors = parse_decls("func main() { if value := 1 { return; } }")
+            .expect_err("invalid condition");
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(matches!(
+            errors[0].value,
+            ParserError::ConditionalShorthandBinding
+        ));
+    }
+
+    #[test]
+    fn class_headers_are_distinct_from_inline_structs() {
+        let declaration = parse_one_decl(
+            "public final class Box[T]: Base, Printable where T: Copy { readonly value: T }",
+        );
+        assert_eq!(declaration.visibility.level, VisibilityLevel::Public);
+        let DeclarationKind::Class(class) = declaration.kind else {
+            panic!("expected class")
+        };
+        assert!(class.is_final);
+        assert!(class.generics.type_parameters.is_some());
+        assert!(class.generics.where_clause.is_some());
+        assert_eq!(class.fields[0].mutability, Mutability::Immutable);
+        let declaration = parse_one_decl("namespace Models { class Entry {}; }");
+        let DeclarationKind::Namespace(namespace) = declaration.kind else {
+            panic!("namespace")
+        };
+        assert!(matches!(
+            namespace.declarations[0].kind,
+            NamespaceDeclarationKind::Class(_)
+        ));
+        assert!(parse_decls("func f() { class Local {} }").is_err());
+        assert!(parse_decls("final struct Value {}").is_err());
+    }
+
+    #[test]
+    fn class_method_modifiers_preserve_the_implicit_receiver() {
+        let declaration = parse_one_decl("extend Box { final override func reset() {}; }");
+        let DeclarationKind::Impl(block) = declaration.kind else {
+            panic!("extend")
+        };
+        let AssociatedDeclarationKind::Function(function) = &block.declarations[0].kind else {
+            panic!("function")
+        };
+        assert!(function.is_final && function.is_override);
+        assert!(matches!(
+            function.signature.prototype.inputs[0].annotated_type.kind,
+            TypeKind::ImplicitSelf
+        ));
+        assert!(parse_decls("extend Box { final final func f() {} }").is_err());
+        assert!(parse_decls("extend Box { override static func f() {} }").is_err());
+    }
+
+    #[test]
+    fn lifecycle_declarations_have_distinct_ast_nodes() {
+        let declaration = parse_one_decl(
+            "extend Doc { required override init(_ value: int32) { super.init(value) }
+ convenience init() { self.init(0) } }",
+        );
+        let DeclarationKind::Impl(block) = declaration.kind else {
+            panic!("extend")
+        };
+        let AssociatedDeclarationKind::Initializer(init) = &block.declarations[0].kind else {
+            panic!("init")
+        };
+        assert!(init.is_required && init.function.is_override);
+        assert!(!init.is_convenience);
+        assert_eq!(init.function.signature.prototype.inputs.len(), 1);
+        assert!(
+            matches!(&block.declarations[1].kind, AssociatedDeclarationKind::Initializer(init) if init.is_convenience)
+        );
+        // Contextual modifiers remain ordinary identifiers outside declarations.
+        parse_one_decl("func f(_ required: int32, _ convenience: int32) {}");
+    }
+
+    #[test]
+    fn initializer_keeps_its_explicit_result_annotation() {
+        let declaration = parse_one_decl(
+            "extend Doc { required init[D](from decoder: D) -> Result[Self, D::Error] {} }",
+        );
+        let DeclarationKind::Impl(block) = declaration.kind else {
+            panic!("extend")
+        };
+        let AssociatedDeclarationKind::Initializer(init) = &block.declarations[0].kind else {
+            panic!("init")
+        };
+        assert!(init.is_required);
+        assert!(!matches!(
+            init.function
+                .signature
+                .prototype
+                .output
+                .as_ref()
+                .unwrap()
+                .kind,
+            TypeKind::ImplicitSelf
+        ));
+    }
+
+    #[test]
+    fn lifecycle_signatures_reject_unapproved_forms() {
+        for source in [
+            "extend Doc { init() async {} }",
+            "extend Doc { init(&self) {} }",
+            "extend Doc { init?() {} }",
+            "extend Doc { final init() {} }",
+            "extend Doc { required func f() {} }",
+            "interface P { init() }",
+            "conform Doc to P { init() {}; }",
+            "init() {}",
+        ] {
+            assert!(parse_decls(source).is_err(), "accepted {source}");
+        }
+    }
+
+    #[test]
+    fn weak_storage_reports_removed_syntax_and_keeps_weak_contextual() {
+        let declaration = parse_one_decl(
+            "class Node { parent: int32 = 0\n readonly id: int32 = 1\n weak: int32 }",
+        );
+        let DeclarationKind::Class(class) = declaration.kind else {
+            panic!("class")
+        };
+        assert!(class.fields[0].default_value.is_some());
+        assert_eq!(class.fields[1].mutability, Mutability::Immutable);
+        assert_eq!(class.fields[2].identifier.symbol.as_str(), "weak");
+        parse_one_decl("func f() { weak := 1 }");
+        for source in [
+            "class Node { weak parent: Node? = .none }",
+            "func f() { weak var target: Node? = .none }",
+            "func f() { weak var target: Node? = .none }",
+        ] {
+            let errors = parse_decls(source).expect_err("weak storage was removed");
+            assert_eq!(errors.len(), 1, "{source}: {errors:?}");
+            assert!(matches!(errors[0].value, ParserError::WeakStorageRemoved));
+        }
+    }
+
+    #[test]
+    fn relaxed_bounds_report_their_removal() {
+        for source in [
+            "func forward[T: !Escapable & Clone](_ value: T) -> T { value }",
+            "func forward[T](_ value: T) -> T where T: !Escapable { value }",
+            "interface View: !Escapable, Inspectable {}",
+            "interface View { type Element: !Escapable; }",
+        ] {
+            let errors = parse_decls(source).expect_err("relaxed bounds were removed");
+            assert_eq!(errors.len(), 1, "{source}: {errors:?}");
+            assert!(matches!(errors[0].value, ParserError::RelaxedBoundRemoved));
+        }
+    }
+
+    #[test]
+    fn arrow_closures_parse_without_changing_parenthesized_expressions() {
+        for source in [
+            "() => 42",
+            "(x) => x",
+            "(x: int32,) -> int32 => x",
+            "(x) -> std::result::Result[int32, string] => .ok(x)",
+            "(x) async -> List[int32] => { x }",
+            "(x) -> List[int32] async => { x }",
+            "(x) => (y) => x + y",
+            "() async -> int32 => { 42 }",
+            "(x)\n => x",
+        ] {
+            assert!(
+                matches!(parse_expr_str(source).kind, ExpressionKind::Closure(_)),
+                "not a closure: {source}"
+            );
+        }
+        for source in ["()", "(1, 2)", "(value)", "move(value)", "(left | right)"] {
+            assert!(
+                !matches!(parse_expr_str(source).kind, ExpressionKind::Closure(_)),
+                "misparsed {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_pipe_closures_are_rejected_with_a_migration_diagnostic() {
+        for source in ["|| 1", "|x| x"] {
+            let errors = parse_expr_err(source);
+            assert!(!errors.is_empty(), "accepted {source}");
+            if !source.starts_with("move") {
+                assert!(
+                    errors
+                        .iter()
+                        .any(|e| matches!(e.value, ParserError::LegacyPipeClosure))
+                );
+            }
+        }
+        // Once the arrow commits the parse, missing bodies are closure errors.
+        assert!(
+            parse_expr_err("() =>")
+                .iter()
+                .any(|e| matches!(e.value, ParserError::ExpectedExpression))
+        );
+    }
+
+    #[test]
+    fn named_enum_payloads_preserve_names_labels_and_readonly() {
+        let declaration = parse_one_decl(
+            "enum Event[T] { case item { readonly fixed: T, editable: int32 }; case empty {}; }",
+        );
+        let DeclarationKind::Enum(event) = declaration.kind else {
+            panic!("enum")
+        };
+        let VariantKind::Struct(fields) = &event.cases[0].variants[0].kind else {
+            panic!("named payload")
+        };
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].identifier.symbol.as_str(), "fixed");
+        assert_eq!(fields[0].label.unwrap().identifier, fields[0].identifier);
+        assert_eq!(fields[0].mutability, Mutability::Immutable);
+        assert_eq!(fields[1].mutability, Mutability::Mutable);
+        assert!(
+            matches!(&event.cases[1].variants[0].kind, VariantKind::Struct(fields) if fields.is_empty())
+        );
+        parse_one_decl("enum Event { case click { x: int32\n y: int32\n } }");
+    }
+
+    #[test]
+    fn enum_payload_fields_reject_visibility_modifiers() {
+        for visibility in ["public", "private", "internal"] {
+            for payload in [
+                format!("{{ {visibility} value: int32 }}"),
+                format!("({visibility} int32)"),
+            ] {
+                let source = format!("enum Event {{ case item {payload} }}");
+                let errors = parse_decls(&source).expect_err("payload visibility is inherited");
+                assert_eq!(errors.len(), 1, "{source}: {errors:?}");
+                assert!(matches!(
+                    errors[0].value,
+                    ParserError::EnumPayloadVisibility
+                ));
+            }
+        }
+        parse_one_decl("public enum Event { case item { value: int32 }; case tuple(int32) }");
+        parse_one_decl("struct Value { private field: int32 }");
+    }
+
+    #[test]
+    fn named_enum_payloads_require_separators_and_unique_names() {
+        let errors = parse_decls("enum Event { case click { x: int32, x: int32 } }")
+            .expect_err("duplicate field");
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e.value, ParserError::DuplicateEnumPayloadField(_)))
+        );
+        let errors = parse_decls("enum Event { case click { x: int32 y: int32 } }")
+            .expect_err("missing separator");
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e.value, ParserError::ExpectedEnumPayloadSeparator))
+        );
+    }
+
+    #[test]
+    fn implementation_headers_reject_legacy_or_mixed_syntax() {
+        for source in ["impl Counter {}", "impl Readable for Counter {}"] {
+            let errors = parse_decls(source).expect_err("legacy implementation syntax is rejected");
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| matches!(e.value, ParserError::LegacyImplDeclaration))
+            );
+        }
+        let errors = parse_decls("conform Counter Readable {}").expect_err("missing to");
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e.value, ParserError::ExpectedConformanceTo))
+        );
+        assert!(parse_decls("extend Readable for Counter {}").is_err());
     }
 
     #[test]
@@ -5096,7 +6346,7 @@ mod tests {
 
     #[test]
     fn test_nominal_type_qualified() {
-        let ty = parse_type_str("std.io.File");
+        let ty = parse_type_str("std::io::File");
         assert!(matches!(&ty.kind, TypeKind::Nominal(p) if p.segments.len() == 3));
     }
 
@@ -5196,7 +6446,7 @@ mod tests {
     #[test]
     fn test_reference_type() {
         let ty = parse_type_str("&int32");
-        assert!(matches!(ty.kind, TypeKind::Reference(_, _)));
+        assert!(matches!(ty.kind, TypeKind::Reference(_)));
     }
 
     #[test]
@@ -5243,6 +6493,20 @@ mod tests {
     fn test_collection_type_list() {
         let ty = parse_type_str("[int32]");
         assert!(matches!(ty.kind, TypeKind::List(_)));
+    }
+
+    #[test]
+    fn test_collection_type_slice() {
+        let ty = parse_type_str("[int32; ..]");
+        assert!(matches!(ty.kind, TypeKind::Slice(_)));
+        let ty = parse_type_str("[[int32; ..]; ..]?");
+        let TypeKind::Optional(inner) = ty.kind else {
+            panic!("expected optional slice")
+        };
+        let TypeKind::Slice(inner) = inner.kind else {
+            panic!("expected slice")
+        };
+        assert!(matches!(inner.kind, TypeKind::Slice(_)));
     }
 
     #[test]
@@ -5386,7 +6650,7 @@ mod tests {
     #[test]
     fn test_callable_shorthand_impl_interface() {
         let decl = parse_one_decl(
-            "impl Fn(int32) -> int32 for Point { func call(&self, args: int32) -> int32 { args }; }",
+            "conform Point to Fn(int32) -> int32 { func call( args: int32) -> int32 { args }; }",
         );
         assert!(matches!(
             &decl.kind,
@@ -5432,9 +6696,22 @@ mod tests {
     }
 
     #[test]
-    fn test_reference_pattern() {
-        let pattern = parse_pattern_str("&x");
-        assert!(matches!(pattern.kind, PatternKind::Reference { .. }));
+    fn reference_patterns_are_removed_in_every_binding_position() {
+        for source in [
+            "func f() { match value { case &x => x; } }",
+            "func f() { match value { case &&x => x; } }",
+            "func f() { var &x = value; }",
+            "func f() { var (&x,) = value; }",
+            "func f() { if case &x = value {} }",
+        ] {
+            let errors = parse_decls(source).expect_err("removed reference pattern");
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| matches!(error.value, ParserError::ReferencePatternRemoved)),
+                "{source}"
+            );
+        }
     }
 
     #[test]
@@ -5479,6 +6756,39 @@ mod tests {
     fn test_defer_statement() {
         let decl = parse_one_decl("func foo() { defer { cleanup(); } }");
         assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn g43_inline_defer_wraps_one_expression() {
+        let decl = parse_one_decl("func foo() { defer cleanup(value); after() }");
+        let DeclarationKind::Function(function) = decl.kind else {
+            panic!("function");
+        };
+        let body = function.block.unwrap();
+        assert_eq!(body.statements.len(), 2);
+        let StatementKind::Defer(block) = &body.statements[0].kind else {
+            panic!("defer");
+        };
+        assert!(!block.has_declarations);
+        assert_eq!(block.statements.len(), 1);
+        let StatementKind::Expression(expression) = &block.statements[0].kind else {
+            panic!("expression");
+        };
+        assert!(matches!(expression.kind, ExpressionKind::Call(..)));
+        assert_ne!(block.id, block.statements[0].id);
+        assert_ne!(block.id, expression.id);
+        assert!(matches!(
+            body.statements[1].kind,
+            StatementKind::Expression(_)
+        ));
+    }
+
+    #[test]
+    fn g43_inline_defer_uses_existing_block_mir() {
+        let diagnostics = crate::test_support::analyze_script_mir_diagnostics(
+            "func emit(_ value: int32) {}; func main() { var value: int32 = 1; defer emit(value); defer value += 1; defer if value > 0 { emit(value) }; value = 2 }",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
     #[test]
@@ -5550,7 +6860,7 @@ mod tests {
         }
 
         match &callee.kind {
-            ExpressionKind::Member { target, name } => {
+            ExpressionKind::Member { target, name, .. } => {
                 assert_eq!(name.symbol.as_str(), "sprintf");
                 match &target.kind {
                     ExpressionKind::Identifier(identifier) => {
@@ -5719,7 +7029,7 @@ mod tests {
     #[test]
     fn test_prefix_expr_ref() {
         let expr = parse_expr_str("&a");
-        assert!(matches!(&expr.kind, ExpressionKind::Reference(_, _)));
+        assert!(matches!(&expr.kind, ExpressionKind::Reference(_)));
     }
 
     #[test]
@@ -5749,14 +7059,14 @@ mod tests {
     #[test]
     fn test_postfix_tuple_member() {
         // Test via declaration context to avoid lexer integer literal parsing
-        let decl = parse_one_decl("func foo(t: (int32, int32)) { let _ = t.0; }");
+        let decl = parse_one_decl("func foo(t: (int32, int32)) { var _ = t.0; }");
         assert!(matches!(decl.kind, DeclarationKind::Function(_)));
     }
 
     #[test]
     fn test_postfix_index() {
         // Test via declaration context since indexing requires subscript expressions
-        let decl = parse_one_decl("func foo(a: [int32]) { let _ = a[0]; }");
+        let decl = parse_one_decl("func foo(a: [int32]) { var _ = a[0]; }");
         assert!(matches!(decl.kind, DeclarationKind::Function(_)));
     }
 
@@ -5842,12 +7152,12 @@ mod tests {
     #[test]
     fn test_match_missing_case_recovers_following_arm_and_statement() {
         let input = "func test() {
-            let x = 1;
-            let y = match x {
+            x := 1;
+            y := match x {
                 1 => 10;
                 case _ => 0;
             };
-            let z = 2;
+            z := 2;
         }";
         let (decls, errors) = parse_decls_with_recovery(input);
 
@@ -5895,7 +7205,7 @@ mod tests {
     #[test]
     fn test_match_missing_case_recovers_guarded_arm() {
         let input = "func test(x: int32) {
-            let y = match x {
+            y := match x {
                 n if n > 0 => 1;
                 case _ => 0;
             };
@@ -5942,56 +7252,30 @@ mod tests {
 
     #[test]
     fn test_closure_expr() {
-        let expr = parse_expr_str("|x| x + 1");
+        let expr = parse_expr_str("(x) => x + 1");
         assert!(matches!(expr.kind, ExpressionKind::Closure(_)));
     }
 
     #[test]
     fn test_closure_expr_empty() {
-        let expr = parse_expr_str("|| 42");
+        let expr = parse_expr_str("() => 42");
         assert!(matches!(expr.kind, ExpressionKind::Closure(_)));
     }
 
     #[test]
-    fn test_move_closure_expr_empty() {
-        let expr = parse_expr_str("move || 42");
-        match &expr.kind {
-            ExpressionKind::Closure(closure) => assert!(closure.is_move),
-            _ => panic!("Expected closure"),
-        }
-    }
-
-    #[test]
-    fn test_move_closure_expr() {
-        let expr = parse_expr_str("move |x| x");
-        match &expr.kind {
-            ExpressionKind::Closure(closure) => assert!(closure.is_move),
-            _ => panic!("Expected closure"),
-        }
-    }
-
-    #[test]
-    fn test_move_closure_typed_with_return_type() {
-        let expr = parse_expr_str("move |x: int32| -> int32 { x }");
-        match &expr.kind {
-            ExpressionKind::Closure(closure) => {
-                assert!(closure.is_move);
-                assert!(!closure.is_async);
-                assert!(closure.signature.prototype.output.is_some());
-            }
-            _ => panic!("Expected closure"),
-        }
-    }
-
-    #[test]
-    fn test_move_async_closure_expr_empty() {
-        let expr = parse_expr_str("move || async { 42 }");
-        match &expr.kind {
-            ExpressionKind::Closure(closure) => {
-                assert!(closure.is_move);
-                assert!(closure.is_async);
-            }
-            _ => panic!("Expected closure"),
+    fn removed_move_closures_report_a_deliberate_diagnostic() {
+        for source in [
+            "func f() { value := move () => 42 }",
+            "func f() { value := move (x: int32) -> int32 => x }",
+            "func f() { value := move () async => { 42 } }",
+        ] {
+            let errors = parse_decls(source).unwrap_err();
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| matches!(error.value, ParserError::MoveClosureRemoved)),
+                "{errors:?}"
+            );
         }
     }
 
@@ -6009,7 +7293,7 @@ mod tests {
 
     #[test]
     fn test_async_closure_expr_empty() {
-        let expr = parse_expr_str("|| async { 42 }");
+        let expr = parse_expr_str("() async => { 42 }");
         match &expr.kind {
             ExpressionKind::Closure(closure) => assert!(closure.is_async),
             _ => panic!("Expected closure"),
@@ -6024,7 +7308,7 @@ mod tests {
 
     #[test]
     fn test_block_expr() {
-        let expr = parse_expr_str("{ let x = 1; x }");
+        let expr = parse_expr_str("{ x := 1; x }");
         assert!(matches!(expr.kind, ExpressionKind::Block(_)));
     }
 
@@ -6056,9 +7340,93 @@ mod tests {
     }
 
     #[test]
+    fn specialized_calls_and_indexed_places_keep_the_complete_source_span() {
+        for source in ["identity[int32](3)", "values[index]", "matrix[row][column]"] {
+            let expr = parse_expr_str(source);
+            assert_eq!(expr.span.start.offset, 0, "{source}");
+            assert_eq!(expr.span.end.offset, source.len(), "{source}");
+        }
+    }
+
+    #[test]
+    fn bracket_suffix_preserves_value_and_type_interpretations() {
+        let expr = parse_expr_str("values[key]");
+        assert!(matches!(
+            expr.kind,
+            ExpressionKind::Specialize { index: Some(_), .. }
+        ));
+        let expr = parse_expr_str("values[key + 1]");
+        assert!(matches!(expr.kind, ExpressionKind::Index { .. }));
+        let expr = parse_expr_str("values[&key]");
+        assert!(matches!(
+            expr.kind,
+            ExpressionKind::Specialize { index: Some(_), .. }
+        ));
+        let expr = parse_expr_str("factory[int32, 3]");
+        assert!(matches!(
+            expr.kind,
+            ExpressionKind::Specialize { index: Some(ref index), .. } if index.len() == 2
+        ));
+    }
+
+    #[test]
+    fn g40_generic_wildcards_do_not_leak_speculative_index_errors() {
+        for source in [
+            "group[int32, (), _]",
+            "group[_]",
+            "value.method[int32, (), _]",
+        ] {
+            let expression = parse_expr_str(source);
+            assert!(
+                matches!(
+                    expression.kind,
+                    ExpressionKind::Specialize { index: None, .. }
+                ),
+                "{source}"
+            );
+        }
+        let mut parser = parser("values[_ + 1]");
+        parser
+            .parse_expression()
+            .expect("recover invalid index expression");
+        let errors = parser.errors;
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(error.value, ParserError::DisallowedWildcardExpression)),
+            "{errors:#?}"
+        );
+    }
+
+    #[test]
+    fn bracket_suffix_supports_nested_and_callable_elements() {
+        let expr = parse_expr_str("matrix[row][column]");
+        let ExpressionKind::Specialize {
+            target,
+            index: Some(_),
+            ..
+        } = expr.kind
+        else {
+            panic!("outer subscript")
+        };
+        assert!(matches!(
+            target.kind,
+            ExpressionKind::Specialize { index: Some(_), .. }
+        ));
+        let expr = parse_expr_str("callbacks[index]()");
+        let ExpressionKind::Call(callee, _) = expr.kind else {
+            panic!("element call")
+        };
+        assert!(matches!(
+            callee.kind,
+            ExpressionKind::Specialize { index: Some(_), .. }
+        ));
+    }
+
+    #[test]
     fn test_complex_chain() {
         // Test complex chains in declaration context
-        let decl = parse_one_decl("func foo(a: Foo?) { let _ = a?.b.c(); }");
+        let decl = parse_one_decl("func foo(a: Foo?) { var _ = a?.b.c(); }");
         assert!(matches!(decl.kind, DeclarationKind::Function(_)));
     }
 
@@ -6178,8 +7546,8 @@ mod tests {
     fn test_nested_reference_type() {
         let ty = parse_type_str("&&int32");
         match &ty.kind {
-            TypeKind::Reference(inner, _) => {
-                assert!(matches!(inner.kind, TypeKind::Reference(_, _)))
+            TypeKind::Reference(inner) => {
+                assert!(matches!(inner.kind, TypeKind::Reference(_)))
             }
             _ => panic!("Expected nested reference"),
         }
@@ -6189,7 +7557,7 @@ mod tests {
     fn test_pointer_to_reference() {
         let ty = parse_type_str("*&int32");
         match &ty.kind {
-            TypeKind::Pointer(inner, _) => assert!(matches!(inner.kind, TypeKind::Reference(_, _))),
+            TypeKind::Pointer(inner, _) => assert!(matches!(inner.kind, TypeKind::Reference(_))),
             _ => panic!("Expected pointer to reference"),
         }
     }
@@ -6198,18 +7566,20 @@ mod tests {
     fn test_reference_to_pointer() {
         let ty = parse_type_str("&*int32");
         match &ty.kind {
-            TypeKind::Reference(inner, _) => assert!(matches!(inner.kind, TypeKind::Pointer(_, _))),
+            TypeKind::Reference(inner) => assert!(matches!(inner.kind, TypeKind::Pointer(_, _))),
             _ => panic!("Expected reference to pointer"),
         }
     }
 
     #[test]
-    fn test_const_reference_type() {
-        let ty = parse_type_str("&const int32");
-        assert!(matches!(
-            ty.kind,
-            TypeKind::Reference(_, Mutability::Immutable)
-        ));
+    fn test_const_reference_type_rejected() {
+        let errors =
+            parse_decls("func f(_ value: &const int32) {}").expect_err("obsolete borrow spelling");
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e.value, ParserError::ReferenceConstModifier))
+        );
     }
 
     #[test]
@@ -6297,7 +7667,7 @@ mod tests {
     #[test]
     fn test_path_pattern_qualified() {
         let decl =
-            parse_one_decl("func foo(x: Option[int32]) { match x { case Option.some(v) => v; } }");
+            parse_one_decl("func foo(x: Option[int32]) { match x { case Option::some(v) => v; } }");
         assert!(matches!(decl.kind, DeclarationKind::Function(_)));
     }
 
@@ -6310,15 +7680,14 @@ mod tests {
     }
 
     #[test]
-    fn test_const_reference_pattern() {
-        let pattern = parse_pattern_str("&const x");
-        assert!(matches!(
-            pattern.kind,
-            PatternKind::Reference {
-                mutability: Mutability::Immutable,
-                ..
-            }
-        ));
+    fn test_const_reference_pattern_rejected() {
+        let errors = parse_decls("func f() { match value { case &const x => x; } }")
+            .expect_err("obsolete borrow spelling");
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e.value, ParserError::ReferenceConstModifier))
+        );
     }
 
     // ==================== STATEMENT TESTS (EXTENDED) ====================
@@ -6355,7 +7724,7 @@ mod tests {
 
     #[test]
     fn test_label_on_non_loop_statement_is_preserved_as_warning() {
-        let parser = parser("func foo() { misplaced: let x = 1 }");
+        let parser = parser("func foo() { misplaced: var x = 1 }");
 
         let (_decls, _module_decls, warnings) = parser.parse().expect("Parse failed");
 
@@ -6365,7 +7734,7 @@ mod tests {
 
     #[test]
     fn test_variable_let() {
-        let decl = parse_one_decl("func foo() { let x = 1 }");
+        let decl = parse_one_decl("func foo() { x := 1 }");
         assert!(matches!(decl.kind, DeclarationKind::Function(_)));
     }
 
@@ -6377,7 +7746,7 @@ mod tests {
 
     #[test]
     fn test_variable_with_type() {
-        let decl = parse_one_decl("func foo() { let x: int32 = 1 }");
+        let decl = parse_one_decl("func foo() { var x: int32 = 1 }");
         assert!(matches!(decl.kind, DeclarationKind::Function(_)));
     }
 
@@ -6405,7 +7774,7 @@ mod tests {
 
     #[test]
     fn test_static_variable_declaration_top_level() {
-        let decl = parse_one_decl("static let GLOBAL: int32 = 100");
+        let decl = parse_one_decl("static var GLOBAL: int32 = 100");
         assert!(matches!(decl.kind, DeclarationKind::StaticVariable(_)));
     }
 
@@ -6425,7 +7794,7 @@ mod tests {
 
     #[test]
     fn test_top_level_variable_requires_static() {
-        let errors = parse_decls("let GLOBAL: int32 = 100").expect_err("expected parse failure");
+        let errors = parse_decls("var GLOBAL: int32 = 100").expect_err("expected parse failure");
         assert!(
             errors
                 .iter()
@@ -6435,7 +7804,7 @@ mod tests {
 
     #[test]
     fn test_static_variable_missing_type() {
-        let errors = parse_decls("static let GLOBAL = 100").expect_err("expected parse failure");
+        let errors = parse_decls("static var GLOBAL = 100").expect_err("expected parse failure");
         assert!(
             errors
                 .iter()
@@ -6445,7 +7814,7 @@ mod tests {
 
     #[test]
     fn test_static_variable_missing_initializer() {
-        let errors = parse_decls("static let GLOBAL: int32").expect_err("expected parse failure");
+        let errors = parse_decls("static var GLOBAL: int32").expect_err("expected parse failure");
         assert!(
             errors
                 .iter()
@@ -6457,6 +7826,19 @@ mod tests {
     fn test_public_visibility() {
         let decl = parse_one_decl("public struct Foo { x: int32; }");
         assert_eq!(decl.visibility.level, VisibilityLevel::Public);
+    }
+
+    #[test]
+    fn internal_visibility_applies_to_declarations_and_stored_fields() {
+        let decl = parse_one_decl("internal struct State { internal value: int32; }");
+        assert_eq!(decl.visibility.level, VisibilityLevel::Internal);
+        let DeclarationKind::Struct(definition) = decl.kind else {
+            panic!("expected struct");
+        };
+        assert_eq!(
+            definition.fields[0].visibility.level,
+            VisibilityLevel::Internal
+        );
     }
 
     #[test]
@@ -6505,15 +7887,20 @@ mod tests {
     }
 
     #[test]
-    fn test_function_self_param() {
-        let decl = parse_one_decl("interface Foo { func bar(&self); }");
+    fn test_function_implicit_self() {
+        let decl = parse_one_decl("interface Foo { func bar(); }");
         assert!(matches!(decl.kind, DeclarationKind::Interface(_)));
     }
 
     #[test]
     fn test_function_const_self_param() {
-        let decl = parse_one_decl("interface Foo { func value(&const self) -> int32; }");
-        assert!(matches!(decl.kind, DeclarationKind::Interface(_)));
+        let errors = parse_decls("interface Foo { func value(&const self) -> int32; }")
+            .expect_err("obsolete borrow spelling");
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e.value, ParserError::ReferenceConstModifier))
+        );
     }
 
     #[test]
@@ -6530,13 +7917,13 @@ mod tests {
 
     #[test]
     fn test_import_with_alias() {
-        let decl = parse_one_decl("import std.io as sio");
+        let decl = parse_one_decl("import std::io as sio");
         assert!(matches!(decl.kind, DeclarationKind::Import(_)));
     }
 
     #[test]
     fn test_import_glob() {
-        let decl = parse_one_decl("import std.io.*");
+        let decl = parse_one_decl("import std::io::*");
         match &decl.kind {
             DeclarationKind::Import(tree) => assert!(matches!(tree.kind, UseTreeKind::Glob)),
             _ => panic!("Expected import"),
@@ -6545,7 +7932,7 @@ mod tests {
 
     #[test]
     fn test_export_declaration() {
-        let decl = parse_one_decl("export std.io.File");
+        let decl = parse_one_decl("export std::io::File");
         assert!(matches!(decl.kind, DeclarationKind::Export(_)));
     }
 
@@ -6603,7 +7990,7 @@ mod tests {
 
     #[test]
     fn test_where_same_type() {
-        let decl = parse_one_decl("func foo[T]() where T.Item == int32 { }");
+        let decl = parse_one_decl("func foo[T]() where T::Item == int32 { }");
         match &decl.kind {
             DeclarationKind::Function(f) => assert!(f.generics.where_clause.is_some()),
             _ => panic!("Expected function"),
@@ -6739,12 +8126,14 @@ mod tests {
     }
 
     #[test]
-    fn test_prefix_const_ref() {
-        let expr = parse_expr_str("&const a");
-        assert!(matches!(
-            &expr.kind,
-            ExpressionKind::Reference(_, Mutability::Immutable)
-        ));
+    fn test_prefix_const_ref_rejected() {
+        let errors = parse_decls("func f() { reference := &const value; }")
+            .expect_err("obsolete borrow spelling");
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e.value, ParserError::ReferenceConstModifier))
+        );
     }
 
     #[test]
@@ -6774,13 +8163,13 @@ mod tests {
 
     #[test]
     fn test_closure_typed_params() {
-        let expr = parse_expr_str("|x: int32, y: int32| x + y");
+        let expr = parse_expr_str("(x: int32, y: int32) => x + y");
         assert!(matches!(expr.kind, ExpressionKind::Closure(_)));
     }
 
     #[test]
     fn test_closure_typed_param_with_generic_type() {
-        let expr = parse_expr_str("|group: std.task.TaskGroup[int32]| async { return 0 }");
+        let expr = parse_expr_str("(group: std::task::TaskGroup[int32]) async => { return 0 }");
         let ExpressionKind::Closure(closure) = &expr.kind else {
             panic!("Expected closure");
         };
@@ -6796,19 +8185,19 @@ mod tests {
 
     #[test]
     fn test_closure_with_return_type() {
-        let expr = parse_expr_str("|x: int32| -> int32 x * 2");
+        let expr = parse_expr_str("(x: int32) -> int32 => x * 2");
         assert!(matches!(expr.kind, ExpressionKind::Closure(_)));
     }
 
     #[test]
     fn test_closure_block_body() {
-        let expr = parse_expr_str("|x| { let y = x; y }");
+        let expr = parse_expr_str("(x) => { y := x; y }");
         assert!(matches!(expr.kind, ExpressionKind::Closure(_)));
     }
 
     #[test]
     fn test_async_closure_with_return_type() {
-        let expr = parse_expr_str("|x: int32| -> int32 async { x * 2 }");
+        let expr = parse_expr_str("(x: int32) -> int32 async => { x * 2 }");
         match &expr.kind {
             ExpressionKind::Closure(closure) => {
                 assert!(closure.is_async);
@@ -6820,10 +8209,10 @@ mod tests {
 
     #[test]
     fn test_async_closure_prefix_syntax_is_rejected() {
-        let errors = parse_expr_err("async || {}");
+        let errors = parse_expr_err("async () => {}");
         assert!(
             !errors.is_empty(),
-            "expected parse error for `async || {{}}`"
+            "expected parse error for `async () => {{}}`"
         );
     }
 
@@ -6854,13 +8243,13 @@ mod tests {
 
     #[test]
     fn test_optional_chain_member() {
-        let decl = parse_one_decl("func foo(a: Foo?) { let _ = a?.bar }");
+        let decl = parse_one_decl("func foo(a: Foo?) { var _ = a?.bar }");
         assert!(matches!(decl.kind, DeclarationKind::Function(_)));
     }
 
     #[test]
     fn test_optional_chain_call() {
-        let decl = parse_one_decl("func foo(a: Foo?) { let _ = a?.method() }");
+        let decl = parse_one_decl("func foo(a: Foo?) { var _ = a?.method() }");
         assert!(matches!(decl.kind, DeclarationKind::Function(_)));
     }
 
@@ -6872,7 +8261,7 @@ mod tests {
 
     #[test]
     fn test_let_binding_condition() {
-        let decl = parse_one_decl("func foo(x: int32?) { if let val = x { } }");
+        let decl = parse_one_decl("func foo(x: int32?) { if var val = x { } }");
         assert!(matches!(decl.kind, DeclarationKind::Function(_)));
     }
 
@@ -6898,7 +8287,7 @@ mod tests {
     #[test]
     fn test_multiple_postfix_ops() {
         // Test member chaining instead of double indexing
-        let decl = parse_one_decl("func foo(a: Foo) { let _ = a.bar.baz }");
+        let decl = parse_one_decl("func foo(a: Foo) { var _ = a.bar.baz }");
         assert!(matches!(decl.kind, DeclarationKind::Function(_)));
     }
 
@@ -6932,7 +8321,7 @@ mod tests {
         let expr = parse_expr_str("a?.b");
         match &expr.kind {
             ExpressionKind::OptionalEvaluation(inner) => match &inner.kind {
-                ExpressionKind::Member { target, name } => {
+                ExpressionKind::Member { target, name, .. } => {
                     assert_eq!(name.symbol.as_str(), "b");
                     assert!(matches!(target.kind, ExpressionKind::OptionalUnwrap(_)));
                 }
@@ -6954,6 +8343,7 @@ mod tests {
                     ExpressionKind::Member {
                         target: outer_target,
                         name: outer_name,
+                        ..
                     } => {
                         assert_eq!(outer_name.symbol.as_str(), "c");
                         // Should be OptionalUnwrap(Member(..))
@@ -6964,6 +8354,7 @@ mod tests {
                                     ExpressionKind::Member {
                                         target: inner_target,
                                         name: inner_name,
+                                        ..
                                     } => {
                                         assert_eq!(inner_name.symbol.as_str(), "b");
                                         // Should be OptionalUnwrap(a)
@@ -7105,153 +8496,244 @@ mod tests {
     }
 
     #[test]
-    fn test_impl_computed_property_getter_only() {
-        let decl = parse_one_decl("impl Foo { var x: int32 { get(self) { 1 } }; }");
-        let DeclarationKind::Impl(node) = decl.kind else {
-            panic!("Expected impl declaration");
-        };
-
-        assert_eq!(node.declarations.len(), 2);
-        let property = &node.declarations[0];
-        let getter = &node.declarations[1];
-        let AssociatedDeclarationKind::Property(property_node) = &property.kind else {
-            panic!("Expected property declaration");
-        };
-        assert_eq!(property_node.getter_id, getter.id);
-        assert!(property_node.setter_id.is_none());
+    fn native_subscript_bodies_and_multi_index_overloads_parse() {
+        for source in [
+            "extend Matrix { subscript(row: usize, column: usize) -> Element { get { self.read(row, column) } set(value) { self.write(row, column, value) } } }",
+            "extend &Buffer { subscript(index: usize) -> Element { address { self.at(index) } } subscript(range: Range[usize]) -> Buffer { get { self.copy(range) } } }",
+            "extend Child { final override subscript(index: usize) -> Element { get { self.read(index) } } }",
+        ] {
+            assert!(parse_decls(source).is_ok(), "{source}");
+        }
     }
 
     #[test]
-    fn test_impl_computed_property_getter_setter_async_getter() {
-        let decl = parse_one_decl(
-            "impl Foo { var x: int32 { get(self) async { 1 } set(&mut self, value: int32) { } }; }",
-        );
-        let DeclarationKind::Impl(node) = decl.kind else {
-            panic!("Expected impl declaration");
-        };
-
-        assert_eq!(node.declarations.len(), 3);
-        let property = &node.declarations[0];
-        let getter = &node.declarations[1];
-        let setter = &node.declarations[2];
-
-        let AssociatedDeclarationKind::Property(property_node) = &property.kind else {
-            panic!("Expected property declaration");
-        };
-        assert_eq!(property_node.getter_id, getter.id);
-        assert_eq!(property_node.setter_id, Some(setter.id));
-
-        let AssociatedDeclarationKind::Function(getter_fn) = &getter.kind else {
-            panic!("Expected getter function declaration");
-        };
-        assert!(getter_fn.is_async);
-
-        let AssociatedDeclarationKind::Function(setter_fn) = &setter.kind else {
-            panic!("Expected setter function declaration");
-        };
-        assert!(!setter_fn.is_async);
+    fn native_subscript_interface_capabilities_parse() {
+        for capability in ["get", "get set", "address", "get set address"] {
+            let source = format!(
+                "interface Readable[Key] {{ type Element; subscript(key: Key) -> Self::Element {{ {capability} }} }}"
+            );
+            assert!(parse_decls(&source).is_ok(), "{source}");
+        }
     }
 
     #[test]
-    fn test_impl_computed_property_getter_mut_ref_receiver() {
-        let decl = parse_one_decl("impl Foo { var x: int32 { get(&mut self) { 1 } }; }");
-        let DeclarationKind::Impl(node) = decl.kind else {
-            panic!("Expected impl declaration");
-        };
+    fn native_subscripts_reject_duplicate_and_invalid_accessors() {
+        for accessors in [
+            "get { 1 } get { 2 }",
+            "address { self.at(index) } address { self.at(index) }",
+            "get { 1 } set(value) {} set(other) {}",
+            "set(value) {}",
+            "get(self) { 1 }",
+            "set(value: Element) {} get { 1 }",
+            "get async { 1 }",
+            "address(value) { self.at(index) }",
+            "unknown { 1 }",
+            "",
+        ] {
+            let source =
+                format!("extend Buffer {{ subscript(index: usize) -> Element {{ {accessors} }} }}");
+            assert!(parse_decls(&source).is_err(), "accepted {source}");
+        }
+    }
 
-        assert_eq!(node.declarations.len(), 2);
-        let property = &node.declarations[0];
-        let getter = &node.declarations[1];
-
-        let AssociatedDeclarationKind::Property(property_node) = &property.kind else {
-            panic!("Expected property declaration");
-        };
-        assert_eq!(property_node.getter_id, getter.id);
-        assert!(property_node.setter_id.is_none());
-
-        let AssociatedDeclarationKind::Function(getter_fn) = &getter.kind else {
-            panic!("Expected getter function declaration");
-        };
-        assert_eq!(getter_fn.signature.prototype.inputs.len(), 1);
-        let self_param = &getter_fn.signature.prototype.inputs[0];
-        match &self_param.annotated_type.kind {
-            TypeKind::Reference(inner, Mutability::Mutable) => {
-                assert!(matches!(inner.kind, TypeKind::ImplicitSelf));
+    #[test]
+    fn native_subscript_accessors_preserve_inline_policy() {
+        for policy in ["inline", "noinline"] {
+            for accessors in [
+                "address { self.at(index) }",
+                "get { self.read(index) } set(value) { self.write(index, value) }",
+            ] {
+                let declaration = parse_one_decl(&format!(
+                    "extend Buffer {{ @{policy} subscript(index: usize) -> Element {{ {accessors} }} }}"
+                ));
+                let DeclarationKind::Impl(block) = declaration.kind else {
+                    panic!("extend")
+                };
+                for accessor in &block.declarations[1..] {
+                    assert_eq!(accessor.attributes.len(), 1);
+                    assert_eq!(accessor.attributes[0].identifier.symbol.as_str(), policy);
+                }
             }
-            _ => panic!("Expected &mut self getter receiver"),
         }
     }
 
     #[test]
-    fn test_interface_computed_property_signatures() {
-        let declarations = parse_decls(
-            "interface Foo { var x: int32 { get(&self) set(&mut self, value: int32) }; }",
-        )
-        .expect("interface property signatures should parse");
-        let DeclarationKind::Interface(node) = &declarations[0].kind else {
-            panic!("expected interface declaration");
+    fn native_subscript_address_defaults_have_fresh_syntax_and_implicit_receivers() {
+        let declaration = parse_one_decl(
+            "extend &Buffer { subscript(value: Map[Key, [Element; 2]]) -> Element { address { self.at(value) } } }",
+        );
+        let DeclarationKind::Impl(block) = &declaration.kind else {
+            panic!("extend")
         };
-        assert_eq!(node.declarations.len(), 3);
-        let AssociatedDeclarationKind::Property(property) = &node.declarations[0].kind else {
-            panic!("expected property requirement");
+        let AssociatedDeclarationKind::Subscript(subscript) = &block.declarations[0].kind else {
+            panic!("subscript")
         };
-        assert!(property.setter_id.is_some());
-        for accessor in &node.declarations[1..] {
+        assert_eq!(block.declarations.len(), 4);
+        assert_eq!(subscript.getter_id, Some(block.declarations[1].id));
+        assert_eq!(subscript.setter_id, Some(block.declarations[2].id));
+        assert_eq!(subscript.address_id, Some(block.declarations[3].id));
+        for accessor in &block.declarations[1..] {
             let AssociatedDeclarationKind::Function(function) = &accessor.kind else {
-                panic!("expected hidden accessor requirement");
-            };
-            assert!(function.block.is_none());
-        }
-    }
-
-    #[test]
-    fn test_interface_computed_property_default_accessor_bodies() {
-        let declarations = parse_decls(
-            "interface Foo { var x: int32 { get(self) { 1 } set(&mut self, value: int32) { } }; }",
-        )
-        .expect("default accessor bodies should parse");
-        let DeclarationKind::Interface(node) = &declarations[0].kind else {
-            panic!("expected interface declaration");
-        };
-        for accessor in &node.declarations[1..] {
-            let AssociatedDeclarationKind::Function(function) = &accessor.kind else {
-                panic!("expected hidden accessor requirement");
+                panic!("accessor")
             };
             assert!(function.block.is_some());
+            assert!(matches!(
+                function.signature.prototype.inputs[0].annotated_type.kind,
+                TypeKind::ImplicitSelf
+            ));
+            assert!(function.signature.prototype.inputs[1].label.is_none());
+        }
+        let AssociatedDeclarationKind::Function(setter) = &block.declarations[2].kind else {
+            unreachable!()
+        };
+        assert_ne!(
+            setter.signature.prototype.inputs[1].name.symbol,
+            setter.signature.prototype.inputs[2].name.symbol
+        );
+        let AssociatedDeclarationKind::Function(address) = &block.declarations[3].kind else {
+            unreachable!()
+        };
+        assert!(matches!(
+            address.signature.prototype.output.as_ref().unwrap().kind,
+            TypeKind::Reference(_)
+        ));
+        #[derive(Default)]
+        struct UniqueIds(std::collections::HashSet<NodeID>);
+        impl ast::AstVisitor for UniqueIds {
+            fn visit_type(&mut self, node: &Type) {
+                assert!(self.0.insert(node.id), "reused type identity {:?}", node.id);
+                ast::walk_type(self, node);
+            }
+            fn visit_function_parameter(&mut self, node: &FunctionParameter) {
+                assert!(
+                    self.0.insert(node.id),
+                    "reused parameter identity {:?}",
+                    node.id
+                );
+                ast::walk_function_parameter(self, node);
+            }
+            fn visit_expression(&mut self, node: &Expression) {
+                assert!(
+                    self.0.insert(node.id),
+                    "reused expression identity {:?}",
+                    node.id
+                );
+                ast::walk_expression(self, node);
+            }
+        }
+        ast::walk_declaration(&mut UniqueIds::default(), &declaration);
+    }
+
+    #[test]
+    fn native_subscript_explicit_accessors_replace_only_their_address_defaults() {
+        let declaration = parse_one_decl(
+            "extend Buffer { subscript(index: usize) -> Element { get { self.read(index) } address { self.at(index) } } }",
+        );
+        let DeclarationKind::Impl(block) = declaration.kind else {
+            panic!("extend")
+        };
+        assert_eq!(block.declarations.len(), 4);
+        let AssociatedDeclarationKind::Function(getter) = &block.declarations[1].kind else {
+            panic!("getter")
+        };
+        assert!(
+            matches!(getter.block.as_ref().unwrap().statements[0].kind, StatementKind::Expression(ref expression) if matches!(expression.kind, ExpressionKind::Call(..)))
+        );
+        let AssociatedDeclarationKind::Function(setter) = &block.declarations[2].kind else {
+            panic!("setter")
+        };
+        assert!(
+            matches!(setter.block.as_ref().unwrap().statements[0].kind, StatementKind::Expression(ref expression) if matches!(expression.kind, ExpressionKind::Assign(..)))
+        );
+    }
+
+    #[test]
+    fn native_subscript_index_parameters_initially_have_fixed_arity() {
+        for inputs in ["", "index: usize = 0", "indices: usize...", "self", "&self"] {
+            let source = format!(
+                "extend Buffer {{ subscript({inputs}) -> Element {{ get {{ self.read() }} }} }}"
+            );
+            assert!(parse_decls(&source).is_err(), "accepted {source}");
         }
     }
 
     #[test]
-    fn test_interface_computed_property_mixed_default_and_required_accessors() {
-        let declarations = parse_decls(
-            "interface Foo { var x: int32 { get(&self) { 1 } set(&mut self, value: int32) }; }",
-        )
-        .expect("default and required accessors should parse together");
-        let DeclarationKind::Interface(node) = &declarations[0].kind else {
-            panic!("expected interface declaration");
-        };
-        let AssociatedDeclarationKind::Function(getter) = &node.declarations[1].kind else {
-            panic!("expected hidden getter requirement");
-        };
-        let AssociatedDeclarationKind::Function(setter) = &node.declarations[2].kind else {
-            panic!("expected hidden setter requirement");
-        };
-        assert!(getter.block.is_some());
-        assert!(setter.block.is_none());
+    fn native_subscript_accessor_functions_reach_mir_without_index_protocols() {
+        let errors = crate::test_support::analyze_script_mir_diagnostics(
+            "struct Buffer { value: int32 }\nextend &Buffer { func at(_ index: usize) -> &int32 { &self.value }; subscript(index: usize) -> int32 { address { self.at(index) } } }\nfunc main() {}",
+        );
+        assert!(errors.is_empty(), "{errors:#?}");
     }
 
     #[test]
-    fn test_computed_property_async_setter_rejected() {
-        let errors = parse_decls(
-            "impl Foo { var x: int32 { get(self) { 1 } set(&mut self, value: int32) async { } } }",
-        )
-        .expect_err("parse should fail");
-        assert!(errors.iter().any(|error| {
-            matches!(
-                error.value,
-                ParserError::AsyncComputedPropertySetterNotAllowed
-            )
-        }));
+    fn computed_properties_use_implicit_getters_and_interface_defaults() {
+        for source in [
+            "extend Foo { var x: int32 { get { 1 } } }",
+            "interface Foo { var x: int32 { get } }",
+            "interface Foo { var x: int32 { get { 1 } } }",
+        ] {
+            let declarations = parse_decls(source).expect("implicit getter");
+            let body = match &declarations[0].kind {
+                DeclarationKind::Impl(block) => &block.declarations,
+                DeclarationKind::Interface(interface) => &interface.declarations,
+                _ => unreachable!(),
+            };
+            assert_eq!(body.len(), 2);
+            let AssociatedDeclarationKind::Property(property) = &body[0].kind else {
+                panic!("property")
+            };
+            assert_eq!(property.getter_id, body[1].id);
+            let AssociatedDeclarationKind::Function(getter) = &body[1].kind else {
+                panic!("getter")
+            };
+            assert!(matches!(
+                getter.signature.prototype.inputs[0].annotated_type.kind,
+                TypeKind::ImplicitSelf
+            ));
+            assert!(!getter.is_async);
+        }
+    }
+
+    #[test]
+    fn computed_properties_reject_removed_accessor_signatures_and_setters() {
+        for accessor in [
+            "get(self) { 1 }",
+            "get(&self) { 1 }",
+            "get async { 1 }",
+            "get -> int32 { 1 }",
+            "get { 1 } set(value) {}",
+            "get { 1 } get { 2 }",
+        ] {
+            let source = format!("extend Foo {{ var x: int32 {{ {accessor} }} }}");
+            assert!(parse_decls(&source).is_err(), "accepted {source}");
+        }
+    }
+
+    #[test]
+    fn g40_removed_computed_accessors_recover_without_cascading_declaration_errors() {
+        for accessor in [
+            "get(&self) { 1 }",
+            "get async { 1 }",
+            "get -> int32 { 1 }",
+            "get { 1 } set(value) {}",
+            "",
+        ] {
+            let source = format!(
+                "extend Foo {{ var bad: int32 {{ {accessor} }}; var good: int32 {{ get {{ 2 }} }}; func ok() {{}}; }}\nfunc main() {{}}"
+            );
+            let (declarations, errors) = parse_decls_with_recovery(&source);
+            assert_eq!(errors.len(), 1, "{accessor}: {errors:#?}");
+            assert_eq!(declarations.len(), 2);
+            let DeclarationKind::Impl(block) = &declarations[0].kind else {
+                panic!("extension")
+            };
+            assert!(
+                block
+                    .declarations
+                    .iter()
+                    .any(|declaration| declaration.identifier.symbol.as_str() == "ok")
+            );
+        }
     }
 
     // ==================== ATTRIBUTE TESTS ====================
@@ -7272,6 +8754,19 @@ mod tests {
             errors[0].value,
             ParserError::UnsafeAttributeRemoved
         ));
+    }
+
+    #[test]
+    fn deinit_reports_one_removed_syntax_error() {
+        for source in [
+            "extend Doc { deinit { value := 1 } }",
+            "extend Doc { deinit {}; func keep() {}; }",
+            "interface P { deinit {} }",
+        ] {
+            let errors = parse_decls(source).expect_err("deinit was removed");
+            assert_eq!(errors.len(), 1, "{source}: {errors:?}");
+            assert!(matches!(errors[0].value, ParserError::DeinitRemoved));
+        }
     }
 
     #[test]
@@ -7430,9 +8925,9 @@ mod tests {
     fn test_parser_recovery_declarations() {
         let input = "
             func good1() {}
-            let bad1 = 1;
+            bad1 := 1;
             func good2() {}
-            struct Bad2 { let }
+            struct Bad2 { var }
             func good3() {}
         ";
         let (decls, errors) = parse_decls_with_recovery(input);
@@ -7448,9 +8943,9 @@ mod tests {
     #[test]
     fn test_parser_recovery_statements() {
         let input = "func test() {
-            let x = 1;
-            let y = if if if;
-            let z = 2;
+            x := 1;
+            y := if if if;
+            z := 2;
         }";
         let (decls, errors) = parse_decls_with_recovery(input);
         assert!(!errors.is_empty(), "Should have parse errors");
@@ -7561,7 +9056,7 @@ mod tests {
 
     #[test]
     fn test_await_in_function_body() {
-        let decl = parse_one_decl("func foo() async { let x = await bar() }");
+        let decl = parse_one_decl("func foo() async { x := await bar() }");
         match &decl.kind {
             DeclarationKind::Function(func) => {
                 assert!(func.is_async);
@@ -7573,8 +9068,9 @@ mod tests {
 
     #[test]
     fn test_spawn_call_in_function_body() {
-        let decl =
-            parse_one_decl("func foo() async { let t = std.task.spawn(|| async { await bar() }) }");
+        let decl = parse_one_decl(
+            "func foo() async { t := std::task::spawn(() async => { await bar() }) }",
+        );
         match &decl.kind {
             DeclarationKind::Function(func) => {
                 assert!(func.is_async);
@@ -7586,12 +9082,109 @@ mod tests {
 
     #[test]
     fn test_await_spawn_call() {
-        let expr = parse_expr_str("await std.task.spawn(|| async { await foo() })");
+        let expr = parse_expr_str("await std::task::spawn(() async => { await foo() })");
         match &expr.kind {
             ExpressionKind::Await(inner) => {
                 assert!(matches!(inner.kind, ExpressionKind::Call(_, _)));
             }
             _ => panic!("Expected Await(Call(...))"),
         }
+    }
+    #[test]
+    fn named_field_constructors_and_patterns_parse() {
+        let expression = parse_expr_str(".rect { width, height: 4 }");
+        assert!(matches!(
+            expression.kind,
+            ExpressionKind::StructLiteral(StructLiteral {
+                path: ConstructorPath::Inferred { .. },
+                ..
+            })
+        ));
+        let pattern = parse_pattern_str("Point[int32] { y: other, x, .. }");
+        let PatternKind::PathNamed { fields, rest, .. } = pattern.kind else {
+            panic!("named pattern")
+        };
+        assert!(rest);
+        assert_eq!(fields.len(), 2);
+        assert!(matches!(fields[1].pattern.kind, PatternKind::Identifier(_)));
+    }
+
+    #[test]
+    fn named_field_duplicates_and_invalid_rest_are_diagnosed() {
+        for (source, expected) in [
+            (
+                "func main() { var p = P { x: 1, x: 2 } }",
+                "duplicate named field",
+            ),
+            (
+                "func main() { match p { case P { x, x } => {} } }",
+                "duplicate named field",
+            ),
+            (
+                "func main() { match p { case P { .., x } => {} } }",
+                "at the end of a named pattern",
+            ),
+            (
+                "func main() { var p = P { x + 1 } }",
+                "field shorthand requires",
+            ),
+        ] {
+            let errors = parse_decls(source).expect_err("invalid named fields");
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.value.to_string().contains(expected)),
+                "{source}: {errors:?}"
+            );
+        }
+    }
+    #[test]
+    fn struct_update_base_parses_after_fields() {
+        for source in [
+            "Pair { first: 3, ..base }",
+            "Pair { first, ..make(), }",
+            "Pair { ..base }",
+        ] {
+            let expression = parse_expr_str(source);
+            let ExpressionKind::StructLiteral(literal) = expression.kind else {
+                panic!("literal")
+            };
+            assert!(literal.base.is_some());
+        }
+    }
+    #[test]
+    fn struct_update_base_must_be_unique_and_final() {
+        for source in [
+            "func main() { var x = Pair { ..base, first: 1 } }",
+            "func main() { var x = Pair { ..base, ..other } }",
+        ] {
+            let errors = parse_decls(source).expect_err("invalid update order");
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| matches!(e.value, ParserError::StructUpdateBaseMustBeLast)),
+                "{errors:?}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_text_tests {
+    use super::*;
+    #[test]
+    fn expected_tokens_use_source_spelling() {
+        assert_eq!(
+            ParserError::Expected(Token::RBrace, Token::Identifier { value: "b".into() })
+                .to_string(),
+            "expected `}`, found `b`"
+        );
+    }
+    #[test]
+    fn removed_const_reference_names_current_reference_form() {
+        assert_eq!(
+            ParserError::ReferenceConstModifier.to_string(),
+            "`&const T` is removed; write `&T`"
+        );
     }
 }

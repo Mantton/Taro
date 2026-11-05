@@ -6,13 +6,13 @@ extern "C" {
     type FILE
     type Handle
 
-    func fopen(_ path: *uint8, _ mode: *uint8) -> *FILE
-    func fclose(_ file: *FILE) -> int32
+    unsafe func fopen(_ path: *uint8, _ mode: *uint8) -> *FILE
+    unsafe func fclose(_ file: *FILE) -> int32
 }
 
 // Test that opaque types can be used in function signatures with pointers
 func process_file(_ file: *FILE) -> int32 {
-    return fclose(file)
+    return unsafe { fclose(file) }
 }
 
 // Test that opaque types can be stored in struct fields as pointers

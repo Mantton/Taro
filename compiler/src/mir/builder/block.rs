@@ -17,6 +17,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     ) -> BlockAnd<()> {
         let statements = &self.thir.blocks[thir_block].stmts;
         let saved_cleanup = self.current_cleanup;
+        let saved_scope = self.current_cleanup_scope;
+        self.current_cleanup_scope = self.fresh_cleanup_scope();
         let mut block = self
             .lower_block_statements(mir_block, statements)
             .into_block();
@@ -46,6 +48,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         }
 
         self.current_cleanup = saved_cleanup;
+        self.current_cleanup_scope = saved_scope;
         block.unit()
     }
 
@@ -60,7 +63,40 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         block.unit()
     }
 
-    fn lower_statement(&mut self, stmt: thir::StmtId, mut block: BasicBlockId) -> BlockAnd<()> {
+    fn lower_statement(&mut self, stmt: thir::StmtId, block: BasicBlockId) -> BlockAnd<()> {
+        let entry = self.current_cleanup;
+        let parent_scope = self.current_cleanup_scope;
+        let scope = self.fresh_cleanup_scope();
+        self.current_cleanup_scope = scope;
+        let mut block = self
+            .lower_statement_inner(stmt, block, parent_scope)
+            .into_block();
+        let (exiting, retained) = super::cleanup::split_scope(
+            &mut self.cleanup_nodes,
+            &self.cleanup_scope_depths,
+            self.current_cleanup,
+            entry,
+            scope,
+        );
+        if exiting != retained && self.body.basic_blocks[block].terminator.is_none() {
+            let next = self.new_block_with_note("after statement temporaries".into());
+            let mut cache = FxHashMap::default();
+            cache.insert(retained, next);
+            let cleanup = self.ensure_cleanup_path(exiting, retained, next, &mut cache);
+            self.goto(block, cleanup, self.thir.stmts[stmt].span);
+            block = next;
+        }
+        self.current_cleanup = retained;
+        self.current_cleanup_scope = parent_scope;
+        block.unit()
+    }
+
+    fn lower_statement_inner(
+        &mut self,
+        stmt: thir::StmtId,
+        mut block: BasicBlockId,
+        binding_scope: super::CleanupScopeId,
+    ) -> BlockAnd<()> {
         let stmt = &self.thir.stmts[stmt];
 
         match &stmt.kind {
@@ -71,10 +107,66 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 mutable,
                 ..
             } => {
-                // Evaluate initializer (if any) into a temp so we can destructure.
+                if let thir::PatternKind::Binding {
+                    local: pat_id,
+                    name,
+                    ty: binding_ty,
+                    ..
+                } = &pattern.kind
+                {
+                    if self.thir.constructor_self == Some(*pat_id) {
+                        let local = if self
+                            .gcx
+                            .result_parts(self.body.locals[self.body.return_local].ty)
+                            .is_some()
+                        {
+                            self.push_local(
+                                *binding_ty,
+                                LocalKind::ConstructorSelf,
+                                true,
+                                Some(*name),
+                                pattern.span,
+                            )
+                        } else {
+                            self.body.return_local
+                        };
+                        self.locals.insert(*pat_id, local);
+                        self.push_storage_live(block, local, pattern.span);
+                        return block.unit();
+                    }
+                    // A whole binding can own its initializer storage directly.
+                    // Publish its source name only after initialization, so a
+                    // shadowing initializer still resolves the previous binding.
+                    let local = self.push_local(
+                        *binding_ty,
+                        LocalKind::User,
+                        *mutable,
+                        Some(*name),
+                        pattern.span,
+                    );
+                    self.push_storage_live(block, local, pattern.span);
+                    let temporary_scope = self.current_cleanup_scope;
+                    self.current_cleanup_scope = binding_scope;
+                    self.register_storage_cleanup(local, pattern.span);
+
+                    self.current_cleanup_scope = temporary_scope;
+                    if let Some(init) = expr {
+                        block = self
+                            .expr_into_dest(Place::from_local(local), block, *init)
+                            .into_block();
+                    }
+                    self.locals.insert(*pat_id, local);
+                    return block.unit();
+                }
+                // Destructuring needs an independent, conditionally owned temp.
                 let init_place = if let Some(init) = expr {
                     let temp = self.push_local(*ty, LocalKind::Temp, true, None, stmt.span);
                     let place = Place::from_local(temp);
+                    self.push_storage_live(block, temp, stmt.span);
+                    self.register_storage_cleanup(temp, stmt.span);
+                    // The initializer owns storage independently of its bindings.
+                    // Copy bindings duplicate it; partial construction can unwind.
+
                     block = self
                         .expr_into_dest(place.clone(), block, *init)
                         .into_block();
@@ -83,9 +175,12 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     None
                 };
 
+                let temporary_scope = self.current_cleanup_scope;
+                self.current_cleanup_scope = binding_scope;
                 block = self
                     .bind_pattern_to_place(block, pattern, init_place.as_ref(), *mutable)
                     .into_block();
+                self.current_cleanup_scope = temporary_scope;
                 return block.unit();
             }
             thir::StmtKind::Break => {
@@ -98,7 +193,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 let place = Place::from_local(self.body.return_local);
                 if let Some(&value) = value.as_ref() {
                     block = self.expr_into_dest(place, block, value).into_block();
-                } else {
+                } else if self.thir.constructor_self.is_none() {
                     self.push_assign_unit(block, stmt.span, place, self.gcx);
                 }
                 return self.record_return_edge(block, stmt.span);
@@ -126,8 +221,33 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     },
                 );
             }
+            thir::StmtKind::Guard {
+                condition,
+                else_block,
+            } => {
+                let success = self.new_block_with_note("guard success".into());
+                let failure = self.new_block_with_note("guard failure".into());
+                let temporary_scope = self.current_cleanup_scope;
+                // Successful guard bindings persist after this statement.
+                // Keep their backing scrutinee alongside them for borrowed
+                // payloads; failed paths clean only initialized obligations.
+                self.current_cleanup_scope = binding_scope;
+                self.lower_condition(block, *condition, success, failure);
+                let destination = self.unit_temp_place(stmt.span);
+                let failed = self
+                    .lower_block(destination, failure, *else_block)
+                    .into_block();
+                if self.body.basic_blocks[failed].terminator.is_none() {
+                    self.terminate(failed, stmt.span, TerminatorKind::Unreachable);
+                }
+                self.current_cleanup_scope = temporary_scope;
+                return success.unit();
+            }
             thir::StmtKind::Defer(block_id) => {
+                let temporary_scope = self.current_cleanup_scope;
+                self.current_cleanup_scope = binding_scope;
                 self.push_defer_action(*block_id, stmt.span);
+                self.current_cleanup_scope = temporary_scope;
             }
             thir::StmtKind::Expr(expr) => {
                 block = self.lower_statement_expression(block, *expr).into_block();
@@ -147,14 +267,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         mutable: bool,
     ) -> BlockAnd<()> {
         match &pattern.kind {
-            thir::PatternKind::Wild => {
-                if self.is_task_ty(pattern.ty)
-                    && let Some(task_place) = place
-                {
-                    return self.drop_task_place(block, task_place.clone(), pattern.span);
-                }
-                block.unit()
-            }
+            thir::PatternKind::Wild => block.unit(),
             thir::PatternKind::Binding {
                 local: pat_id,
                 name,
@@ -170,33 +283,14 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 );
                 self.locals.insert(*pat_id, local);
                 self.push_storage_live(block, local, pattern.span);
-                if self.is_task_ty(*ty) {
-                    self.register_task_cleanup(local, block, pattern.span, false);
-                }
+                self.register_storage_cleanup(local, pattern.span);
+
                 if let Some(src) = place {
-                    let operand = if self.is_type_copyable(*ty) {
-                        Operand::Copy(src.clone())
-                    } else {
-                        Operand::Move(src.clone())
-                    };
+                    let operand = Operand::Copy(src.clone());
                     let rvalue = Rvalue::Use(operand);
                     self.push_assign(block, Place::from_local(local), rvalue, pattern.span);
                 }
                 block.unit()
-            }
-            thir::PatternKind::Deref { pattern: inner } => {
-                // Deref pattern: apply deref to the place and bind the inner pattern
-                if let Some(base_place) = place {
-                    let mut proj = base_place.projection.clone();
-                    proj.push(PlaceElem::Deref);
-                    let deref_place = Place {
-                        local: base_place.local,
-                        projection: proj,
-                    };
-                    self.bind_pattern_to_place(block, inner, Some(&deref_place), mutable)
-                } else {
-                    block.unit()
-                }
             }
             thir::PatternKind::Constant { .. } => block.unit(),
             thir::PatternKind::Leaf { subpatterns } => {

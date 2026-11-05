@@ -1,0 +1,83 @@
+// Diagnostic layers only: literal token writes isolate transport from JSON
+// validation/formatting. They are not an alternative application encoder.
+func writePersonTokens(_ buffer: std::bytes::Buffer) {
+    std::io::writeString(buffer, "{").unwrap()
+    std::io::writeString(buffer, "\"").unwrap()
+    std::io::writeString(buffer, "name").unwrap()
+    std::io::writeString(buffer, "\"").unwrap()
+    std::io::writeString(buffer, ":").unwrap()
+    std::io::writeString(buffer, "\"").unwrap()
+    std::io::writeString(buffer, "Ada").unwrap()
+    std::io::writeString(buffer, "\"").unwrap()
+    std::io::writeString(buffer, ",").unwrap()
+    std::io::writeString(buffer, "\"").unwrap()
+    std::io::writeString(buffer, "age").unwrap()
+    std::io::writeString(buffer, "\"").unwrap()
+    std::io::writeString(buffer, ":").unwrap()
+    std::io::writeString(buffer, "37").unwrap()
+    std::io::writeString(buffer, "}").unwrap()
+}
+
+func writePeopleTokens(_ buffer: std::bytes::Buffer) {
+    std::io::writeString(buffer, "[").unwrap()
+    var index: usize = 0
+    while index < 128 {
+        if index > 0 { std::io::writeString(buffer, ",").unwrap() }
+        writePersonTokens(buffer)
+        index += 1
+    }
+    std::io::writeString(buffer, "]").unwrap()
+}
+
+@bench
+@tag("json", "diagnostic", "parse")
+func stageParsePeople128(benchmark: &std::bench::Benchmark) {
+    measureParse(benchmark, personDocument(128), "128-record parser stage")
+}
+
+@bench
+@tag("json", "diagnostic", "write")
+func stageCopyWholePeople128(benchmark: &std::bench::Benchmark) {
+    input := personDocument(128)
+    buffer := std::bytes::Buffer::new()
+    buffer.reserve(input.byteLen()).unwrap()
+    buffer.writeString(input).unwrap()
+    assert(buffer.toString() == input, "whole-document copy fixture")
+    benchmark.setBytes(input.byteLen())
+    while benchmark.next() {
+        buffer.reset()
+        std::io::writeString(buffer, input).unwrap()
+        std::hint::blackBox(buffer.len())
+    }
+}
+
+@bench
+@tag("json", "diagnostic", "write")
+func stageWritePeople128TokensReused(benchmark: &std::bench::Benchmark) {
+    input := personDocument(128)
+    buffer := std::bytes::Buffer::new()
+    buffer.reserve(input.byteLen()).unwrap()
+    writePeopleTokens(buffer)
+    assert(buffer.toString() == input, "literal token fixture")
+    benchmark.setBytes(input.byteLen())
+    while benchmark.next() {
+        buffer.reset()
+        writePeopleTokens(buffer)
+        std::hint::blackBox(buffer.len())
+    }
+}
+
+@bench
+@tag("json", "diagnostic", "write")
+func stageWritePeople128TokensFresh(benchmark: &std::bench::Benchmark) {
+    input := personDocument(128)
+    check := std::bytes::Buffer::new()
+    writePeopleTokens(check)
+    assert(check.toString() == input, "fresh token fixture")
+    benchmark.setBytes(input.byteLen())
+    while benchmark.next() {
+        buffer := std::bytes::Buffer::new()
+        writePeopleTokens(buffer)
+        std::hint::blackBox(buffer.toString())
+    }
+}

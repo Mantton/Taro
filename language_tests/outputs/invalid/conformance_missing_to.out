@@ -1,0 +1,4 @@
+error: expected `to` after the conformance target type
+ -> language_tests/source_files/invalid/conformance_missing_to.tr:5:16
+	conform Counter Readable {}
+	                ^^^^^^^^

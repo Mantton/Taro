@@ -1,0 +1,48 @@
+// G58b: gcStats() counters are monotonic and consistent, and collect() runs a
+// collection that reclaims an unreachable value.
+// ENV: TARO_GC_TRACE=1
+// EXPECT_STDERR_CONTAINS: freed
+import std::weak::Weak
+struct Probe { value: int32 }
+
+@noinline
+func expiredProbe() -> Weak[Probe] {
+    probe := Probe { value: 9 }
+    return Weak[Probe]::new(&probe)
+}
+
+func churn(_ count: int32) -> int32 {
+    var total: int32 = 0
+    var i: int32 = 0
+    while i < count {
+        total += std::sprintf("garbage-%d", i).byteLen() as int32
+        i += 1
+    }
+    return total
+}
+
+func consistent(_ stats: std::runtime::GcStats) -> bool {
+    return stats.heapBytes == stats.allocatedBytes - stats.freedBytes
+        && stats.totalPauseNanos >= stats.lastPauseNanos
+}
+
+func main() {
+    before := std::runtime::gcStats()
+    var _ = churn(1000)
+    weak := expiredProbe()
+    std::runtime::collect()
+    after := std::runtime::gcStats()
+
+    assert(consistent(before) && consistent(after), "heap bytes match allocated minus freed")
+    assert(after.collections > before.collections, "collect() completes a collection")
+    assert(after.allocatedBytes > before.allocatedBytes, "allocation counters grow")
+    assert(after.freedBytes > before.freedBytes, "the collection frees the garbage")
+    assert(after.totalPauseNanos > before.totalPauseNanos && after.lastPauseNanos > 0, "pauses are recorded")
+    assert(after.reservedBytes >= after.heapBytes, "the heap fits in its reservation")
+    assert(weak.value().isNone(), "collect() reclaims an unreachable value")
+
+    std::runtime::collect()
+    again := std::runtime::gcStats()
+    assert(again.collections > after.collections && again.freedBytes >= after.freedBytes, "counters stay monotonic")
+    print("PASS: gc stats are monotonic and consistent\n")
+}

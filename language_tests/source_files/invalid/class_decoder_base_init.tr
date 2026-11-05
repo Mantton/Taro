@@ -1,0 +1,4 @@
+class UncodedBase { value: int32 }
+extend UncodedBase { public init(_ value: int32) { self.value = value } }
+final class DecodedChild: UncodedBase, std::encoding::Codable { extra: int32 }
+func main() {}

@@ -1,0 +1,24 @@
+// Overloaded type-relative lookup must not create unused inference variables.
+struct FactoryBox[T] { value: T }
+
+extend[T] FactoryBox[T] {
+    static func new(value: T) -> Self { Self { value } }
+    static func new(other: T) -> Self { Self { value: other } }
+}
+
+struct SingleFactory[T] { value: T }
+
+extend[T] SingleFactory[T] {
+    static func new(_ value: T) -> Self { Self { value } }
+}
+
+func main() {
+    var first: FactoryBox[int32] = FactoryBox::new(value: 7)
+    var second: FactoryBox[string] = FactoryBox::new(other: "ok")
+    var factory: (int32) -> SingleFactory[int32] = SingleFactory::new
+    var third: SingleFactory[int32] = factory(9)
+    assert(first.value == 7, "overloaded generic factory with inferred argument")
+    assert(second.value == "ok", "overloaded generic factory with other label")
+    assert(third.value == 9, "generic factory function value")
+    print("explicit factory inference\n")
+}

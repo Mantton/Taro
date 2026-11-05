@@ -1,0 +1,62 @@
+// G24b: closing a shared pipe handle while another task is blocked reading it
+// defers releasing the descriptor until that read finishes. The in-flight read
+// still delivers its bytes, only later reads report `closed`, and the
+// descriptor number cannot be reused under the reader by the next open.
+// ENV: TARO_WORKERS=2
+import std::io::Reader
+
+func drain(_ pipe: std::process::ChildStdout, _ started: std::sync::Sender[int32]) -> string {
+    var reader = pipe
+    var collected = ""
+    var storage: [uint8; 64] = [0; 64]
+    base := unsafe { (&storage as *mut [uint8; 64]) as *mut uint8 }
+    buf := unsafe { std::mem::Span[uint8]::from(base, 64) }
+    while true {
+        match reader.read(buf) {
+            case .ok(0) => return collected + " | ended: eof"
+            case .ok(n) => {
+                collected = collected + std::string::stringFromBytes(unsafe { std::mem::Span[uint8]::from(base as *const uint8, n) })
+                started.trySend(1).unwrap()
+            }
+            case .err(err) => {
+                var ending: string = if err.isKind(.closed) { "closed" } else { "other error" }
+                return collected + " | ended: " + ending
+            }
+        }
+    }
+    return collected
+}
+
+func main() async {
+    dir := std::fs::createTempDir().unwrap()
+    decoy := dir.path() + "/decoy"
+    std::fs::writeString(decoy, "LEAK").unwrap()
+    var (started, running) = std::sync::bounded[int32](4).unwrap()
+
+    // The child writes "B" only once main has closed the reader's pipe.
+    var command = std::process::Command::new("/bin/sh", "-c", "printf A; read go; printf B")
+    command.stdin(.piped).stdout(.piped)
+    var child = command.spawn().unwrap()
+    release := child.takeStdin().unwrap()
+    pipe := child.takeStdout().unwrap()
+    reader := std::task::spawn(() async => {
+        return await std::task::blocking(() => drain(pipe, started))
+    })
+
+    // The reader consumed "A" and is now blocked waiting for "B".
+    var _ = await running.recv()
+    await std::task::sleep(std::time::Duration::fromMillis(200_u64))
+    pipe.close().unwrap()
+    var opened = std::fs::File::open(decoy).unwrap()
+    release.writeString("go\n").unwrap()
+    release.close().unwrap()
+
+    std::printf("reader saw: %s\n", (await reader.result()).unwrap())
+    match pipe.close() {
+        case .err(err) if err.isKind(.closed) => std::printf("second close: closed\n")
+        case _ => std::printf("second close: unexpected\n")
+    }
+    var _ = opened.close()
+    var _ = child.wait()
+    var _ = dir.close()
+}

@@ -1,0 +1,4 @@
+error: field 'id' of TaskGroup[int32] is not visible here
+ -> language_tests/source_files/invalid/task_group_id_access.tr:4:4
+	    group.id
+	    ^^^^^^^^

@@ -1,15 +1,15 @@
 // Loop temporaries use fixed preamble storage rather than per-iteration allocas.
 
 interface Speak {
-    func id(&self) -> int32
+    func id() -> int32
 }
 
 struct Dog {
     tag: int32
 }
 
-impl Speak for Dog {
-    func id(&self) -> int32 {
+conform Dog to Speak {
+    func id() -> int32 {
         self.tag
     }
 }
@@ -18,7 +18,7 @@ impl Speak for Dog {
 // it by pointer and the caller spills a defensive copy per call.
 const LEN: usize = 512
 
-struct Big: Copy {
+struct Big {
     data: [int64; LEN]
 }
 
@@ -30,9 +30,9 @@ func main() {
     var total: int32 = 0
     var i: int32 = 0
     while i < 5000000 {
-        let d = Dog { tag: 1 }
-        let s: any Speak = d
-        let maybe = s as? Dog
+        d := Dog { tag: 1 }
+        var s: any Speak = d
+        maybe := s as? Dog
         match maybe {
             case .some(back) => total += back.tag
             case .none => {}

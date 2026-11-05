@@ -1,10 +1,10 @@
 interface ReadonlyValue {
     var value: int32 {
-        get(&self)
+        get
     };
 }
 
-func writeValue[T: ReadonlyValue](_ value: &mut T) {
+func writeValue[T: ReadonlyValue](_ value: &T) {
     value.value = 1
 }
 

@@ -1,0 +1,16 @@
+import std::ops::{PartialEq, Neg}
+public struct Local { public value: int32 }
+type LocalAlias = Local
+conform int32 to PartialEq[LocalAlias] {
+    public func eq(_ other: LocalAlias) -> bool { self == other.value }
+}
+// Imported array aliases cover their element parameter without owning it.
+conform[T, const Size: usize] std::collections::Array[T, Size] to PartialEq[Local] {
+    public func eq(_ other: Local) -> bool { self.len() == other.value as usize }
+}
+conform[T] *const T to PartialEq[Local] {
+    public func eq(_ other: Local) -> bool { false }
+}
+conform &Local to Neg { type Output = int32; public func neg() -> int32 { -self.value }; }
+public func make(_ value: int32) -> Local { Local { value } }
+public func checkPointer[T](_ value: *const T, _ other: &Local) -> bool { value.eq(*other) }

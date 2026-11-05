@@ -4,9 +4,9 @@ struct Widget {
     value: int32
 }
 
-impl Marker for Widget {}
-impl Marker for Widget {}
+conform Widget to Marker {}
+conform Widget to Marker {}
 
 func main() {
-    let _ = Widget { value: 1 }
+    var _ = Widget { value: 1 }
 }

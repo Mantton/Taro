@@ -1,0 +1,22 @@
+func twice[F: Fn() -> int32](_ callback: F) -> int32 { callback() + callback() }
+func repeat[F: AsyncFn() -> int32](_ callback: F) async -> int32 {
+    (await callback()) + (await callback())
+}
+func counter() -> any Fn() -> int32 {
+    var count: int32 = 0
+    () => { count += 1; count }
+}
+func main() async {
+    callback := counter()
+    copy := callback
+    assert(callback() == 1 && copy() == 2 && twice(callback) == 7, "generic and erased stateful Fn calls repeat")
+    var total: int32 = 0
+    asyncCallback := () async => { await std::testing::yieldNow(); total += 1; total }
+    assert((await repeat(asyncCallback)) == 3 && total == 2, "async callbacks share captured state")
+    var erased: any AsyncFn() -> int32 = asyncCallback
+    assert((await erased()) == 3 && (await erased.call(args: ())) == 4, "erased AsyncFn calls repeat")
+    left := std::task::spawn(() async => { await erased() })
+    right := std::task::spawn(() async => { await erased() })
+    var _ = (await left.result()).unwrap()
+    var _ = (await right.result()).unwrap()
+}

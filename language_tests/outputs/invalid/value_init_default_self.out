@@ -1,0 +1,4 @@
+error: unknown symbol `self`
+ -> language_tests/source_files/invalid/value_init_default_self.tr:1:47
+	struct Counter { first: int32; second: int32 = self.first }
+	                                               ^^^^

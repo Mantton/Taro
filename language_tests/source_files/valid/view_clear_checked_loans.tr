@@ -1,0 +1,24 @@
+enum View { case empty; case value(&int32) }
+func clear(_ slot: &View) { *slot = .empty }
+func exercise(_ slot: &(&int32)?) {
+    var value: int32 = 1
+    var saved: &int32 = &value
+    *slot = .none
+    assert(*saved == 1, "clearing an unrelated view preserves a live borrow")
+    value = 2
+    var exclusive: &int32 = &value
+    *slot = .none
+    *exclusive = 3
+    assert(value == 3, "mutable access through the authorized reference remains valid")
+}
+func main() {
+    var slot: (&int32)? = .none
+    exercise(&slot)
+    var value: int32 = 4
+    var view: View = .value(&value)
+    clear(&view)
+    match view {
+        case .empty => {}
+        case .value(_) => panic("cleared view retained its old case")
+    }
+}

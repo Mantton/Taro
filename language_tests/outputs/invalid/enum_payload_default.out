@@ -1,0 +1,4 @@
+error: enum payload fields do not support defaults
+ -> language_tests/source_files/invalid/enum_payload_default.tr:1:26
+	enum State { case value { count: int32 = 7 } }
+	                          ^^^^^

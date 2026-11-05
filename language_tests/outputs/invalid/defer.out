@@ -1,6 +1,6 @@
 error: `await` is not allowed inside a defer block
  -> language_tests/source_files/invalid/defer.tr:6:20
-	    defer { let _ = await asyncValue() }
+	    defer { var _ = await asyncValue() }
 	                    ^^^^^^^^^^^^^^^^^^
 error: `break` is not allowed inside a defer block
  -> language_tests/source_files/invalid/defer.tr:10:12

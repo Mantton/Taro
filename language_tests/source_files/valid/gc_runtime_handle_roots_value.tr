@@ -1,0 +1,50 @@
+// G57: foreign code keeps a managed value across collections only through an
+// integer `Handle`, which roots the value until `delete`. Using a deleted
+// handle is detected rather than reaching another value.
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: runtime handle used after delete
+import std::runtime::Handle
+extern "C" {
+    unsafe func __gc__test_probe_create(_ target: *const uint8) -> *mut uint8
+    unsafe func __gc__test_collect_probe_is_live(_ probe: *mut uint8) -> bool
+}
+final class Payload {
+    name: string
+    parts: [string]
+}
+extend Payload {
+    init(_ name: string) {
+        self.name = name
+        self.parts = [std::sprintf("%s-a", name), std::sprintf("%s-b", name)]
+    }
+}
+
+func collect() {
+    probe := unsafe { __gc__test_probe_create(0 as *const uint8) }
+    var _ = unsafe { __gc__test_collect_probe_is_live(probe) }
+}
+
+// Only the integer survives this frame, as if stored by C.
+@noinline
+func stash() -> usize {
+    return Handle[Payload]::new(Payload(std::sprintf("payload-%d", 7))).raw()
+}
+
+func main() {
+    raw := stash()
+    var i = 0
+    while i < 3 {
+        var _ = std::sprintf("garbage-%d", i)
+        collect()
+        i += 1
+    }
+    handle := unsafe { Handle[Payload]::fromRaw(raw) }
+    payload := handle.value()
+    std::printf("%s: %s, %s\n", payload.name, payload.parts[0], payload.parts[1])
+    other := Handle[string]::new("second")
+    var distinct: string = if other.raw() != raw { "yes" } else { "no" }
+    std::printf("distinct ids: %s\n", distinct)
+    other.delete()
+    handle.delete()
+    var _ = handle.value()
+}

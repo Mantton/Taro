@@ -1,0 +1,4 @@
+error: derived class decoding requires an accessible designated non-fallible superclass init(); write init(from:) explicitly
+ -> language_tests/source_files/invalid/class_decoder_base_init.tr:3:12
+	final class DecodedChild: UncodedBase, std::encoding::Codable { extra: int32 }
+	            ^^^^^^^^^^^^

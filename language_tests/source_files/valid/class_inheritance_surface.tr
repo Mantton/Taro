@@ -1,0 +1,19 @@
+class Base[T] { item: T }
+class Derived[T]: Base[T] { extra: int32 }
+extend[T] Base[T] {
+    func read() -> &T { &self.item }
+    func echo[U](_ value: U) -> U { value }
+    func change() { self.extraBase() }
+    func extraBase() {}
+}
+extend[T] Derived[T] {
+    override func read() -> &T { return super.read(); }
+    override func echo[V](_ value: V) -> V { return super.echo(value); }
+    func changeBase() { super.change() }
+}
+func upcast[T](_ value: Derived[T]) -> Base[T] { value }
+func inspect[T](_ value: &Derived[T]) -> &T { return value.read(); }
+func infer[T](_ value: Base[T]) -> int32 { 1 }
+func inferred(_ value: &Derived[int32]) -> int32 { return infer(*value); }
+func inheritedMutable(_ value: &Derived[int32]) { value.change() }
+func main() {}

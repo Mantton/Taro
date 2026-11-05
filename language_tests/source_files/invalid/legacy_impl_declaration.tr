@@ -1,0 +1,5 @@
+struct Counter {}
+
+impl Counter {}
+
+func main() {}

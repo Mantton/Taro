@@ -23,6 +23,9 @@ use rustc_hash::FxHashSet;
 
 use super::MirPass;
 
+mod gc_frame;
+mod tail_await;
+
 /// Lowers async functions into:
 /// 1. A public constructor body that allocates and initializes a frame, then
 ///    returns a compiler/runtime-private async handle.
@@ -37,6 +40,7 @@ struct YieldSite<'ctx> {
     future_place: Place<'ctx>,
     resume: BasicBlockId,
     resume_arg: Place<'ctx>,
+    no_result: Option<BasicBlockId>,
     cancel: BasicBlockId,
     cancel_complete: BasicBlockId,
     unwind: CallUnwindAction,
@@ -48,15 +52,14 @@ struct AsyncFrameLayout<'ctx> {
     state_ty: Ty<'ctx>,
     stored_locals: Vec<LocalId>,
     resident_locals: Vec<LocalId>,
+    /// Directly address-taken locals: a live reference may still read them.
+    pinned_locals: FxHashSet<LocalId>,
     start_locals: Vec<LocalId>,
+    /// Initialized by the constructor even when the body never starts.
+    input_locals: Vec<LocalId>,
+    /// Outside the suspended dispatch states; published before body execution.
+    started_state: usize,
     yield_locals: Vec<Vec<LocalId>>,
-    mobility: AsyncTaskMobility,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum AsyncTaskMobility {
-    Pinned,
-    Movable,
 }
 
 struct PollThunkLocals<'ctx> {
@@ -79,6 +82,9 @@ impl<'ctx> MirPass<'ctx> for AsyncTransform {
         if !body.is_async {
             return Ok(());
         }
+        if tail_await::forward_tail_await(gcx, body) {
+            return Ok(());
+        }
 
         let span = body_span(body);
         let poll_id = register_async_poll_definition(gcx, body.owner, span);
@@ -91,7 +97,7 @@ impl<'ctx> MirPass<'ctx> for AsyncTransform {
         poll_body.source_scopes[SourceScopeId::from_raw(0)].definition = poll_id;
         let frame = lower_async_poll_body(gcx, &mut poll_body)?;
 
-        let (drop_id, drop_body) = build_async_drop_body(gcx, body.owner, &frame, &poll_body);
+        let (drop_id, drop_body) = build_async_drop_body(gcx, body.owner, &frame, &poll_body)?;
         let constructor = build_async_constructor(gcx, body, poll_id, drop_id, &frame)?;
 
         gcx.queue_synthetic_mir_body(poll_id, poll_body);
@@ -140,6 +146,7 @@ fn register_async_poll_definition<'ctx>(
         .alloc(signature.clone());
     let owner_name = gcx.definition_symbol_or_fallback(owner);
     let def = crate::sema::models::SyntheticDefinition {
+        kind: crate::sema::models::SyntheticDefinitionKind::AsyncPoll,
         name: gcx.intern_symbol(&format!("{}$poll", gcx.symbol_text(owner_name))),
         generics: gcx.generics_of(owner),
         signature,
@@ -148,6 +155,28 @@ fn register_async_poll_definition<'ctx>(
     gcx.register_synthetic_definition(poll_id, def);
     gcx.cache_type(poll_id, Ty::from_labeled_signature(gcx, &signature));
     poll_id
+}
+
+/// The callback tag conveys only a wire ABI. Validate imported headers before
+/// publication; it must never stand in for native/body/storage proofs.
+pub(crate) fn validate_poll_declaration<'ctx>(
+    gcx: Gcx<'ctx>,
+    definition: &crate::sema::models::SyntheticDefinition<'ctx>,
+) -> Result<(), String> {
+    if definition.kind != crate::sema::models::SyntheticDefinitionKind::AsyncPoll {
+        return Ok(());
+    }
+    let signature = definition.signature;
+    let pointer = raw_ptr_ty(gcx, gcx.types.uint8, crate::hir::Mutability::Mutable);
+    if signature.abi.is_some()
+        || signature.is_variadic
+        || signature.output != gcx.types.uint8
+        || signature.inputs.len() != 3
+        || signature.inputs.iter().any(|input| input.ty != pointer)
+    {
+        return Err("async poll callback metadata has an invalid C wire signature".into());
+    }
+    Ok(())
 }
 
 fn lower_async_poll_body<'ctx>(
@@ -172,13 +201,27 @@ fn lower_async_poll_body<'ctx>(
     }
 
     let mut yields = materialize_await_futures(gcx, body);
-    let frame = build_frame_layout(gcx, body, &yields);
+    let mut frame = build_frame_layout(gcx, body, &yields);
+    frame.input_locals = original_params
+        .into_iter()
+        .filter(|local| frame.stored_locals.contains(local))
+        .collect();
+    let original_locals = body.locals.len();
     let locals = add_poll_thunk_locals(gcx, body, frame.ty, output_ty);
     rewrite_resident_local_places(body, &frame, locals.frame_ptr, &mut yields);
 
-    rewrite_returns(gcx, body, original_return_local, &frame, &locals);
+    rewrite_returns(gcx, body, original_return_local, &frame, &locals)?;
     rewrite_yields(gcx, body, &yields, &frame, &locals)?;
     install_dispatch(gcx, body, &yields, &frame, &locals)?;
+    verify_frame_reference_storage(body, original_locals).map_err(|(local, span)| {
+        gcx.dcx().emit_error(
+            format!(
+                "internal error: async borrow still refers to movable poll-stack storage {local:?}"
+            ),
+            Some(span),
+        );
+        ReportedError
+    })?;
 
     Ok(frame)
 }
@@ -206,6 +249,7 @@ fn materialize_await_futures<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> Vec
             value,
             resume,
             resume_arg,
+            no_result,
             cancel,
             cancel_complete,
             unwind,
@@ -214,7 +258,7 @@ fn materialize_await_futures<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> Vec
             unreachable!();
         };
 
-        let future_place = if let Some((place, _)) = value.as_copy() {
+        let future_place = if let Some(place) = value.place() {
             place.clone()
         } else {
             let future_ty = body.operand_ty(gcx, &value);
@@ -237,6 +281,7 @@ fn materialize_await_futures<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> Vec
             future_place,
             resume,
             resume_arg,
+            no_result,
             cancel,
             cancel_complete,
             unwind,
@@ -253,6 +298,24 @@ fn build_frame_layout<'ctx>(
     yields: &[YieldSite<'ctx>],
 ) -> AsyncFrameLayout<'ctx> {
     let state_ty = gcx.types.uint;
+    // A reference can be the only future use of its owner's storage. Ordinary
+    // local liveness cannot see that dependency through an aggregate/view.
+    // Reserve a stable field for every directly address-taken local, including
+    // NoCopy values, rather than moving it through transient poll-stack slots.
+    let mut pinned = FxHashSet::default();
+    for block in &body.basic_blocks {
+        for statement in &block.statements {
+            if let StatementKind::Assign(
+                _,
+                Rvalue::Ref { place, .. } | Rvalue::CleanupAddress { place },
+            ) = &statement.kind
+            {
+                if !place.projection.contains(&PlaceElem::Deref) {
+                    pinned.insert(place.local);
+                }
+            }
+        }
+    }
     let liveness = compute_block_liveness(body);
     let start_locals = collect_async_state_locals(body, &liveness.live_in[body.start_block], None);
     let yield_locals: Vec<_> = yields
@@ -271,13 +334,12 @@ fn build_frame_layout<'ctx>(
         .filter(|&local| {
             start_locals.contains(&local)
                 || yield_locals.iter().any(|locals| locals.contains(&local))
+                || pinned.contains(&local)
         })
         .collect();
-    let resident_locals = stored_locals
-        .iter()
-        .copied()
-        .filter(|local| async_local_can_reside_in_frame(gcx, body.locals[*local].ty))
-        .collect();
+    // References must keep pointing into stable GC frame storage across
+    // suspension and cleanup, rather than temporary resumed poll-stack slots.
+    let resident_locals = stored_locals.clone();
     let mut fields = Vec::with_capacity(stored_locals.len() + 1);
     fields.push(state_ty);
     fields.extend(stored_locals.iter().map(|local| body.locals[*local].ty));
@@ -285,15 +347,16 @@ fn build_frame_layout<'ctx>(
         TyKind::Tuple(gcx.store.interners.intern_ty_list(fields)),
         gcx,
     );
-    let mobility = infer_async_task_mobility(gcx, body, &stored_locals);
     AsyncFrameLayout {
         ty: frame_ty,
         state_ty,
         stored_locals,
         resident_locals,
+        pinned_locals: pinned,
         start_locals,
+        input_locals: vec![],
+        started_state: yields.len() + 1,
         yield_locals,
-        mobility,
     }
 }
 
@@ -308,22 +371,7 @@ fn collect_async_state_locals(
         .collect()
 }
 
-fn async_local_can_reside_in_frame<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>) -> bool {
-    if gcx.is_type_copyable(ty) {
-        return true;
-    }
-    // An AsyncFnOnce adapter owns its closure but may invoke an AsyncFn or
-    // AsyncFnMut implementation whose child future borrows that environment.
-    // Keep every concrete closure environment at a stable frame address until
-    // the adapter completes; restoring it to a poll-stack local would leave
-    // the suspended child future with a dangling pointer.
-    matches!(ty.kind(), TyKind::Closure { .. })
-}
-
-/// Keep addressable Copy state in the heap frame for the entire lifetime of
-/// the future. A child future may retain an immutable reference to one of these
-/// values while it is pending, so moving it through a poll-stack local would
-/// invalidate that reference.
+/// Saved values stay at their final frame addresses throughout the future.
 fn rewrite_resident_local_places<'ctx>(
     body: &mut Body<'ctx>,
     frame: &AsyncFrameLayout<'ctx>,
@@ -346,7 +394,9 @@ fn rewrite_resident_local_places<'ctx>(
             match &mut statement.kind {
                 StatementKind::SourceScope(_)
                 | StatementKind::StorageLive(_)
+                | StatementKind::StorageDead(_)
                 | StatementKind::SetInitialized(_) => {}
+
                 StatementKind::Assign(destination, rvalue) => {
                     remap_resident_place(destination, &remaps);
                     rvalue.for_each_place_mut(|place| remap_resident_place(place, &remaps));
@@ -409,43 +459,37 @@ fn remap_resident_place<'ctx>(place: &mut Place<'ctx>, remaps: &[Option<Place<'c
 
 fn remap_resident_operand<'ctx>(operand: &mut Operand<'ctx>, remaps: &[Option<Place<'ctx>>]) {
     match operand {
-        Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
+        Operand::Copy(place) | Operand::CopyWith(place, _) => {
             remap_resident_place(place, remaps);
         }
         Operand::Constant(_) => {}
     }
 }
 
-fn infer_async_task_mobility<'ctx>(
-    gcx: Gcx<'ctx>,
-    body: &Body<'ctx>,
-    stored_locals: &[LocalId],
-) -> AsyncTaskMobility {
-    // Borrowed async closure environments are tied to the immediate caller.
-    // Keep their frames pinned even if later Sendable rules learn how to
-    // classify raw environment pointers more permissively.
-    if gcx
-        .get_closure_captures(body.owner)
-        .is_some_and(|captures| {
-            captures.captures.iter().any(|capture| {
-                matches!(
-                    capture.capture_kind,
-                    crate::sema::models::CaptureKind::ByRef { .. }
-                )
-            })
-        })
-    {
-        return AsyncTaskMobility::Pinned;
+/// Every source address-taken owner is assigned final frame storage before
+/// executing the body. A missed rewrite must fail in the compiler, rather than
+/// letting a suspended child retain an address into an obsolete poll stack.
+fn verify_frame_reference_storage(
+    body: &Body<'_>,
+    original_locals: usize,
+) -> Result<(), (LocalId, Span)> {
+    for block in &body.basic_blocks {
+        for statement in &block.statements {
+            let StatementKind::Assign(_, value) = &statement.kind else {
+                continue;
+            };
+            let place = match value {
+                Rvalue::Ref { place, .. } | Rvalue::CleanupAddress { place } => place,
+                _ => continue,
+            };
+            if place.local.index() < original_locals
+                && !place.projection.contains(&PlaceElem::Deref)
+            {
+                return Err((place.local, statement.span));
+            }
+        }
     }
-
-    if stored_locals
-        .iter()
-        .all(|local| gcx.is_type_sendable(body.locals[*local].ty))
-    {
-        AsyncTaskMobility::Movable
-    } else {
-        AsyncTaskMobility::Pinned
-    }
+    Ok(())
 }
 
 fn add_poll_thunk_locals<'ctx>(
@@ -531,7 +575,7 @@ fn rewrite_returns<'ctx>(
     original_return_local: LocalId,
     frame: &AsyncFrameLayout<'ctx>,
     locals: &PollThunkLocals<'ctx>,
-) {
+) -> CompileResult<()> {
     let return_blocks: Vec<_> = body
         .basic_blocks
         .indices()
@@ -550,7 +594,8 @@ fn rewrite_returns<'ctx>(
             .expect("ICE: block in return set has no terminator")
             .span;
         let return_place = poll_local_place(body, frame, locals.frame_ptr, original_return_local);
-        body.basic_blocks[bb_id].statements.push(Statement {
+        let output_block = bb_id;
+        body.basic_blocks[output_block].statements.push(Statement {
             kind: StatementKind::Assign(
                 Place {
                     local: locals.out_ptr,
@@ -558,15 +603,12 @@ fn rewrite_returns<'ctx>(
                 },
                 Rvalue::Use(Operand::CopyWith(
                     return_place,
-                    CopyModifiers {
-                        init: true,
-                        take: false,
-                    },
+                    CopyModifiers { init: true },
                 )),
             ),
             span,
         });
-        body.basic_blocks[bb_id].statements.push(Statement {
+        body.basic_blocks[output_block].statements.push(Statement {
             kind: StatementKind::Assign(
                 Place::from_local(locals.tag_return),
                 Rvalue::Use(const_uint8_operand(gcx, 1)),
@@ -574,6 +616,7 @@ fn rewrite_returns<'ctx>(
             span,
         });
     }
+    Ok(())
 }
 
 fn rewrite_yields<'ctx>(
@@ -590,7 +633,7 @@ fn rewrite_yields<'ctx>(
         find_or_register_async_runtime_function(gcx, AsyncRuntimeFn::Destroy, span);
     let async_destroy_ty = gcx.get_type(async_destroy_id);
     let async_cancel_id =
-        find_or_register_async_runtime_function(gcx, AsyncRuntimeFn::CancelHandle, span);
+        find_or_register_async_runtime_function(gcx, AsyncRuntimeFn::CancelPoll, span);
     let async_cancel_ty = gcx.get_type(async_cancel_id);
     let is_cancelled_id =
         find_or_register_async_runtime_function(gcx, AsyncRuntimeFn::IsTaskCancelled, span);
@@ -621,10 +664,9 @@ fn rewrite_yields<'ctx>(
         );
         let ready_ref_local = push_local(
             body,
-            gcx.store.interners.intern_ty(TyKind::Reference(
-                ready_storage_ty,
-                crate::hir::Mutability::Mutable,
-            )),
+            gcx.store
+                .interners
+                .intern_ty(TyKind::Reference(ready_storage_ty)),
             LocalKind::Temp,
             true,
             Some(gcx.intern_symbol("$await_ready_ref")),
@@ -693,7 +735,6 @@ fn rewrite_yields<'ctx>(
             kind: StatementKind::Assign(
                 Place::from_local(ready_ref_local),
                 Rvalue::Ref {
-                    mutable: true,
                     place: Place::from_local(ready_storage_local),
                 },
             ),
@@ -746,7 +787,15 @@ fn rewrite_yields<'ctx>(
                 locals.tag_return,
                 index + 1,
                 site.span,
-            ),
+            )
+            .into_iter()
+            .chain(clear_dead_frame_fields(
+                frame,
+                &frame.yield_locals[index],
+                locals.frame_ptr,
+                site.span,
+            ))
+            .collect(),
             terminator: Some(Terminator {
                 kind: TerminatorKind::Return,
                 span: site.span,
@@ -765,6 +814,18 @@ fn rewrite_yields<'ctx>(
             statements: vec![],
             terminator: None,
         });
+        let cancel_progress_block = body.basic_blocks.push(BasicBlockData {
+            note: Some(format!("await-cancel-progress-{}", index)),
+            statements: vec![],
+            terminator: Some(Terminator {
+                kind: TerminatorKind::SwitchInt {
+                    discr: Operand::Copy(Place::from_local(tag_local)),
+                    targets: vec![(0, pending_store_block)],
+                    otherwise: site.cancel,
+                },
+                span: site.span,
+            }),
+        });
         let cancel_destroy_block = body.basic_blocks.push(BasicBlockData {
             note: Some(format!("await-cancel-destroy-{}", index)),
             statements: vec![],
@@ -772,9 +833,8 @@ fn rewrite_yields<'ctx>(
                 kind: TerminatorKind::Call {
                     func: fn_operand(async_cancel_id, GenericArguments::empty(), async_cancel_ty),
                     args: vec![Operand::Copy(Place::from_local(handle_local))],
-                    devirt_hint: None,
-                    destination: Place::from_local(destroy_void_local),
-                    target: site.cancel,
+                    destination: Place::from_local(tag_local),
+                    target: cancel_progress_block,
                     unwind: site.unwind,
                 },
                 span: site.span,
@@ -791,7 +851,6 @@ fn rewrite_yields<'ctx>(
                         async_destroy_ty,
                     ),
                     args: vec![Operand::Copy(Place::from_local(handle_local))],
-                    devirt_hint: None,
                     destination: Place::from_local(destroy_void_local),
                     target: site.resume,
                     unwind: site.unwind,
@@ -818,10 +877,7 @@ fn rewrite_yields<'ctx>(
                     site.resume_arg.clone(),
                     Rvalue::Use(Operand::CopyWith(
                         Place::from_local(ready_storage_local),
-                        CopyModifiers {
-                            init: true,
-                            take: true,
-                        },
+                        CopyModifiers { init: true },
                     )),
                 ),
                 span: site.span,
@@ -839,10 +895,41 @@ fn rewrite_yields<'ctx>(
             }),
         });
 
+        let no_result_target = body.basic_blocks.push(BasicBlockData {
+            note: Some(format!("await-without-result-{}", index)),
+            statements: vec![],
+            terminator: Some(Terminator {
+                kind: if let Some(target) = site.no_result {
+                    TerminatorKind::Call {
+                        func: fn_operand(
+                            async_destroy_id,
+                            GenericArguments::empty(),
+                            async_destroy_ty,
+                        ),
+                        args: vec![Operand::Copy(Place::from_local(handle_local))],
+                        destination: Place::from_local(destroy_void_local),
+                        target,
+                        unwind: site.unwind,
+                    }
+                } else {
+                    TerminatorKind::Unreachable
+                },
+                span: site.span,
+            }),
+        });
+
+        // Cancellation can arrive on another worker after the check above.
+        // A child that then observes it before starting reports cancelled (2)
+        // without a result; take this frame's cancellation path, where
+        // cancel_poll consumes the terminal child.
         body.basic_blocks[check_block].terminator = Some(Terminator {
             kind: TerminatorKind::SwitchInt {
                 discr: Operand::Copy(Place::from_local(tag_local)),
-                targets: vec![(0u128, pending_store_block)],
+                targets: vec![
+                    (0u128, pending_store_block),
+                    (2, cancel_destroy_block),
+                    (3, no_result_target),
+                ],
                 otherwise: ready_block,
             },
             span: site.span,
@@ -855,7 +942,6 @@ fn rewrite_yields<'ctx>(
                     Operand::Copy(Place::from_local(handle_local)),
                     Operand::Copy(Place::from_local(ready_raw_local)),
                 ],
-                devirt_hint: None,
                 destination: Place::from_local(tag_local),
                 target: check_block,
                 unwind: site.unwind,
@@ -874,7 +960,6 @@ fn rewrite_yields<'ctx>(
             kind: TerminatorKind::Call {
                 func: fn_operand(is_cancelled_id, GenericArguments::empty(), is_cancelled_ty),
                 args: vec![],
-                devirt_hint: None,
                 destination: Place::from_local(cancelled_local),
                 target: cancel_switch_block,
                 unwind: site.unwind,
@@ -989,7 +1074,7 @@ fn restore_block<'ctx>(
     target: BasicBlockId,
     span: Span,
 ) -> BasicBlockId {
-    let statements: Vec<_> = locals_to_restore
+    let mut statements: Vec<_> = locals_to_restore
         .iter()
         .filter(|local| !frame.resident_locals.contains(local))
         .map(|local| Statement {
@@ -999,15 +1084,29 @@ fn restore_block<'ctx>(
                 Place::from_local(*local),
                 Rvalue::Use(Operand::CopyWith(
                     frame_local_place(body, frame, frame_ptr_local, *local),
-                    CopyModifiers {
-                        init: true,
-                        take: true,
-                    },
+                    CopyModifiers { init: true },
                 )),
             ),
             span,
         })
         .collect();
+
+    // Retire both initial and suspended admission before any continuation can
+    // unwind. If cleanup then panics, destruction must not reenter this state.
+    // A real Pending return republishes its suspension tag in the save path.
+    statements.insert(
+        0,
+        Statement {
+            span,
+            kind: StatementKind::Assign(
+                frame_state_place(frame_ptr_local, frame.state_ty),
+                Rvalue::Use(Operand::Constant(Constant {
+                    ty: frame.state_ty,
+                    value: ConstantKind::Integer(frame.started_state as u64),
+                })),
+            ),
+        },
+    );
 
     let restore = body.basic_blocks.push(BasicBlockData {
         note: Some("async-restore".into()),
@@ -1041,10 +1140,7 @@ fn pending_save_statements<'ctx>(
                 frame_local_place_stub(frame, frame_ptr_local, *local),
                 Rvalue::Use(Operand::CopyWith(
                     Place::from_local(*local),
-                    CopyModifiers {
-                        init: true,
-                        take: true,
-                    },
+                    CopyModifiers { init: true },
                 )),
             ),
             span,
@@ -1067,6 +1163,37 @@ fn pending_save_statements<'ctx>(
     statements
 }
 
+/// Zeroes frame fields whose locals are dead while suspended at this await,
+/// so a suspended frame traces only the values its resumption can read. A
+/// zeroed field is the same state as a never-initialized one, which tracing
+/// already accepts for every type; nothing reads it before reassignment.
+fn clear_dead_frame_fields<'ctx>(
+    frame: &AsyncFrameLayout<'ctx>,
+    live_locals: &[LocalId],
+    frame_ptr_local: LocalId,
+    span: Span,
+) -> Vec<Statement<'ctx>> {
+    frame
+        .resident_locals
+        .iter()
+        .filter(|local| !live_locals.contains(local) && !frame.pinned_locals.contains(local))
+        .filter_map(|&local| {
+            let ty = frame_local_ty(frame, local);
+            let scalar = matches!(
+                ty.kind(),
+                TyKind::Bool | TyKind::Rune | TyKind::Int(_) | TyKind::UInt(_) | TyKind::Float(_)
+            ) || matches!(ty.kind(), TyKind::Tuple(items) if items.is_empty());
+            (!scalar).then(|| Statement {
+                kind: StatementKind::Assign(
+                    frame_local_place_stub(frame, frame_ptr_local, local),
+                    Rvalue::Zeroed { ty },
+                ),
+                span,
+            })
+        })
+        .collect()
+}
+
 fn build_async_constructor<'ctx>(
     gcx: Gcx<'ctx>,
     original: &Body<'ctx>,
@@ -1076,19 +1203,19 @@ fn build_async_constructor<'ctx>(
 ) -> CompileResult<Body<'ctx>> {
     let span = body_span(original);
     let async_return_ty = gcx.async_handle_ty();
-    let frame_ptr_const_ty = raw_ptr_ty(gcx, frame.ty, crate::hir::Mutability::Immutable);
     let frame_ptr_mut_ty = raw_ptr_ty(gcx, frame.ty, crate::hir::Mutability::Mutable);
     let ptr_u8_mut = raw_ptr_ty(gcx, gcx.types.uint8, crate::hir::Mutability::Mutable);
     let ptr_u8_const = raw_ptr_ty(gcx, gcx.types.uint8, crate::hir::Mutability::Immutable);
 
     let mut body = Body {
+        escape_locals: Vec::new(),
+
         owner: original.owner,
         source_scopes: Body::initial_source_scopes(original.owner),
         locals: Default::default(),
         basic_blocks: Default::default(),
         start_block: BasicBlockId::from_raw(0),
         return_local: LocalId::from_raw(0),
-        escape_locals: vec![],
         phase: original.phase,
         is_async: false,
     };
@@ -1103,7 +1230,7 @@ fn build_async_constructor<'ctx>(
     );
     body.return_local = async_return_local;
 
-    if is_std_testing_yield_now(gcx, original.owner) {
+    if is_std_yield_now(gcx, original.owner) {
         let yield_now_id =
             find_or_register_async_runtime_function(gcx, AsyncRuntimeFn::YieldNow, span);
         let ret_block = body.basic_blocks.push(BasicBlockData {
@@ -1125,7 +1252,6 @@ fn build_async_constructor<'ctx>(
                         gcx.get_type(yield_now_id),
                     ),
                     args: vec![],
-                    devirt_hint: None,
                     destination: Place::from_local(async_return_local),
                     target: ret_block,
                     unwind: CallUnwindAction::Terminate,
@@ -1156,14 +1282,6 @@ fn build_async_constructor<'ctx>(
         })
         .collect();
 
-    let alloc_local = push_local(
-        &mut body,
-        frame_ptr_const_ty,
-        LocalKind::Temp,
-        true,
-        Some(gcx.intern_symbol("$frame_alloc")),
-        span,
-    );
     let frame_ptr_local = push_local(
         &mut body,
         frame_ptr_mut_ty,
@@ -1178,22 +1296,6 @@ fn build_async_constructor<'ctx>(
         LocalKind::Temp,
         true,
         Some(gcx.intern_symbol("$frame_bytes")),
-        span,
-    );
-    let size_local = push_local(
-        &mut body,
-        gcx.types.uint,
-        LocalKind::Temp,
-        true,
-        Some(gcx.intern_symbol("$frame_size")),
-        span,
-    );
-    let memset_tmp = push_local(
-        &mut body,
-        gcx.types.void,
-        LocalKind::Temp,
-        true,
-        Some(gcx.intern_symbol("$memset")),
         span,
     );
     let poll_ptr_local = push_local(
@@ -1215,46 +1317,11 @@ fn build_async_constructor<'ctx>(
 
     let entry = body.basic_blocks.push(BasicBlockData {
         note: Some("async-ctor-entry".into()),
-        statements: vec![
-            Statement {
-                kind: StatementKind::Assign(
-                    Place::from_local(alloc_local),
-                    Rvalue::Alloc { ty: frame.ty },
-                ),
-                span,
-            },
-            Statement {
-                kind: StatementKind::Assign(
-                    Place::from_local(frame_ptr_local),
-                    Rvalue::Cast {
-                        operand: Operand::Copy(Place::from_local(alloc_local)),
-                        ty: frame_ptr_mut_ty,
-                        kind: crate::mir::CastKind::Pointer,
-                    },
-                ),
-                span,
-            },
-            Statement {
-                kind: StatementKind::Assign(
-                    Place::from_local(frame_bytes_local),
-                    Rvalue::Cast {
-                        operand: Operand::Copy(Place::from_local(frame_ptr_local)),
-                        ty: ptr_u8_mut,
-                        kind: crate::mir::CastKind::Pointer,
-                    },
-                ),
-                span,
-            },
-        ],
+        statements: vec![],
         terminator: None,
     });
     body.start_block = entry;
 
-    let after_size = body.basic_blocks.push(BasicBlockData {
-        note: Some("async-ctor-after-size".into()),
-        statements: vec![],
-        terminator: None,
-    });
     let after_memset = body.basic_blocks.push(BasicBlockData {
         note: Some("async-ctor-after-memset".into()),
         statements: vec![],
@@ -1269,50 +1336,6 @@ fn build_async_constructor<'ctx>(
         }),
     });
 
-    let size_of_id = find_std_function(gcx, "mem", "sizeOf", span)?;
-    let size_of_ty = gcx.get_type(size_of_id);
-    body.basic_blocks[entry].terminator = Some(Terminator {
-        kind: TerminatorKind::Call {
-            func: fn_operand(
-                size_of_id,
-                gcx.store
-                    .interners
-                    .intern_generic_args(vec![GenericArgument::Type(frame.ty)]),
-                size_of_ty,
-            ),
-            args: vec![],
-            devirt_hint: None,
-            destination: Place::from_local(size_local),
-            target: after_size,
-            unwind: CallUnwindAction::Terminate,
-        },
-        span,
-    });
-
-    let memset_id = find_std_function(gcx, "intrinsic", "__intrinsic_memset", span)?;
-    let memset_ty = gcx.get_type(memset_id);
-    body.basic_blocks[after_size].terminator = Some(Terminator {
-        kind: TerminatorKind::Call {
-            func: fn_operand(
-                memset_id,
-                gcx.store
-                    .interners
-                    .intern_generic_args(vec![GenericArgument::Type(gcx.types.uint8)]),
-                memset_ty,
-            ),
-            args: vec![
-                Operand::Copy(Place::from_local(frame_bytes_local)),
-                const_uint8_operand(gcx, 0),
-                Operand::Copy(Place::from_local(size_local)),
-            ],
-            devirt_hint: None,
-            destination: Place::from_local(memset_tmp),
-            target: after_memset,
-            unwind: CallUnwindAction::Terminate,
-        },
-        span,
-    });
-
     for ((poll_local, _), ctor_local) in poll_param_locals.iter().zip(ctor_param_locals.iter()) {
         if !frame.stored_locals.contains(poll_local) {
             continue;
@@ -1320,6 +1343,9 @@ fn build_async_constructor<'ctx>(
         body.basic_blocks[after_memset].statements.push(Statement {
             kind: StatementKind::Assign(
                 frame_local_place_stub(frame, frame_ptr_local, *poll_local),
+                // Parameters transfer their one initialized obligation into
+                // the frame, including Copy handles already acquired by the
+                // caller. This is not another environment/header copy.
                 Rvalue::Use(Operand::Copy(Place::from_local(*ctor_local))),
             ),
             span,
@@ -1356,31 +1382,48 @@ fn build_async_constructor<'ctx>(
         span,
     });
 
-    let async_create_id =
-        find_or_register_async_runtime_function(gcx, AsyncRuntimeFn::Create, span);
+    let native_owner = push_local(
+        &mut body,
+        ptr_u8_mut,
+        LocalKind::Temp,
+        true,
+        Some(gcx.intern_symbol("$gc_frame_owner")),
+        span,
+    );
+    let create = AsyncRuntimeFn::CreateOwned;
+    let async_create_id = find_or_register_async_runtime_function(gcx, create, span);
     let async_create_ty = gcx.get_type(async_create_id);
     body.basic_blocks[after_memset].terminator = Some(Terminator {
         kind: TerminatorKind::Call {
             func: fn_operand(async_create_id, GenericArguments::empty(), async_create_ty),
             args: vec![
-                Operand::Copy(Place::from_local(frame_bytes_local)),
+                Operand::Copy(Place::from_local(native_owner)),
                 Operand::Copy(Place::from_local(poll_ptr_local)),
                 Operand::Copy(Place::from_local(drop_ptr_local)),
-                const_uint8_operand(
-                    gcx,
-                    match frame.mobility {
-                        AsyncTaskMobility::Pinned => 0,
-                        AsyncTaskMobility::Movable => 1,
-                    },
-                ),
+                // Source frames and captures use stable GC storage. Only
+                // internal native tasks can request worker affinity.
+                const_uint8_operand(gcx, 1),
             ],
-            devirt_hint: None,
             destination: Place::from_local(async_return_local),
             target: ret_block,
             unwind: CallUnwindAction::Terminate,
         },
         span,
     });
+
+    {
+        gc_frame::install(
+            gcx,
+            &mut body,
+            frame.ty,
+            entry,
+            after_memset,
+            native_owner,
+            frame_bytes_local,
+            frame_ptr_local,
+            span,
+        );
+    }
 
     Ok(body)
 }
@@ -1411,6 +1454,7 @@ fn register_async_drop_definition<'ctx>(
         .alloc(signature.clone());
     let owner_name = gcx.definition_symbol_or_fallback(owner);
     let def = crate::sema::models::SyntheticDefinition {
+        kind: crate::sema::models::SyntheticDefinitionKind::Ordinary,
         name: gcx.intern_symbol(&format!("{}$drop", gcx.symbol_text(owner_name))),
         generics: gcx.generics_of(owner),
         signature,
@@ -1421,34 +1465,32 @@ fn register_async_drop_definition<'ctx>(
     drop_id
 }
 
-/// Build a synthetic drop body that loads all frame locals into temps, then
-/// returns after taking ownership out of the frame.
+/// Before the first poll, only constructor inputs own initialized values.
+/// Started bodies use their checked cleanup paths on normal/cancellation/unwind
+/// exits. Never read uninitialized body-local slots or register body defers here.
 fn build_async_drop_body<'ctx>(
     gcx: Gcx<'ctx>,
     owner: DefinitionID,
     frame: &AsyncFrameLayout<'ctx>,
     poll_body: &Body<'ctx>,
-) -> (DefinitionID, Body<'ctx>) {
+) -> CompileResult<(DefinitionID, Body<'ctx>)> {
     let span = poll_body.locals[poll_body.return_local].span;
     let drop_id = register_async_drop_definition(gcx, owner, span);
-
     let ptr_u8_mut = raw_ptr_ty(gcx, gcx.types.uint8, crate::hir::Mutability::Mutable);
     let frame_ptr_mut_ty = raw_ptr_ty(gcx, frame.ty, crate::hir::Mutability::Mutable);
-
     let mut body = Body {
+        escape_locals: Vec::new(),
+
         owner: drop_id,
         source_scopes: Body::initial_source_scopes(drop_id),
         locals: Default::default(),
         basic_blocks: Default::default(),
         start_block: BasicBlockId::from_raw(0),
         return_local: LocalId::from_raw(0),
-        escape_locals: vec![],
         phase: poll_body.phase,
         is_async: false,
     };
-
-    // Return local (void)
-    let ret_local = push_local(
+    body.return_local = push_local(
         &mut body,
         gcx.types.void,
         LocalKind::Return,
@@ -1456,9 +1498,6 @@ fn build_async_drop_body<'ctx>(
         Some(gcx.intern_symbol("$ret")),
         span,
     );
-    body.return_local = ret_local;
-
-    // Parameter: frame raw pointer
     let frame_raw = push_local(
         &mut body,
         ptr_u8_mut,
@@ -1467,8 +1506,6 @@ fn build_async_drop_body<'ctx>(
         Some(gcx.intern_symbol("$frame")),
         span,
     );
-
-    // Typed frame pointer
     let frame_ptr = push_local(
         &mut body,
         frame_ptr_mut_ty,
@@ -1477,68 +1514,75 @@ fn build_async_drop_body<'ctx>(
         Some(gcx.intern_symbol("$frame_ptr")),
         span,
     );
-
-    // Create temp locals mirroring the frame's stored locals. We load all of
-    // them so the drop body can take ownership out of the frame uniformly.
-    let mirror_locals: Vec<_> = frame
-        .stored_locals
-        .iter()
-        .map(|&local| {
-            let ty = poll_body.locals[local].ty;
-            push_local(&mut body, ty, LocalKind::Temp, true, None, span)
-        })
-        .collect();
-
-    // Entry block: cast frame pointer and load all locals
-    let mut statements = vec![Statement {
-        kind: StatementKind::Assign(
-            Place::from_local(frame_ptr),
-            Rvalue::Cast {
-                operand: Operand::Copy(Place::from_local(frame_raw)),
-                ty: frame_ptr_mut_ty,
-                kind: crate::mir::CastKind::Pointer,
-            },
-        ),
+    let state = push_local(
+        &mut body,
+        frame.state_ty,
+        LocalKind::Temp,
+        true,
+        Some(gcx.intern_symbol("$state")),
         span,
-    }];
-
-    for (i, &mirror) in mirror_locals.iter().enumerate() {
-        let field_index = i + 1; // +1 because field 0 is the state tag
-        let field_ty = poll_body.locals[frame.stored_locals[i]].ty;
-        // Use init+take modifiers and zero the frame field after loading so
-        // ownership transfers into the mirror local exactly once.
-        statements.push(Statement {
-            kind: StatementKind::Assign(
-                Place::from_local(mirror),
-                Rvalue::Use(Operand::CopyWith(
-                    Place {
-                        local: frame_ptr,
-                        projection: vec![
-                            PlaceElem::Deref,
-                            PlaceElem::Field(FieldIndex::from_raw(field_index as u32), field_ty),
-                        ],
-                    },
-                    CopyModifiers {
-                        init: true,
-                        take: true,
-                    },
-                )),
-            ),
-            span,
-        });
-    }
-
-    let entry = body.basic_blocks.push(BasicBlockData {
-        note: Some("async-drop-entry".into()),
-        statements,
+    );
+    let done = body.basic_blocks.push(BasicBlockData {
+        note: Some("async-drop-done".into()),
+        statements: vec![],
         terminator: Some(Terminator {
             kind: TerminatorKind::Return,
             span,
         }),
     });
+    // GC reclaims frame inputs; explicit cancellation is handled by the poll body.
+    let unstarted = body.basic_blocks.push(BasicBlockData {
+        note: Some("async-drop-unstarted-inputs".into()),
+        statements: vec![Statement {
+            span,
+            kind: StatementKind::Assign(
+                frame_state_place(frame_ptr, frame.state_ty),
+                Rvalue::Use(const_uint_operand(
+                    gcx,
+                    frame.state_ty,
+                    frame.started_state as u64,
+                )),
+            ),
+        }],
+        terminator: Some(Terminator {
+            span,
+            kind: TerminatorKind::Goto { target: done },
+        }),
+    });
+    let drop_targets = vec![(0, unstarted)];
+    let entry = body.basic_blocks.push(BasicBlockData {
+        note: Some("async-drop-entry".into()),
+        statements: vec![
+            Statement {
+                span,
+                kind: StatementKind::Assign(
+                    Place::from_local(frame_ptr),
+                    Rvalue::Cast {
+                        operand: Operand::Copy(Place::from_local(frame_raw)),
+                        ty: frame_ptr_mut_ty,
+                        kind: crate::mir::CastKind::Pointer,
+                    },
+                ),
+            },
+            Statement {
+                span,
+                kind: StatementKind::Assign(
+                    Place::from_local(state),
+                    Rvalue::Use(Operand::Copy(frame_state_place(frame_ptr, frame.state_ty))),
+                ),
+            },
+        ],
+        terminator: Some(Terminator {
+            span,
+            kind: TerminatorKind::SwitchInt {
+                discr: Operand::Copy(Place::from_local(state)),
+                targets: drop_targets,
+                otherwise: done,
+            },
+        }),
+    });
     body.start_block = entry;
-
-    (drop_id, body)
+    Ok((drop_id, body))
 }
 
 fn push_local<'ctx>(
@@ -1556,7 +1600,6 @@ fn push_local<'ctx>(
         name,
         span,
     });
-    body.escape_locals.push(false);
     local
 }
 
@@ -1677,15 +1720,40 @@ pub(crate) fn find_or_register_async_runtime_function<'ctx>(
     which: AsyncRuntimeFn,
     span: Span,
 ) -> DefinitionID {
-    let spec = which.spec();
+    find_or_register_runtime_function(gcx, which.spec(), span)
+}
+
+/// Register a typed compiler call only when its exact signature is present in
+/// the canonical native ABI, including entries without a convenience enum.
+pub(crate) fn find_or_register_runtime_function<'ctx>(
+    gcx: Gcx<'ctx>,
+    spec: crate::runtime_abi::RuntimeFunctionSpec,
+    span: Span,
+) -> DefinitionID {
+    let expected = crate::runtime_abi::RuntimeAbiFunction::ALL
+        .iter()
+        .map(|function| function.spec())
+        .find(|known| known.symbol == spec.symbol)
+        .map(|known| known.signature())
+        .or_else(|| {
+            crate::runtime_abi::ADDITIONAL_RUNTIME_SYMBOLS
+                .iter()
+                .find(|known| known.symbol == spec.symbol)
+                .map(|known| known.signature.to_owned())
+        });
+    assert_eq!(
+        expected.as_deref(),
+        Some(spec.signature().as_str()),
+        "compiler runtime declaration must match the canonical ABI"
+    );
     let name = spec.symbol;
     let inputs = spec
         .inputs
         .iter()
         .copied()
-        .map(|ty| lower_runtime_abi_type(gcx, ty, span))
+        .map(|ty| lower_runtime_abi_type(gcx, ty))
         .collect::<Vec<_>>();
-    let output = lower_runtime_abi_type(gcx, spec.output, span);
+    let output = lower_runtime_abi_type(gcx, spec.output);
 
     let symbol = gcx.intern_symbol(name);
     if let Some(id) = gcx
@@ -1696,7 +1764,12 @@ pub(crate) fn find_or_register_async_runtime_function<'ctx>(
         .find_map(|(id, def)| {
             (gcx.symbol_eq(def.name, name)
                 && def.signature.abi == Some(crate::hir::Abi::Runtime)
-                && def.signature.inputs.len() == inputs.len()
+                && def
+                    .signature
+                    .inputs
+                    .iter()
+                    .map(|input| input.ty)
+                    .eq(inputs.iter().copied())
                 && def.signature.output == output)
                 .then_some(*id)
         })
@@ -1726,6 +1799,7 @@ pub(crate) fn find_or_register_async_runtime_function<'ctx>(
         .function_signatures
         .alloc(signature.clone());
     let def = crate::sema::models::SyntheticDefinition {
+        kind: crate::sema::models::SyntheticDefinitionKind::Ordinary,
         name: symbol,
         generics: gcx.empty_generics_for_package(gcx.package_index()),
         signature,
@@ -1739,7 +1813,6 @@ pub(crate) fn find_or_register_async_runtime_function<'ctx>(
 fn lower_runtime_abi_type<'ctx>(
     gcx: Gcx<'ctx>,
     ty: crate::runtime_abi::RuntimeAbiType,
-    span: Span,
 ) -> Ty<'ctx> {
     use crate::runtime_abi::RuntimeAbiType;
 
@@ -1759,13 +1832,6 @@ fn lower_runtime_abi_type<'ctx>(
             raw_ptr_ty(gcx, gcx.types.uint8, crate::hir::Mutability::Immutable)
         }
         RuntimeAbiType::AsyncHandle => gcx.async_handle_ty(),
-        RuntimeAbiType::GcDescPtr => {
-            let desc_id = find_std_function(gcx, "intrinsic", "__intrinsic_gc_desc", span)
-                .unwrap_or_else(|_| {
-                    panic!("ICE: missing std.intrinsic.__intrinsic_gc_desc definition")
-                });
-            gcx.get_signature(desc_id).output
-        }
     }
 }
 
@@ -1801,8 +1867,9 @@ pub(crate) fn definition_in_std_module<'ctx>(
     false
 }
 
-fn is_std_testing_yield_now<'ctx>(gcx: Gcx<'ctx>, owner: DefinitionID) -> bool {
-    definition_in_std_module(gcx, owner, "testing")
+fn is_std_yield_now<'ctx>(gcx: Gcx<'ctx>, owner: DefinitionID) -> bool {
+    (definition_in_std_module(gcx, owner, "testing")
+        || definition_in_std_module(gcx, owner, "task"))
         && gcx.symbol_eq(gcx.definition_symbol_or_fallback(owner), "yieldNow")
 }
 
@@ -1875,5 +1942,124 @@ pub(crate) fn find_std_function<'ctx>(
             );
             Err(ReportedError)
         }
+    }
+}
+
+#[cfg(test)]
+mod frame_storage_tests {
+    use super::*;
+    use crate::hir::Mutability;
+    use crate::mir::test_support::minimal_body;
+
+    #[test]
+    fn address_taken_aggregate_storage_resides_in_the_frame_even_without_ordinary_liveness() {
+        crate::test_support::analyze_script(
+            "struct Owner { value: int32 }\nfunc main() {}",
+            |package, gcx| {
+                let mut body = minimal_body(gcx);
+                let ty = gcx.get_type(package.root.declarations[0].id);
+                let owner = crate::mir::test_support::push_temp(&mut body, ty);
+                let reference = crate::mir::test_support::push_temp(
+                    &mut body,
+                    Ty::new(TyKind::Reference(ty), gcx),
+                );
+                let span = body.locals[owner].span;
+                let TyKind::Adt(definition, _) = ty.kind() else {
+                    unreachable!()
+                };
+                body.basic_blocks[body.start_block].statements = vec![
+                    Statement {
+                        span,
+                        kind: StatementKind::Assign(
+                            Place::from_local(owner),
+                            Rvalue::Aggregate {
+                                kind: crate::mir::AggregateKind::Adt {
+                                    def_id: definition.id,
+                                    variant_index: None,
+                                    generic_args: GenericArguments::empty(),
+                                },
+                                fields: index_vec::IndexVec::from(vec![Operand::Constant(
+                                    Constant {
+                                        ty: gcx.types.int32,
+                                        value: ConstantKind::Integer(7),
+                                    },
+                                )]),
+                            },
+                        ),
+                    },
+                    Statement {
+                        span,
+                        kind: StatementKind::Assign(
+                            Place::from_local(reference),
+                            Rvalue::Ref {
+                                place: Place::from_local(owner),
+                            },
+                        ),
+                    },
+                ];
+                assert!(!compute_block_liveness(&body).live_in[body.start_block].contains(&owner));
+                let frame = build_frame_layout(gcx, &body, &[]);
+                assert!(frame.stored_locals.contains(&owner));
+                assert!(
+                    frame.resident_locals.contains(&owner),
+                    "taking an address cannot depend on Copy conformance"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn verifier_rejects_poll_stack_borrows_until_the_owner_is_rewritten() {
+        crate::test_support::analyze_script(
+            "struct Owner { value: int32 }\nfunc main() {}",
+            |package, gcx| {
+                let mut body = minimal_body(gcx);
+                let ty = gcx.get_type(package.root.declarations[0].id);
+                let owner = crate::mir::test_support::push_temp(&mut body, ty);
+                let reference = crate::mir::test_support::push_temp(
+                    &mut body,
+                    Ty::new(TyKind::Reference(gcx.types.int32), gcx),
+                );
+                let span = body.locals[owner].span;
+                body.basic_blocks[body.start_block]
+                    .statements
+                    .push(Statement {
+                        span,
+                        kind: StatementKind::Assign(
+                            Place::from_local(reference),
+                            Rvalue::Ref {
+                                place: Place {
+                                    local: owner,
+                                    projection: vec![PlaceElem::Field(
+                                        FieldIndex::from_raw(0),
+                                        gcx.types.int32,
+                                    )],
+                                },
+                            },
+                        ),
+                    });
+                let original_locals = body.locals.len();
+                assert_eq!(
+                    verify_frame_reference_storage(&body, original_locals)
+                        .unwrap_err()
+                        .0,
+                    owner
+                );
+                let frame = build_frame_layout(gcx, &body, &[]);
+                let frame_pointer = crate::mir::test_support::push_temp(
+                    &mut body,
+                    raw_ptr_ty(gcx, frame.ty, Mutability::Mutable),
+                );
+                rewrite_resident_local_places(&mut body, &frame, frame_pointer, &mut []);
+                assert!(verify_frame_reference_storage(&body, original_locals).is_ok());
+                let StatementKind::Assign(_, Rvalue::Ref { place, .. }) =
+                    &body.basic_blocks[body.start_block].statements[0].kind
+                else {
+                    unreachable!()
+                };
+                assert_eq!(place.local, frame_pointer);
+                assert_eq!(place.projection.first(), Some(&PlaceElem::Deref));
+            },
+        );
     }
 }

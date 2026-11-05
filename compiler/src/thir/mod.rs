@@ -1,5 +1,6 @@
+mod erased_async_self;
 use crate::{
-    hir::{BindingMode, DefinitionID, NodeID},
+    hir::{DefinitionID, NodeID},
     mir::{BinaryOperator, LogicalOperator, UnaryOperator},
     sema::models::{
         AdtDef, CaptureKind, EnumVariant, GenericArguments, GenericParameter, InterfaceReference,
@@ -49,6 +50,7 @@ pub struct ThirPackage<'a> {
 pub struct ThirFunction<'a> {
     pub id: DefinitionID,
     pub body: Option<BlockId>,
+    pub constructor_self: Option<crate::hir::NodeID>,
     pub span: Span,
     pub params: Vec<Param<'a>>,
     pub stmts: IndexVec<StmtId, Stmt<'a>>,
@@ -79,7 +81,6 @@ pub enum ExprKind<'a> {
     Local(NodeID),
     /// Address-of / reference expression
     Reference {
-        mutable: bool,
         expr: ExprId,
     },
     /// Dereference `*expr`
@@ -129,6 +130,13 @@ pub enum ExprKind<'a> {
         op: UnaryOperator,
         operand: ExprId,
     },
+    ClassUpcast {
+        value: ExprId,
+    },
+    /// Narrow a proven subclass-preserving owned Self result.
+    ClassSelfResult {
+        value: ExprId,
+    },
     /// `value as T`
     Cast {
         value: ExprId,
@@ -142,6 +150,12 @@ pub enum ExprKind<'a> {
     ExistentialTypeIs {
         value: ExprId,
         target: Ty<'a>,
+    },
+    /// Non-overloadable identity of two owned strong class-handle snapshots.
+    ClassIdentity {
+        lhs: ExprId,
+        rhs: ExprId,
+        equal: bool,
     },
     /// Binary op
     Binary {
@@ -158,6 +172,10 @@ pub enum ExprKind<'a> {
     Call {
         callee: ExprId,
         args: Vec<ExprId>,
+        /// ABI argument positions in evaluation order. Supplied expressions
+        /// keep source order; omitted defaults follow in declaration order.
+        /// None is the identity order. Kept separate from parameter positions.
+        argument_evaluation_order: Option<Vec<usize>>,
         is_async: bool,
     },
     /// Box a concrete value into a Swift-style existential container
@@ -179,9 +197,6 @@ pub enum ExprKind<'a> {
     },
     Tuple {
         fields: Vec<ExprId>,
-    },
-    Make {
-        value: ExprId,
     },
     Match {
         scrutinee: ExprId,
@@ -270,6 +285,11 @@ pub enum StmtKind<'a> {
     Break,
     Continue,
     Defer(BlockId),
+    /// Successful bindings live in the enclosing lexical scope.
+    Guard {
+        condition: ExprId,
+        else_block: BlockId,
+    },
     Loop {
         block: BlockId,
     },
@@ -298,6 +318,8 @@ pub struct FieldExpression {
 
 #[derive(Debug, Clone)]
 pub struct AdtExpression<'a> {
+    /// Evaluated after explicit fields; only its omitted fields are copied.
+    pub base: Option<ExprId>,
     pub definition: AdtDef,
     pub variant_index: Option<VariantIndex>,
     pub generic_args: GenericArguments<'a>,
@@ -318,10 +340,6 @@ pub enum PatternKind<'ctx> {
         name: Symbol,
         local: NodeID,
         ty: Ty<'ctx>,
-        mode: BindingMode,
-    },
-    Deref {
-        pattern: Box<Pattern<'ctx>>,
     },
     Leaf {
         subpatterns: Vec<FieldPattern<'ctx>>,

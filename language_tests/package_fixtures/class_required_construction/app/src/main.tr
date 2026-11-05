@@ -1,0 +1,28 @@
+import library
+final class Child[T]: library::Middle[T] { extra: int32 = 23 }
+class Explicit: library::Base[List[string]] { extra: int32 }
+extend Explicit {
+    public required override init(_ value: List[string]) { super.init(value); self.extra = 31 };
+    public required convenience init(pair: (List[string], List[string])) { self.init(pair.0) };
+}
+final class Descendant: Explicit { leaf: int32 = 37 }
+func main() {
+    original := Child[string](["original"])
+    var base: library::Base[List[string]] = original
+    fresh := base.fresh(["fresh"])
+    convenient := base.freshPair(["first"], ["discarded"])
+    assert(fresh !== original && convenient !== original, "dynamic construction creates independent objects")
+    assert(fresh.value[0] == "fresh" && convenient.value[0] == "first", "required argument forwarding")
+    derived := (fresh as? Child[string]).unwrap()
+    assert(derived.stamp == 17 && derived.extra == 23, "imported generic dynamic Self preserves every class level")
+    assert((convenient as? Child[string]).unwrap().extra == 23, "required convenience dispatch preserves subclass")
+    explicit := Descendant(["explicit"])
+    var explicitBase: library::Base[List[string]] = explicit
+    replacement := explicitBase.freshPair(["replacement"], ["unused"])
+    descendant := (replacement as? Descendant).unwrap()
+    assert(descendant.extra == 31 && descendant.leaf == 37, "explicit required implementation survives a further descendant")
+    exact := library::Exact::make()
+    assert(exact.value == 29 && exact.fresh().value == 30, "final Self construction needs no required obligation")
+    std::runtime::collect()
+    assert(base.value[0] == "original" && descendant.value[0] == "replacement", "construction roots and original instance remain valid")
+}

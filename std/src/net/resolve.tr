@@ -1,12 +1,11 @@
-import std.collections.List
-import std.fmt.{Display, Formatter}
-import std.io.Error
-import std.marker.Copy
-import std.ops.PartialEq
-import std.result.Result
+import std::collections::List
+import std::fmt::{Display, Formatter}
+import std::io::Error
+import std::ops::PartialEq
+import std::result::Result
 
 /// A stable category for host-name resolution failures.
-public enum ResolveErrorKind: Copy, PartialEq {
+public enum ResolveErrorKind: PartialEq {
     /// The resolver has no record for the requested name or address.
     case notFound
     /// A transient resolver or name-server failure may succeed when retried.
@@ -31,19 +30,19 @@ public struct ResolveError {
     systemCodeValue: int32?
 }
 
-impl ResolveError {
-    public func kind(&self) -> ResolveErrorKind { self.kindValue }
-    public func query(&self) -> string { self.queryValue }
+extend ResolveError {
+    public func kind() -> ResolveErrorKind { self.kindValue }
+    public func query() -> string { self.queryValue }
 
     /// Return the platform `getaddrinfo`/`getnameinfo` code, when present.
-    public func resolverCode(&self) -> int32? { self.resolverCodeValue }
+    public func resolverCode() -> int32? { self.resolverCodeValue }
 
     /// Return the native errno associated with a system resolver error.
-    public func rawOsError(&self) -> int32? { self.systemCodeValue }
+    public func rawOsError() -> int32? { self.systemCodeValue }
 }
 
-impl Display for ResolveErrorKind {
-    public func display(&self, _ into: &mut Formatter) {
+conform ResolveErrorKind to Display {
+    public func display(_ into: &Formatter) {
         match self {
             case .notFound => into.writeString("name or address not found")
             case .temporary => into.writeString("temporary resolver failure")
@@ -56,8 +55,8 @@ impl Display for ResolveErrorKind {
     }
 }
 
-impl Display for ResolveError {
-    public func display(&self, _ into: &mut Formatter) {
+conform ResolveError to Display {
+    public func display(_ into: &Formatter) {
         into.writeString("resolve ")
         into.writeString(self.queryValue)
         into.writeString(": ")
@@ -81,7 +80,7 @@ impl Display for ResolveError {
     }
 }
 
-impl std.error.Error for ResolveError {}
+conform ResolveError to std::error::Error {}
 
 /// Distinguishes name-resolution failures from connection-attempt failures.
 public enum ConnectHostError {
@@ -89,8 +88,8 @@ public enum ConnectHostError {
     case connect(Error)
 }
 
-impl Display for ConnectHostError {
-    public func display(&self, _ into: &mut Formatter) {
+conform ConnectHostError to Display {
+    public func display(_ into: &Formatter) {
         match self {
             case .resolve(error) => error.display(into)
             case .connect(error) => error.display(into)
@@ -98,9 +97,9 @@ impl Display for ConnectHostError {
     }
 }
 
-impl std.error.Error for ConnectHostError {}
+conform ConnectHostError to std::error::Error {}
 
-func resolveKindFromRaw(_ kind: std.sys.net.RawResolveErrorKind) -> ResolveErrorKind {
+func resolveKindFromRaw(_ kind: std::sys::net::RawResolveErrorKind) -> ResolveErrorKind {
     match kind {
         case .notFound => .notFound
         case .temporary => .temporary
@@ -118,12 +117,12 @@ func resolveError(
     _ resolverCode: int32,
     _ systemCode: int32,
 ) -> ResolveError {
-    let resolverCodeValue: int32? = if resolverCode == 0_i32 {
+    var resolverCodeValue: int32? = if resolverCode == 0_i32 {
         .none
     } else {
         .some(resolverCode)
     }
-    let systemCodeValue: int32? = if systemCode == 0_i32 {
+    var systemCodeValue: int32? = if systemCode == 0_i32 {
         .none
     } else {
         .some(systemCode)
@@ -136,7 +135,7 @@ func resolveError(
     }
 }
 
-func resolveErrorFromRaw(_ query: string, _ raw: std.sys.net.RawResolveError) -> ResolveError {
+func resolveErrorFromRaw(_ query: string, _ raw: std::sys::net::RawResolveError) -> ResolveError {
     resolveError(
         resolveKindFromRaw(raw.kind()),
         query,
@@ -159,17 +158,17 @@ public func lookupHost(_ host: string) async -> Result[List[IpAddress], ResolveE
 
     // Like Go, recognize an IP literal before consulting DNS. This guarantees
     // one exact result and avoids platform-specific canonicalization surprises.
-    match IpAddress.parse(host) {
+    match IpAddress::parse(host) {
         case .ok(address) => {
-            var addresses = List[IpAddress](withCapacity: 1)
+            var addresses = List[IpAddress]::new(withCapacity: 1)
             addresses.append(address)
             return .ok(addresses)
         }
         case .err(_) => {}
     }
 
-    let query = host
-    let raw = await std.task.blocking(move || std.sys.net.resolveHost(query))
+    query := host
+    raw := await std::task::blocking(() => std::sys::net::resolveHost(query))
     match raw {
         case .ok(addresses) => return .ok(addresses)
         case .err(error) => return .err(resolveErrorFromRaw(host, error))
@@ -179,23 +178,23 @@ public func lookupHost(_ host: string) async -> Result[List[IpAddress], ResolveE
 /// Reverse-resolve `address` on the bounded blocking pool.
 @cfg(family("unix"))
 public func lookupAddress(_ address: IpAddress) async -> Result[List[string], ResolveError] {
-    let query = std.sprintf("%v", address)
-    let raw = await std.task.blocking(move || std.sys.net.resolveAddress(address))
+    query := std::sprintf("%v", address)
+    raw := await std::task::blocking(() => std::sys::net::resolveAddress(address))
     match raw {
         case .ok(names) => return .ok(names)
         case .err(error) => return .err(resolveErrorFromRaw(query, error))
     }
 }
 
-impl TcpStream {
+extend TcpStream {
     /// Resolve `host` and attempt each address in OS preference order.
     ///
     /// Attempts are deliberately sequential: choosing a hidden timeout or
     /// Happy-Eyeballs delay here would impose policy before Taro has a dialer
     /// API capable of exposing and configuring that policy.
     @cfg(family("unix"))
-    public func connectHost(_ host: string, _ port: uint16) async -> Result[TcpStream, ConnectHostError] {
-        let addresses = match await lookupHost(host) {
+    public static func connectHost(_ host: string, _ port: uint16) async -> Result[TcpStream, ConnectHostError] {
+        addresses := match await lookupHost(host) {
             case .ok(values) => values
             case .err(error) => return .err(.resolve(error))
         }
@@ -203,11 +202,11 @@ impl TcpStream {
         var lastError: Error? = .none
         var index: usize = 0
         while index < addresses.len() {
-            let address = SocketAddress(*addresses.at(index), port)
-            match await TcpStream.connect(address) {
+            address := SocketAddress::new(*addresses.at(index), port)
+            match await TcpStream::connect(address) {
                 case .ok(stream) => return .ok(stream)
                 case .err(error) => {
-                    lastError = .some(error.withAddress(std.sprintf("%v", address)))
+                    lastError = .some(error.withAddress(std::sprintf("%v", address)))
                 }
             }
             index += 1

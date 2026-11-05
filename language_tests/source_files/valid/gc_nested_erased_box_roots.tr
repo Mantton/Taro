@@ -1,0 +1,35 @@
+// ENV: TARO_GC_STRESS=1
+// Boxing a value that holds an erased field allocates the outer payload, then
+// duplicates the nested payload; collecting during that nested allocation must
+// keep the fresh outer payload itself live, not only its fields (G54).
+extern "C" {
+    unsafe func __gc__test_probe_create(_ target: *const uint8) -> *mut uint8
+    unsafe func __gc__test_collect_probe_is_live(_ probe: *mut uint8) -> bool
+}
+func collect() {
+    probe := unsafe { __gc__test_probe_create(0 as *const uint8) }
+    var _ = unsafe { __gc__test_collect_probe_is_live(probe) }
+}
+interface Label { func label() -> string; }
+struct LabelValue { text: string }
+conform LabelValue to Label {
+    func label() -> string { self.text }
+}
+interface Outer { func label() -> string; }
+struct OuterValue { number: int32; nested: any Label }
+conform OuterValue to Outer {
+    func label() -> string { self.nested.label() }
+}
+@noinline
+func make(_ number: int32) -> any Outer {
+    OuterValue { number, nested: LabelValue { text: "nested " + "payload" } }
+}
+func main() {
+    original := make(7)
+    collect()
+    copy := original
+    collect()
+    std::testing::assertEqual(original.label(), "nested payload", "boxed outer payload survives")
+    std::testing::assertEqual(copy.label(), "nested payload", "copied outer payload survives")
+    print("PASS: nested erased payloads keep their fresh outer box live\n")
+}

@@ -1,0 +1,4 @@
+error: expected bool, found int32
+ -> language_tests/source_files/invalid/class_inherited_wrong_specialization.tr:7:29
+	    var child: Child[bool] = Child[bool]() // Error: the inherited entry requires Base[int32].
+	                             ^^^^^^^^^^^^^

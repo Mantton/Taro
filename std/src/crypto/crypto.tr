@@ -1,0 +1,31 @@
+import std::fmt::{Display, Formatter}
+import std::ops::PartialEq
+
+public enum Error: PartialEq {
+    case invalidKey
+    case entropy
+    case authentication
+    case closed
+    case limit
+}
+conform Error to Display {
+    public func display(_ into: &Formatter) {
+        into.writeString(match self {
+            case .invalidKey => "invalid cryptographic key"
+            case .entropy => "secure random source failed"
+            case .authentication => "authentication failed"
+            case .closed => "cryptographic key is closed"
+            case .limit => "cryptographic operation limit reached"
+        })
+    }
+}
+conform Error to std::error::Error {}
+internal func cryptoError(_ code: uint8) -> Error {
+    match code {
+        case 1_u8 => .invalidKey
+        case 2_u8 => .entropy
+        case 3_u8 => .authentication
+        case 4_u8 => .closed
+        case _ => .limit
+    }
+}

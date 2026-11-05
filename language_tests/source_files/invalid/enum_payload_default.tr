@@ -1,0 +1,2 @@
+enum State { case value { count: int32 = 7 } }
+func main() { var state: State = .value(count: 9) }

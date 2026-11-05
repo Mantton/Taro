@@ -1,0 +1,12 @@
+import dep::{record, projector, increment, applyNamed, namedCallback, namedAsyncCallback}
+func main() async {
+    value := record(23)
+    var saved: &int32 = await value.project(projector())
+    assert(*saved == 23, "imported nominal async callback contract")
+    assert(applyNamed(increment) == 42, "imported generic function-pointer witness")
+    sync := namedCallback()
+    assert(sync(41) == 42, "cached dependency function-pointer witness")
+    later := namedAsyncCallback()
+    result := await later(41)
+    assert(result == 42, "cached dependency async function-pointer witness")
+}

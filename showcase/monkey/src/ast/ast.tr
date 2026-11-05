@@ -1,13 +1,13 @@
-import monkey.token.Position
+import monkey::token::Position
 
 /// Monkey's prefix operators.
-public enum PrefixOperator: Copy {
+public enum PrefixOperator {
     case not
     case negate
 }
 
-impl PrefixOperator {
-    public func symbol(&self) -> string {
+extend PrefixOperator {
+    public func symbol() -> string {
         match self {
             case .not => "!"
             case .negate => "-"
@@ -20,7 +20,7 @@ impl PrefixOperator {
 /// The Go original compares operator strings at every dispatch site. Naming them
 /// makes evaluation exhaustive, so an unhandled operator is a compile error
 /// rather than a runtime "unknown operator".
-public enum InfixOperator: Copy {
+public enum InfixOperator {
     case add
     case subtract
     case multiply
@@ -31,8 +31,8 @@ public enum InfixOperator: Copy {
     case notEqual
 }
 
-impl InfixOperator {
-    public func symbol(&self) -> string {
+extend InfixOperator {
+    public func symbol() -> string {
         match self {
             case .add => "+"
             case .subtract => "-"
@@ -54,9 +54,8 @@ public struct HashEntry {
 
 /// A Monkey expression.
 ///
-/// Recursive positions go through `&Expression`. Taro rejects a directly
-/// recursive enum as infinitely sized, and references to locals are promoted to
-/// managed storage, so a parser can build and return these trees safely.
+/// Recursive edges are GC references to expressions. Lists and the remaining
+/// fields are ordinary values; copying syntax shares its referenced children.
 public enum Expression {
     case identifier(string)
     case integer(int64)
@@ -100,11 +99,11 @@ public struct Program {
 /// for free by returning Go's `nil` for a binding and a `NULL` object otherwise;
 /// modelling both as `Object.null` means the question is answered from the
 /// syntax instead.
-public func endsWithBinding(_ program: &Program) -> bool {
+public func endsWithBinding(_ program: Program) -> bool {
     if program.statements.isEmpty() {
         return false
     }
-    let last = program.statements.at(program.statements.len() - 1)
+    last := program.statements.at(program.statements.len() - 1)
     match last {
         case .bind(_, _) => return true
         case _ => return false

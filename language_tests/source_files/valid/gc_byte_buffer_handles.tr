@@ -1,0 +1,45 @@
+// TEST
+import std::io::{Reader, Writer}
+
+@test
+func builderAliasesShareContentsAndSnapshotsStayImmutable() {
+    var builder = std::string::Builder::new()
+    var alias = builder
+    alias.writeString("hello")
+    assert(builder.len() == 5, "builder copies share their length and contents")
+    first := builder.toString()
+    alias.clear()
+    builder.writeString("world")
+    assert(alias.toString() == "world", "clear and reuse affect every alias")
+    assert(first == "hello", "later writes cannot change a produced string")
+    assert(builder.toString() == "world" && builder.len() == 5, "conversion leaves contents intact")
+}
+
+@test
+func bufferAliasesShareReadAndWritePositions() {
+    var buffer = std::bytes::Buffer::new("abc")
+    var alias = buffer
+    alias.writeString("def").unwrap()
+    assert(buffer.len() == 6, "buffer copies share writes")
+    var discarded: [uint8; 2] = [0_u8; 2]
+    buffer.read(discarded.asSpan()).unwrap()
+    assert(alias.toString() == "cdef", "buffer copies share the read cursor")
+    snapshot := alias.toString()
+    bytes := buffer.toBytes()
+    alias.reset()
+    buffer.writeString("reused").unwrap()
+    assert(snapshot == "cdef" && *bytes.at(0) == 99_u8, "conversions return independent snapshots")
+    assert(alias.toString() == "reused", "reset and reuse affect every alias")
+}
+
+@test
+func selfAppendPreservesConsumedPrefixViewsDuringCompaction() {
+    var buffer = std::bytes::Buffer::new("abcdef" + "x".repeat(58))
+    prefix := buffer.bytes().slice(0, 6)
+    var discarded: [uint8; 7] = [0_u8; 7]
+    buffer.read(discarded.asSpan()).unwrap()
+    // The append fits after compaction, which would overwrite the prefix's
+    // original slots before copying them without an independent snapshot.
+    buffer.write(prefix).unwrap()
+    assert(buffer.toString() == "x".repeat(57) + "abcdef", "self-append snapshots the source before compacting")
+}

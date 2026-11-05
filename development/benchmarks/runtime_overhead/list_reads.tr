@@ -1,5 +1,5 @@
 func main() {
-    var values = List[int64]()
+    var values = List[int64]::new()
     values.append(1)
 
     var total = 0 as int64
@@ -8,5 +8,5 @@ func main() {
         total += *values.at(0)
         iteration += 1
     }
-    std.printf("%v\n", total)
+    std::printf("%v\n", total)
 }

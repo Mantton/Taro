@@ -11,13 +11,13 @@
 @test
 @expectPanic("stable fragment")
 func matchingExpectedPanicSubstring() {
-    std.panic.panic("prefix stable fragment suffix")
+    std::panic::panic("prefix stable fragment suffix")
 }
 
 @test
 @expectPanic("wanted fragment")
 func mismatchedExpectedPanicMessage() {
-    std.panic.panic("actual panic text")
+    std::panic::panic("actual panic text")
 }
 
 @test
@@ -27,5 +27,5 @@ func missingExpectedPanic() {
 
 @test
 func unexpectedPanicShowsDetails() {
-    std.panic.panic("unexpected panic detail")
+    std::panic::panic("unexpected panic detail")
 }

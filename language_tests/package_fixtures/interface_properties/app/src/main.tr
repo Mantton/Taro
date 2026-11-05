@@ -1,14 +1,14 @@
-import dep.{DefaultNamed, Named, makeDefaultRemote, makeRemote}
+import dep::{DefaultNamed, Named, makeDefaultRemote, makeRemote, Value, wrap}
 
 struct Local {
     name: string
 }
 
-impl Named for Local {}
+conform Local to Named {}
 
 struct LocalDefault {}
 
-impl DefaultNamed for LocalDefault {}
+conform LocalDefault to DefaultNamed {}
 
 func readName[T: Named](_ value: &T) -> string {
     value.name
@@ -18,30 +18,35 @@ func readDefaultName[T: DefaultNamed](_ value: &T) -> string {
     value.name
 }
 
+func readValue[T, V: Value[T]](_ value: &V) -> T { value.value }
+
 func main() {
-    let remote = makeRemote()
+    number := wrap(23_i32)
+    var numberValue: int32 = readValue(&number)
+    assert(numberValue == 23, "imported generic Copy getter witness")
+    remote := makeRemote()
     assert(readName(&remote) == "remote", "dependency field witness")
-    let erasedRemote: any Named = remote
+    var erasedRemote: any Named = remote
     assert(erasedRemote.name == "remote", "dependency existential witness")
 
-    let local = Local { name: "local" }
+    local := Local { name: "local" }
     assert(readName(&local) == "local", "foreign interface local type witness")
 
-    let defaultRemote = makeDefaultRemote()
+    defaultRemote := makeDefaultRemote()
     assert(
         readDefaultName(&defaultRemote) == "default",
         "dependency default property witness",
     )
-    let erasedDefaultRemote: any DefaultNamed = defaultRemote
+    var erasedDefaultRemote: any DefaultNamed = defaultRemote
     assert(
         erasedDefaultRemote.name == "default",
         "dependency existential default property witness",
     )
 
-    let localDefault = LocalDefault {}
+    localDefault := LocalDefault {}
     assert(
         readDefaultName(&localDefault) == "default",
         "foreign interface default for local type",
     )
-    std.print("PASS: cross-package interface properties\n")
+    std::print("PASS: cross-package interface properties\n")
 }

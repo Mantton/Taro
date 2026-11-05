@@ -1,8 +1,7 @@
-import std.default.Default
-import std.fmt.Display
-import std.marker.Copy
-import std.ops.PartialEq
-import std.optional.Optional
+import std::default::Default
+import std::fmt::Display
+import std::ops::PartialEq
+import std::optional::Optional
 
 /// The default maximum nesting depth accepted by JSON parsers and encoders.
 public const DEFAULT_MAX_DEPTH: usize = 128
@@ -11,7 +10,7 @@ public const DEFAULT_MAX_DEPTH: usize = 128
 public const DEFAULT_MAX_INPUT_BYTES: usize = 16 * 1024 * 1024
 
 /// How an object parser handles a repeated member name.
-public enum DuplicateKeyPolicy: Copy, PartialEq {
+public enum DuplicateKeyPolicy: PartialEq {
     /// Reject the object. This is the default because silently choosing one
     /// value can create security differences between downstream consumers.
     case reject
@@ -22,67 +21,86 @@ public enum DuplicateKeyPolicy: Copy, PartialEq {
 }
 
 /// Resource and compatibility controls shared by parsers and encoders.
-public struct Options: Copy {
+public struct Options {
     maxDepthValue: usize
     maxInputBytesValue: usize
     duplicateKeysValue: DuplicateKeyPolicy
+    validationFirstValue: bool
 }
 
-impl Options {
+extend Options {
     /// Construct options with safe, finite defaults.
-    public func new() -> Self {
+    public static func new() -> Self {
         Options {
             maxDepthValue: DEFAULT_MAX_DEPTH,
             maxInputBytesValue: DEFAULT_MAX_INPUT_BYTES,
             duplicateKeysValue: .reject,
+            validationFirstValue: false,
         }
     }
 
-    public func maxDepth(&self) -> usize {
+    public func maxDepth() -> usize {
         self.maxDepthValue
     }
 
-    public func maxInputBytes(&self) -> usize {
+    public func maxInputBytes() -> usize {
         self.maxInputBytesValue
     }
 
-    public func duplicateKeys(&self) -> DuplicateKeyPolicy {
+    public func duplicateKeys() -> DuplicateKeyPolicy {
         self.duplicateKeysValue
     }
 
-    public func withMaxDepth(self, _ maximum: usize) -> Self {
+    /// Validate the complete text before calling custom decoders or initializers.
+    /// Disabled by default: single-pass decoding may construct values before a
+    /// later syntax error is discovered. Only applies to string typed decoding.
+    public func validationFirst() -> bool { self.validationFirstValue }
+
+    public func withValidationFirst(_ enabled: bool) -> Self {
+        Options {
+            maxDepthValue: self.maxDepthValue,
+            maxInputBytesValue: self.maxInputBytesValue,
+            duplicateKeysValue: self.duplicateKeysValue,
+            validationFirstValue: enabled,
+        }
+    }
+
+    public func withMaxDepth(_ maximum: usize) -> Self {
         Options {
             maxDepthValue: maximum,
             maxInputBytesValue: self.maxInputBytesValue,
             duplicateKeysValue: self.duplicateKeysValue,
+            validationFirstValue: self.validationFirstValue,
         }
     }
 
-    public func withMaxInputBytes(self, _ maximum: usize) -> Self {
+    public func withMaxInputBytes(_ maximum: usize) -> Self {
         Options {
             maxDepthValue: self.maxDepthValue,
             maxInputBytesValue: maximum,
             duplicateKeysValue: self.duplicateKeysValue,
+            validationFirstValue: self.validationFirstValue,
         }
     }
 
-    public func withDuplicateKeys(self, _ policy: DuplicateKeyPolicy) -> Self {
+    public func withDuplicateKeys(_ policy: DuplicateKeyPolicy) -> Self {
         Options {
             maxDepthValue: self.maxDepthValue,
             maxInputBytesValue: self.maxInputBytesValue,
             duplicateKeysValue: policy,
+            validationFirstValue: self.validationFirstValue,
         }
     }
 }
 
-impl Default for Options {
-    public func default() -> Self {
-        Options()
+conform Options to Default {
+    public static func default() -> Self {
+        Options::new()
     }
 }
 
 /// A stable category for JSON input failures.
-public enum ErrorKind: Copy, PartialEq {
+public enum ErrorKind: PartialEq {
     case unexpectedEof
     case unexpectedToken
     case trailingData
@@ -97,23 +115,29 @@ public enum ErrorKind: Copy, PartialEq {
     case io
 }
 
-/// A JSON input failure with source position and value-path context.
-///
-/// Byte offsets are zero-based. Lines and columns are one-based and columns
-/// count bytes, which makes every reported location directly seekable in the
-/// original input even when it contains malformed UTF-8.
-public struct Error {
+struct JsonErrorPayload {
     kindValue: ErrorKind
     messageValue: string
     offsetValue: usize
     lineValue: usize
     columnValue: usize
     pathValue: string
-    ioErrorValue: std.io.Error?
+    ioErrorValue: std::io::Error?
 }
 
-impl Error {
-    func at(
+// A compact header keeps diagnostic storage out of successful Results.
+// Payloads are allocated on errors and never mutated; rebasing creates a new one.
+/// A JSON input failure with source position and value-path context.
+///
+/// Byte offsets are zero-based. Lines and columns are one-based and columns
+/// count bytes, which makes every reported location directly seekable in the
+/// original input even when it contains malformed UTF-8.
+public struct Error {
+    data: &JsonErrorPayload
+}
+
+extend Error {
+    static func at(
         _ kind: ErrorKind,
         _ message: string,
         _ offset: usize,
@@ -121,7 +145,7 @@ impl Error {
         _ column: usize,
         _ path: string,
     ) -> Self {
-        Error {
+        payload := JsonErrorPayload {
             kindValue: kind,
             messageValue: message,
             offsetValue: offset,
@@ -130,17 +154,18 @@ impl Error {
             pathValue: path,
             ioErrorValue: .none,
         }
+        Error { data: &payload }
     }
 
-    func fromIo(
-        _ cause: std.io.Error,
+    static func fromIo(
+        _ cause: std::io::Error,
         _ offset: usize,
         _ line: usize,
         _ column: usize,
         _ path: string,
     ) -> Self {
-        let ioErrorValue: std.io.Error? = .some(cause)
-        Error {
+        var ioErrorValue: std::io::Error? = .some(cause)
+        payload := JsonErrorPayload {
             kindValue: .io,
             messageValue: "I/O failure while reading JSON",
             offsetValue: offset,
@@ -149,61 +174,61 @@ impl Error {
             pathValue: path,
             ioErrorValue,
         }
+        Error { data: &payload }
     }
 
     /// Rebase a root-relative child error beneath an already materialized
     /// container path. Parsers use this only while unwinding an error, keeping
     /// successful traversal free of JSONPath allocations.
-    func rebased(self, _ parent: string) -> Self {
-        var suffix = self.pathValue
+    func rebased(_ parent: string) -> Self {
+        var suffix = self.data.pathValue
         if suffix.byteLen() > 0 && suffix.byteAt(0) == ('$' as uint8) {
             suffix = suffix.sliceBytes(1, suffix.byteLen() - 1)
         }
-        Error {
-            kindValue: self.kindValue,
-            messageValue: self.messageValue,
-            offsetValue: self.offsetValue,
-            lineValue: self.lineValue,
-            columnValue: self.columnValue,
+        payload := JsonErrorPayload {
+            kindValue: self.data.kindValue,
+            messageValue: self.data.messageValue,
+            offsetValue: self.data.offsetValue,
+            lineValue: self.data.lineValue,
+            columnValue: self.data.columnValue,
             pathValue: parent.concat(suffix),
-            ioErrorValue: self.ioErrorValue,
+            ioErrorValue: self.data.ioErrorValue,
         }
+        Error { data: &payload }
     }
 
-    public func kind(&self) -> ErrorKind {
-        self.kindValue
+    public func kind() -> ErrorKind {
+        self.data.kindValue
     }
 
-    public func message(&self) -> string {
-        self.messageValue
+    public func message() -> string {
+        self.data.messageValue
     }
 
-    public func byteOffset(&self) -> usize {
-        self.offsetValue
+    public func byteOffset() -> usize {
+        self.data.offsetValue
     }
 
-    public func line(&self) -> usize {
-        self.lineValue
+    public func line() -> usize {
+        self.data.lineValue
     }
 
-    public func column(&self) -> usize {
-        self.columnValue
+    public func column() -> usize {
+        self.data.columnValue
     }
 
-    public func path(&self) -> string {
-        self.pathValue
+    public func path() -> string {
+        self.data.pathValue
     }
 
-    public func ioError(&self) -> Optional[&std.io.Error] {
-        match &self.ioErrorValue {
-            case .some(cause) => return .some(cause)
-            case .none => return .none
-        }
+    /// Return an independent error value, rather than a reference into a variant.
+    public func ioError() -> Optional[std::io::Error] {
+        self.data.ioErrorValue
     }
 }
 
-impl Display for ErrorKind {
-    public func display(&self, _ into: &mut std.fmt.Formatter) {
+conform ErrorKind to Display {
+    public func display(_ into: &std::fmt::Formatter) {
         match self {
             case .unexpectedEof => into.writeString("unexpected end of JSON input")
             case .unexpectedToken => into.writeString("unexpected JSON token")
@@ -221,21 +246,21 @@ impl Display for ErrorKind {
     }
 }
 
-impl Display for Error {
-    public func display(&self, _ into: &mut std.fmt.Formatter) {
-        self.kindValue.display(into)
+conform Error to Display {
+    public func display(_ into: &std::fmt::Formatter) {
+        self.data.kindValue.display(into)
         into.writeString(" at ")
-        into.writeString(self.pathValue)
+        into.writeString(self.data.pathValue)
         into.writeString(" (line ")
-        self.lineValue.display(into)
+        self.data.lineValue.display(into)
         into.writeString(", column ")
-        self.columnValue.display(into)
+        self.data.columnValue.display(into)
         into.writeString(", byte ")
-        self.offsetValue.display(into)
+        self.data.offsetValue.display(into)
         into.writeString("): ")
-        into.writeString(self.messageValue)
+        into.writeString(self.data.messageValue)
 
-        match &self.ioErrorValue {
+        match self.data.ioErrorValue {
             case .some(cause) => {
                 into.writeString(": ")
                 cause.display(into)
@@ -245,4 +270,4 @@ impl Display for Error {
     }
 }
 
-impl std.error.Error for Error {}
+conform Error to std::error::Error {}

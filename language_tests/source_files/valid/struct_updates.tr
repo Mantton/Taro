@@ -1,0 +1,37 @@
+struct Triple[T] { first: T; second: T; third: T }
+static var order: int32 = 0
+static var calls: int32 = 0
+func tick(_ value: int32) -> int32 { order = order * 10 + value; value }
+func base() -> Triple[int32] { calls += 1; tick(3); Triple { first: 10, second: 20, third: 30 } }
+func update[T](_ value: Triple[T], _ first: T) -> Triple[T] { Triple { first, ..value } }
+struct Defaulted { first: int32; second: int32 = tick(9) }
+struct Nested { first: int32; inline: Triple[int32]; reference: &int32 }
+func main() {
+    var next = Triple { second: tick(1), first: tick(2), ..base() }
+    assert(order == 123 && calls == 1, "explicit fields run in source order before one base evaluation")
+    assert(next.first == 2 && next.second == 1 && next.third == 30, "updated values")
+    var original = Triple { first: 4_i32, second: 5_i32, third: 6_i32 }
+    var changed = update(original, 7_i32)
+    changed.second = 99
+    assert(original.second == 5 && changed.first == 7, "inline fields copy without Clone")
+    var throughReference = Triple { first: 8_i32, ..*(&original) }
+    assert(throughReference.second == 5, "explicit reference read")
+    var read = 11_i32
+    var snapshot = Triple { first: read, ..{ read = 12; original } }
+    assert(snapshot.first == 11 && read == 12, "explicit values are captured before base side effects")
+    order = 0
+    var defaults = Defaulted { first: 1, second: 2 }
+    var defaultsCopy = Defaulted { first: 3, ..defaults }
+    assert(defaultsCopy.second == 2 && order == 0, "base fields override declaration defaults")
+    var nested = Nested { first: 1, inline: original, reference: &read }
+    var nestedCopy = Nested { first: 2, ..nested }
+    nestedCopy.inline.third = 42
+    *nestedCopy.reference = 13
+    assert(nested.inline.third == 6 && *nested.reference == 13, "inline values copy and references share targets")
+    var callback = (replacement: int32) => Triple { first: replacement, ..original }
+    assert(callback(19).third == 6, "update bases participate in closure capture")
+    if (Triple { first: 20_i32, ..original }).first == 20 { assert(true, "parenthesized control-flow literal") }
+    order = 0
+    var redundant = Triple { first: 1_i32, second: 2_i32, third: 3_i32, ..base() }
+    assert(order == 3 && calls == 2 && redundant.third == 3, "redundant bases still evaluate")
+}

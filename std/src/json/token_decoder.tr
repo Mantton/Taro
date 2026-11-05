@@ -1,0 +1,613 @@
+// Contiguous JSON decoder. Ordinary records consume tokens directly; enum
+// envelopes and non-reject duplicate policies select validated source ranges.
+// Source strings and selected ranges keep their immutable backing storage alive.
+import std::collections::{Dictionary, List}
+import std::convert::Parse
+import std::encoding::{CodingErrorKind, CodingValueKind, Decodable, Decoder}
+import std::result::Result
+
+struct TokenFrame {
+    object: bool
+    index: usize
+    key: string
+    keyStart: usize
+    lookup: TokenKeyLookup?
+    pending: bool
+    ended: bool
+    selection: SelectedObject?
+}
+
+struct TokenDecoder {
+    input: StringInput
+    state: ParseState
+    frames: List[TokenFrame]
+    keys: List[string]
+    consumed: bool
+    syntax: Error?
+    baseDepth: usize
+}
+
+extend TokenDecoder {
+    static func new(_ source: string, _ options: Options) -> Self {
+        TokenDecoder {
+            input: StringInput::new(source),
+            state: ParseState::new(options, 0),
+            frames: List[TokenFrame]::new(),
+            keys: List[string]::new(),
+            consumed: false,
+            syntax: .none,
+            baseDepth: 0,
+        }
+    }
+}
+
+extend &TokenDecoder {
+    func pathThrough(_ count: usize) -> string {
+        var path = ROOT_PATH
+        var index: usize = 0
+        while index < count {
+            frame := self.frames.at(index)
+            if frame.index > 0 {
+                path = if frame.object {
+                    childPathForKey(path, frame.key)
+                } else {
+                    childPathForIndex(path, frame.index - 1)
+                }
+            }
+            index += 1
+        }
+        return path
+    }
+
+    func path() -> string { self.pathThrough(self.frames.len()) }
+
+    @inline
+    func lexical[T](_ result: Result[T, Error]) -> Result[T, CodecError] {
+        match result {
+            case .ok(value) => return .ok(value)
+            case .err(error) => {
+                path := self.path()
+                self.syntax = .some(error.rebased(path))
+                return .err(CodecError::at(.invalidValue, path, error.message()))
+            }
+        }
+    }
+
+    func syntaxFailure(_ kind: ErrorKind, _ message: string) -> CodecError {
+        error := errorAt(kind, message, self.input.position(), self.path())
+        self.syntax = .some(error)
+        return CodecError::at(.invalidValue, self.path(), message)
+    }
+
+    @inline
+    func byte() -> Result[uint8?, CodecError] {
+        // EOF and the byte limit are distinct: at exact EOF there is no
+        // byte to reject, even when the configured budget is exhausted.
+        index := self.input.index
+        if index >= self.input.source.byteLen() { return .ok(.none) }
+        if self.input.tracker.value.offset - self.state.valueStart >= self.state.options.maxInputBytes() {
+            return .err(self.syntaxFailure(.inputLimit, "JSON value exceeds the configured byte limit"))
+        }
+        return .ok(.some(self.input.source.byteAt(index)))
+    }
+
+    @inline
+    func whitespace() -> Result[(), CodecError] {
+        length := self.input.source.byteLen()
+        var end = length
+        if end > self.state.options.maxInputBytes() { end = self.state.options.maxInputBytes() }
+        tokenSkipWhitespace(&self.input, end)
+        if self.input.index >= end && end < length {
+            return .err(self.syntaxFailure(.inputLimit, "JSON value exceeds the configured byte limit"))
+        }
+        return .ok(())
+    }
+
+    @inline
+    func requirePending() -> Result[(), CodecError] {
+        pending := if self.frames.isEmpty() {
+            !self.consumed
+        } else {
+            self.frames.at(self.frames.len() - 1).pending
+        }
+        if !pending { return .err(self.error(.invalidState, "no pending value")) }
+        return .ok(())
+    }
+
+    @inline
+    func consume() -> Result[(), CodecError] {
+        self.requirePending()!
+        if self.frames.isEmpty() {
+            self.consumed = true
+        } else {
+            self.frames.at(self.frames.len() - 1).pending = false
+        }
+        return .ok(())
+    }
+
+    @inline
+    func expect(_ kind: CodingValueKind) -> Result[(), CodecError] {
+        if self.peekKind()! != kind {
+            return .err(self.error(.typeMismatch, "unexpected JSON value kind"))
+        }
+        return .ok(())
+    }
+
+    func open(_ object: bool) -> Result[usize?, CodecError] {
+        self.expect(if object { .object } else { .sequence })!
+        if self.baseDepth + self.frames.len() >= self.state.options.maxDepth() {
+            return .err(self.syntaxFailure(.depthLimit, "container exceeds nesting depth"))
+        }
+        self.input.advance(if object { '{' as uint8 } else { '[' as uint8 })
+        self.consume()!
+        self.frames.append(TokenFrame {
+            object, index: 0, key: "", keyStart: self.keys.len(), lookup: .none, pending: false, ended: false, selection: .none,
+        })
+        return .ok(.none)
+    }
+
+    // Consume delimiters without retaining a frame reference across calls that
+    // can allocate. List storage can grow while nested containers are decoded.
+    func next(_ object: bool) -> Result[bool, CodecError] {
+        if self.frames.isEmpty() {
+            return .err(self.error(.invalidState, "missing container"))
+        }
+        frame := self.frames.at(self.frames.len() - 1)
+        if frame.object != object || frame.pending || frame.ended {
+            return .err(self.error(.invalidState, "invalid container cursor state"))
+        }
+        count := frame.index
+        self.whitespace()!
+        byte := match self.byte()! {
+            case .some(byte) => byte
+            case .none => return .err(self.syntaxFailure(.unexpectedEof, "unterminated container"))
+        }
+        closing := if object { '}' as uint8 } else { ']' as uint8 }
+        if byte == closing {
+            self.input.advance(byte)
+            self.frames.at(self.frames.len() - 1).ended = true
+            return .ok(false)
+        }
+        if count > 0 {
+            if byte != (',' as uint8) {
+                return .err(self.syntaxFailure(.unexpectedToken, "expected container separator"))
+            }
+            self.input.advance(byte)
+            self.whitespace()!
+            if self.byte()!.unwrapOr(0_u8) == closing {
+                return .err(self.syntaxFailure(.unexpectedToken, "trailing container separator"))
+            }
+        }
+        return .ok(true)
+    }
+
+    func close(_ object: bool) -> Result[(), CodecError] {
+        if self.frames.isEmpty() {
+            return .err(self.error(.invalidState, "missing container"))
+        }
+        frame := self.frames.at(self.frames.len() - 1)
+        if frame.object != object || frame.pending || !frame.ended {
+            return .err(self.error(.invalidState, "container not completely consumed"))
+        }
+        match frame.selection {
+            case .some(selected) => {
+                self.requireSelectedEnd(selected)!
+                self.input = selected.resume
+            }
+            case .none => {}
+        }
+        start := frame.keyStart
+        while self.keys.len() > start { var _ = self.keys.pop() }
+        frame.lookup = .none
+        frame.key = ""
+        var _ = self.frames.pop()
+        return .ok(())
+    }
+
+    @inline
+    func scanner() -> TokenScanner {
+        var end = self.input.source.byteLen()
+        if end > self.state.options.maxInputBytes() { end = self.state.options.maxInputBytes() }
+        return TokenScanner { input: self.input, options: self.state.options, end, keys: self.keys }
+    }
+
+    func literal(_ expected: string) -> Result[(), CodecError] {
+        var scanner = self.scanner()
+        result := (&scanner).literal(expected)
+        self.input = scanner.input
+        return self.lexical(result)
+    }
+
+    @inline
+    func stringToken() -> Result[string, CodecError] {
+        var scanner = self.scanner()
+        result := (&scanner).string()
+        self.input = scanner.input
+        return self.lexical(result)
+    }
+
+    func numberText() -> Result[string, CodecError] {
+        self.expect(.number)!
+        start := self.input.index
+        var scanner = self.scanner()
+        result := (&scanner).number()
+        self.input = scanner.input
+        self.lexical(result)!
+        return .ok(self.input.source.substring(start, self.input.index - start))
+    }
+
+    func number[T: Parse]() -> Result[T, CodecError] {
+        saved := self.input
+        text := self.numberText()!
+        match T::parse(text) {
+            case .ok(value) => {
+                self.consume()!
+                return .ok(value)
+            }
+            case .err(_) => {
+                self.input = saved
+                return .err(self.error(.invalidValue, "number outside the target type"))
+            }
+        }
+    }
+
+    func finish() -> Result[(), CodecError] {
+        if self.syntax.isSome() {
+            return .err(self.error(.invalidState, "syntax errors are fatal"))
+        }
+        if !self.consumed || !self.frames.isEmpty() {
+            return .err(self.error(.invalidState, "root value was not completely consumed"))
+        }
+        self.whitespace()!
+        if self.byte()!.isSome() {
+            return .err(self.syntaxFailure(.trailingData, "trailing JSON data"))
+        }
+        return .ok(())
+    }
+
+    func reset(_ source: string) {
+        // Validation finished every frame. Reuse its small cursor/key buffers,
+        // as a real two-pass decoder can; no parsed object tree is retained.
+        self.input = StringInput::new(source)
+        self.consumed = false
+        self.syntax = .none
+    }
+
+    func failure(_ error: CodecError) -> JsonDecodeError {
+        match self.syntax {
+            case .some(error) => return .syntax(error)
+            case .none => return .codec(error)
+        }
+    }
+}
+
+conform &TokenDecoder to std::encoding::Decoder {
+    type Error = CodecError
+
+    public func error(_ kind: CodingErrorKind, _ message: string) -> CodecError {
+        CodecError::at(kind, self.path(), message)
+    }
+
+    public func missingField(_ name: string, _ message: string) -> CodecError {
+        count := self.frames.len()
+        parent := if count == 0 { ROOT_PATH } else { self.pathThrough(count - 1) }
+        CodecError::at(.missingField, childPathForKey(parent, name), message)
+    }
+
+    @inline
+    public func peekKind() -> Result[CodingValueKind, CodecError] {
+        self.requirePending()!
+        self.whitespace()!
+        byte := match self.byte()! {
+            case .some(byte) => byte
+            case .none => return .err(self.syntaxFailure(.unexpectedEof, "expected JSON value"))
+        }
+        match byte {
+            case 0x6e => return .ok(.null)
+            case 0x74 | 0x66 => return .ok(.boolean)
+            case 0x22 => return .ok(.string)
+            case 0x5b => return .ok(.sequence)
+            case 0x7b => return .ok(.object)
+            case _ => {
+                if byte == ('-' as uint8) || isDigit(byte) { return .ok(.number) }
+                return .err(self.syntaxFailure(.unexpectedToken, "invalid JSON value"))
+            }
+        }
+    }
+
+    public func decodeNull() -> Result[(), CodecError] {
+        self.expect(.null)!
+        self.literal("null")!
+        return self.consume()
+    }
+
+    public func decodeBool() -> Result[bool, CodecError] {
+        self.expect(.boolean)!
+        value := self.byte()!.unwrapOr(0_u8) == ('t' as uint8)
+        self.literal(if value { "true" } else { "false" })!
+        self.consume()!
+        return .ok(value)
+    }
+
+    public func decodeString() -> Result[string, CodecError] {
+        self.expect(.string)!
+        value := self.stringToken()!
+        self.consume()!
+        return .ok(value)
+    }
+
+    public func decodeDecimal() -> Result[string, CodecError] {
+        text := self.numberText()!
+        self.consume()!
+        return .ok(text)
+    }
+
+    public func decodeInt8() -> Result[int8, CodecError] { self.number[int8]() }
+    public func decodeInt16() -> Result[int16, CodecError] { self.number[int16]() }
+    public func decodeInt32() -> Result[int32, CodecError] { self.number[int32]() }
+    public func decodeInt64() -> Result[int64, CodecError] { self.number[int64]() }
+    public func decodeIsize() -> Result[isize, CodecError] { self.number[isize]() }
+    public func decodeUint8() -> Result[uint8, CodecError] { self.number[uint8]() }
+    public func decodeUint16() -> Result[uint16, CodecError] { self.number[uint16]() }
+    public func decodeUint32() -> Result[uint32, CodecError] { self.number[uint32]() }
+    public func decodeUint64() -> Result[uint64, CodecError] { self.number[uint64]() }
+    public func decodeUsize() -> Result[usize, CodecError] { self.number[usize]() }
+    public func decodeFloat() -> Result[float, CodecError] { self.number[float]() }
+    public func decodeDouble() -> Result[double, CodecError] { self.number[double]() }
+
+    public func beginEnum() -> Result[string, CodecError] {
+        start := self.input
+        var _ = self.open(true)!
+        selected := self.selectObject(start)!
+        selected.envelope = true
+        self.frames.at(self.frames.len() - 1).selection = .some(selected)
+        match selected.find("kind") {
+            case .none => return .err(self.missingField("kind", "enum tag is required"))
+            case .some(index) => self.selectField(selected, index)!
+        }
+        return self.decodeString()
+    }
+
+    public func beginEnumContent(_ hasPayload: bool) -> Result[(), CodecError] {
+        if self.frames.isEmpty() { return .err(self.error(.invalidState, "missing enum envelope")) }
+        frame := self.frames.at(self.frames.len() - 1)
+        selected := match frame.selection {
+            case .some(selected) => selected
+            case .none => return .err(self.error(.invalidState, "not an enum envelope"))
+        }
+        if !selected.envelope || frame.pending || frame.ended {
+            return .err(self.error(.invalidState, "invalid enum cursor state"))
+        }
+        self.requireSelectedEnd(selected)!
+        match selected.find("content") {
+            case .some(index) => {
+                self.selectField(selected, index)!
+                if !hasPayload { return .err(self.error(.invalidValue, "unit enum variant cannot have content")) }
+            }
+            case .none => {
+                if hasPayload { return .err(self.missingField("content", "enum payload is required")) }
+            }
+        }
+        frame.ended = true
+        return .ok(())
+    }
+
+    public func beginSequence() -> Result[usize?, CodecError] { self.open(false) }
+    public func beginObject() -> Result[usize?, CodecError] {
+        start := self.input
+        var _ = self.open(true)!
+        if self.state.options.duplicateKeys() != DuplicateKeyPolicy::reject {
+            selected := self.selectObject(start)!
+            self.frames.at(self.frames.len() - 1).selection = .some(selected)
+            self.input = selected.resume
+            return .ok(.some(selected.fields.len()))
+        }
+        return .ok(.none)
+    }
+
+    public func nextElement() -> Result[bool, CodecError] {
+        if !self.next(false)! { return .ok(false) }
+        frame := self.frames.at(self.frames.len() - 1)
+        frame.index += 1
+        frame.pending = true
+        return .ok(true)
+    }
+
+    public func nextField() -> Result[string?, CodecError] {
+        if !self.frames.isEmpty() {
+            match self.frames.at(self.frames.len() - 1).selection {
+                case .some(selected) => return self.nextSelectedField(selected)
+                case .none => {}
+            }
+        }
+        if !self.next(true)! { return .ok(.none) }
+        keyPosition := self.input.position()
+        key := self.stringToken()!
+        frame := self.frames.at(self.frames.len() - 1)
+        frame.key = key
+        frame.index += 1
+        if self.state.options.duplicateKeys() == DuplicateKeyPolicy::reject {
+            if frame.index == 33 { frame.lookup = .some(tokenKeyIndex(self.keys, frame.keyStart)) }
+            if tokenSeenKey(self.keys, frame.keyStart, key, frame.lookup) {
+                self.syntax = .some(errorAt(.duplicateKey, "duplicate object key", keyPosition, self.path()))
+                return .err(self.error(.invalidValue, "duplicate object key"))
+        }
+        self.keys.append(key)
+        }
+        self.whitespace()!
+        colon := match self.byte()! {
+            case .some(byte) => byte
+            case .none => return .err(self.syntaxFailure(.unexpectedEof, "expected ':' after key"))
+        }
+        self.input.advance(colon)
+        if colon != (':' as uint8) {
+            return .err(self.syntaxFailure(.unexpectedToken, "expected ':' after key"))
+        }
+        self.frames.at(self.frames.len() - 1).pending = true
+        self.whitespace()!
+        return .ok(.some(key))
+    }
+
+    public func endSequence() -> Result[(), CodecError] { self.close(false) }
+    public func endObject() -> Result[(), CodecError] { self.close(true) }
+
+    public func skipValue() -> Result[(), CodecError] {
+        self.requirePending()!
+        var scanner = self.scanner()
+        result := (&scanner).value(self.baseDepth + self.frames.len())
+        self.input = scanner.input
+        self.lexical(result)!
+        return self.consume()
+    }
+
+}
+
+
+struct SelectedField {
+    name: string
+    start: StringInput
+    end: usize
+}
+
+// Allocated only for enum envelopes and duplicate-selection policies. Ordinary
+// reject-mode records retain the streaming path and need no field-range table.
+final class SelectedObject {
+    fields: List[SelectedField]
+    lookup: ObjectLookupIndex?
+    resume: StringInput
+    envelope: bool
+}
+
+extend SelectedObject {
+    init(_ input: StringInput) {
+        self.fields = List[SelectedField]::new()
+        self.lookup = .none
+        self.resume = input
+        self.envelope = false
+    }
+
+    func find(_ name: string) -> usize? {
+        match self.lookup {
+            case .some(index) => return index.lookup.get(&name)
+            case .none => {}
+        }
+        var index: usize = 0
+        while index < self.fields.len() {
+            if self.fields[index].name == name { return .some(index) }
+            index += 1
+        }
+        return .none
+    }
+
+    func insert(_ name: string, _ start: StringInput, _ end: usize, _ policy: DuplicateKeyPolicy) {
+        match self.find(name) {
+            case .some(index) => {
+                if policy == DuplicateKeyPolicy::useLast { self.fields[index] = SelectedField { name, start, end } }
+                return
+            }
+            case .none => {}
+        }
+        index := self.fields.len()
+        self.fields.append(SelectedField { name, start, end })
+        if self.lookup.isNone() && self.fields.len() == OBJECT_INDEX_THRESHOLD {
+            var lookup = Dictionary[string, usize]::new()
+            var slot: usize = 0
+            while slot < self.fields.len() { lookup.set(key: self.fields[slot].name, value: slot); slot += 1 }
+            self.lookup = .some(ObjectLookupIndex(lookup))
+        } else {
+            match self.lookup {
+                case .some(indexMap) => indexMap.lookup.set(key: name, value: index)
+                case .none => {}
+            }
+        }
+    }
+}
+
+extend &TokenDecoder {
+    func collectObjectFields() -> Result[SelectedObject, CodecError] {
+        selected := SelectedObject(self.input)
+        var _ = self.open(true)!
+        loop {
+            match self.nextField()! {
+                case .none => break
+                case .some(name) => {
+                    start := self.input
+                    self.skipValue()!
+                    selected.insert(name, start, self.input.index, self.state.options.duplicateKeys())
+                }
+            }
+        }
+        self.close(true)!
+        selected.resume = self.input
+        return .ok(selected)
+    }
+
+    func selectObject(_ start: StringInput) -> Result[SelectedObject, CodecError] {
+        var scan = TokenDecoder::new(start.source, self.state.options)
+        scan.input = start
+        scan.baseDepth = self.baseDepth + self.frames.len() - 1
+        match (&scan).collectObjectFields() {
+            case .ok(selected) => return .ok(selected)
+            case .err(error) => {
+                self.input = scan.input
+                match scan.syntax {
+                    case .some(syntax) => return self.lexical[SelectedObject](Result[SelectedObject, Error]::err(syntax))
+                    case .none => return .err(error)
+                }
+            }
+        }
+    }
+
+    func requireSelectedEnd(_ selected: SelectedObject) -> Result[(), CodecError] {
+        frame := self.frames.at(self.frames.len() - 1)
+        if frame.index > 0 && self.input.index != selected.fields[frame.index - 1].end {
+            return .err(self.error(.invalidState, "selected field was not completely consumed"))
+        }
+        return .ok(())
+    }
+
+    func selectField(_ selected: SelectedObject, _ index: usize) -> Result[(), CodecError] {
+        self.requireSelectedEnd(selected)!
+        field := selected.fields[index]
+        frame := self.frames.at(self.frames.len() - 1)
+        frame.key = field.name
+        frame.index = index + 1
+        frame.pending = true
+        self.input = field.start
+        return .ok(())
+    }
+
+    func nextSelectedField(_ selected: SelectedObject) -> Result[string?, CodecError] {
+        frame := self.frames.at(self.frames.len() - 1)
+        if selected.envelope || !frame.object || frame.pending || frame.ended {
+            return .err(self.error(.invalidState, "invalid selected object cursor state"))
+        }
+        self.requireSelectedEnd(selected)!
+        if frame.index == selected.fields.len() {
+            frame.ended = true
+            return .ok(.none)
+        }
+        index := frame.index
+        self.selectField(selected, index)!
+        return .ok(.some(selected.fields[index].name))
+    }
+}
+
+func decodeText[Target: std::encoding::Decodable](_ source: string, _ options: Options) -> Result[Target, JsonDecodeError] {
+    if options.validationFirst() {
+        var validator = TokenScanner::new(source, options)
+        match (&validator).document() {
+            case .err(error) => return .err(.syntax(error))
+            case .ok(_) => {}
+        }
+    }
+    var decoder = TokenDecoder::new(source, options)
+    value := match Target::decode(from: &decoder) {
+        case .ok(value) => value
+        case .err(error) => return .err((&decoder).failure(error))
+    }
+    match (&decoder).finish() {
+        case .ok(_) => return .ok(value)
+        case .err(error) => return .err((&decoder).failure(error))
+    }
+}

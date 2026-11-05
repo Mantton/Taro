@@ -1,12 +1,11 @@
-import std.fmt.Display
-import std.marker.Copy
-import std.ops.PartialEq
+import std::fmt::Display
+import std::ops::PartialEq
 
 /// A stable, platform-agnostic category for an I/O failure.
 ///
 /// OS backends preserve their native error code separately on `Error`, so
 /// callers can usually branch on this portable kind without losing details.
-public enum ErrorKind: Copy, PartialEq {
+public enum ErrorKind: PartialEq {
     /// An entity could not be found.
     case notFound
     /// The operation lacked the required permission.
@@ -88,104 +87,104 @@ public enum ErrorContext {
 public struct Error {
     kindValue: ErrorKind
     rawCode: int32?
+    // Out of line, as most errors have none and this is in every I/O call's Result.
+    details: ErrorDetails?
+}
+
+final class ErrorDetails {
     operationValue: string?
     contextValue: ErrorContext
 }
 
-impl Error {
+extend ErrorDetails {
+    init(_ operation: string?, _ context: ErrorContext) {
+        self.operationValue = operation
+        self.contextValue = context
+    }
+}
+
+extend Error {
     /// Construct a library-generated error without a native OS code.
-    public func new(_ kind: ErrorKind) -> Self {
-        Error {
-            kindValue: kind,
-            rawCode: .none,
-            operationValue: .none,
-            contextValue: .none,
-        }
+    public static func new(_ kind: ErrorKind) -> Self {
+        Error { kindValue: kind, rawCode: .none, details: .none }
     }
 
     /// Construct an error translated from a native OS error code.
-    public func fromRawOsError(_ kind: ErrorKind, _ code: int32) -> Self {
-        let rawCode: int32? = .some(code)
-        Error {
-            kindValue: kind,
-            rawCode,
-            operationValue: .none,
-            contextValue: .none,
-        }
+    public static func fromRawOsError(_ kind: ErrorKind, _ code: int32) -> Self {
+        var rawCode: int32? = .some(code)
+        Error { kindValue: kind, rawCode, details: .none }
     }
 
     /// Return the portable category for this failure.
-    public func kind(&self) -> ErrorKind {
+    public func kind() -> ErrorKind {
         self.kindValue
     }
 
     /// Return whether this failure has the requested portable category.
-    public func isKind(&self, _ kind: ErrorKind) -> bool {
+    public func isKind(_ kind: ErrorKind) -> bool {
         self.kindValue == kind
     }
 
     /// Return the native OS error code, when one was reported.
-    public func rawOsError(&self) -> int32? {
+    public func rawOsError() -> int32? {
         self.rawCode
     }
 
     /// Return the operation that failed, when available.
-    public func operation(&self) -> string? {
-        self.operationValue
+    public func operation() -> string? {
+        match self.details {
+            case .some(details) => return details.operationValue
+            case .none => return .none
+        }
     }
 
     /// Return the resource context associated with the failure.
-    public func context(&self) -> &ErrorContext {
-        return &self.contextValue
+    public func context() -> &ErrorContext {
+        details := match self.details {
+            case .some(details) => details
+            case .none => ErrorDetails(.none, .none)
+        }
+        return &details.contextValue
+    }
+
+    func withDetails(_ operation: string?, _ context: ErrorContext) -> Self {
+        Error { kindValue: self.kindValue, rawCode: self.rawCode, details: .some(ErrorDetails(operation, context)) }
+    }
+
+    func existingContext() -> ErrorContext {
+        match self.details {
+            case .some(details) => return details.contextValue
+            case .none => return .none
+        }
     }
 
     /// Replace the operation context and return the enriched error.
-    public func withOperation(self, _ operation: string) -> Self {
-        let operationValue: string? = .some(operation)
-        Error {
-            kindValue: self.kindValue,
-            rawCode: self.rawCode,
-            operationValue,
-            contextValue: self.contextValue,
-        }
+    public func withOperation(_ operation: string) -> Self {
+        var operationValue: string? = .some(operation)
+        return self.withDetails(operationValue, self.existingContext())
     }
 
     /// Replace the resource context with one filesystem path.
-    public func withPath(self, _ path: string) -> Self {
-        let contextValue: ErrorContext = .path(path)
-        Error {
-            kindValue: self.kindValue,
-            rawCode: self.rawCode,
-            operationValue: self.operationValue,
-            contextValue,
-        }
+    public func withPath(_ path: string) -> Self {
+        var contextValue: ErrorContext = .path(path)
+        return self.withDetails(self.operation(), contextValue)
     }
 
     /// Replace the resource context with source and destination paths.
-    public func withPaths(self, _ first: string, _ second: string) -> Self {
-        let contextValue: ErrorContext = .paths(first, second)
-        Error {
-            kindValue: self.kindValue,
-            rawCode: self.rawCode,
-            operationValue: self.operationValue,
-            contextValue,
-        }
+    public func withPaths(_ first: string, _ second: string) -> Self {
+        var contextValue: ErrorContext = .paths(first, second)
+        return self.withDetails(self.operation(), contextValue)
     }
 
     /// Replace the resource context with a network address.
-    public func withAddress(self, _ address: string) -> Self {
-        let contextValue: ErrorContext = .address(address)
-        Error {
-            kindValue: self.kindValue,
-            rawCode: self.rawCode,
-            operationValue: self.operationValue,
-            contextValue,
-        }
+    public func withAddress(_ address: string) -> Self {
+        var contextValue: ErrorContext = .address(address)
+        return self.withDetails(self.operation(), contextValue)
     }
 }
 
-impl Display for ErrorKind {
-    public func display(&self, _ into: &mut std.fmt.Formatter) {
+conform ErrorKind to Display {
+    public func display(_ into: &std::fmt::Formatter) {
         match self {
             case .notFound => into.writeString("not found")
             case .permissionDenied => into.writeString("permission denied")
@@ -221,11 +220,11 @@ impl Display for ErrorKind {
     }
 }
 
-impl Display for Error {
-    public func display(&self, _ into: &mut std.fmt.Formatter) {
+conform Error to Display {
+    public func display(_ into: &std::fmt::Formatter) {
         var hasPrefix = false
 
-        match self.operationValue {
+        match self.operation() {
             case .some(operation) => {
                 into.writeString(operation)
                 hasPrefix = true
@@ -233,29 +232,29 @@ impl Display for Error {
             case .none => {}
         }
 
-        match &self.contextValue {
+        match self.existingContext() {
             case .none => {}
             case .path(path) => {
                 if hasPrefix {
                     into.writeString(" ")
                 }
-                into.writeString(*path)
+                into.writeString(path)
                 hasPrefix = true
             }
             case .paths(first, second) => {
                 if hasPrefix {
                     into.writeString(" ")
                 }
-                into.writeString(*first)
+                into.writeString(first)
                 into.writeString(" -> ")
-                into.writeString(*second)
+                into.writeString(second)
                 hasPrefix = true
             }
             case .address(address) => {
                 if hasPrefix {
                     into.writeString(" ")
                 }
-                into.writeString(*address)
+                into.writeString(address)
                 hasPrefix = true
             }
         }
@@ -276,4 +275,4 @@ impl Display for Error {
     }
 }
 
-impl std.error.Error for Error {}
+conform Error to std::error::Error {}

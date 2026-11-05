@@ -4,5 +4,5 @@ error: expected bool, found {integer(0)}
 	          ^
 error: optional binding requires an Optional value, found 'int32'
  -> language_tests/source_files/invalid/guards.tr:3:22
-	    guard let value = 123 else { return }
+	    guard var value = 123 else { return }
 	                      ^^^

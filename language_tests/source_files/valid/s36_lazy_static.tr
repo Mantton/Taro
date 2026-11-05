@@ -1,0 +1,18 @@
+static var calls: int32 = 0
+static var unused: int32 = unusedInitializer()
+static var value: int32 = makeValue()
+static var dependent: int32 = value + 1
+func unusedInitializer() -> int32 { panic("unused static must not initialize") }
+func makeValue() -> int32 { calls += 1; 7 }
+func makeRhs() -> int32 { assert(calls == 0, "RHS executes before destination initialization"); 21 }
+func main() {
+    assert(calls == 0, "runtime initializers are lazy")
+    value = makeRhs()
+    assert(calls == 1 && value == 21, "assignment initializes before installing the RHS")
+    assert(dependent == 22 && calls == 1, "dependent initializer observes already published storage")
+    var first: &int32 = &value // &int32; process-long storage, active shared access.
+    var second: &int32 = &value // &int32; shared global borrows coexist.
+    assert(*first == 21 && *second == 21, "shared access")
+    value += 1
+    assert(value == 22, "last-use permission release")
+}

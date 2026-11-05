@@ -1,0 +1,57 @@
+import std::marker::Clone
+import std::ops::PartialEq
+import std::hash::{DefaultHasher, Hashable, Hasher}
+
+public struct Comparable[T]: PartialEq, Hashable { value: T }
+public func comparable[T](_ value: T) -> Comparable[T] { Comparable[T] { value } }
+public func equivalent[T: PartialEq[T]](_ a: &Comparable[T], _ b: &Comparable[T]) -> bool {
+    a.eq(*b)
+}
+public func fingerprint[T: Hashable](_ value: &Comparable[T]) -> uint64 {
+    var hasher = DefaultHasher::new()
+    value.hash(into: &hasher)
+    hasher.finish()
+}
+public func duplicate[T: Clone](_ value: &T) -> T { value.clone() }
+public func narrow() -> (int32, int32) {
+    var value: (int32, int32) = (7, 9)
+    duplicate(&value)
+}
+public func wide() -> (int64, string) {
+    var value: (int64, string) = (11, "hello")
+    duplicate(&value)
+}
+public struct Conditional[T]: Clone { value: T }
+public func wrap[T](_ value: T) -> Conditional[T] { Conditional[T] { value } }
+public func read(_ value: &Conditional[int32]) -> int32 { value.value }
+
+public struct OwnedComponent: Clone { value: int32 }
+public func componentPair() -> (OwnedComponent, OwnedComponent) {
+    value := (OwnedComponent { value: 23 }, OwnedComponent { value: 29 })
+    value.clone()
+}
+public func componentSum(_ value: &(OwnedComponent, OwnedComponent)) -> int32 {
+    value.0.value + value.1.value
+}
+
+public func componentArray() -> [OwnedComponent; 2] {
+    var value: [OwnedComponent; 2] = [OwnedComponent { value: 31 }, OwnedComponent { value: 37 }]
+    value.clone()
+}
+public func arraySum(_ value: &[OwnedComponent; 2]) -> int32 {
+    value.at(0).value + value.at(1).value
+}
+
+public func clonedCallback(_ value: int32) -> int32 {
+    original := () => value
+    cloned := original.clone()
+    original() + cloned()
+}
+
+struct CapturePair { left: int32; right: int32 }
+public func projectedCallback(_ value: int32) -> any Fn() -> int32 {
+    var pair: CapturePair = CapturePair { left: value, right: 1 }
+    callback := () => pair.left
+    pair.right = 2
+    callback
+}

@@ -1,0 +1,24 @@
+error: field 'handle' of PlatformDir is not visible here
+ -> language_tests/source_files/invalid/raw_resource_forged.tr:2:65
+	    var directory: std::sys::fs::RawDir = std::sys::fs::RawDir { handle: 1 }
+	                                                                 ^^^^^^^
+error: field 'lease' of PlatformFile is not visible here
+ -> language_tests/source_files/invalid/raw_resource_forged.tr:3:62
+	    var file: std::sys::fs::RawFile = std::sys::fs::RawFile { lease: 3 }
+	                                                              ^^^^^^
+error: field 'source_id' of PlatformAsyncStream is not visible here
+ -> language_tests/source_files/invalid/raw_resource_forged.tr:4:78
+	    var stream: std::sys::io::RawAsyncStream = std::sys::io::RawAsyncStream { source_id: 1 }
+	                                                                              ^^^^^^^^^^
+error: field 'handle' of RawChild is not visible here
+ -> language_tests/source_files/invalid/raw_resource_forged.tr:5:75
+	    var child: std::sys::process::RawChild = std::sys::process::RawChild { handle: 1 }
+	                                                                           ^^^^^^^
+error: field 'lease' of RawPipe is not visible here
+ -> language_tests/source_files/invalid/raw_resource_forged.tr:6:72
+	    var pipe: std::sys::process::RawPipe = std::sys::process::RawPipe { lease: 3 }
+	                                                                        ^^^^^^
+error: field 'fd' of RawSocket is not visible here
+ -> language_tests/source_files/invalid/raw_resource_forged.tr:7:70
+	    var socket: std::sys::net::RawSocket = std::sys::net::RawSocket { fd: 3_i32 }
+	                                                                      ^^^

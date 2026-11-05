@@ -1,0 +1,47 @@
+// ENV: TARO_GC_STRESS=1 TARO_WORKERS=4
+// Exercise a dense one-page class and a non-power-of-two two-page class.
+// Field references keep the containing allocation alive after its list clears.
+struct DenseCell { child: &int64; padding: [uint8; 400] }
+struct WideCell { child: &int64; padding: [uint8; 1392] }
+
+@noinline
+func fresh(_ value: int64) -> &int64 {
+    var result = value
+    &result
+}
+
+@noinline
+func dense(_ value: int64) -> &DenseCell {
+    var result = DenseCell { child: fresh(value), padding: [0; 400] }
+    &result
+}
+
+@noinline
+func wide(_ value: int64) -> &WideCell {
+    var result = WideCell { child: fresh(value), padding: [0; 1392] }
+    &result
+}
+
+func main() {
+    var small = List[&DenseCell]::new()
+    var large = List[&WideCell]::new()
+    var i: int64 = 0
+    while i < 64 {
+        small.append(dense(i))
+        large.append(wide(i + 100))
+        i += 1
+    }
+    std::runtime::collect()
+    var index: usize = 0
+    while index < small.len() {
+        assert(*small[index].child == index as int64, "dense cell child")
+        assert(*large[index].child == index as int64 + 100, "wide cell child")
+        assert(small[index].padding[399] == 0 && large[index].padding[1391] == 0, "zeroed fields")
+        index += 1
+    }
+    large[0].padding[1391] = 23
+    field := &large[0].padding[1391]
+    large.clear()
+    std::runtime::collect()
+    assert(*field == 23, "interior field reference retains a multi-page allocation")
+}

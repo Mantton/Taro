@@ -1,0 +1,5 @@
+func main() {
+    var values: [string: int32] = ["key": 7]
+    key := "key"
+    value := values[&key]
+}

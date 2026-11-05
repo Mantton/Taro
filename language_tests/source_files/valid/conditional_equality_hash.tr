@@ -1,0 +1,45 @@
+import std::ops::PartialEq
+import std::hash::{DefaultHasher, Hashable, Hasher}
+
+struct Counter: PartialEq, Hashable { value: int32 }
+struct Owned { value: int32 }
+struct Wrapper[T]: PartialEq, Hashable { value: T }
+enum Choice[T]: PartialEq, Hashable { case empty; case value(T) }
+struct Phantom[T]: PartialEq, Hashable { fixed: int32 }
+
+func digest[T: Hashable](_ value: &T) -> uint64 {
+    var hasher = DefaultHasher::new()
+    value.hash(into: &hasher)
+    hasher.finish()
+}
+func equalWrapped[T: PartialEq[T]](_ left: &Wrapper[T], _ right: &Wrapper[T]) -> bool {
+    left.eq(*right)
+}
+func equalBounded[T: Hashable](_ left: &T, _ right: &T) -> bool {
+    left.eq(*right)
+}
+func main() {
+    var owned: Wrapper[Owned] = Wrapper[Owned] { value: Owned { value: 1 } }
+    moved := owned
+    assert(moved.value.value == 1, "valid type without conditional conformances")
+    left := Wrapper[Counter] { value: Counter { value: 7 } }
+    right := Wrapper[Counter] { value: Counter { value: 7 } }
+    other := Wrapper[Counter] { value: Counter { value: 8 } }
+    assert(left == right, "conditional equality borrows NoCopy fields")
+    assert(left != other, "conditional inequality")
+    assert(equalWrapped(&left, &right), "generic field equality bounds")
+    assert(equalBounded(&left, &right), "inherited equality is one requirement")
+    assert(digest(&left) == digest(&right), "conditional field hashing")
+    assert(left == right, "operands remain usable")
+
+    var choice: Choice[Counter] = .value(Counter { value: 9 })
+    var same: Choice[Counter] = .value(Counter { value: 9 })
+    var empty: Choice[Counter] = .empty
+    assert(choice == same, "conditional enum payload equality")
+    assert(choice != empty, "case identity participates")
+    assert(digest(&choice) == digest(&same), "conditional enum hashing")
+    var phantom: Phantom[Owned] = Phantom[Owned] { fixed: 11 }
+    var phantomSame: Phantom[Owned] = Phantom[Owned] { fixed: 11 }
+    assert(phantom == phantomSame, "unused type argument imposes no equality")
+    assert(digest(&phantom) == digest(&phantomSame), "unused argument imposes no hashing")
+}

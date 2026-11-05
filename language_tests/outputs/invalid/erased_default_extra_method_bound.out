@@ -1,0 +1,4 @@
+error: type 'Self' does not conform to interface 'Clone'
+ -> language_tests/source_files/invalid/erased_default_extra_method_bound.tr:8:30
+	    var result: int32 = boxed.known() // Extra does not promise its hidden Rhs is Clone.
+	                              ^^^^^

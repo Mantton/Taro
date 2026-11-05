@@ -1,5 +1,6 @@
+func exchange[T](_ dest: &T, _ value: T) -> T { previous := *dest; *dest = value; previous }
 func main() {
     var values: [int32] = []
-    let array: [int32; 1] = [3]
-    let old = std.mem.replace(&mut values, array)
+    var array: [int32; 1] = [3]
+    old := exchange(&values, array)
 }

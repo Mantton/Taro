@@ -1,0 +1,14 @@
+public class Base[T] { public value: T }
+extend[T] Base[T] {
+    public required init(_ value: T) { self.value = value };
+    public required convenience init(pair: (T, T)) { self.init(pair.0) };
+    public func fresh(_ value: T) -> Self { Self(value) };
+    public func freshPair(_ first: T, _ second: T) -> Self { Self(pair: (first, second)) };
+}
+public class Middle[T]: Base[List[T]] { public stamp: int32 = 17 }
+public final class Exact { public value: int32 }
+extend Exact {
+    private required init(_ value: int32) { self.value = value };
+    public static func make() -> Self { Self(29) };
+    public func fresh() -> Self { Self(self.value + 1) };
+}

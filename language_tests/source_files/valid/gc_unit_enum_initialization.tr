@@ -1,0 +1,73 @@
+// ENV: TARO_GC_STRESS=1 TARO_WORKERS=4
+// Unit variants must define complete values for copies/repeats, preserve their
+// actual tag (which need not be zero), and replace shared payloads safely.
+enum State {
+    case first
+    case live([&int32; 4])
+    case last
+}
+struct Group { states: [State; 8] }
+struct Holder { state: State; optional: (&int32)? }
+
+@noinline
+func firstGroup() -> Group { Group { states: [.first; 8] } }
+
+@noinline
+func lastGroup() -> Group { Group { states: [.last; 8] } }
+
+@noinline
+func emptyValues[T]() -> [T?; 8] { [.none; 8] }
+
+@noinline
+func fresh(_ number: int32) -> &int32 {
+    var value = number
+    &value
+}
+
+@noinline
+func clear(_ holder: &Holder) {
+    holder.state = .last
+    holder.optional = .none
+}
+
+func main() {
+    var iteration: int32 = 0
+    while iteration < 24 {
+        var holder = Holder {
+            state: .live([fresh(iteration); 4]),
+            optional: .some(fresh(iteration + 1)),
+        }
+        saved := holder
+        clear(&holder)
+        first := firstGroup()
+        last := lastGroup()
+        // Reference optionals use a null niche; integer optionals use a tag.
+        nulls := emptyValues[&int32]()
+        tagged := emptyValues[int32]()
+        std::runtime::collect()
+        match holder.state {
+            case .last => {}
+            case _ => panic("shared replacement preserves the nonzero unit tag")
+        }
+        assert(holder.optional.isNone(), "shared null-niche replacement")
+        match saved.state {
+            case .live(values) => assert(*values[3] == iteration, "saved payload stays rooted")
+            case _ => panic("replacement must not change the copy")
+        }
+        assert(*saved.optional.unwrap() == iteration + 1, "saved null-niche payload stays rooted")
+        var index: usize = 0
+        while index < 8 {
+            match first.states[index] {
+                case .first => {}
+                case _ => panic("zero unit tag survives repetition and return")
+            }
+            match last.states[index] {
+                case .last => {}
+                case _ => panic("nonzero unit tag survives repetition and return")
+            }
+            assert(nulls[index].isNone() && tagged[index].isNone(), "generic empty optionals")
+            index += 1
+        }
+        iteration += 1
+    }
+}

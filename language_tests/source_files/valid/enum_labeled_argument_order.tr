@@ -1,0 +1,20 @@
+enum Pair {
+    case pair(left: int32, right: int32)
+}
+
+func record(_ trace: &int32, _ digit: int32) -> int32 {
+    *trace = *trace * 10 + digit
+    return digit
+}
+
+func main() {
+    var trace: int32 = 0
+    var value: Pair = .pair(right: record(&trace, 7), left: record(&trace, 3))
+    match value {
+        case .pair(left, right) => {
+            assert(left == 3 && right == 7, "labels select payload fields")
+        }
+    }
+    assert(trace == 73, "arguments evaluate in source order")
+    print("labeled enum arguments\n")
+}

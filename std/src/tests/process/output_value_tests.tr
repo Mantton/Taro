@@ -1,0 +1,11 @@
+@test
+@cfg(family("unix"))
+func outputAccessorsReturnValuesAndSharedByteHandles() {
+    output := std::process::Command::new("/bin/sh", "-c", "printf ok").output().unwrap()
+    var bytes = output.stdout()
+    status := output.status()
+    bytes[0] = 'O' as uint8
+    std::testing::assertTrue(output.stdout()[0] == ('O' as uint8) && status.success(), "byte handles share and status is an ordinary value")
+    var (_, stdout, _) = output.parts()
+    std::testing::assertEqual(stdout.len(), 2 as usize, "parts returns handle copies")
+}

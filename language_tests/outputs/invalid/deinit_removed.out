@@ -1,0 +1,4 @@
+error: `deinit` was removed; the garbage collector reclaims memory, so release resources with an explicit method such as `close()`
+ -> language_tests/source_files/invalid/deinit_removed.tr:4:4
+	    deinit { closing := self.descriptor }
+	    ^^^^^^

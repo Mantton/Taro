@@ -1,0 +1,5 @@
+public class Base[T] { private value: T }
+extend[T] Base[T] {
+    public init(_ value: T) { self.value = value }
+    public func read() -> &T { &self.value }
+}

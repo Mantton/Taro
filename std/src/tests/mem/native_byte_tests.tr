@@ -1,0 +1,42 @@
+import std::io::Reader
+
+@test
+func managedByteStorageSharesGrowthAndSnapshotsImmutableStrings() {
+    var bytes = std::bytes::Buffer::new("abc")
+    alias := bytes
+    original := bytes.bytes().asPtr()
+    alias.reserve(32).unwrap()
+    grown := bytes.bytes().asPtr()
+    std::testing::assertTrue(bytes.capacity() >= 32 && bytes.capacity() == alias.capacity(), "aliases share managed growth")
+    std::testing::assertEqual(unsafe { original.read() }, 97_u8, "growth preserves old storage for pointers")
+    value := bytes.toString()
+    std::testing::assertTrue(value == "abc", "initialized bytes survive managed growth")
+    std::testing::assertTrue(unsafe { std::string::stringData(value) as usize } != unsafe { grown as usize }, "immutable snapshots have independent storage")
+    bytes.reset()
+    bytes.writeString("z").unwrap()
+    var copied: string = value // String copies share immutable bytes.
+    std::testing::assertTrue(copied == "abc", "later byte writes do not change a string snapshot")
+}
+
+@test
+func managedByteBufferSnapshotsCompactedStorage() {
+    var buffer: std::bytes::Buffer = std::bytes::Buffer::new("prefix-payload")
+    var discarded: [uint8; 7] = [0_u8; 7]
+    var _ = buffer.read(discarded.asSpan()).unwrap()
+    buffer.reserve(128).unwrap() // compacts to the allocation's first byte.
+    var view: std::mem::Span[uint8] = buffer.bytes()
+    var address: usize = unsafe { view.asPtr() as usize }
+    var result: string = buffer.toString()
+    std::testing::assertEqual(result, "payload", "compaction keeps the unread prefix")
+    std::testing::assertTrue(unsafe { std::string::stringData(result) as usize } != address, "Buffer strings are independent snapshots")
+}
+
+@test
+func nativeCStringKeepsIndependentTerminatedStorage() {
+    var input: string = "native-" + "path"
+    var cstring: std::ffi::CString = std::ffi::CString::tryNew(input).unwrap()
+    var pointer: *const uint8 = cstring.asPtr()
+    std::testing::assertEqual(unsafe { pointer.add(input.byteLen()).read() }, 0_u8, "CString adds its managed terminator")
+    std::testing::assertEqual(unsafe { std::string::stringFromParts(pointer, input.byteLen()) }, input, "CString bytes remain readable while its owner is alive")
+    std::testing::assertTrue(std::ffi::CString::tryNew("bad\0path").isNone(), "embedded NUL is rejected")
+}

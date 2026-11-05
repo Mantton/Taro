@@ -1,8 +1,8 @@
 # Taro
 
 Taro is an experimental compiled programming language inspired by Rust, Swift,
-and Go. It combines algebraic data types, interfaces, generics, move semantics,
-and structured concurrency with automatic garbage collection.
+and Go. It combines algebraic data types, interfaces, generics, ordinary value
+copies and shared handles, with a tracing collector and asynchronous tasks.
 
 > [!WARNING]
 > Taro is under active development. Language syntax, compiler metadata,
@@ -13,11 +13,12 @@ and structured concurrency with automatic garbage collection.
 - Strong static typing with bidirectional inference
 - Payload enums, exhaustive pattern matching, optionals, and results
 - Interfaces, associated types, generics, and monomorphization
-- Rust-style moves with a non-moving, precise garbage collector
+- Inline struct/array copies, shared collections, and writable GC references
+- GC classes with inheritance and explicit `std::weak::Weak[T]` references
 - Multithreaded async tasks, cancellation, groups, selection, and timeouts
 - First-class tests and benchmarks
 - LLVM code generation with incremental builds, bitcode, and optional LTO
-- C ABI interoperability and compact language-level panic reports
+- Internal C ABI integration and compact language-level panic reports
 
 ## Quick Start
 
@@ -66,8 +67,8 @@ struct Point {
     y: int32
 }
 
-impl Add for Point {
-    func add(self, rhs: Point) -> Point {
+conform Point to Add {
+    func add(_ rhs: Point) -> Point {
         Point { x: self.x + rhs.x, y: self.y + rhs.y }
     }
 }
@@ -145,7 +146,6 @@ attributes and regression directives.
 | [Packages](docs/packages.md) | Manifests, dependency resolution, and lockfiles |
 | [Async runtime](docs/async-runtime.md) | Executor lifecycle and concurrency invariants |
 | [Existentials](docs/existentials.md) | Existential representation and dispatch |
-| [Release checklist](docs/RELEASE_CHECKLIST.md) | Required validation before release |
 
 ## Status and Limitations
 
@@ -164,7 +164,7 @@ attributes and regression directives.
 | --- | --- |
 | `compiler/` | Parsing, semantics, IRs, optimization, and LLVM codegen |
 | `compiler-cli/` and `taro-bin/` | CLI workflows and the `taro` executable |
-| `runtime/` | GC, executor, panic, process, filesystem, and native services |
+| `runtime/` | Tracing collector, executor, synchronization, panic, and native services |
 | `std/` | Standard library sources and tests |
 | `language_tests/` | End-to-end language and backend regressions |
 | `showcase/` and `examples/` | Substantial and minimal Taro programs |

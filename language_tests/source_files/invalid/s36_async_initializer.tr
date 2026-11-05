@@ -1,0 +1,3 @@
+func initialize() async -> int32 { 7 }
+static var value: int32 = await initialize() // Error: initialization is synchronous.
+func main() {}

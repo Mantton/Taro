@@ -1,8 +1,8 @@
 // Result API type mismatch diagnostics under value semantics.
 
 func invalidMapClosureInputType() {
-    let r: Result[int32, int32] = .ok(1)
-    let _ = r.map(|x: string| -> int32 { x.len() as int32 })
+    var r: Result[int32, int32] = .ok(1)
+    var _ = r.map((x: string) -> int32 => { x.len() as int32 })
 }
 
 func main() {

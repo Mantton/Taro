@@ -1,0 +1,8 @@
+error: this access requires a subscript address accessor; get/set does not provide element storage
+ -> language_tests/source_files/invalid/native_subscript_base_view_capabilities.tr:5:40
+	func use(_ value: Base) { reference := &value[0 as usize]; value[0 as usize] = 7 }
+	                                        ^^^^^^^^^^^^^^^^^
+error: subscript has no set accessor
+ -> language_tests/source_files/invalid/native_subscript_base_view_capabilities.tr:5:59
+	func use(_ value: Base) { reference := &value[0 as usize]; value[0 as usize] = 7 }
+	                                                           ^^^^^^^^^^^^^^^^^

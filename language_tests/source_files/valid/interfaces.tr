@@ -1,7 +1,7 @@
 // Consolidated interface language tests.
 
 interface MarkerN[const N: usize] {
-    func id(&self) -> usize
+    func id() -> usize
 }
 
 struct ConstUser {
@@ -9,105 +9,105 @@ struct ConstUser {
     name: string
 }
 
-impl MarkerN[1] for ConstUser {
-    func id(&self) -> usize { self.id }
+conform ConstUser to MarkerN[1] {
+    func id() -> usize { self.id }
 }
 
 func takesOne(_ v: any MarkerN[1]) {
-    let val = v.id()
+    val := v.id()
     assert(val == 42, "Marker[1] dispatch failed")
 }
 
 func testInterfaceConstGenerics() {
-    let user = ConstUser { id: 42, name: "Alice" }
+    user := ConstUser { id: 42, name: "Alice" }
     takesOne(user)
 }
 
 interface SameAs[T = Self] {
-    func same(&self, _ other: &T) -> bool
+    func same( _ other: &T) -> bool
 }
 
 struct BoxedSameAs {
     value: int32
 }
 
-impl SameAs for BoxedSameAs {
-    func same(&self, _ other: &BoxedSameAs) -> bool {
+conform BoxedSameAs to SameAs {
+    func same( _ other: &BoxedSameAs) -> bool {
         self.value == other.value
     }
 }
 
 func testDefaultGenericSelfSubstitution() {
-    let a = BoxedSameAs { value: 7 }
-    let b = BoxedSameAs { value: 7 }
+    a := BoxedSameAs { value: 7 }
+    b := BoxedSameAs { value: 7 }
     assert(a.same(&b), "default generic argument Self should substitute to concrete impl self type")
 }
 
 func testDefaultGenericSelfSubstitutionVirtual() {
-    let a = BoxedSameAs { value: 11 }
-    let b = BoxedSameAs { value: 11 }
-    let erased: any SameAs = a
-    assert(erased.same(&b), "default generic argument Self should dispatch through existential")
+    a := BoxedSameAs { value: 11 }
+    b := BoxedSameAs { value: 11 }
+    var erased: any SameAs[BoxedSameAs] = a
+    assert(erased.same(&b), "a statically fixed argument type dispatches through existential")
 }
 
 interface HashableDM {
-    func hash[H](&self, _ hasher: &mut H)
+    func hash[H]( _ hasher: &H)
 }
 
 interface HasherDM {
-    func combine[V: HashableDM](&mut self, _ value: V) {
-        value.hash(self)
+    func combine[V: HashableDM]( _ value: V) {
+        value.hash(&self)
     }
 }
 
 struct TokenDM {}
 
-impl HashableDM for TokenDM {
-    public func hash[H](&self, _ hasher: &mut H) {}
+conform TokenDM to HashableDM {
+    public func hash[H]( _ hasher: &H) {}
 }
 
 struct DummyHasherDM {}
 
-impl HasherDM for DummyHasherDM {}
+conform DummyHasherDM to HasherDM {}
 
-func feedDM[H: HasherDM](_ hasher: &mut H) {
+func feedDM[H: HasherDM](_ hasher: &H) {
     hasher.combine(TokenDM {})
 }
 
 func testDefaultMethodConcreteAndForwarding() {
     var hasher = DummyHasherDM {}
     hasher.combine(TokenDM {})
-    feedDM(&mut hasher)
+    feedDM(&hasher)
 }
 
 interface ContainerGI[T] {
-    func retrieve(&self) -> T
+    func retrieve() -> T
 }
 
-struct GenericUser: Copy {
+struct GenericUser {
     id: usize
     name: string
 }
 
-impl ContainerGI[string] for GenericUser {
-    func retrieve(&self) -> string {
+conform GenericUser to ContainerGI[string] {
+    func retrieve() -> string {
         self.name
     }
 }
 
-impl ContainerGI[usize] for GenericUser {
-    func retrieve(&self) -> usize {
+conform GenericUser to ContainerGI[usize] {
+    func retrieve() -> usize {
         self.id
     }
 }
 
 func printStringContainerGI(_ value: any ContainerGI[string]) {
-    let str = value.retrieve()
+    str := value.retrieve()
     assert(str == "Alice", "String container retrieve failed")
 }
 
 func printIntContainerGI(_ value: any ContainerGI[usize]) {
-    let id = value.retrieve()
+    id := value.retrieve()
     match id {
         case 42 => assert(true, "Found correct ID")
         case _ => assert(false, "Found wrong ID")
@@ -115,17 +115,17 @@ func printIntContainerGI(_ value: any ContainerGI[usize]) {
 }
 
 func testInterfaceGenericImpl() {
-    let user = GenericUser { id: 42, name: "Alice" }
+    user := GenericUser { id: 42, name: "Alice" }
     printStringContainerGI(user)
     printIntContainerGI(user)
 }
 
 interface IdentifiableIH {
-    func identifier(&self) -> usize
+    func identifier() -> usize
 }
 
 interface EntityIH: IdentifiableIH {
-    func name(&self) -> string
+    func name() -> string
 }
 
 struct InheritUser {
@@ -133,23 +133,23 @@ struct InheritUser {
     name: string
 }
 
-impl IdentifiableIH for InheritUser {
-    func identifier(&self) -> usize {
+conform InheritUser to IdentifiableIH {
+    func identifier() -> usize {
         self.id
     }
 }
 
-impl EntityIH for InheritUser {
-    func name(&self) -> string {
+conform InheritUser to EntityIH {
+    func name() -> string {
         self.name
     }
 }
 
 func printEntityIH(_ value: any EntityIH) {
-    let str = value.name()
+    str := value.name()
     assert(str == "Alice", "Name check failed")
 
-    let id = value.identifier()
+    id := value.identifier()
     match id {
         case 42 => assert(true, "ID matched")
         case _ => assert(false, "ID mismatch")
@@ -157,78 +157,78 @@ func printEntityIH(_ value: any EntityIH) {
 }
 
 func testInterfaceInheritance() {
-    let user = InheritUser { id: 42, name: "Alice" }
+    user := InheritUser { id: 42, name: "Alice" }
     printEntityIH(user)
 }
 
 interface IdentityMGI {
-    func touch[T](&mut self, _ value: T)
+    func touch[T]( _ value: T)
 }
 
 struct BoxMGI {}
 
-impl IdentityMGI for BoxMGI {
-    public func touch[T](&mut self, _ value: T) {}
+conform BoxMGI to IdentityMGI {
+    public func touch[T]( _ value: T) {}
 }
 
-func callTouch[I: IdentityMGI](_ value: &mut I) {
+func callTouch[I: IdentityMGI](_ value: &I) {
     value.touch(1 as int32)
 }
 
 func testInterfaceMethodGenericInfer() {
     var box = BoxMGI {}
-    callTouch(&mut box)
+    callTouch(&box)
 }
 
 interface IdentifiableStress {
-    func identifier(&self) -> usize
+    func identifier() -> usize
 }
 
 interface NamedStress {
-    func name(&self) -> string
+    func name() -> string
 }
 
 interface EntityStress: IdentifiableStress, NamedStress {
-    func describe(&self) -> string
+    func describe() -> string
 }
 
 interface ContainerStress[T] {
-    func retrieve(&self) -> T
+    func retrieve() -> T
 }
 
 type Str = string
 type UserName = string
 
-struct StressUser: Copy {
+struct StressUser {
     id: usize
     name: string
 }
 
-impl IdentifiableStress for StressUser {
-    func identifier(&self) -> usize { self.id }
+conform StressUser to IdentifiableStress {
+    func identifier() -> usize { self.id }
 }
 
-impl NamedStress for StressUser {
-    func name(&self) -> string { self.name }
+conform StressUser to NamedStress {
+    func name() -> string { self.name }
 }
 
-impl EntityStress for StressUser {
-    func describe(&self) -> string { self.name }
+conform StressUser to EntityStress {
+    func describe() -> string { self.name }
 }
 
-impl ContainerStress[string] for StressUser {
-    func retrieve(&self) -> string { self.name }
+conform StressUser to ContainerStress[string] {
+    func retrieve() -> string { self.name }
 }
 
-impl ContainerStress[usize] for StressUser {
-    func retrieve(&self) -> usize { self.id }
+conform StressUser to ContainerStress[usize] {
+    func retrieve() -> usize { self.id }
 }
 
 func printEntityStress(_ value: any EntityStress) {
-    let str = value.describe()
+    str := value.describe()
     assert(str == "Alice", "Describe check")
 
-    let id = value.identifier()
+    id := value.identifier()
     match id {
         case 42 => assert(true, "ID ok")
         case _ => assert(false, "ID mismatch")
@@ -236,7 +236,7 @@ func printEntityStress(_ value: any EntityStress) {
 }
 
 func printIdentStress(_ value: any IdentifiableStress) {
-    let id = value.identifier()
+    id := value.identifier()
     match id {
         case 42 => assert(true, "Identifiable ok")
         case _ => assert(false, "Identifiable fail")
@@ -244,12 +244,12 @@ func printIdentStress(_ value: any IdentifiableStress) {
 }
 
 func printStringContainerStress(_ value: any ContainerStress[string]) {
-    let str = value.retrieve()
+    str := value.retrieve()
     assert(str == "Alice", "String container ok")
 }
 
 func printIntContainerStress(_ value: any ContainerStress[usize]) {
-    let id = value.retrieve()
+    id := value.retrieve()
     match id {
         case 42 => assert(true, "Int container ok")
         case _ => assert(false, "Int container fail")
@@ -257,12 +257,12 @@ func printIntContainerStress(_ value: any ContainerStress[usize]) {
 }
 
 func printAliasContainerStress(_ value: any ContainerStress[UserName]) {
-    let str = value.retrieve()
+    str := value.retrieve()
     assert(str == "Alice", "Inferred alias container lookup ok")
 }
 
 func showNameStress[T: NamedStress](_ value: T) {
-    let str = value.name()
+    str := value.name()
     assert(str == "Alice", "Named constraint ok")
 }
 
@@ -274,11 +274,11 @@ func sameTypeStress[T, U](_ a: T, _ b: U) where T == U {
 }
 
 func testInterfaceStress() {
-    let user = StressUser { id: 42, name: "Alice" }
+    user := StressUser { id: 42, name: "Alice" }
 
     printEntityStress(user)
 
-    let e: any EntityStress = user
+    var e: any EntityStress = user
     printIdentStress(e)
 
     printStringContainerStress(user)
@@ -293,34 +293,34 @@ func testInterfaceStress() {
 }
 
 interface CounterDefault {
-    func next(self, _ seed: int32) -> int32 { seed + 1 }
+    func next( _ seed: int32) -> int32 { seed + 1 }
 }
 
 struct TickDefault {}
 
-impl CounterDefault for TickDefault {}
+conform TickDefault to CounterDefault {}
 
 func advanceDefault[T: CounterDefault](_ counter: T, _ seed: int32) -> int32 {
-    CounterDefault.next(counter, seed)
+    CounterDefault::next(counter, seed)
 }
 
 func testDefaultMethodsGenericBound() {
-    let tick = TickDefault {}
-    let n = advanceDefault(tick, 41)
+    tick := TickDefault {}
+    n := advanceDefault(tick, 41)
     assert(n == 42, "generic bound default call should return 42")
 }
 
 interface GreeterDefault {
-    func value(self) -> int32 { 42 }
+    func value() -> int32 { 42 }
 }
 
 struct UnitDefault {}
 
-impl GreeterDefault for UnitDefault {}
+conform UnitDefault to GreeterDefault {}
 
 func testDefaultMethodsUfcs() {
-    let u = UnitDefault {}
-    let v = GreeterDefault.value(u)
+    u := UnitDefault {}
+    v := GreeterDefault::value(u)
     assert(v == 42, "default method should return 42")
 }
 
@@ -334,22 +334,22 @@ interface HasMagicRequired {
 
 struct MagicBox {}
 
-impl HasMagicDefault for MagicBox {}
+conform MagicBox to HasMagicDefault {}
 
-impl HasMagicRequired for MagicBox {
+conform MagicBox to HasMagicRequired {
     const MAGIC: int32 = 7
 }
 
 func acceptMagicDefault[T: HasMagicDefault](_ value: &T) {
-    let _ = value
+    var _ = value
 }
 
 func acceptMagicRequired[T: HasMagicRequired](_ value: &T) {
-    let _ = value
+    var _ = value
 }
 
 func testAssociatedConstantsInConformance() {
-    let box = MagicBox {}
+    box := MagicBox {}
     acceptMagicDefault(&box)
     acceptMagicRequired(&box)
 }
@@ -367,5 +367,5 @@ func main() {
     testDefaultMethodsUfcs()
     testAssociatedConstantsInConformance()
 
-    std.print("PASS: interfaces\n")
+    std::print("PASS: interfaces\n")
 }

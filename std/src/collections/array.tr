@@ -1,65 +1,45 @@
-import std.optional.Optional
-import std.mem.{MaybeUninit, Span, MutableSpan, sizeOf}
-import std.iter.{Iterator, Iterable}
-import std.ops.PartialEq
-import std.panic.panic
+import std::optional::Optional
+import std::mem::Span
+import std::iter::{Iterator, Iterable}
+import std::ops::PartialEq
+import std::panic::panic
+import std::range::{Range, ClosedRange}
+import std::collections::List
 
 public type Array[Element, const Size: usize] = [Element; Size]
 
-impl[Element, const Size: usize] Array[Element, Size] {
-    public func len(&self) -> usize {
-        Size
+extend[Element, const Size: usize] &Array[Element, Size] {
+    public subscript(index: usize) -> Element { address { self.at(index) } }
+
+    /// Range indexing copies elements, matching List range indexing.
+    public subscript(range: Range[usize]) -> List[Element] {
+        get { self.copyRange(range.start, range.end) }
     }
 
-    public func at(&self, _ idx: usize) -> &Element {
-        if idx < Size {
-            return unsafe { (self as *const Element).add(idx) as &Element }
+    public subscript(range: ClosedRange[usize]) -> List[Element] {
+        get {
+            if range.start > range.end || range.end >= Size { panic("array range out of range") }
+            self.copyRange(range.start, range.end + (1 as usize))
         }
-        panic("array index out of range")
     }
 
-    public func at(&mut self, _ idx: usize) -> &mut Element {
-        if idx < Size {
-            return unsafe { (self as *mut Element).add(idx) as &mut Element }
-        }
-        panic("array index out of range")
-    }
-
-    public func get(&self, _ idx: usize) -> Optional[&Element] {
-        if idx < Size {
-            return .some(self.at(idx))
-        }
-        return .none
-    }
-
-    public func get(&mut self, _ idx: usize) -> Optional[&mut Element] {
-        if idx < Size {
-            return .some(self.at(idx))
-        }
-        return .none
-    }
-
-    public func set(&mut self, _ idx: usize, _ value: Element) {
-        if idx < Size {
-            unsafe { (self as *mut Element).add(idx).write(value) }
-            return
-        }
-        panic("array index out of range")
-    }
-
-    public func asSpan(&self) -> Span[Element] {
-        let ptr = unsafe { self as *const Element }
-        return Span[Element].from(ptr, Size)
-    }
-
-    public func asSpan(&mut self) -> MutableSpan[Element] {
-        let ptr = unsafe { self as *mut Element }
-        return MutableSpan[Element].from(ptr, Size)
+    func copyRange(_ start: usize, _ end: usize) -> List[Element] {
+        if start > end || end > Size { panic("array range out of range") }
+        var result = List[Element]::new(withCapacity: end - start)
+        var index = start
+        while index < end { result.append(self[index]); index += 1 }
+        result
     }
 }
 
-impl[Element: PartialEq[Element], const Size: usize] PartialEq[[Element; Size]] for [Element; Size] {
-    public func eq(&self, _ other: &[Element; Size]) -> bool {
+extend[Element, const Size: usize] Array[Element, Size] {
+    public func len() -> usize {
+        Size
+    }
+}
+
+conform[Element: PartialEq[Element], const Size: usize] [Element; Size] to PartialEq[[Element; Size]] {
+    public func eq(_ other: [Element; Size]) -> bool {
         var index: usize = 0
         while index < Size {
             if *self.at(index) != *other.at(index) {
@@ -71,103 +51,68 @@ impl[Element: PartialEq[Element], const Size: usize] PartialEq[[Element; Size]] 
     }
 }
 
-public struct ArrayIterator[Element, const Size: usize] {
+/// Copies the source array once; next() yields ordinary element values.
+public final class ArrayIterator[Element, const Size: usize] {
     array: [Element; Size]
     idx: usize
 }
 
-impl[Element, const Size: usize] Iterator for ArrayIterator[Element, Size] {
-    type Element = Element
-
-    public func next(&mut self) -> Optional[Self.Element] {
-        if self.idx >= Size {
-            return .none
-        }
-
-        let elemSize = sizeOf[Element]()
-        let offset = self.idx * elemSize
-        var elem = MaybeUninit[Element].uninit()
-        unsafe {
-            let src = ((&self.array) as *const uint8).byteAdd(offset)
-            let dst = elem.asMutPtr() as *mut uint8
-            src.readBytes(dst, elemSize)
-        }
-
-        self.idx += 1
-        return .some(unsafe { elem.assumeInit() })
+extend[Element, const Size: usize] ArrayIterator[Element, Size] {
+    init(array: [Element; Size], idx: usize) {
+        self.array = array
+        self.idx = idx
     }
 }
 
-impl[Element, const Size: usize] Iterable for [Element; Size] {
+conform[Element, const Size: usize] ArrayIterator[Element, Size] to Iterator {
+    type Element = Element
+
+    public func next() -> Optional[Self::Element] {
+        if self.idx >= Size { return .none }
+        index := self.idx
+        self.idx += 1
+        return .some(*self.array.at(index))
+    }
+}
+
+conform[Element, const Size: usize] [Element; Size] to Iterable {
     type Iterator = ArrayIterator[Element, Size]
     type Element = Element
 
-    public func iter(self) -> Self.Iterator {
-        ArrayIterator[Element, Size] {
-            array: self,
-            idx: 0,
-        }
+    public func iter() -> Self::Iterator {
+        ArrayIterator[Element, Size](array: self, idx: 0)
     }
 }
 
-public struct ArrayRefIterator[Element, const Size: usize] {
-    ptr: *const Element
-    idx: usize
-}
-
-impl[Element, const Size: usize] Iterator for ArrayRefIterator[Element, Size] {
-    type Element = &Element
-
-    public func next(&mut self) -> Optional[Self.Element] {
-        if self.idx >= Size {
-            return .none
+extend[Element, const Size: usize] &Array[Element, Size] {
+    public func at(_ idx: usize) -> &Element {
+        if idx < Size {
+            ptr := unsafe { (self as *const Element).add(idx) }
+            return unsafe { std::intrinsic::__intrinsic_ref_project(self, ptr) }
         }
+        panic("array index out of range")
+    }
 
-        let elem = unsafe { self.ptr.add(self.idx) as &Element }
-        self.idx += 1
-        return .some(elem)
+    public func get(_ idx: usize) -> Optional[&Element] {
+        if idx < Size {
+            return .some(self.at(idx))
+        }
+        return .none
+    }
+
+    public func set(_ idx: usize, _ value: Element) {
+        *self.at(idx) = value
+    }
+
+    /// Shares this array's elements. Escaping storage is promoted by the GC backend.
+    public func asSpan() -> Span[Element] {
+        ptr := unsafe { self as *const Element }
+        return unsafe { Span[Element]::from(ptr, Size) }
     }
 }
 
-public struct ArrayMutIterator[Element, const Size: usize] {
-    ptr: *mut Element
-    idx: usize
-}
-
-impl[Element, const Size: usize] Iterator for ArrayMutIterator[Element, Size] {
-    type Element = &mut Element
-
-    public func next(&mut self) -> Optional[Self.Element] {
-        if self.idx >= Size {
-            return .none
-        }
-
-        let elem = unsafe { self.ptr.add(self.idx) as &mut Element }
-        self.idx += 1
-        return .some(elem)
-    }
-}
-
-impl[Element, const Size: usize] Iterable for &[Element; Size] {
-    type Iterator = ArrayRefIterator[Element, Size]
-    type Element = &Element
-
-    public func iter(self) -> Self.Iterator {
-        ArrayRefIterator[Element, Size] {
-            ptr: unsafe { self as *const Element },
-            idx: 0,
-        }
-    }
-}
-
-impl[Element, const Size: usize] Iterable for &mut [Element; Size] {
-    type Iterator = ArrayMutIterator[Element, Size]
-    type Element = &mut Element
-
-    public func iter(self) -> Self.Iterator {
-        ArrayMutIterator[Element, Size] {
-            ptr: unsafe { self as *mut Element },
-            idx: 0,
-        }
-    }
+conform[Element, const Size: usize] ArrayIterator[Element, Size] to Iterable {
+    type Element = Element
+    type Iterator = ArrayIterator[Element, Size]
+    public func iter() -> Self::Iterator { self }
 }

@@ -2,27 +2,27 @@ interface CgA {}
 interface CgB {}
 interface CgMarker {}
 interface CgBase {
-    func id(&self) -> int32
+    func id() -> int32
 }
 
 struct CgBox[T] {
     value: T
 }
 
-impl[T] CgBase for CgBox[T] {
-    func id(&self) -> int32 {
+conform[T] CgBox[T] to CgBase {
+    func id() -> int32 {
         1
     }
 }
 
-impl CgA for int32 {}
-impl CgB for int32 {}
+conform int32 to CgA {}
+conform int32 to CgB {}
 
-impl[T: CgA] CgMarker for CgBox[T] {}
-impl[T: CgB] CgMarker for CgBox[T] {}
+conform[T: CgA] CgBox[T] to CgMarker {}
+conform[T: CgB] CgBox[T] to CgMarker {}
 
 func main() {
-    let value = CgBox[int32] { value: 7 }
-    let erased: any CgBase = value
-    let _ = erased.id()
+    value := CgBox[int32] { value: 7 }
+    var erased: any CgBase = value
+    var _ = erased.id()
 }

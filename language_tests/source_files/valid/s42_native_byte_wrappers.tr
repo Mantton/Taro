@@ -1,0 +1,30 @@
+// ENV: TARO_WORKERS=4
+import std::io::{Reader, Writer}
+func main() {
+    var buffer: std::bytes::Buffer = std::bytes::Buffer::new("prefix-payload")
+    var prefix: [uint8; 7] = [0_u8; 7]
+    var destination: std::mem::Span[uint8] = prefix.asSpan()
+    assert(buffer.read(destination).unwrap() == 7, "read the consumed prefix")
+    buffer.reserve(128).unwrap() // compacts the unread prefix before growth.
+    var bytes: std::mem::Span[uint8] = buffer.bytes()
+    var address: usize = unsafe { bytes.asPtr() as usize }
+    var result: string = buffer.toString()
+    assert(result == "payload", "snapshot preserves unread bytes")
+    assert(unsafe { std::string::stringData(result) as usize } != address, "string snapshots copy writable bytes")
+    var copy: string = result
+    assert(copy == "payload", "string copies preserve their bytes")
+
+    var builder: std::string::Builder = std::string::Builder::new()
+    builder.writeString("discarded")
+    builder.clear()
+    builder.writeString("native")
+    builder.reserve(256)
+    builder.writeRune('π')
+    var built: string = builder.toString()
+    assert(built == "nativeπ", "growth preserves initialized bytes")
+
+    var cstring: std::ffi::CString = std::ffi::CString::tryNew(built).unwrap()
+    var pointer: *const uint8 = cstring.asPtr()
+    assert(unsafe { pointer.add(built.byteLen()).read() } == 0_u8, "owned C terminator")
+    assert(unsafe { std::string::stringFromParts(pointer, built.byteLen()) } == built, "C view stays valid while owner lives")
+}

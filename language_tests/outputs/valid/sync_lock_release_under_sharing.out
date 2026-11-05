@@ -1,0 +1,4 @@
+withLock panic: panicked(body panic), mutex unlocked
+cancelled holder: cancelled, mutex unlocked
+cancelled waiter: cancelled
+next waiter: 7

@@ -1,0 +1,22 @@
+// Native ownership regression.
+interface Same[Rhs] {
+    func same(_ other: &Rhs) -> bool
+}
+interface Child[Rhs]: Same[Rhs] {}
+struct Counter { value: int32 }
+conform Counter to Same[Counter] {
+    func same( _ other: &Counter) -> bool { self.value == other.value }
+}
+conform Counter to Child[Counter] {}
+func compare[T: Same[Counter]](_ left: &T, _ right: &Counter) -> bool {
+    left.same(right)
+}
+func main() {
+    var right: Counter = Counter { value: 7_i32 }
+    var direct: Counter = Counter { value: 7_i32 }
+    assert(compare(&direct, &right), "concrete generic control keeps its normal receiver ABI")
+    var erased: any Same[Counter] = Counter { value: 7_i32 }
+    assert(compare(&erased, &right), "independently known argument types remain callable")
+    var inherited: any Child[Counter] = Counter { value: 7_i32 }
+    assert(compare(&inherited, &right), "known argument types survive inherited table projection")
+}

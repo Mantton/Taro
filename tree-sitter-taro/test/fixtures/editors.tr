@@ -1,19 +1,26 @@
+import std::collections::{List}
+
 /// A declaration with a field and methods.
 struct Counter {
     value: int32
 }
 
 interface Readable {
-    func read(&self) -> int32
+    func read() -> int32
 }
 
-impl Readable for Counter {
-    func read(&self) -> int32 {
+conform Counter to Readable {
+    static func make() -> Counter {
+        Counter { value: 3 }
+    }
+
+    func read() -> int32 {
         self.value
     }
 }
 
 func main() {
-    let counter = Counter { value: 3 }
+    var values: std::collections::List[int32] = List[int32]::new()
+    counter := Counter { value: 3 }
     print(f"count {counter.read()}")
 }

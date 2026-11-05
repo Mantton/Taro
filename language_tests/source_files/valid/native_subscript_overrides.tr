@@ -1,0 +1,68 @@
+static var gets: int32 = 0
+static var sets: int32 = 0
+class Base { first: int32; second: int32 }
+extend Base {
+    init(_ first: int32, _ second: int32) { self.first = first; self.second = second }
+    @inline
+    subscript(index: usize) -> int32 { address { &self.first } }
+}
+class AddressChild: Base {}
+extend AddressChild { override subscript(index: usize) -> int32 { address { &self.second } } }
+class GetterChild: Base {}
+extend GetterChild { override subscript(index: usize) -> int32 { get { self.first + 100 } } }
+class SetterChild: Base {}
+extend SetterChild { override subscript(index: usize) -> int32 { set(value) { sets += 1; self.first = value * 2 } } }
+class ExplicitBase { first: int32; second: int32 }
+extend ExplicitBase {
+    init(_ first: int32, _ second: int32) { self.first = first; self.second = second }
+    @inline
+    subscript(index: usize) -> int32 { get { gets += 1; self.first } address { &self.first } }
+}
+class ExplicitChild: ExplicitBase {}
+extend ExplicitChild { override subscript(index: usize) -> int32 { address { &self.second } } }
+class GetOnlyBase { value: int32 }
+extend GetOnlyBase { init(_ value: int32) { self.value = value }; subscript(index: usize) -> int32 { get { self.value } } }
+class AddedAddress: GetOnlyBase {}
+extend AddedAddress { override subscript(index: usize) -> int32 { address { &self.value } } }
+class GenericBase[First, Second] { first: First; second: Second }
+extend[First, Second] GenericBase[First, Second] {
+    init(_ first: First, _ second: Second) { self.first = first; self.second = second }
+    @inline
+    subscript(index: usize) -> Second { address { &self.second } }
+}
+class GenericChild[Value]: GenericBase[int32, Value] {}
+extend[Value] GenericChild[Value] { override subscript(index: usize) -> Value { get { self.second } } }
+func main() {
+    addressChild := AddressChild(3, 5)
+    var base: Base = addressChild
+    assert(base[0 as usize] == 5, "inherited getter calls overridden address")
+    base[0 as usize] = 7
+    assert(addressChild.first == 3 && addressChild.second == 7, "inherited setter calls overridden address")
+    getterChild := GetterChild(11, 13)
+    getterChild[0 as usize] = 17
+    kept := &getterChild[0 as usize]
+    *kept += 2
+    assert(getterChild[0 as usize] == 119 && getterChild.first == 19, "get-only override keeps set/address")
+    setterChild := SetterChild(1, 2)
+    setterChild[0 as usize] = 3
+    setterChild[0 as usize] += 1
+    assert(setterChild[0 as usize] == 7 && sets == 1, "address compound bypasses overridden setter")
+    explicitChild := ExplicitChild(23, 29)
+    var explicitBase: ExplicitBase = explicitChild
+    gets = 0
+    assert(explicitBase[0 as usize] == 23 && gets == 1, "address override preserves explicit inherited getter")
+    explicitBase[0 as usize] = 31
+    assert(explicitChild.first == 23 && explicitChild.second == 31, "inherited default setter dispatches address")
+    added := AddedAddress(37)
+    added[0 as usize] = 41
+    addedReference := &added[0 as usize]
+    *addedReference += 2
+    var getOnly: GetOnlyBase = added
+    assert(getOnly[0 as usize] == 43, "derived capability leaves base getter contract intact")
+    generic := GenericChild[string](1, "before")
+    generic[0 as usize] = "after"
+    genericReference := &generic[0 as usize]
+    std::runtime::collect()
+    *genericReference = "retained"
+    assert(generic[0 as usize] == "retained" && *kept == 19, "inherited generic accessors retain independent environments")
+}

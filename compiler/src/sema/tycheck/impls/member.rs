@@ -4,13 +4,14 @@ use crate::{
     hir::{self, DefinitionID, HirVisitor},
     sema::tycheck::lower::{DefTyLoweringCtx, TypeLowerer},
 };
-use rustc_hash::{FxHashMap, FxHasher};
-use std::hash::{Hash, Hasher};
+use rustc_hash::{FxHashMap, FxHashSet};
 
 pub fn run(package: &hir::Package, context: GlobalContext) -> CompileResult<()> {
+    super::super::overloads::run(package, context)?;
     let mut actor = Actor {
         context,
         impl_interfaces: FxHashMap::default(),
+        property_accessors: FxHashSet::default(),
     };
     hir::walk_package(&mut actor, package);
     context.dcx().ok()
@@ -18,30 +19,83 @@ pub fn run(package: &hir::Package, context: GlobalContext) -> CompileResult<()> 
 
 struct Actor<'ctx> {
     context: GlobalContext<'ctx>,
-    /// Maps impl_id -> Option<interface_id> for quick lookup during member collection
-    impl_interfaces: FxHashMap<DefinitionID, Option<DefinitionID>>,
+    /// Full conformance identity, including interface arguments.
+    impl_interfaces: FxHashMap<DefinitionID, Option<crate::sema::models::InterfaceReference<'ctx>>>,
+    property_accessors: FxHashSet<DefinitionID>,
 }
 
 impl<'ctx> Actor<'ctx> {
-    fn is_hidden_property_accessor_name(&self, name: crate::span::Symbol) -> bool {
-        let name = self.context.symbol_text(name);
-        name.starts_with("__prop_get_") || name.starts_with("__prop_set_")
-    }
-
     fn collect_impl_member(&mut self, impl_id: DefinitionID, decl: &hir::AssociatedDeclaration) {
         let Some(head) = self.context.get_impl_type_head(impl_id) else {
             return;
         };
 
         // Check if this impl has an interface (trait impl vs inherent impl)
-        let interface_id = self.impl_interfaces.get(&impl_id).cloned().flatten();
-        let _ = interface_id.is_some();
+        let interface_id = self
+            .impl_interfaces
+            .get(&impl_id)
+            .copied()
+            .flatten()
+            .map(|interface| interface.id);
+
+        if self.property_accessors.contains(&decl.id) {
+            return;
+        }
+        if let Some(interface) = interface_id {
+            let mut pending = vec![interface];
+            let mut seen = rustc_hash::FxHashSet::default();
+            let mut declared = false;
+            while let Some(interface) = pending.pop() {
+                if !seen.insert(interface) {
+                    continue;
+                }
+                if let Some(requirements) = self.context.get_interface_requirements(interface) {
+                    let name = decl.identifier.symbol;
+                    declared |= match &decl.kind {
+                        hir::AssociatedDeclarationKind::Function(_) => {
+                            requirements.methods.iter().any(|item| item.name == name)
+                                || self
+                                    .context
+                                    .native_subscript_for_accessor(decl.id)
+                                    .is_some()
+                                    && requirements.methods.iter().any(|item| {
+                                        self.context
+                                            .native_subscript_for_accessor(item.id)
+                                            .is_some()
+                                    })
+                        }
+                        hir::AssociatedDeclarationKind::Property(_) => {
+                            requirements.properties.iter().any(|item| item.name == name)
+                        }
+                        hir::AssociatedDeclarationKind::Constant(_) => {
+                            requirements.constants.iter().any(|item| item.name == name)
+                        }
+                        hir::AssociatedDeclarationKind::Type(_) => {
+                            requirements.types.iter().any(|item| item.name == name)
+                        }
+                        hir::AssociatedDeclarationKind::Subscript(_) => {
+                            requirements.methods.iter().any(|item| {
+                                self.context
+                                    .native_subscript_for_accessor(item.id)
+                                    .is_some()
+                            })
+                        }
+                        hir::AssociatedDeclarationKind::Initializer(_) => false,
+                    };
+                }
+                if let Some(definition) = self.context.get_interface_definition(interface) {
+                    pending.extend(definition.superfaces.iter().map(|item| item.value.id));
+                }
+            }
+            if !declared {
+                self.context.dcx().emit_error(format!("'{}' is not a requirement of this interface; declare unrelated members in an `extend` block", self.context.symbol_text(decl.identifier.symbol)), Some(decl.identifier.span));
+                return;
+            }
+        }
 
         match &decl.kind {
-            hir::AssociatedDeclarationKind::Function(function) => {
-                if self.is_hidden_property_accessor_name(decl.identifier.symbol) {
-                    return;
-                }
+            hir::AssociatedDeclarationKind::Function(function)
+            | hir::AssociatedDeclarationKind::Initializer(function) => {
                 let has_self = function
                     .signature
                     .prototype
@@ -113,7 +167,11 @@ impl<'ctx> Actor<'ctx> {
             return;
         }
 
-        let fingerprint = self.fingerprint_for(def_id);
+        let fingerprint = super::super::overloads::member_fingerprint(
+            self.context,
+            def_id,
+            self.impl_interfaces.get(&impl_id).copied().flatten(),
+        );
         self.context.with_session_type_database(|db| {
             let index: &mut TypeMemberIndex = db.type_head_to_members.entry(head).or_default();
             let is_trait_method = interface_id.is_some();
@@ -270,33 +328,10 @@ impl<'ctx> Actor<'ctx> {
             return;
         }
 
-        if let Some(setter_id) = property.setter_id {
-            let setter_sig = self.context.get_signature(setter_id);
-            if setter_sig.inputs.len() != 2 || setter_sig.inputs[1].ty != property_ty {
-                self.context.dcx().emit_error(
-                    format!(
-                        "setter for property '{}' must accept a value of type {}",
-                        self.context.symbol_text(ident.symbol),
-                        property_ty.format(self.context)
-                    ),
-                    Some(ident.span),
-                );
-                return;
-            }
-
-            if self.context.definition_is_async(setter_id) {
-                self.context
-                    .dcx()
-                    .emit_error("async setters are not supported".into(), Some(ident.span));
-                return;
-            }
-        }
-
         let entry = ComputedPropertyEntry {
             property_id,
             ty: property_ty,
             getter_id: property.getter_id,
-            setter_id: property.setter_id,
             visibility: self.context.definition_visibility(property_id),
         };
 
@@ -316,40 +351,41 @@ impl<'ctx> Actor<'ctx> {
             }
         });
     }
-
-    fn fingerprint_for(&self, id: DefinitionID) -> u64 {
-        let sig = self.context.get_signature(id);
-
-        let mut hasher = FxHasher::default();
-        self.context.definition_is_async(id).hash(&mut hasher);
-        sig.abi.hash(&mut hasher);
-        sig.is_variadic.hash(&mut hasher);
-        sig.inputs.len().hash(&mut hasher);
-        for param in &sig.inputs {
-            param.label.hash(&mut hasher);
-            param.ty.hash(&mut hasher);
-        }
-        sig.output.hash(&mut hasher);
-        hasher.finish()
-    }
 }
 
 impl HirVisitor for Actor<'_> {
     fn visit_declaration(&mut self, declaration: &hir::Declaration) -> Self::Result {
         // Cache interface information for impl blocks
         if let hir::DeclarationKind::Impl(impl_node) = &declaration.kind {
-            let interface_id = impl_node.interface.as_ref().and_then(|interface_ty| {
-                // Extract interface ID from the type
-                if let hir::TypeKind::Nominal(path) = &interface_ty.kind {
-                    if let hir::ResolvedPath::Resolved(resolved) = path {
-                        if let hir::Resolution::Definition(id, _) = resolved.resolution {
-                            return Some(id);
-                        }
-                    }
+            let interface = impl_node.interface.as_ref().and_then(|interface| {
+                let hir::TypeKind::Nominal(hir::ResolvedPath::Resolved(path)) = &interface.kind
+                else {
+                    return None;
+                };
+                if !matches!(
+                    path.resolution,
+                    hir::Resolution::Definition(_, hir::DefinitionKind::Interface)
+                ) {
+                    return None;
                 }
-                None
+                let path = hir::PathNode {
+                    id: interface.id,
+                    path: hir::ResolvedPath::Resolved(path.clone()),
+                    span: interface.span,
+                };
+                let lowerer = DefTyLoweringCtx::new(declaration.id, self.context);
+                let target = self
+                    .context
+                    .get_impl_target_ty(declaration.id)
+                    .expect("collected extension target");
+                Some(lowerer.lowerer().lower_interface_reference(target, &path))
             });
-            self.impl_interfaces.insert(declaration.id, interface_id);
+            self.impl_interfaces.insert(declaration.id, interface);
+            for declaration in &impl_node.declarations {
+                if let hir::AssociatedDeclarationKind::Property(property) = &declaration.kind {
+                    self.property_accessors.insert(property.getter_id);
+                }
+            }
         }
 
         // Continue walking to visit children (especially associated declarations in impl blocks)
@@ -367,5 +403,112 @@ impl HirVisitor for Actor<'_> {
                 self.collect_impl_member(impl_id, node);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod declaration_tests {
+    #[test]
+    fn g29_reference_clone_requires_an_explicit_reference() {
+        let prefix = "interface Clone { func clone() -> Self; }; struct Plain { value: int32 }; ";
+        for expression in ["value.clone()", "value.clone"] {
+            let source = format!(
+                "{prefix}func main() {{ value := Plain {{ value: 1 }}; copied := {expression}; }}"
+            );
+            let diagnostics = crate::test_support::analyze_language_item_script(
+                &source,
+                false,
+                &[(crate::hir::StdItem::Clone, "Clone")],
+            );
+            assert!(!diagnostics.is_empty(), "{source}");
+        }
+        let source = format!(
+            "{prefix}func main() {{ value := Plain {{ value: 1 }}; reference := (&value).clone(); copyReference := (&value).clone; copied := copyReference(); }}"
+        );
+        let diagnostics = crate::test_support::analyze_language_item_script(
+            &source,
+            true,
+            &[(crate::hir::StdItem::Clone, "Clone")],
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn g29_value_storage_and_class_receivers() {
+        for source in [
+            "struct Secret { private value: int32; private update: int32 }; extend &Secret { func update() { self.value = self.update }; }; func main() {}",
+            "struct Kind { value: int32 }; enum Input { case value(int32); }; extend &Kind { func take(_ input: Input) {}; }; func main() { kind := Kind { value: 0 }; kind.take(.value(1)) }",
+            "struct Counter { value: int32 }; extend Counter { func copyChange() -> int32 { self.value += 1; self.value }; }; extend &Counter { func change() { self.value += 1 }; }; func main() { counter := Counter { value: 1 }; copied := counter.copyChange(); counter.change(); update := counter.change; update() }",
+            "final class Object { value: int32 }; extend &Object { func replace(_ other: Object) { *self = other }; }; func main() {}",
+            "final class Counter { value: int32 }; extend Counter { init() { self.value = 0 }; func change() { self.value += 1 }; }; func main() { counter := Counter(); counter.change() }",
+            "interface Read { func read[T](_ value: T) -> int32 { 7 }; }; final class Box[Item, const Size: usize] { value: Item }; conform[Item, const Size: usize] Box[Item, Size] to Read {}; func main() {}",
+            "struct Secret { private value: int32 }; extend &Secret { func read() -> int32 { self.value }; }; func main() {}",
+        ] {
+            let diagnostics = if source.contains("Counter()") {
+                crate::test_support::analyze_script_diagnostics(source)
+            } else {
+                crate::test_support::analyze_script_mir_diagnostics(source)
+            };
+            assert!(diagnostics.is_empty(), "{source}\n{diagnostics:#?}");
+        }
+    }
+
+    #[test]
+    fn g29_reference_subject_bounds_support_generic_assignment() {
+        let source = "interface AddAssign[Rhs] { func addAssign(_ rhs: Rhs); }; func update[T](_ value: &T, _ rhs: &T) where &T: AddAssign[T] { *value += *rhs }; func main() {}";
+        let diagnostics = crate::test_support::analyze_language_item_script(
+            source,
+            true,
+            &[(crate::hir::StdItem::AddAssign, "AddAssign")],
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        let value_receiver = source.replace(" where &T: AddAssign[T]", " where T: AddAssign[T]");
+        let diagnostics = crate::test_support::analyze_language_item_script(
+            &value_receiver,
+            true,
+            &[(crate::hir::StdItem::AddAssign, "AddAssign")],
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "value receivers may mutate shared state: {diagnostics:#?}"
+        );
+        for source in [
+            source.replace(" where &T: AddAssign[T]", ""),
+            format!("{source}\nfunc missing[T](_ value: &T, _ rhs: &T) {{ update(value, rhs) }}"),
+        ] {
+            let diagnostics = crate::test_support::analyze_language_item_script(
+                &source,
+                true,
+                &[(crate::hir::StdItem::AddAssign, "AddAssign")],
+            );
+            assert!(!diagnostics.is_empty(), "{source}");
+        }
+    }
+
+    #[test]
+    fn g29_reference_targets_require_storage_and_explicit_conformance() {
+        for source in [
+            "struct Counter { value: int32 }; extend &Counter { func change() { self.value += 1 }; }; func use(_ pointer: *const Counter) { unsafe { pointer.change() } }; func main() {}",
+            "final class Object {}; extend &Object { func replace(_ other: Object) { *self = other }; }; func use(_ pointer: *const Object, _ other: Object) { unsafe { pointer.replace(other) } }; func main() {}",
+            "final class Object {}; func use(_ pointer: *const Object) { unsafe { reference := &*pointer; } }; func main() {}",
+            "struct Counter { value: int32 }; extend Counter { var copy: Counter { get { self } }; }; extend &Counter { func change() { self.value += 1 }; }; func main() { value := Counter { value: 0 }; value.copy.change() }",
+            "struct Counter { value: int32 }; extend &Counter { func change() { self.value += 1 }; }; func make() -> Counter { Counter { value: 0 } }; func main() { make().change() }",
+            "interface Update { func change(); }; struct Counter { value: int32 }; conform &Counter to Update { func change() { self.value += 1 }; }; func use[T: Update](_ value: T) { value.change() }; func main() { value := Counter { value: 0 }; use(value) }",
+        ] {
+            let diagnostics = crate::test_support::analyze_script_diagnostics(source);
+            assert!(!diagnostics.is_empty(), "{source}");
+        }
+    }
+
+    #[test]
+    fn g29_conformance_bodies_cannot_add_unrelated_methods() {
+        let source = "interface Reader { func read() -> int32; }\nstruct Value {}\nconform Value to Reader { func read() -> int32 { 1 }; func unrelated() {}; }\nfunc main() {}";
+        let diagnostics = crate::test_support::analyze_script_diagnostics(source);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|item| item.message.contains("not a requirement")),
+            "{diagnostics:#?}"
+        );
     }
 }

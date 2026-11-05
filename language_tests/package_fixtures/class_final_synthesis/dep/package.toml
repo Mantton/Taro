@@ -1,0 +1,3 @@
+[package]
+name = "github.com/taro-story/s35-class-fields"
+kind = "library"

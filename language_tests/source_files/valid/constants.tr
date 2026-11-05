@@ -10,7 +10,7 @@ func main() {
     assert(SELECTED == 42, "conditional constant fail")
     assert(RATIO == 1.5, "float cast constant fail")
     
-    std.print("PASS: Constants working\n")
+    std::print("PASS: Constants working\n")
 }
 
 const EXIT: int32 = 10

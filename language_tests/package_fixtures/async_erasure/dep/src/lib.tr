@@ -1,0 +1,31 @@
+public interface Reader { func read() async -> int32; }
+public interface Getter { func valueRef() async -> &int32; }
+struct Counter { value: int32 }
+conform Counter to Reader {
+    public func read() async -> int32 { await std::testing::yieldNow(); self.value }
+}
+conform Counter to Getter {
+    public func valueRef() async -> &int32 { await std::testing::yieldNow(); &self.value }
+}
+public func makeReader() -> any Reader { Counter { value: 7 } }
+public func makeGetter() -> any Getter { Counter { value: 11 } }
+public func run[T: Reader](_ value: &T) async -> int32 { await value.read() }
+public class Base {}
+extend Base {
+    public init() {}
+}
+conform Base to Reader {
+    public func read() async -> int32 { await std::testing::yieldNow(); 17 }
+}
+
+func inspect[T: Reader](_ value: &T) async -> int32 { await value.read() }
+func project[T: Getter](_ value: &T) async -> &int32 { await value.valueRef() }
+public func inspectErased(_ value: &any Reader) async -> int32 { await inspect(value) }
+public func projectErased(_ value: &any Getter) async -> &int32 { await project(value) }
+
+public interface Duplicate: Reader { func duplicate() async -> Self; }
+conform Counter to Duplicate {
+    public func duplicate() async -> Self { await std::testing::yieldNow(); Counter { value: self.value + 1 } }
+}
+public func makeDuplicate() -> any Duplicate { Counter { value: 7 } }
+public func duplicateErased(_ value: &any Duplicate) async -> any Duplicate { await value.duplicate() }

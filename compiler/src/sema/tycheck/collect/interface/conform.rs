@@ -4,13 +4,10 @@ use crate::{
     hir,
     sema::{
         models::{
-            AdtKind, ConformanceRecord, Constraint, EnumVariantKind, GenericArgument,
-            GenericArguments, InterfaceGoal, InterfaceReference, SelectionError, SelectionMode,
-            TyKind,
+            ConformanceRecord, Constraint, GenericArguments, InterfaceGoal, InterfaceReference,
+            SelectionError, SelectionMode,
         },
-        tycheck::solve::{ConstraintSystem, Goal},
         tycheck::utils::{
-            instantiate::instantiate_ty_with_args,
             type_head_from_value_ty,
             unresolved::{
                 goal_contains_unresolved_inference, interface_ref_contains_unresolved_inference,
@@ -48,7 +45,33 @@ impl<'ctx> Actor<'ctx> {
         });
 
         for record in &records {
-            self.validate_copy_storage(*record);
+            if self.context.std_item_def(hir::StdItem::AnyObject) == Some(record.interface.id)
+                && !record
+                    .interface
+                    .self_ty()
+                    .is_some_and(|ty| self.context.uses_native_class_handle(ty))
+            {
+                self.context.dcx().emit_error("AnyObject is a compiler-provided class-only capability; value types cannot declare this conformance".into(), Some(record.location));
+                continue;
+            }
+            if record.is_inline
+                && self.context.std_item_def(hir::StdItem::PartialEq) == Some(record.interface.id)
+                && let Some(self_ty) = record.interface.self_ty()
+                && crate::sema::tycheck::derive::equality_rhs(
+                    self.context,
+                    record.interface.arguments,
+                    self_ty,
+                ) != Some(crate::sema::tycheck::utils::normalize_aliases(
+                    self.context,
+                    self_ty,
+                ))
+            {
+                self.context.dcx().emit_error(
+                    "automatic equality requires Rhs = Self; provide an explicit cross-type conformance".into(),
+                    Some(record.location),
+                );
+                continue;
+            }
             self.validate_direct(
                 record.interface,
                 record.location,
@@ -66,6 +89,14 @@ impl<'ctx> Actor<'ctx> {
             let mut supers = self.collect_interface_with_supers(record.interface);
             for iface in supers.drain(1..) {
                 if !seen.insert((record.target, iface)) {
+                    continue;
+                }
+
+                if self.context.std_item_def(hir::StdItem::AnyObject) == Some(iface.id)
+                    && iface
+                        .self_ty()
+                        .is_some_and(|ty| self.context.uses_native_class_handle(ty))
+                {
                     continue;
                 }
 
@@ -94,6 +125,17 @@ impl<'ctx> Actor<'ctx> {
                         explicit_record.is_conditional,
                         Some(explicit_record),
                     );
+                } else if iface
+                    .self_ty()
+                    .is_some_and(|ty| self.context.is_class_type(ty))
+                    && resolve_conformance_witness(self.context, iface).is_some()
+                {
+                    // A verified inherited class conformance satisfies a
+                    // superinterface too. Requiring a second declaration here
+                    // contradicts coherence (which rejects redeclaring it).
+                    // Witness selection keeps the base's generic arguments;
+                    // this never invents Parent[Derived] from Parent[Base].
+                    continue;
                 } else {
                     let type_name = record.target.format(self.context);
                     let requiring = record.interface.format(self.context);
@@ -108,69 +150,6 @@ impl<'ctx> Actor<'ctx> {
                 }
             }
         }
-    }
-
-    fn validate_copy_storage(&self, record: ConformanceRecord<'ctx>) {
-        let gcx = self.context;
-        if gcx.std_item_def(hir::StdItem::Copy) != Some(record.interface.id) {
-            return;
-        }
-        let Some(self_ty) = record.interface.self_ty() else {
-            return;
-        };
-        let mut cs = ConstraintSystem::new(gcx, record.extension);
-        let self_ty = cs.structurally_resolve(self_ty);
-        let TyKind::Adt(def, args) = self_ty.kind() else {
-            // Builtin Copy types already have a representation guarantee. A
-            // blanket assertion on an arbitrary type cannot establish one.
-            if !gcx.is_type_builtin_copyable(self_ty) {
-                gcx.dcx().emit_error(
-                    "Copy can only be implemented for structs, enums, or intrinsically copyable types"
-                        .into(),
-                    Some(record.location),
-                );
-            }
-            return;
-        };
-
-        // Check the representation even for unused generic declarations and
-        // conditional impls. Instantiation maps nominal field parameters into
-        // the impl's parameter environment (including specialized impl heads).
-        let mut require_copy = |ty| {
-            let ty = instantiate_ty_with_args(gcx, ty, args);
-            let arguments = gcx
-                .store
-                .interners
-                .intern_generic_args(vec![GenericArgument::Type(ty)]);
-            cs.add_goal(
-                Goal::Conforms {
-                    ty,
-                    interface: InterfaceReference {
-                        id: record.interface.id,
-                        arguments,
-                        bindings: &[],
-                    },
-                },
-                record.location,
-            );
-        };
-        match def.kind {
-            AdtKind::Struct => {
-                for field in gcx.get_struct_definition(def.id).fields {
-                    require_copy(field.ty);
-                }
-            }
-            AdtKind::Enum => {
-                for variant in gcx.get_enum_definition(def.id).variants {
-                    if let EnumVariantKind::Tuple(fields) = variant.kind {
-                        for field in fields {
-                            require_copy(field.ty);
-                        }
-                    }
-                }
-            }
-        }
-        cs.solve_all();
     }
 
     fn validate_direct(
@@ -269,7 +248,6 @@ impl<'ctx> Actor<'ctx> {
         let mut property_accessors = FxHashSet::default();
         for property in &requirements.properties {
             property_accessors.insert(property.getter_id);
-            property_accessors.extend(property.setter_id);
             if crate::sema::impl_engine::property_requirement_satisfied(
                 self.context,
                 type_head,
@@ -278,17 +256,9 @@ impl<'ctx> Actor<'ctx> {
             ) {
                 continue;
             }
-            let capability = match (
-                property.getter_is_required,
-                property.setter_is_required.unwrap_or(false),
-            ) {
-                (true, true) => "readable and writable",
-                (false, true) => "writable",
-                _ => "readable",
-            };
             self.context.dcx().emit_info(
                 format!(
-                    "missing {capability} property '{}' of type '{}'",
+                    "missing readable property '{}' of type '{}'",
                     self.context.symbol_text(property.name),
                     property.ty.format(self.context)
                 ),
@@ -399,4 +369,103 @@ fn resolve_conformance_witness_with_mode_and_param_env<'ctx>(
 
 fn goal_has_unresolved_types(goal: InterfaceGoal<'_>) -> bool {
     goal_contains_unresolved_inference(goal)
+}
+
+#[cfg(test)]
+mod final_class_tests {
+    #[test]
+    fn final_class_conformances_support_generic_calls_and_readonly_defaults() {
+        crate::test_support::analyze_script(
+            r#"
+interface CounterOps {
+    func bump(_ amount: int32)
+    func current() -> int32
+    func duplicate() -> Self
+    func next() -> int32 { self.current() + 1 }
+}
+final class Counter { value: int32 }
+extend Counter { init(_ value: int32) { self.value = value } }
+conform Counter to CounterOps {
+    func bump(_ amount: int32) { self.value += amount }
+    func current() -> int32 { self.value }
+    func duplicate() -> Self { Self(self.value) }
+}
+func inspect[T: CounterOps](_ value: &T) -> int32 { value.next() }
+func update[T: CounterOps](_ value: &T) { value.bump(2) }
+func main() {
+    var value: Counter = Counter(3)
+    update(&value)
+    var result: int32 = inspect(&value)
+    var duplicate: Counter = value.duplicate()
+}
+"#,
+            |_, _| {},
+        );
+    }
+
+    #[test]
+    fn value_interface_defaults_can_change_or_reference_their_receiver_copy() {
+        for source in [
+            "interface Replace { func replace(_ other: Self) { self = other }; }\nfinal class Counter { value: int32 }\nconform Counter to Replace {}\nfunc main() {}",
+            "interface Export { func borrowed() -> &Self { &self }; }\nfinal class Counter { value: int32 }\nconform Counter to Export {}\nfunc main() {}",
+        ] {
+            let diagnostics = crate::test_support::analyze_script_mir_diagnostics(source);
+            assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        }
+    }
+
+    #[test]
+    fn value_defaults_dispatch_through_the_shared_class_object() {
+        let diagnostics = crate::test_support::analyze_script_mir_diagnostics(
+            r#"
+interface Steps {
+    func step()
+    func twice() { self.step(); self.step() }
+}
+final class Counter { value: int32 }
+conform Counter to Steps { func step() {}; }
+final class GenericCounter[Tag] { value: int32 }
+conform[Tag] GenericCounter[Tag] to Steps { func step() {}; }
+func useGeneric(_ value: &GenericCounter[bool]) { value.twice() }
+func change[T: Steps](_ value: &T) { value.twice() }
+func use(_ value: &Counter) { change(value) }
+func main() {}
+"#,
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn retargeting_defaults_remain_valid_for_ordinary_value_types() {
+        let diagnostics = crate::test_support::analyze_script_mir_diagnostics(
+            r#"
+interface Replace { func replace(_ other: Self) { self = other }; }
+struct Counter { value: int32 }
+conform Counter to Replace {}
+func use(_ value: &Counter, _ other: Counter) { value.replace(other) }
+func main() {}
+"#,
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+}
+
+#[cfg(test)]
+mod inherited_superinterface_tests {
+    #[test]
+    fn inherited_class_witness_satisfies_superinterface_without_redeclaration() {
+        let diagnostics = crate::test_support::analyze_script_diagnostics(
+            r#"
+interface Reader { func read() -> int32; }
+interface Duplicate: Reader { func duplicate() -> Self; }
+class Base {}
+extend Base { init() {}; }
+conform Base to Reader { func read() -> int32 { 7 }; }
+final class Derived: Base {}
+conform Derived to Duplicate { func duplicate() -> Self { Derived() }; }
+func main() { var source: any Duplicate = Derived(); }
+"#,
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
 }

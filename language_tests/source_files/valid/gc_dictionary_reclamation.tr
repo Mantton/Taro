@@ -1,0 +1,70 @@
+// TEST
+// Internal liveness probes check dictionary retention and slot replacement.
+// Helpers end the payload's local root lifetime before collection.
+extern "C" {
+    unsafe func __gc__test_probe_create(_ target: *const uint8) -> *mut uint8
+    unsafe func __gc__test_collect_probe_is_live(_ probe: *mut uint8) -> bool
+}
+
+class DictionaryPayload { value: int64 }
+extend DictionaryPayload {
+    init(_ value: int64) { self.value = value }
+}
+
+@noinline
+func insertAndProbe(_ values: [int64: DictionaryPayload], _ key: int64) -> *mut uint8 {
+    payload := DictionaryPayload(key)
+    values.set(key: key, value: payload)
+    return unsafe { __gc__test_probe_create(&payload.value as *const uint8) }
+}
+
+func isAlive(_ probe: *mut uint8) -> bool {
+    return unsafe { __gc__test_collect_probe_is_live(probe) }
+}
+
+@test
+func removalReleasesPayloadBeforeClear() {
+    var values: [int64: DictionaryPayload] = [:]
+    probe := insertAndProbe(values, 1)
+    assert(isAlive(probe), "the dictionary traces its payload")
+    var _ = values.remove(&1)
+    assert(!isAlive(probe), "private optional slots release removed values immediately")
+    values.clear()
+    assert(!isAlive(probe), "clearing an empty table preserves reclamation")
+    assert(values.isEmpty(), "the dictionary remains usable after collection")
+}
+
+@test
+func reusingSlotReleasesRemovedValue() {
+    var values: [int64: DictionaryPayload] = [:]
+    probe := insertAndProbe(values, 1)
+    var _ = values.remove(&1)
+    replacement := insertAndProbe(values, 1)
+    assert(!isAlive(probe) && isAlive(replacement), "slot reuse replaces the removed payload")
+    assert(values.len() == 1, "the replacement is still in the dictionary")
+}
+
+@test
+func copyDoesNotRetainRemovedEntries() {
+    var values: [int64: DictionaryPayload] = [:]
+    probe := insertAndProbe(values, 1)
+    var _ = values.remove(&1)
+    copied := values.copy()
+    values.clear()
+    assert(!isAlive(probe), "copy includes live entries only")
+    assert(values.isEmpty() && copied.isEmpty(), "both tables survive collection")
+}
+
+@test
+func rehashReleasesRemovedValue() {
+    var values: [int64: DictionaryPayload] = [:]
+    probe := insertAndProbe(values, 1)
+    var _ = values.remove(&1)
+    var key: int64 = 2
+    while key < 9 {
+        values.set(key: key, value: DictionaryPayload(key))
+        key += 1
+    }
+    assert(!isAlive(probe), "rehash omits tombstones and releases removed payloads")
+    assert(values.len() == 7, "live entries survive growth and collection")
+}

@@ -95,6 +95,14 @@ impl<'ctx> Actor<'ctx> {
         let def_id = node.id;
 
         match &node.kind {
+            hir::AssociatedDeclarationKind::Subscript(_) => {}
+            hir::AssociatedDeclarationKind::Initializer(_) => {
+                gcx.dcx().emit_error(
+                    "interfaces cannot require init; declare it in the owning type's extension"
+                        .into(),
+                    Some(node.span),
+                );
+            }
             hir::AssociatedDeclarationKind::Function(func) => {
                 let has_self = func
                     .signature
@@ -111,25 +119,18 @@ impl<'ctx> Actor<'ctx> {
                 };
                 methods.push(req);
             }
-            hir::AssociatedDeclarationKind::Type(_alias) => {
-                // Don't lower default type here - defer to avoid circular dependencies
+            hir::AssociatedDeclarationKind::Type(alias) => {
                 let req = AssociatedTypeDefinition {
                     id: def_id,
                     name: node.identifier.symbol,
-                    default_type: None,
+                    default_type: alias.ty.as_ref().map(|ty| {
+                        DefTyLoweringCtx::new(interface_id, gcx)
+                            .lowerer()
+                            .lower_type(ty)
+                    }),
                 };
                 types.push(req);
             }
-            // Operators are now implemented via trait methods
-            // hir::AssociatedDeclarationKind::Operator(op) => {
-            //     let req = InterfaceOperatorRequirement {
-            //         id: def_id,
-            //         kind: op.kind,
-            //         signature: gcx.get_signature(def_id),
-            //         is_required: op.function.block.is_none(),
-            //     };
-            //     operators.push(req);
-            // }
             hir::AssociatedDeclarationKind::Constant(c) => {
                 let icx = DefTyLoweringCtx::new(interface_id, gcx);
                 let ty = icx.lowerer().lower_type(&c.ty);
@@ -150,29 +151,12 @@ impl<'ctx> Actor<'ctx> {
                 let lowerer = DefTyLoweringCtx::new(def_id, gcx);
                 let ty = lowerer.lowerer().lower_type(&property.ty);
                 gcx.cache_type(def_id, ty);
-                if let Some(setter_id) = property.setter_id {
-                    let setter = gcx.get_signature(setter_id);
-                    if setter.inputs.len() != 2 || setter.inputs[1].ty != ty {
-                        gcx.dcx().emit_error(
-                            format!(
-                                "setter requirement for property '{}' must accept a value of type {}",
-                                gcx.symbol_text(node.identifier.symbol),
-                                ty.format(gcx)
-                            ),
-                            Some(node.span),
-                        );
-                    }
-                }
                 properties.push(InterfacePropertyRequirement {
                     id: def_id,
                     name: node.identifier.symbol,
                     ty,
                     getter_id: property.getter_id,
                     getter_is_required: accessor_is_required(interface, property.getter_id),
-                    setter_id: property.setter_id,
-                    setter_is_required: property
-                        .setter_id
-                        .map(|id| accessor_is_required(interface, id)),
                 });
             }
         }

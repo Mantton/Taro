@@ -2,10 +2,10 @@ struct OneShotAsyncIter {
     emitted: bool
 }
 
-impl AsyncIterator for OneShotAsyncIter {
+conform OneShotAsyncIter to AsyncIterator {
     type Element = int32
 
-    func next(&mut self) async -> Optional[int32] {
+    func next() async -> Optional[int32] {
         if self.emitted {
             return .none
         }
@@ -16,18 +16,18 @@ impl AsyncIterator for OneShotAsyncIter {
 
 struct OneShotAsyncSequence {}
 
-impl AsyncIterable for OneShotAsyncSequence {
+conform OneShotAsyncSequence to AsyncIterable {
     type Iterator = OneShotAsyncIter
     type Element = int32
 
-    func iter(self) -> Self.Iterator {
+    func iter() -> Self::Iterator {
         return OneShotAsyncIter { emitted: false }
     }
 }
 
 func main() {
-    let source = OneShotAsyncSequence {}
+    source := OneShotAsyncSequence {}
     for await value in source {
-        let _ = value
+        var _ = value
     }
 }

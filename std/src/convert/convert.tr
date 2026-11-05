@@ -1,7 +1,6 @@
-import std.fmt.Display
-import std.marker.Copy
-import std.ops.PartialEq
-import std.result.Result
+import std::fmt::Display
+import std::ops::PartialEq
+import std::result::Result
 
 /// Interface for constructing a value from another type.
 ///
@@ -15,17 +14,17 @@ import std.result.Result
 ///     value: double
 /// }
 ///
-/// impl From[double] for Meters {
-///     public func from(_ value: double) -> Meters {
+/// conform Meters to From[double] {
+///     public static func from(_ value: double) -> Meters {
 ///         Meters { value: value }
 ///     }
 /// }
 ///
-/// let m = Meters.from(3.5)
+/// m := Meters::from(3.5)
 /// ```
 @lang("From")
 public interface From[T] {
-    func from(_ value: T) -> Self
+    static func from(_ value: T) -> Self
 }
 
 /// Interface for converting a value into another type.
@@ -41,11 +40,33 @@ public interface From[T] {
 /// }
 /// ```
 public interface Into[T] {
-    func into(self) -> T
+    func into() -> T
+}
+
+/// A From implementation supplies the corresponding value conversion.
+conform[Source, Target: From[Source]] Source to Into[Target] {
+    public func into() -> Target { Target::from(self) }
+}
+
+/// A fallible value conversion. The implementation chooses its error type.
+public interface TryFrom[Source] {
+    type Error
+    static func tryFrom(_ value: Source) -> Result[Self, Self::Error]
+}
+
+/// Prefer implementing TryFrom; this interface is supplied by its bridge.
+public interface TryInto[Target] {
+    type Error
+    func tryInto() -> Result[Target, Self::Error]
+}
+
+conform[Source, Target: TryFrom[Source]] Source to TryInto[Target] {
+    type Error = Target::Error
+    public func tryInto() -> Result[Target, Self::Error] { Target::tryFrom(self) }
 }
 
 /// The category of a scalar parsing failure.
-public enum ParseErrorKind: Copy, PartialEq {
+public enum ParseErrorKind: PartialEq {
     /// The input contains no bytes.
     case empty
     /// A byte is not a digit in the requested radix.
@@ -63,14 +84,14 @@ public enum ParseErrorKind: Copy, PartialEq {
 /// The index points at the first invalid or range-crossing byte. When a
 /// required component is missing at the end of the input, the index equals
 /// the input's byte length.
-public struct ParseError: Copy {
+public struct ParseError {
     kindValue: ParseErrorKind
     indexValue: usize
 }
 
-impl ParseError {
+extend ParseError {
     /// Construct a parse error for `kind` at `index`.
-    public func new(_ kind: ParseErrorKind, _ index: usize) -> Self {
+    public static func new(_ kind: ParseErrorKind, _ index: usize) -> Self {
         ParseError {
             kindValue: kind,
             indexValue: index,
@@ -78,18 +99,18 @@ impl ParseError {
     }
 
     /// Return the category of this parsing failure.
-    public func kind(&self) -> ParseErrorKind {
+    public func kind() -> ParseErrorKind {
         self.kindValue
     }
 
     /// Return the offending byte index.
-    public func index(&self) -> usize {
+    public func index() -> usize {
         self.indexValue
     }
 }
 
-impl std.fmt.Display for ParseErrorKind {
-    public func display(&self, _ into: &mut std.fmt.Formatter) {
+conform ParseErrorKind to std::fmt::Display {
+    public func display(_ into: &std::fmt::Formatter) {
         match self {
             case .empty => into.writeString("empty input")
             case .invalidDigit => into.writeString("invalid digit")
@@ -100,25 +121,25 @@ impl std.fmt.Display for ParseErrorKind {
     }
 }
 
-impl std.fmt.Display for ParseError {
-    public func display(&self, _ into: &mut std.fmt.Formatter) {
+conform ParseError to std::fmt::Display {
+    public func display(_ into: &std::fmt::Formatter) {
         self.kindValue.display(into)
         into.writeString(" at byte ")
         self.indexValue.display(into)
     }
 }
 
-impl std.error.Error for ParseError {}
+conform ParseError to std::error::Error {}
 
 /// Interface for constructing a value from its textual representation.
 ///
 /// Implementations do not trim input implicitly. Invalid user input is
 /// returned as `ParseError` and must not panic.
 public interface Parse {
-    func parse(_ input: string) -> Result[Self, ParseError]
+    static func parse(_ input: string) -> Result[Self, ParseError]
 }
 
 /// Parse `input` as `T` using its `Parse` implementation.
 public func parse[T: Parse](_ input: string) -> Result[T, ParseError] {
-    T.parse(input)
+    T::parse(input)
 }

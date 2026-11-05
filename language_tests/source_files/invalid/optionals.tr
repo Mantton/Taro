@@ -9,8 +9,8 @@ struct ChainProfile {
 }
 
 func invalidOptionalChainingOnNonOptional() {
-    let profile = ChainProfile { name: ChainName { value: "Ana" } }
-    let _ = profile?.name
+    profile := ChainProfile { name: ChainName { value: "Ana" } }
+    var _ = profile?.name
 }
 
 func make_profile() -> ChainProfile {
@@ -18,17 +18,17 @@ func make_profile() -> ChainProfile {
 }
 
 func invalidOptionalChainingOnNonOptionalCallResult() {
-    let _ = make_profile()?.name
+    var _ = make_profile()?.name
 }
 
 func invalidOptionalChainingNestedNonOptional() {
-    let profile = ChainProfile { name: ChainName { value: "Ana" } }
-    let _ = profile.name?.value
+    profile := ChainProfile { name: ChainName { value: "Ana" } }
+    var _ = profile.name?.value
 }
 
 func invalidOptionalDefaultOnNonOptional() {
-    let x = 10
-    let _ = x ?? 100
+    x := 10
+    var _ = x ?? 100
 }
 
 func main() {

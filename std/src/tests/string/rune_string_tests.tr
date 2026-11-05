@@ -1,10 +1,10 @@
-import std.testing.assertEqual
-import std.testing.assertTrue
-import std.rune.replacementCharacter
+import std::testing::assertEqual
+import std::testing::assertTrue
+import std::rune::replacementCharacter
 
 @test
 func testStringBytesIterable() {
-    let s = "hello"
+    s := "hello"
     var iter = s.bytes()
 
     assertEqual(iter.next().unwrap(), 'h' as uint8, "should match byte")
@@ -18,7 +18,7 @@ func testStringBytesIterable() {
     var count = 0
     var iter2 = s.bytes()
     loop {
-        let opt = iter2.next()
+        opt := iter2.next()
         if opt.isNone() {
             break
         }
@@ -30,7 +30,7 @@ func testStringBytesIterable() {
 @test
 func testStringCharactersIterable() {
     // "hello" + " world" + " ✨" + " 🚀"
-    let s = "hello world ✨ 🚀"
+    s := "hello world ✨ 🚀"
     var iter = s.characters()
 
     assertEqual(iter.next().unwrap(), 'h', "should match char")
@@ -46,29 +46,29 @@ func testStringCharactersIterable() {
     assertEqual(iter.next().unwrap(), 'd', "should match char")
     assertEqual(iter.next().unwrap(), ' ', "should match char")
     // '✨' is U+2728 -> 0x2728_u32 as rune
-    assertEqual(iter.next().unwrap(), std.intrinsic.__intrinsic_rune_from_u32_unchecked(0x2728_u32), "should match sparkle")
+    assertEqual(iter.next().unwrap(), std::intrinsic::__intrinsic_rune_from_u32_unchecked(0x2728_u32), "should match sparkle")
     assertEqual(iter.next().unwrap(), ' ', "should match char")
     // '🚀' is U+1F680 -> 0x1F680_u32 as rune
-    assertEqual(iter.next().unwrap(), std.intrinsic.__intrinsic_rune_from_u32_unchecked(0x1F680_u32), "should match rocket")
+    assertEqual(iter.next().unwrap(), std::intrinsic::__intrinsic_rune_from_u32_unchecked(0x1F680_u32), "should match rocket")
     assertTrue(iter.next().isNone(), "should be none after last char")
 }
 
 @test
 func testDecodeRuneValid() {
-    let s = "aπ🚀"
+    s := "aπ🚀"
 
-    let (r1, w1) = s.decodeRune(0)
+    var (r1, w1) = s.decodeRune(0)
     assertEqual(r1, 'a', "should decode ascii char")
     assertEqual(w1, 1, "width should be 1")
 
     // 'π' is encoded as 2 bytes: CF 80
-    let (r2, w2) = s.decodeRune(1)
-    assertEqual(r2, std.intrinsic.__intrinsic_rune_from_u32_unchecked(0x03C0_u32), "should decode pi char")
+    var (r2, w2) = s.decodeRune(1)
+    assertEqual(r2, std::intrinsic::__intrinsic_rune_from_u32_unchecked(0x03C0_u32), "should decode pi char")
     assertEqual(w2, 2, "width should be 2")
 
     // '🚀' is encoded as 4 bytes: F0 9F 9A 80
-    let (r3, w3) = s.decodeRune(3)
-    assertEqual(r3, std.intrinsic.__intrinsic_rune_from_u32_unchecked(0x1F680_u32), "should decode rocket char")
+    var (r3, w3) = s.decodeRune(3)
+    assertEqual(r3, std::intrinsic::__intrinsic_rune_from_u32_unchecked(0x1F680_u32), "should decode rocket char")
     assertEqual(w3, 4, "width should be 4")
 }
 
@@ -79,59 +79,59 @@ func testDecodeRuneInvalid() {
     // [0xC0, 0x80] is overlong encoding for U+0000
     // [0xED, 0xA0, 0x80] is surrogate U+D800
     var bytes: [uint8; 6] = [0xFF, 0xC0, 0x80, 0xED, 0xA0, 0x80]
-    let s = std.string.stringFromParts(bytes.asSpan().ptr, 6)
+    s := std::string::stringFromBytes(bytes.asSpan())
 
     // First sequence: 0xFF
-    let (r1, w1) = s.decodeRune(0)
+    var (r1, w1) = s.decodeRune(0)
     assertEqual(r1, replacementCharacter(), "should yield replacement on invalid lead byte")
     assertEqual(w1, 1, "width should be 1 on invalid lead")
 
     // Second sequence: 0xC0 0x80 (overlong)
-    let (r2, w2) = s.decodeRune(1)
+    var (r2, w2) = s.decodeRune(1)
     assertEqual(r2, replacementCharacter(), "should yield replacement on overlong")
     assertEqual(w2, 1, "width should be 1 on overlong")
 
     // The remaining 0x80 is an unexpected continuation byte
-    let (r3, w3) = s.decodeRune(2)
+    var (r3, w3) = s.decodeRune(2)
     assertEqual(r3, replacementCharacter(), "should yield replacement on bad continuation")
     assertEqual(w3, 1, "width should be 1 on bad continuation")
 
     // Third sequence: 0xED 0xA0 0x80 (surrogate)
-    let (r4, w4) = s.decodeRune(3)
+    var (r4, w4) = s.decodeRune(3)
     assertEqual(r4, replacementCharacter(), "should yield replacement on surrogate")
     assertEqual(w4, 1, "width should be 1 on surrogate")
 }
 
 @test
 func testDecodeRuneOutOfBounds() {
-    let s = "abc"
-    let (r, w) = s.decodeRune(3)
+    s := "abc"
+    var (r, w) = s.decodeRune(3)
     assertEqual(r, replacementCharacter(), "OOB gives replacement rune")
     assertEqual(w, 0, "OOB width is 0")
 }
 
 @test
 func testRuneOrientedStringApisPreserveInvalidUtf8Bytes() {
-    var builder = std.string.Builder()
+    var builder = std::string::Builder::new()
     builder.writeByte(0xff_u8)
     builder.writeByte('a' as uint8)
     builder.writeByte(0xc0_u8)
     builder.writeByte(0x80_u8)
-    let value = builder.intoString()
+    value := builder.toString()
 
     assertEqual(value.byteLen(), 4 as usize, "invalid UTF-8 sample should retain its raw length")
     assertEqual(value.runeCount(), 4 as usize, "each invalid byte should count as one decoded rune")
 
-    let first = value.sliceRunes(0, 1)
+    first := value.sliceRunes(0, 1)
     assertEqual(first.byteLen(), 1 as usize, "rune slice should retain one invalid byte")
     assertEqual(first.byteAt(0), 0xff_u8, "rune slice should preserve invalid bytes verbatim")
 
-    let tail = value.sliceRunes(2, 2)
+    tail := value.sliceRunes(2, 2)
     assertEqual(tail.byteLen(), 2 as usize, "rune slice should count consecutive invalid bytes independently")
     assertEqual(tail.byteAt(0), 0xc0_u8, "rune slice should retain the first invalid tail byte")
     assertEqual(tail.byteAt(1), 0x80_u8, "rune slice should retain the second invalid tail byte")
 
-    let pieces = value.split("")
+    pieces := value.split("")
     assertEqual(pieces.len(), 4 as usize, "empty split should emit one field per invalid byte")
     assertEqual(pieces.at(0).byteAt(0), 0xff_u8, "empty split should preserve invalid field bytes")
     assertEqual(*pieces.at(1), "a", "empty split should preserve valid fields among invalid bytes")
@@ -139,11 +139,11 @@ func testRuneOrientedStringApisPreserveInvalidUtf8Bytes() {
 
 @test
 func testTrimDoesNotTreatInvalidUtf8AsWhitespace() {
-    var builder = std.string.Builder()
+    var builder = std::string::Builder::new()
     builder.writeByte(' ' as uint8)
     builder.writeByte(0xff_u8)
     builder.writeByte(' ' as uint8)
-    let trimmed = builder.intoString().trim()
+    trimmed := builder.toString().trim()
 
     assertEqual(trimmed.byteLen(), 1 as usize, "trim should remove surrounding spaces only")
     assertEqual(trimmed.byteAt(0), 0xff_u8, "trim should preserve invalid UTF-8 bytes")

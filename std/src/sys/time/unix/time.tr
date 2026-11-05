@@ -1,6 +1,6 @@
-import std.libc
-import std.panic.panic
-import std.sys.time.{MonotonicTime, RealtimeTime}
+import std::libc
+import std::panic::panic
+import std::sys::time::{MonotonicTime, RealtimeTime}
 
 const NANOS_PER_SEC_I64: int64 = 1000000000_i64
 
@@ -11,20 +11,20 @@ func validateNanos(_ nanos: int64) -> uint32 {
     return nanos as uint32
 }
 
-func convertMonotonic(_ ts: std.libc.Timespec) -> MonotonicTime {
+func convertMonotonic(_ ts: std::libc::Timespec) -> MonotonicTime {
     if ts.tv_sec < 0_i64 {
         panic("std.sys.time.monotonicNow: negative seconds")
     }
 
-    let nanos = validateNanos(ts.tv_nsec)
+    nanos := validateNanos(ts.tv_nsec)
     return MonotonicTime {
         secs: ts.tv_sec as uint64,
         nanos,
     }
 }
 
-func convertRealtime(_ ts: std.libc.Timespec) -> RealtimeTime {
-    let nanos = validateNanos(ts.tv_nsec)
+func convertRealtime(_ ts: std::libc::Timespec) -> RealtimeTime {
+    nanos := validateNanos(ts.tv_nsec)
     return RealtimeTime {
         secs: ts.tv_sec,
         nanos,
@@ -32,12 +32,12 @@ func convertRealtime(_ ts: std.libc.Timespec) -> RealtimeTime {
 }
 
 public func monotonicNow() -> MonotonicTime {
-    var ts = std.libc.Timespec {
+    var ts = std::libc::Timespec {
         tv_sec: 0_i64,
         tv_nsec: 0_i64,
     }
-    let tsPtr = unsafe { (&mut ts as *mut std.libc.Timespec) }
-    let rc = std.libc.clock_gettime(std.libc.CLOCK_MONOTONIC, tsPtr)
+    tsPtr := unsafe { (&ts as *mut std::libc::Timespec) }
+    rc := unsafe { std::libc::clock_gettime(std::libc::CLOCK_MONOTONIC, tsPtr) }
     if rc != 0 {
         panic("std.sys.time.monotonicNow: clock_gettime failed")
     }
@@ -45,12 +45,12 @@ public func monotonicNow() -> MonotonicTime {
 }
 
 public func realtimeNow() -> RealtimeTime {
-    var ts = std.libc.Timespec {
+    var ts = std::libc::Timespec {
         tv_sec: 0_i64,
         tv_nsec: 0_i64,
     }
-    let tsPtr = unsafe { (&mut ts as *mut std.libc.Timespec) }
-    let rc = std.libc.clock_gettime(std.libc.CLOCK_REALTIME, tsPtr)
+    tsPtr := unsafe { (&ts as *mut std::libc::Timespec) }
+    rc := unsafe { std::libc::clock_gettime(std::libc::CLOCK_REALTIME, tsPtr) }
     if rc != 0 {
         panic("std.sys.time.realtimeNow: clock_gettime failed")
     }

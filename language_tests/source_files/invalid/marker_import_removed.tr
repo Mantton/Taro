@@ -1,0 +1,4 @@
+// Importing a removed marker explains the removal.
+import std::marker::{Clone, NoCopy}
+
+func main() {}

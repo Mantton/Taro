@@ -1,0 +1,5 @@
+Checking – vet_nocopy_repeat
+warning: array repetition copies a @NoCopy value; store references instead
+ -> language_tests/source_files/invalid/vet_nocopy_repeat.tr:5:31
+	    var repeated: [State; 2] = [State { value: 1 }; 2]
+	                               ^^^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,12 @@
+error: type 'Wrapper[Owned]' does not conform to interface 'PartialEq[Wrapper[Owned]]'
+ -> language_tests/source_files/invalid/conditional_equality_requirements.tr:10:4
+	    needsEq(&value)
+	    ^^^^^^^
+error: type 'Wrapper[Owned]' does not conform to interface 'Hashable'
+ -> language_tests/source_files/invalid/conditional_equality_requirements.tr:11:4
+	    needsHash(&value)
+	    ^^^^^^^^^
+error: type 'MissingSuper[int32]' does not conform to interface 'Hashable'
+ -> language_tests/source_files/invalid/conditional_equality_requirements.tr:13:4
+	    needsHash(&missing)
+	    ^^^^^^^^^

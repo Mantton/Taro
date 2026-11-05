@@ -1,4 +1,4 @@
-import std.panic.todo
+import std::panic::todo
 
 public const SEPARATOR: string = ""
 

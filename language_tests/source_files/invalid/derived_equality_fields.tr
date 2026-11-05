@@ -1,0 +1,4 @@
+import std::ops::PartialEq
+struct NoEquality { value: int32 }
+struct Container: PartialEq { value: NoEquality }
+func main() {}

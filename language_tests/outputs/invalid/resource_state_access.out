@@ -1,0 +1,28 @@
+error: field 'state' of File is not visible here
+ -> language_tests/source_files/invalid/resource_state_access.tr:1:50
+	func fileState(_ value: &std::fs::File) { var _ = value.state }
+	                                                  ^^^^^^^^^^^
+error: field 'state' of ReadDir is not visible here
+ -> language_tests/source_files/invalid/resource_state_access.tr:2:58
+	func directoryState(_ value: &std::fs::ReadDir) { var _ = value.state }
+	                                                          ^^^^^^^^^^^
+error: field 'state' of TempDir is not visible here
+ -> language_tests/source_files/invalid/resource_state_access.tr:3:58
+	func temporaryState(_ value: &std::fs::TempDir) { var _ = value.state }
+	                                                          ^^^^^^^^^^^
+error: field 'state' of TcpStream is not visible here
+ -> language_tests/source_files/invalid/resource_state_access.tr:4:58
+	func socketState(_ value: &std::net::TcpStream) { var _ = value.state }
+	                                                          ^^^^^^^^^^^
+error: field 'state' of Child is not visible here
+ -> language_tests/source_files/invalid/resource_state_access.tr:5:57
+	func childState(_ value: &std::process::Child) { var _ = value.state }
+	                                                         ^^^^^^^^^^^
+error: field 'state' of ChildStdin is not visible here
+ -> language_tests/source_files/invalid/resource_state_access.tr:6:62
+	func inputState(_ value: &std::process::ChildStdin) { var _ = value.state }
+	                                                              ^^^^^^^^^^^
+error: field 'state' of AsyncStream is not visible here
+ -> language_tests/source_files/invalid/resource_state_access.tr:7:65
+	func streamState(_ value: &std::io::task::AsyncStream) { var _ = value.state }
+	                                                                 ^^^^^^^^^^^

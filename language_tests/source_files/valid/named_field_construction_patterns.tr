@@ -1,0 +1,77 @@
+struct Point { x: int64; y: int64 }
+enum Shape[T] {
+    case rect { readonly width: T; height: T }
+    case empty {}
+    case dot(T)
+}
+
+func area(_ shape: &Shape[int64]) -> int64 {
+    match shape {
+        case .rect { height, width: w } => w * height
+        case .empty {} => 0
+        case .dot(value) => value
+    }
+}
+
+type Rectangle = Shape[int64]
+func identity[T](_ value: T) -> T { value }
+func consume(_ shape: Shape[int64]) -> int64 { area(&shape) }
+func replaceShape(_ shape: &Shape[int64]) -> bool { *shape = .empty {}; false }
+
+func observe(_ log: &int64, _ digit: int64) -> int64 {
+    *log = *log * 10 + digit
+    digit
+}
+struct Flags { enabled: bool; point: Point }
+func nested(_ flags: Flags) -> int64 {
+    match flags {
+        case Flags { enabled: true, point: Point { x: 1, .. } } => 1
+        case Flags { enabled: true, .. } => 2
+        case Flags { enabled: false, .. } => 3
+    }
+}
+
+func main() {
+    var log = 0_i64
+    ordered := Shape::rect { height: observe(&log, 2), width: observe(&log, 1) }
+    assert(log == 21 && area(&ordered) == 2, "explicit fields evaluate in source order")
+    assert(nested(Flags { enabled: true, point: Point { x: 1, y: 2 } }) == 1, "nested named patterns")
+    assert(nested(Flags { enabled: false, point: Point { x: 1, y: 2 } }) == 3, "struct field exhaustiveness")
+    var alias: Rectangle = .rect { width: 3, height: 4 }
+    assert(consume(.rect { width: 2, height: 3 }) == 6, "call argument context")
+    var inferred: Shape[int64] = identity(.rect { width: 3, height: 4 })
+    assert(area(&inferred) == 12, "generic call result supplies enum context")
+    match &alias {
+        case .rect { width, .. } if replaceShape(&alias) => panic("false guard")
+        case .rect { width, .. } => assert(width == 3, "failed guard keeps the matched value snapshot")
+        case _ => panic("original rectangle expected")
+    }
+    width := 3_i64
+    height := 4_i64
+    var shape: Shape[int64] = .rect { height, width }
+    assert(area(&shape) == 12, "named fields map independently of source order")
+    match &shape {
+        case .rect { width: w, .. } => {
+            w += 1
+            assert(w == 4, "payload bindings are writable values")
+        }
+        case _ => panic("expected rectangle")
+    }
+    assert(area(&shape) == 12, "editing a binding leaves its source intact")
+    shape = Shape[int64]::empty {}
+    assert(area(&shape) == 0, "empty named variants retain their shape")
+    shape = Shape::rect { width: 5_i64, height: 6_i64 }
+    assert(area(&shape) == 30, "qualified construction infers generic arguments")
+
+    point := Point { x: 7, y: 9 }
+    match &point {
+        case Point { y, x } => assert(x == 7 && y == 9, "struct fields bind by name")
+    }
+    if case Point { x: first, .. } = point {
+        first += 2
+        assert(first == 9, "conditional named bindings are writable")
+    }
+    var Point { x, .. } = point
+    x += 1
+    assert(x == 8, "local named destructuring copies values")
+}

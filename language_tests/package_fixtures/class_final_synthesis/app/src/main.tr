@@ -1,0 +1,11 @@
+import dep::Base
+import std::hash::Hashable
+final class Record[T]: Base[T], Clone, PartialEq, Hashable { label: string = "label" }
+func main() {
+    var source: Record[int32] = Record[int32](7) // Record[int32]; imported generic base, private inherited field.
+    var cloned: Record[int32] = source.clone() // Record[int32]; fresh object, including imported base payload.
+    assert(source !== cloned && source == cloned, "imported generic base fields participate in structural synthesis")
+    assert(*cloned.read() == 7, "base access reads the cloned private payload")
+    cloned.label = "other"
+    assert(source != cloned, "local field equality remains structural")
+}

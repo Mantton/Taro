@@ -1,0 +1,19 @@
+import dep::{tick, read, increment, project, exclusive}
+func main() async {
+    var value: int32 = 17
+    var observed: int32 = await read(&value)
+    value = 19
+    await increment(&value)
+    assert(value == 20, "imported async exclusive input")
+    assert(observed == 17, "imported independent result")
+    var saved: &int32 = &value
+    await tick()
+    assert(*saved == 20, "local shared loan survives imported independent await")
+    value = 23
+    assert(value == 23, "loan ends at last use")
+    var shared: &int32 = await project(&value)
+    assert(*shared == 23, "imported borrowed ready result")
+    var mutable: &int32 = await exclusive(&value)
+    *mutable = 29
+    assert(value == 29, "imported exclusive ready result")
+}

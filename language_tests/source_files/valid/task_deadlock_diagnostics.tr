@@ -7,69 +7,74 @@
 // EXPECT_STDERR_CONTAINS: panic: executor deadlock detected
 
 func main() async {
-    let first = match std.sync.Mutex[int32].new(1_i32) {
+    first := match std::sys::sync::mutexCreate() {
         case .ok(value) => value
-        case .err(_) => std.panic.panic("first mutex should be created")
+        case .err(_) => std::panic::panic("first mutex should be created")
     }
-    let second = match std.sync.Mutex[int32].new(2_i32) {
+    second := match std::sys::sync::mutexCreate() {
         case .ok(value) => value
-        case .err(_) => std.panic.panic("second mutex should be created")
+        case .err(_) => std::panic::panic("second mutex should be created")
     }
-    let (firstReadySender, firstReadyReceiver) = match std.sync.bounded[int32](1) {
+    var (firstReadySender, firstReadyReceiver) = match std::sync::bounded[int32](1) {
         case .ok(value) => value
-        case .err(_) => std.panic.panic("first barrier should be created")
+        case .err(_) => std::panic::panic("first barrier should be created")
     }
-    let (secondReadySender, secondReadyReceiver) = match std.sync.bounded[int32](1) {
+    var (secondReadySender, secondReadyReceiver) = match std::sync::bounded[int32](1) {
         case .ok(value) => value
-        case .err(_) => std.panic.panic("second barrier should be created")
+        case .err(_) => std::panic::panic("second barrier should be created")
     }
-    let firstForA = &first
-    let secondForA = &second
-    let firstForB = &first
-    let secondForB = &second
+    firstForA := first
+    secondForA := second
+    firstForB := first
+    secondForB := second
 
-    let taskA = std.task.spawn(|| async {
-        var firstGuard = match await firstForA.lock() {
-            case .ok(value) => value
-            case .err(_) => std.panic.panic("task A should lock the first mutex")
-        }
+    taskA := std::task::spawn(() async => {
+        await lockNative(&firstForA)
         match await firstReadySender.send(1_i32) {
             case .ok(_) => {}
-            case .err(_) => std.panic.panic("task A should signal readiness")
+            case .err(_) => std::panic::panic("task A should signal readiness")
         }
         match await secondReadyReceiver.recv() {
             case .some(_) => {}
-            case .none => std.panic.panic("task A should receive task B readiness")
+            case .none => std::panic::panic("task A should receive task B readiness")
         }
-        var secondGuard = match await secondForA.lock() {
-            case .ok(value) => value
-            case .err(_) => std.panic.panic("task A should wait on the second mutex")
-        }
-        return *firstGuard.value() + *secondGuard.value()
+        await lockNative(&secondForA)
+        return 1_i32
     })
 
-    std.task.detached(|| async {
-        var secondGuard = match await secondForB.lock() {
-            case .ok(value) => value
-            case .err(_) => std.panic.panic("task B should lock the second mutex")
-        }
+    std::task::detached(() async => {
+        await lockNative(&secondForB)
         match await secondReadySender.send(1_i32) {
             case .ok(_) => {}
-            case .err(_) => std.panic.panic("task B should signal readiness")
+            case .err(_) => std::panic::panic("task B should signal readiness")
         }
         match await firstReadyReceiver.recv() {
             case .some(_) => {}
-            case .none => std.panic.panic("task B should receive task A readiness")
+            case .none => std::panic::panic("task B should receive task A readiness")
         }
-        var firstGuard = match await firstForB.lock() {
-            case .ok(value) => value
-            case .err(_) => std.panic.panic("task B should wait on the first mutex")
-        }
-        return *secondGuard.value() + *firstGuard.value()
+        await lockNative(&firstForB)
+        return 2_i32
     })
 
     match await taskA.result() {
-        case .ok(_) => std.panic.panic("deadlocked task A should not complete")
-        case .err(_) => std.panic.panic("deadlock watchdog should fail the root first")
+        case .ok(_) => std::panic::panic("deadlocked task A should not complete")
+        case .err(_) => std::panic::panic("deadlock watchdog should fail the root first")
+    }
+}
+
+// Exercise the runtime wait graph using independent native synchronization
+// handles. These intentionally exercise the raw runtime wait graph directly.
+func lockNative(_ mutex: &std::sys::sync::RawMutex) async {
+    loop {
+        match std::sys::sync::mutexTryLock(mutex) {
+            case .ok(true) => return
+            case .ok(false) => {
+                match await std::sys::sync::waitMutexLock(mutex) {
+                    case .ok(_) => {}
+                    case .err(_) => std::panic::panic("native mutex wait should succeed")
+                }
+            }
+            case .err(_) => std::panic::panic("native mutex lock should succeed")
+        }
     }
 }

@@ -1,0 +1,8 @@
+error: unknown symbol `Cleanup`
+ -> language_tests/source_files/invalid/removed_gc_cleanup_type.tr:2:34
+	    var fabricated: std::runtime::Cleanup = std::runtime::Cleanup { token: 2 }
+	                                  ^^^^^^^
+error: unknown symbol `Cleanup`
+ -> language_tests/source_files/invalid/removed_gc_cleanup_type.tr:2:58
+	    var fabricated: std::runtime::Cleanup = std::runtime::Cleanup { token: 2 }
+	                                                          ^^^^^^^

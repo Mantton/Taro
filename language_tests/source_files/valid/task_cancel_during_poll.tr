@@ -1,0 +1,25 @@
+// G22: a cancel request can land on another worker while the target is in the
+// middle of a poll. A child await that then observes cancellation before it
+// starts must take the cancellation path; it must not resume the parent with
+// an uninitialized result.
+// ENV: TARO_WORKERS=4
+func main() async {
+    var completed = 0
+    var cancelled = 0
+    var i = 0
+    while i < 300 {
+        task := std::task::spawn(() async => {
+            await std::task::sleep(std::time::Duration::fromSeconds(60_u64))
+            return 1_i64
+        })
+        await std::testing::yieldNow()
+        task.cancel()
+        match await task.result() {
+            case .ok(_) => completed += 1
+            case .err(.cancelled) => cancelled += 1
+            case .err(.panicked(_)) => panic("sleep should not panic")
+        }
+        i += 1
+    }
+    std::printf("completed %d cancelled %d\n", completed, cancelled)
+}

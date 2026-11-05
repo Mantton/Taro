@@ -1,0 +1,66 @@
+// TEST
+import std::io::{Reader, Writer}
+
+extern "C" {
+    unsafe func __gc__test_probe_create(_ target: *const uint8) -> *mut uint8
+    unsafe func __gc__test_collect_probe_is_live(_ probe: *mut uint8) -> bool
+}
+
+@noinline
+func retainedBufferView() -> std::mem::Span[uint8] {
+    var buffer = std::bytes::Buffer::new("retained")
+    view := buffer.bytes()
+    buffer.reserve(8192).unwrap()
+    buffer.reset()
+    buffer.writeString("replacement").unwrap()
+    return view
+}
+
+@noinline
+func retainedCStringPointer() -> *const uint8 {
+    cstring := std::ffi::CString::new("cstring")
+    return cstring.asPtr()
+}
+
+@test
+func oldViewsKeepGcStorageAliveAfterGrowthAndHandleExit() {
+    view := retainedBufferView()
+    probe := unsafe { __gc__test_probe_create(view.asPtr()) }
+    assert(unsafe { __gc__test_collect_probe_is_live(probe) }, "an old view roots its backing allocation")
+    assert(std::string::stringFromBytes(view) == "retained", "growth does not free or retarget an old view")
+    assert(!unsafe { __gc__test_collect_probe_is_live(probe) }, "old storage is reclaimed when its last view dies")
+}
+
+@test
+func cStringPointersKeepTerminatedGcBytesAlive() {
+    pointer := retainedCStringPointer()
+    probe := unsafe { __gc__test_probe_create(pointer) }
+    assert(unsafe { __gc__test_collect_probe_is_live(probe) }, "CString bytes are managed")
+    assert(unsafe { pointer.add(7).read() } == 0_u8, "the terminator survives the wrapper")
+    assert(unsafe { std::string::stringFromParts(pointer, 7) } == "cstring", "the pointer remains readable")
+    assert(!unsafe { __gc__test_collect_probe_is_live(probe) }, "unreachable CString storage is reclaimed")
+}
+
+@test
+func nativeFileReadWritesIntoManagedByteStorage() {
+    path := "taro_g16b_managed_read.txt"
+    defer { var _ = std::fs::removeFile(path) }
+    std::fs::writeString(path, "native bytes").unwrap()
+    var file = std::fs::File::open(path).unwrap()
+    defer { var _ = file.close() }
+    var buffer = std::bytes::Buffer::new()
+    assert(std::io::copy(file, buffer).unwrap() == 12, "native I/O copies the complete byte range")
+    assert(buffer.toString() == "native bytes", "native I/O fills the managed byte buffer")
+}
+
+@test
+func largeBufferGrowthPreservesInitializedBytes() {
+    var input: [uint8; 8192] = [97_u8; 8192]
+    buffer := std::bytes::Buffer::new(input.asSpan())
+    old := buffer.bytes()
+    buffer.reserve(16384).unwrap()
+    assert(buffer.len() == 8192 && buffer.capacity() >= 16384, "growth keeps the logical byte count")
+    assert(*old.at(0) == 97_u8 && *old.at(8191) == 97_u8, "old large storage remains readable")
+    snapshot := buffer.toString()
+    assert(snapshot.byteLen() == 8192 && snapshot.byteAt(0) == 97_u8 && snapshot.byteAt(8191) == 97_u8, "growth copies the full initialized prefix")
+}

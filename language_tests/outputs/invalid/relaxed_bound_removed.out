@@ -1,0 +1,8 @@
+error: `!` bounds were removed; every type is escapable, so delete this bound
+ -> language_tests/source_files/invalid/relaxed_bound_removed.tr:2:16
+	func forward[T: !Escapable](_ value: T) -> T { value }
+	                ^^^^^^^^^^
+error: `!` bounds were removed; every type is escapable, so delete this bound
+ -> language_tests/source_files/invalid/relaxed_bound_removed.tr:4:16
+	interface View: !Escapable {}
+	                ^^^^^^^^^^

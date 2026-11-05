@@ -1,0 +1,39 @@
+// Copy reads and plain stores of trivially copyable class fields are single
+// checked accesses. They respect sibling borrows, nested and inherited paths,
+// multi-word values and zero-sized fields, and leave no permission behind.
+struct Point { x: int64; y: int64 }
+struct Empty {}
+class Base { id: int32 = 0 }
+extend Base {
+    init() {}
+}
+class Shape: Base { origin: Point; scale: double = 1.0; marker: Empty; flag: bool = false }
+extend Shape {
+    override init() {
+        super.init()
+        self.origin = Point { x: 1, y: 2 }
+        self.marker = Empty {}
+    }
+}
+func main() {
+    var shape: Shape = Shape()
+    var alias: Shape = shape
+    alias.id = 7
+    assert(shape.id == 7, "inherited field store and read")
+    var origin: Point = shape.origin
+    assert(origin.x == 1 && origin.y == 2, "multi-word copy read")
+    alias.origin = Point { x: 3, y: 4 }
+    assert(shape.origin.y == 4, "multi-word store")
+    alias.origin.x = 5
+    assert(shape.origin.x == 5 && shape.origin.y == 4, "nested inline store")
+    var held: &double = &shape.scale
+    alias.origin.y = shape.origin.x + 1
+    alias.flag = !alias.flag
+    alias.marker = Empty {}
+    var _ = alias.marker
+    *held = 2.5
+    assert(shape.scale == 2.5 && shape.origin.y == 6 && shape.flag, "siblings stay disjoint")
+    var exclusive: &Point = &shape.origin
+    exclusive.x += 1
+    assert(alias.origin.x == 6, "instant accesses leave no outstanding permission")
+}

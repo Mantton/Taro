@@ -1,0 +1,25 @@
+// G23: withTimeout drains the timed-out operation. An operation that never
+// reaches a cancellation checkpoint keeps the caller waiting past the deadline
+// until it finishes on its own. Whether the timer or the operation wins the
+// race is unspecified (under GC stress the timer can lose), so only the wait
+// is checked.
+// ENV: TARO_WORKERS=2
+func main() async {
+    start := std::time::Instant::now()
+    outcome := await std::task::withTimeout(std::time::Duration::fromMillis(10_u64), () async => {
+        spin := std::time::Instant::now()
+        var millis: uint64 = 0
+        while millis < 200 {
+            millis = (spin.elapsed().subsecNanos() as uint64) / 1000000_u64 + spin.elapsed().seconds() * 1000_u64
+        }
+        return 7_i32
+    })
+    var waited: uint64 = (start.elapsed().subsecNanos() as uint64) / 1000000_u64 + start.elapsed().seconds() * 1000_u64
+    match outcome {
+        case .err(.timedOut) => print("settled\n")
+        case .ok(_) => print("settled\n")
+        case .err(.operation(_)) => print("operation failed\n")
+    }
+    var finished: string = if waited >= 200 { "yes" } else { "no" }
+    std::printf("waited for the operation to finish: %s\n", finished)
+}

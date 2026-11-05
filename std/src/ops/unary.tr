@@ -1,10 +1,12 @@
 
 @lang("Neg")
-public interface Neg[Output=Self] {
-    func neg(self) -> Output
+public interface Neg {
+    type Output = Self
+    func neg() -> Self::Output
 }
 
 @lang("Not")
-public interface Not[Output=Self] {
-    func not(self) -> Output
+public interface Not {
+    type Output = Self
+    func not() -> Self::Output
 }

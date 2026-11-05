@@ -1,0 +1,30 @@
+func main() async {
+    args := std::env::args()
+    count := int32::parse(args.at(1)).unwrap()
+    pairs := int32::parse(args.at(2)).unwrap()
+    tasks := List[std::task::Task[()]]::new()
+    var pair = 0_i32
+    while pair < pairs {
+        var (pingSend, pingRecv) = std::sync::bounded[int32](1).unwrap()
+        var (pongSend, pongRecv) = std::sync::bounded[int32](1).unwrap()
+        tasks.append(std::task::spawn(() async => {
+            var i = 0_i32
+            while i < count {
+                value := (await pingRecv.recv()).unwrap()
+                (await pongSend.send(value + 1)).unwrap()
+                i += 1
+            }
+        }))
+        tasks.append(std::task::spawn(() async => {
+            var i = 0_i32
+            while i < count {
+                (await pingSend.send(i)).unwrap()
+                assert((await pongRecv.recv()).unwrap() == i + 1, "round trip checksum")
+                i += 1
+            }
+        }))
+        pair += 1
+    }
+    for task in tasks { (await task.result()).unwrap() }
+    std::printf("%v\n", count * pairs)
+}

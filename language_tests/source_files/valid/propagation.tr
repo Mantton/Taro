@@ -1,6 +1,6 @@
-import std.io.Error
-import std.prelude.Optional
-import std.result.Result
+import std::io::Error
+import std::prelude::Optional
+import std::result::Result
 
 func maybeStep(_ value: int32) -> Optional[int32] {
     if value < 0 {
@@ -15,8 +15,8 @@ func nestedOptional(_ value: int32) -> Optional[int32] {
 }
 
 func closureOptional(_ value: int32) -> Optional[int32] {
-    let compute = || -> Optional[int32] {
-        let inner = maybeStep(value)!
+    compute := () -> Optional[int32] => {
+        inner := maybeStep(value)!
         return .some(inner * 2)
     }
 
@@ -43,7 +43,7 @@ func optionalDefaultProviderEarlyReturn(
 
 func checkedAdd(_ value: int32) -> Result[int32, Error] {
     if value < 0 {
-        return .err(Error(.invalidInput))
+        return .err(Error::new(.invalidInput))
     }
 
     return .ok(value + 1)
@@ -57,8 +57,8 @@ enum AppFailure {
     case source(SourceFailure)
 }
 
-impl From[SourceFailure] for AppFailure {
-    func from(_ value: SourceFailure) -> AppFailure {
+conform AppFailure to From[SourceFailure] {
+    static func from(_ value: SourceFailure) -> AppFailure {
         .source(value)
     }
 }
@@ -71,7 +71,7 @@ func sourceResult(_ succeeds: bool) -> Result[int32, SourceFailure] {
 }
 
 func convertedResult(_ succeeds: bool) -> Result[int32, AppFailure] {
-    let value = sourceResult(succeeds)!
+    value := sourceResult(succeeds)!
     return .ok(value + 1)
 }
 
@@ -81,8 +81,19 @@ func genericConvertedResult[T, Source, Target: From[Source]](
     return .ok(value!)
 }
 
+struct ReferenceSourceFailure { value: &int32 }
+enum ReferenceAppFailure { case source(ReferenceSourceFailure) }
+conform ReferenceAppFailure to From[ReferenceSourceFailure] {
+    static func from(_ value: ReferenceSourceFailure) -> Self { .source(value) }
+}
+@noinline
+func referenceFailure() -> Result[int32, ReferenceSourceFailure] {
+    var local: int32 = 42
+    return .err(ReferenceSourceFailure { value: &local })
+}
+
 func asyncConvertedResult(_ succeeds: bool) async -> Result[int32, AppFailure] {
-    await std.testing.yieldNow()
+    await std::testing::yieldNow()
     return .ok(sourceResult(succeeds)!)
 }
 
@@ -91,8 +102,8 @@ func nestedResult(_ value: int32) -> Result[int32, Error] {
 }
 
 func closureResult(_ value: int32) -> Result[int32, Error] {
-    let compute = || -> Result[int32, Error] {
-        let inner = checkedAdd(value)!
+    compute := () -> Result[int32, Error] => {
+        inner := checkedAdd(value)!
         return .ok(inner * 3)
     }
 
@@ -108,7 +119,7 @@ func resultDefaultProvider(_ value: Result[int32, Error] = .ok(defaultResultSeed
 }
 
 func defaultResultErrSeed() -> Result[int32, Error] {
-    return .err(Error(.permissionDenied))
+    return .err(Error::new(.permissionDenied))
 }
 
 func resultDefaultProviderEarlyReturn(
@@ -117,15 +128,15 @@ func resultDefaultProviderEarlyReturn(
     return value
 }
 
-func acceptError[E: std.error.Error](_ err: E) {}
+func acceptError[E: std::error::Error](_ err: E) {}
 
-func awaitTaskResult() async -> Result[int32, std.task.TaskError] {
-    let task = std.task.spawn(|| async {
-        await std.testing.yieldNow()
+func awaitTaskResult() async -> Result[int32, std::task::TaskError] {
+    task := std::task::spawn(() async => {
+        await std::testing::yieldNow()
         return 5
     })
 
-    let value = (await task.result())!
+    value := (await task.result())!
     return .ok(value + 7)
 }
 
@@ -167,7 +178,7 @@ func main() async {
     match nestedResult(-1) {
         case .err(err) => {
             assert(
-                std.sprintf("%v", err) == "invalid input",
+                std::sprintf("%v", err) == "invalid input",
                 "nested Result propagation should return the original error",
             )
         }
@@ -178,7 +189,7 @@ func main() async {
     match closureResult(-1) {
         case .err(err) => {
             assert(
-                std.sprintf("%v", err) == "invalid input",
+                std::sprintf("%v", err) == "invalid input",
                 "closure Result propagation should return the original error",
             )
         }
@@ -188,16 +199,16 @@ func main() async {
     match resultDefaultProviderEarlyReturn() {
         case .err(err) => {
             assert(
-                std.sprintf("%v", err) == "permission denied",
+                std::sprintf("%v", err) == "permission denied",
                 "default Result provider should return the propagated error",
             )
         }
         case .ok(_) => assert(false, "default Result provider should return err when propagation fails")
     }
 
-    acceptError(Error(.notFound))
+    acceptError(Error::new(.notFound))
     assert(
-        std.sprintf("%v", Error(.notFound)) == "not found",
+        std::sprintf("%v", Error::new(.notFound)) == "not found",
         "std.io.Error should conform to std.error.Error",
     )
 
@@ -209,7 +220,7 @@ func main() async {
         case _ => assert(false, "converted Result should preserve the source error")
     }
 
-    let genericConverted: Result[int32, AppFailure] = genericConvertedResult(sourceResult(true))
+    var genericConverted: Result[int32, AppFailure] = genericConvertedResult(sourceResult(true))
     expectOk(genericConverted, 31, "generic Result propagation should use From")
 
     expectOk(
@@ -222,5 +233,12 @@ func main() async {
         case _ => assert(false, "async converted Result should preserve the source error")
     }
 
-    std.print("PASS: propagation\n")
+    var referenceConverted: Result[int32, ReferenceAppFailure] = genericConvertedResult(referenceFailure())
+    std::runtime::collect()
+    match referenceConverted {
+        case .err(.source(value)) => assert(*value.value == 42, "inlined generic enum conversion retains references")
+        case .ok(_) => assert(false, "reference conversion should preserve failure")
+    }
+
+    std::print("PASS: propagation\n")
 }

@@ -1,0 +1,30 @@
+import std::mem::{Span, sizeOf}
+import std::collections::ListIterator
+import std::iter::Iterator
+
+func main() {
+    var values: [int32] = [10, 20, 30]
+    {
+        var view: Span[int32] = values.asSpan()
+        var pointer: *mut int32 = view.asMutPtr()
+        unsafe { pointer.write(11) }
+        var shared: Span[int32] = view
+        var bytes: Span[uint8] = unsafe { shared.asBytes() }
+        assert(bytes.len() == 3 * sizeOf[int32](), "byte views preserve extent")
+        var raw: *const int32 = shared.asPtr()
+        assert(unsafe { raw.read() } == 11, "raw accessors preserve data")
+        var sum: int32 = 0
+        for value in shared {
+            sum += value
+        }
+        assert(sum == 61, "span iterators yield element copies")
+    }
+    *values.at(0) += 1
+    assert(*values.at(0) == 12, "element references see span writes")
+    var owned: ListIterator[int32] = values.iter()
+    assert(owned.next().unwrap() == 12, "owning iterator transfers first element")
+    assert(owned.next().unwrap() == 20, "owning iterator advances")
+    assert(owned.next().unwrap() == 30, "owning iterator transfers last element")
+    assert(owned.next().isNone(), "owning iterator remains exhausted")
+    print("collection header accessors ok\n")
+}

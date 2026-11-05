@@ -1,0 +1,43 @@
+import std::convert::{From, Into, TryFrom, TryInto}
+import std::ops::Deref
+import std::result::Result
+
+struct BridgeSource { value: int32 }
+struct BridgeTarget { value: int32 }
+struct BridgeFailure { value: int32 }
+conform BridgeTarget to From[BridgeSource] {
+    public static func from(_ value: BridgeSource) -> BridgeTarget { BridgeTarget { value: value.value } }
+}
+conform BridgeTarget to TryFrom[int32] {
+    type Error = BridgeFailure
+    public static func tryFrom(_ value: int32) -> Result[BridgeTarget, BridgeFailure] {
+        if value < 0 { .err(BridgeFailure { value }) } else { .ok(BridgeTarget { value }) }
+    }
+}
+struct BridgeInline { storage: BridgeTarget }
+conform &BridgeInline to Deref {
+    type Target = BridgeTarget
+    public func deref() -> &BridgeTarget { &self.storage }
+}
+func bridgeGeneric[S, T: TryFrom[S]](_ value: S) -> Result[T, T::Error] { value.tryInto() }
+
+@test
+func testFromSuppliesInto() {
+    var value: BridgeTarget = (BridgeSource { value: 7 }).into()
+    std::testing::assertEqual(value.value, 7_i32, "From supplies Into")
+}
+
+@test
+func testTryFromSuppliesTryIntoAndError() {
+    var success: Result[BridgeTarget, BridgeFailure] = bridgeGeneric(9_i32)
+    std::testing::assertEqual(success.unwrap().value, 9_i32, "generic fallible bridge")
+    var failure: Result[BridgeTarget, BridgeFailure] = (-2_i32).tryInto()
+    std::testing::assertEqual(failure.unwrapErr().value, -2_i32, "bridge error type and value")
+}
+
+@test
+func testDerefUsesOriginalInlineStorage() {
+    var wrapper = BridgeInline { storage: BridgeTarget { value: 1 } }
+    wrapper.value = 3
+    std::testing::assertEqual(wrapper.storage.value, 3_i32, "Deref storage receiver")
+}

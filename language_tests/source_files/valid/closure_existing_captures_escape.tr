@@ -1,0 +1,31 @@
+// Existing closures and bound methods escape with their captured variables;
+// there is no borrowed-environment restriction (G27f).
+struct Counter { value: int32 }
+extend Counter { func read() -> int32 { self.value }
+}
+func retain[F: Fn() -> int32](_ callback: F) -> F { callback }
+func boundRead(_ counter: &Counter) -> any Fn() -> int32 { counter.read }
+func make() -> any Fn() -> int32 {
+    var base: int32 = 40
+    callback := () => base + 2
+    callback
+}
+func main() {
+    var counter = Counter { value: 5 }
+    read := boundRead(&counter)
+    std::printf("%v\n", read())
+
+    var count: int32 = 0
+    bump := () => { count += 1 }
+    var erased: any Fn() -> () = bump
+    var retainedBump = erased
+    retainedBump()
+    retainedBump()
+    std::printf("%v\n", count)
+
+    observe := () => count
+    kept := retain(observe)
+    count = 7
+    std::printf("%v\n", kept())
+    std::printf("%v\n", make()())
+}

@@ -1,0 +1,86 @@
+// ENV: TARO_GC_STRESS=1 TARO_WORKERS=4
+// Inlining must keep cold result temporaries out of the hot path while still
+// initializing and tracing them before their first partial construction.
+interface Payload {
+    func read() -> int32
+}
+struct InlinePayload { target: &int32 }
+conform InlinePayload to Payload {
+    func read() -> int32 { *self.target }
+}
+enum Value {
+    case pointer(&int32)
+    case erased(any Payload)
+    case number(int32)
+}
+enum Failure {
+    case missing(string, &int32, &int32)
+}
+enum Signal {
+    case failed(Failure)
+    case produced(Value)
+}
+
+@noinline
+func fresh(_ value: int32) -> &int32 {
+    var stored = value
+    std::runtime::collect()
+    return &stored
+}
+
+@noinline
+func lookup(_ mode: int32, _ source: &int32) -> Value? {
+    std::runtime::collect()
+    if mode == 0 { return .some(.pointer(source)) }
+    if mode == 1 { return .some(.erased(InlinePayload { target: source })) }
+    return .none
+}
+
+@inline
+func resolve(_ mode: int32, _ source: &int32) -> Result[Value, Signal] {
+    // This loop is outside the cold error construction. Its safepoints must
+    // retain source, without making the later error buffers live on this path.
+    var remaining = mode
+    while remaining > 0 {
+        std::runtime::collect()
+        assert(*source == 40, "the source stays rooted across the unrelated loop")
+        remaining -= 1
+    }
+    match lookup(mode, source) {
+        case .some(value) => return .ok(value)
+        case .none => {}
+    }
+    return .err(.failed(.missing("missing", fresh(17), fresh(25))))
+}
+
+@noinline
+func exercise(_ mode: int32) {
+    var original: int32 = 40
+    var result = resolve(mode, &original)
+    snapshot := result
+    result = .ok(.number(0))
+    std::runtime::collect()
+    match snapshot {
+        case .ok(.pointer(target)) => {
+            *target += 2
+            assert(original == 42, "the returned reference retains its identity")
+        }
+        case .ok(.erased(payload)) => {
+            assert(payload.read() == 40, "the copied erased result retains its payload")
+        }
+        case .err(.failed(.missing(message, first, second))) => {
+            assert(message == "missing", "the cold error keeps its tag and string")
+            assert(*first + *second == 42, "nested error references survive construction and return")
+        }
+        case _ => panic("unexpected result")
+    }
+}
+
+func main() {
+    var index: int32 = 0
+    while index < 12 {
+        exercise(index % 3)
+        index += 1
+    }
+    print("PASS: inlined result temporaries survive GC\n")
+}

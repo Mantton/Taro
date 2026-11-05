@@ -1,0 +1,5 @@
+Checking – vet_nocopy_reference_read
+warning: copy of @NoCopy value 'value'; use a reference
+ -> language_tests/source_files/invalid/vet_nocopy_reference_read.tr:7:14
+	    copied := *reference(&state)
+	              ^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,15 @@
+interface CopyDefault[Rhs = Self] { func known() -> int32; }
+struct Counter { value: int32 }
+conform Counter to CopyDefault {
+    func known() -> int32 { self.value }
+}
+interface Extra[Rhs = Self] { func known() -> int32; }
+conform Counter to Extra {
+    func known() -> int32 { self.value }
+}
+func main() {
+    var boxed: any CopyDefault = Counter { value: 7 }
+    assert(boxed.known() == 7, "the payload witness proves its interface's default-argument bound")
+    var explicit: any Extra[Counter] = Counter { value: 9 }
+    assert(explicit.known() == 9, "known extra method bounds are checked normally")
+}

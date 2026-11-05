@@ -1,36 +1,52 @@
-import std.io.Error
-import std.intrinsic.{
+import std::io::Error
+import std::intrinsic::{
     __intrinsic_channel_wait_send,
     __intrinsic_channel_wait_recv,
     __intrinsic_mutex_lock,
     __intrinsic_rwlock_read,
     __intrinsic_rwlock_write,
 }
-import std.marker.Copy
-import std.result.Result
+import std::result::Result
 
 @cfg(family("unix"))
-import std.sys.sync.unix.*
+import std::sys::sync::unix::*
 
 @cfg(family("unix"))
-export std.sys.sync.unix.*
+export std::sys::sync::unix::*
 
 @cfg(family("windows"))
-import std.sys.sync.windows.*
+import std::sys::sync::windows::*
 
 @cfg(family("windows"))
-export std.sys.sync.windows.*
+export std::sys::sync::windows::*
 
-public struct RawChannel: Copy {
-    handle: *mut uint8
+// One collected runtime object owns each opaque native handle box. Copy
+// endpoints share it, and the collector releases the box once no copy can
+// reach it; explicit registry destruction never frees a box behind an alias.
+// The handle is read through the object so no use can outlive its owner.
+internal struct NativeSyncOwner {
+    internal readonly object: *mut uint8
+}
+extern "taro_rt" {
+    unsafe func __gc__sync_owner_new(_ handle: *mut uint8) -> *mut uint8
+}
+extend NativeSyncOwner {
+    internal init(_ handle: *mut uint8) { self.object = unsafe { __gc__sync_owner_new(handle) } }
+    internal func handle() -> *mut uint8 {
+        unsafe { (self.object as *const *mut uint8).read() }
+    }
 }
 
-public struct RawMutex: Copy {
-    handle: *mut uint8
+public struct RawChannel {
+    internal owner: NativeSyncOwner
 }
 
-public struct RawRwLock: Copy {
-    handle: *mut uint8
+public struct RawMutex {
+    internal owner: NativeSyncOwner
+}
+
+public struct RawRwLock {
+    internal owner: NativeSyncOwner
 }
 
 public enum ChannelTryRecvStatus {
@@ -47,21 +63,21 @@ func withSyncOperation(_ result: Result[(), Error], _ operation: string) -> Resu
 }
 
 public func waitChannelSend(_ channel: &RawChannel) async -> Result[(), Error] {
-    withSyncOperation(mapStatus(await __intrinsic_channel_wait_send(channel.handle)), "wait to send channel value")
+    withSyncOperation(mapStatus(await __intrinsic_channel_wait_send(channel.owner.handle())), "wait to send channel value")
 }
 
 public func waitChannelRecv(_ channel: &RawChannel) async -> Result[(), Error] {
-    withSyncOperation(mapStatus(await __intrinsic_channel_wait_recv(channel.handle)), "wait to receive channel value")
+    withSyncOperation(mapStatus(await __intrinsic_channel_wait_recv(channel.owner.handle())), "wait to receive channel value")
 }
 
 public func waitMutexLock(_ mutex: &RawMutex) async -> Result[(), Error] {
-    withSyncOperation(mapStatus(await __intrinsic_mutex_lock(mutex.handle)), "wait for mutex")
+    withSyncOperation(mapStatus(await __intrinsic_mutex_lock(mutex.owner.handle())), "wait for mutex")
 }
 
 public func waitRwLockRead(_ lock: &RawRwLock) async -> Result[(), Error] {
-    withSyncOperation(mapStatus(await __intrinsic_rwlock_read(lock.handle)), "wait for rwlock read")
+    withSyncOperation(mapStatus(await __intrinsic_rwlock_read(lock.owner.handle())), "wait for rwlock read")
 }
 
 public func waitRwLockWrite(_ lock: &RawRwLock) async -> Result[(), Error] {
-    withSyncOperation(mapStatus(await __intrinsic_rwlock_write(lock.handle)), "wait for rwlock write")
+    withSyncOperation(mapStatus(await __intrinsic_rwlock_write(lock.owner.handle())), "wait for rwlock write")
 }

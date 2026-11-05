@@ -72,8 +72,7 @@ pub struct Visibility {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VisibilityLevel {
     Public,
-    Protected,
-    FilePrivate,
+    Internal,
     Private,
     Inherent,
 }
@@ -144,6 +143,7 @@ pub struct Declaration<K = DeclarationKind> {
 pub enum DeclarationKind {
     Interface(Interface),
     Struct(Struct),
+    Class(Class),
     Enum(Enum),
     Function(Function),
     ExternBlock(ExternBlock),
@@ -173,6 +173,7 @@ pub type NamespaceDeclaration = Declaration<NamespaceDeclarationKind>;
 #[derive(Debug, Clone)]
 pub enum NamespaceDeclarationKind {
     Struct(Struct),
+    Class(Class),
     Enum(Enum),
     Function(Function),
     StaticVariable(StaticVariable),
@@ -188,17 +189,42 @@ pub enum NamespaceDeclarationKind {
 pub type AssociatedDeclaration = Declaration<AssociatedDeclarationKind>;
 #[derive(Debug, Clone)]
 pub enum AssociatedDeclarationKind {
+    Initializer(Initializer),
     Constant(Constant),
     Function(Function),
     AssociatedType(TypeAlias),
     Property(ComputedProperty),
+    Subscript(NativeSubscript),
+}
+
+/// An initializer has parameters and a body, never an explicit receiver/result.
+/// Its function representation preserves generic and parameter syntax for the
+/// later definite-initialization pass; it is not an ordinary static factory.
+#[derive(Debug, Clone)]
+pub struct Initializer {
+    pub function: Function,
+    pub is_required: bool,
+    pub is_convenience: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct ComputedProperty {
     pub ty: Box<Type>,
     pub getter_id: NodeID,
+}
+
+/// Native indexing capabilities. Accessors are associated functions with
+/// implicit receivers; an address accessor supplies omitted get/set bodies.
+#[derive(Debug, Clone)]
+pub struct NativeSubscript {
+    pub ty: Box<Type>,
+    pub getter_id: Option<NodeID>,
     pub setter_id: Option<NodeID>,
+    pub address_id: Option<NodeID>,
+    pub getter_is_default: bool,
+    pub setter_is_default: bool,
+    pub is_override: bool,
+    pub is_final: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -215,6 +241,16 @@ pub struct Struct {
     pub conformances: Option<Conformances>,
 }
 
+/// A reference class is distinct from an inline struct from parsing onward.
+/// The header's base/conformance types are classified during name resolution.
+#[derive(Debug, Clone)]
+pub struct Class {
+    pub generics: Generics,
+    pub fields: Vec<FieldDefinition>,
+    pub conformances: Option<Conformances>,
+    pub is_final: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct Enum {
     pub generics: Generics,
@@ -229,6 +265,8 @@ pub struct Function {
     pub block: Option<Block>,
     pub is_unsafe: bool,
     pub is_async: bool,
+    pub is_final: bool,
+    pub is_override: bool,
     pub abi: Option<Symbol>,
 }
 
@@ -295,7 +333,7 @@ pub struct OpaqueType;
 #[derive(Debug, Clone)]
 pub struct Impl {
     pub generics: Generics,
-    /// The interface being implemented (Some for `impl I for T`, None for `impl T`)
+    /// Some for `conform T to I`, absent for `extend T`.
     pub interface: Option<Box<Type>>,
     /// The type implementing the interface (the target type)
     pub target: Box<Type>,
@@ -404,10 +442,13 @@ pub enum ExpressionKind {
     /// `foo`
     Identifier(Identifier),
 
-    /// `foo.bar`
+    /// Instance access (`foo.bar`) or qualified access (`Foo::bar`). The
+    /// distinction survives parsing so resolution cannot accept a static path
+    /// through instance syntax, or an instance member through qualified syntax.
     Member {
         target: Box<Expression>,
         name: Identifier,
+        qualified: bool,
     },
     /// `.bar`
     InferredMember { name: Identifier },
@@ -415,6 +456,14 @@ pub enum ExpressionKind {
     Specialize {
         target: Box<Expression>,
         type_arguments: TypeArguments,
+        /// The same tokens parsed as an index expression. Resolution or
+        /// semantic member lookup selects the branch; identities are disjoint.
+        index: Option<Vec<ExpressionArgument>>,
+    },
+    /// An expression-only bracket suffix, e.g. `items[i + 1]`.
+    Index {
+        target: Box<Expression>,
+        index: Vec<ExpressionArgument>,
     },
     /// Foo { a: 10, b: 20 }
     StructLiteral(StructLiteral),
@@ -444,8 +493,8 @@ pub enum ExpressionKind {
     Continue { label: Option<Identifier> },
     /// `main()`
     Call(Box<Expression>, Vec<ExpressionArgument>),
-    /// &a | &const T
-    Reference(Box<Expression>, Mutability),
+    /// &a
+    Reference(Box<Expression>),
     /// *a
     Dereference(Box<Expression>),
     /// `a + b`
@@ -577,7 +626,6 @@ pub struct PatternBindingCondition {
 pub struct ClosureExpression {
     pub signature: FunctionSignature,
     pub is_async: bool,
-    pub is_move: bool,
     pub body: Box<Expression>,
     pub span: Span,
 }
@@ -592,8 +640,10 @@ pub struct ExpressionField {
 
 #[derive(Debug, Clone)]
 pub struct StructLiteral {
-    pub path: Path,
+    pub path: ConstructorPath,
     pub fields: Vec<ExpressionField>,
+    /// Evaluated once after explicit fields; supplies all omitted fields.
+    pub base: Option<Box<Expression>>,
 }
 
 #[derive(Debug, Clone)]
@@ -634,8 +684,8 @@ pub enum TypeKind {
     Pointer(Box<Type>, Mutability),
     /// Reference Type
     ///
-    /// `&T` | `&const T`
-    Reference(Box<Type>, Mutability),
+    /// `&T`
+    Reference(Box<Type>),
     /// Paren type
     /// `(T)`
     Parenthesis(Box<Type>),
@@ -655,6 +705,8 @@ pub enum TypeKind {
     ///
     /// `[T]`
     List(Box<Type>),
+    /// A GC-backed pointer/length slice: `[T; ..]`.
+    Slice(Box<Type>),
     /// A hash-map
     ///
     /// `[T:V]`
@@ -665,7 +717,7 @@ pub enum TypeKind {
         inputs: Vec<Box<Type>>,
         output: Box<Type>,
     },
-    /// Ty of, self, &self, &const self
+    /// Receiver type for self or &self
     ImplicitSelf,
     /// |a, b| a + b
     InferedClosureParameter,
@@ -708,28 +760,35 @@ pub enum PatternKind {
     // (a, b)
     Tuple(Vec<Pattern>, Span),
     // Foo.Bar
-    Member(PatternPath),
+    Member(ConstructorPath),
     // Foo.Bar(a, b)
     PathTuple {
-        path: PatternPath,
+        path: ConstructorPath,
         fields: Vec<Pattern>,
+        field_span: Span,
+    },
+    PathNamed {
+        path: ConstructorPath,
+        fields: Vec<NamedPatternField>,
+        rest: bool,
         field_span: Span,
     },
     // Foo | Bar
     Or(Vec<Pattern>, Span),
     // Bool, Rune, String, Integer & Float Literals
     Literal(AnonConst),
-    // &T
-    Reference {
-        pattern: Box<Pattern>,
-        mutability: Mutability,
-    },
 }
 
 #[derive(Debug, Clone)]
-pub enum PatternPath {
+pub enum ConstructorPath {
     Qualified { path: Path },                  // A.B.C
     Inferred { name: Identifier, span: Span }, // .B
+}
+
+#[derive(Debug, Clone)]
+pub struct NamedPatternField {
+    pub name: Identifier,
+    pub pattern: Pattern,
 }
 
 // Generics
@@ -848,11 +907,14 @@ pub struct Variant {
 pub enum VariantKind {
     Unit,
     Tuple(Vec<FieldDefinition>),
+    /// Named payload declarations retain source names and constructor labels.
+    Struct(Vec<FieldDefinition>),
 }
 
 #[derive(Debug, Clone)]
 pub struct FieldDefinition {
     pub id: NodeID,
+    pub default_value: Option<Box<Expression>>,
     pub visibility: Visibility,
     pub mutability: Mutability,
     pub label: Option<Label>,
@@ -898,12 +960,6 @@ pub struct FunctionSignature {
     pub prototype: FunctionPrototype,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SelfKind {
-    Copy,
-    Reference,
-}
-
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum BinaryOperator {
     /// `+`
@@ -930,6 +986,10 @@ pub enum BinaryOperator {
     BitShl,
     /// `>>`
     BitShr,
+    /// `===`, non-overloadable class identity.
+    IdentityEql,
+    /// `!==`, non-overloadable class nonidentity.
+    IdentityNeq,
     /// `==`
     Eql,
     /// `<`
@@ -1031,6 +1091,7 @@ impl TryFrom<DeclarationKind> for NamespaceDeclarationKind {
         Ok(match kind {
             DeclarationKind::Function(node) => NamespaceDeclarationKind::Function(node),
             DeclarationKind::Struct(node) => NamespaceDeclarationKind::Struct(node),
+            DeclarationKind::Class(node) => NamespaceDeclarationKind::Class(node),
             DeclarationKind::Enum(node) => NamespaceDeclarationKind::Enum(node),
             DeclarationKind::StaticVariable(node) => NamespaceDeclarationKind::StaticVariable(node),
             DeclarationKind::Constant(node) => NamespaceDeclarationKind::Constant(node),
@@ -1157,7 +1218,6 @@ impl<T> VisitorResult for ControlFlow<T> {
 pub trait AstVisitor: Sized {
     type Result: VisitorResult = ();
 
-    #[allow(dead_code)]
     fn visit_package(&mut self, node: &Package) -> Self::Result {
         walk_package(self, node)
     }
@@ -1275,6 +1335,10 @@ pub trait AstVisitor: Sized {
         walk_label(self, node)
     }
 
+    fn visit_class_definition(&mut self, node: &Class) -> Self::Result {
+        walk_class_definition(self, node)
+    }
+
     fn visit_struct_definition(&mut self, node: &Struct) -> Self::Result {
         walk_struct_definition(self, node)
     }
@@ -1313,8 +1377,8 @@ pub trait AstVisitor: Sized {
         walk_type_argument(self, node)
     }
 
-    fn visit_pattern_path(&mut self, node: &PatternPath) -> Self::Result {
-        walk_pattern_path(self, node)
+    fn visit_constructor_path(&mut self, node: &ConstructorPath) -> Self::Result {
+        walk_constructor_path(self, node)
     }
 
     fn visit_identifier(&mut self, _: &Identifier) -> Self::Result {
@@ -1395,6 +1459,9 @@ pub fn walk_declaration<V: AstVisitor>(visitor: &mut V, declaration: &Declaratio
         DeclarationKind::Struct(node) => {
             try_visit!(visitor.visit_struct_definition(&node));
         }
+        DeclarationKind::Class(node) => {
+            try_visit!(visitor.visit_class_definition(node));
+        }
         DeclarationKind::Enum(node) => {
             try_visit!(visitor.visit_enum_definition(&node));
         }
@@ -1467,6 +1534,13 @@ pub fn walk_assoc_declaration<V: AstVisitor>(
     visitor.visit_identifier(&declaration.identifier);
 
     match &declaration.kind {
+        AssociatedDeclarationKind::Initializer(node) => {
+            try_visit!(visitor.visit_function(
+                declaration.id,
+                &node.function,
+                FunctionContext::Assoc(context)
+            ));
+        }
         AssociatedDeclarationKind::Constant(node) => {
             try_visit!(visitor.visit_constant(&node));
         }
@@ -1481,6 +1555,9 @@ pub fn walk_assoc_declaration<V: AstVisitor>(
             try_visit!(visitor.visit_alias(&node));
         }
         AssociatedDeclarationKind::Property(node) => {
+            try_visit!(visitor.visit_type(&node.ty));
+        }
+        AssociatedDeclarationKind::Subscript(node) => {
             try_visit!(visitor.visit_type(&node.ty));
         }
     }
@@ -1528,6 +1605,9 @@ pub fn walk_namespace_declaration<V: AstVisitor>(
     match &declaration.kind {
         NamespaceDeclarationKind::Struct(node) => {
             try_visit!(visitor.visit_struct_definition(node))
+        }
+        NamespaceDeclarationKind::Class(node) => {
+            try_visit!(visitor.visit_class_definition(node))
         }
         NamespaceDeclarationKind::Enum(node) => {
             try_visit!(visitor.visit_enum_definition(node))
@@ -1617,7 +1697,7 @@ pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::
         ExpressionKind::Identifier(node) => {
             try_visit!(visitor.visit_identifier(node))
         }
-        ExpressionKind::Member { target, name } => {
+        ExpressionKind::Member { target, name, .. } => {
             try_visit!(visitor.visit_expression(target));
             try_visit!(visitor.visit_identifier(name));
         }
@@ -1627,9 +1707,17 @@ pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::
         ExpressionKind::Specialize {
             target,
             type_arguments,
+            index,
         } => {
             try_visit!(visitor.visit_expression(target));
             try_visit!(visitor.visit_type_arguments(type_arguments));
+            if let Some(index) = index {
+                walk_list!(visitor, visit_expression_argument, index);
+            }
+        }
+        ExpressionKind::Index { target, index } => {
+            try_visit!(visitor.visit_expression(target));
+            walk_list!(visitor, visit_expression_argument, index);
         }
         ExpressionKind::Array(expressions) => {
             walk_list!(visitor, visit_expression, expressions)
@@ -1663,7 +1751,7 @@ pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::
             try_visit!(visitor.visit_expression(expression));
             walk_list!(visitor, visit_expression_argument, arguments);
         }
-        ExpressionKind::Reference(expression, _) => {
+        ExpressionKind::Reference(expression) => {
             try_visit!(visitor.visit_expression(expression));
         }
         ExpressionKind::Dereference(expression) => {
@@ -1747,8 +1835,9 @@ pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::
             try_visit!(visitor.visit_expression(expression));
         }
         ExpressionKind::StructLiteral(node) => {
-            try_visit!(visitor.visit_path(&node.path));
+            try_visit!(visitor.visit_constructor_path(&node.path));
             walk_list!(visitor, visit_expression_field, &node.fields);
+            visit_optional!(visitor, visit_expression, &node.base);
         }
         ExpressionKind::CfgCheck(_) => {
             // CfgExpr doesn't contain inner expressions to visit
@@ -1770,7 +1859,7 @@ pub fn walk_type<V: AstVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
         TypeKind::Pointer(internal, _) => {
             try_visit!(visitor.visit_type(internal))
         }
-        TypeKind::Reference(internal, _) => {
+        TypeKind::Reference(internal) => {
             try_visit!(visitor.visit_type(internal))
         }
         TypeKind::Parenthesis(internal) => {
@@ -1786,7 +1875,7 @@ pub fn walk_type<V: AstVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
             try_visit!(visitor.visit_anon_constant(size));
             try_visit!(visitor.visit_type(element));
         }
-        TypeKind::List(element) => {
+        TypeKind::List(element) | TypeKind::Slice(element) => {
             try_visit!(visitor.visit_type(element));
         }
         TypeKind::Dictionary { key, value } => {
@@ -1823,18 +1912,22 @@ pub fn walk_pattern<V: AstVisitor>(visitor: &mut V, pattern: &Pattern) -> V::Res
             try_visit!(visitor.visit_identifier(identifier))
         }
         PatternKind::Member(head) => {
-            try_visit!(visitor.visit_pattern_path(head))
+            try_visit!(visitor.visit_constructor_path(head))
         }
         PatternKind::PathTuple { fields, path, .. } => {
-            try_visit!(visitor.visit_pattern_path(path));
+            try_visit!(visitor.visit_constructor_path(path));
             walk_list!(visitor, visit_pattern, fields);
+        }
+        PatternKind::PathNamed { fields, path, .. } => {
+            try_visit!(visitor.visit_constructor_path(path));
+            for field in fields {
+                try_visit!(visitor.visit_pattern(&field.pattern));
+            }
         }
         PatternKind::Tuple(patterns, _) => {
             walk_list!(visitor, visit_pattern, patterns);
         }
-        PatternKind::Reference { pattern, .. } => {
-            try_visit!(visitor.visit_pattern(pattern));
-        }
+
         PatternKind::Or(patterns, _) => {
             walk_list!(visitor, visit_pattern, patterns);
         }
@@ -1950,6 +2043,16 @@ pub fn walk_block<V: AstVisitor>(visitor: &mut V, block: &Block) -> V::Result {
 }
 
 #[inline]
+pub fn walk_class_definition<V: AstVisitor>(visitor: &mut V, node: &Class) -> V::Result {
+    try_visit!(visitor.visit_generics(&node.generics));
+    if let Some(conformances) = &node.conformances {
+        try_visit!(visitor.visit_conformance(conformances));
+    }
+    walk_list!(visitor, visit_field_definition, &node.fields);
+    V::Result::output()
+}
+
+#[inline]
 pub fn walk_struct_definition<V: AstVisitor>(visitor: &mut V, node: &Struct) -> V::Result {
     try_visit!(visitor.visit_generics(&node.generics));
     if let Some(conformances) = &node.conformances {
@@ -1973,7 +2076,7 @@ pub fn walk_enum_definition<V: AstVisitor>(visitor: &mut V, node: &Enum) -> V::R
 pub fn walk_enum_variant<V: AstVisitor>(visitor: &mut V, node: &Variant) -> V::Result {
     try_visit!(visitor.visit_identifier(&node.identifier));
     match &node.kind {
-        VariantKind::Tuple(fields) => {
+        VariantKind::Tuple(fields) | VariantKind::Struct(fields) => {
             walk_list!(visitor, visit_field_definition, fields);
         }
         _ => {}
@@ -1989,6 +2092,7 @@ pub fn walk_field_definition<V: AstVisitor>(
 ) -> V::Result {
     try_visit!(visitor.visit_identifier(&field_definition.identifier));
     try_visit!(visitor.visit_type(&field_definition.ty));
+    visit_optional!(visitor, visit_expression, &field_definition.default_value);
     V::Result::output()
 }
 
@@ -2077,12 +2181,12 @@ pub fn walk_generic_bound<V: AstVisitor>(visitor: &mut V, node: &GenericBound) -
     V::Result::output()
 }
 
-pub fn walk_pattern_path<V: AstVisitor>(visitor: &mut V, node: &PatternPath) -> V::Result {
+pub fn walk_constructor_path<V: AstVisitor>(visitor: &mut V, node: &ConstructorPath) -> V::Result {
     match node {
-        PatternPath::Qualified { path, .. } => {
+        ConstructorPath::Qualified { path, .. } => {
             try_visit!(visitor.visit_path(path))
         }
-        PatternPath::Inferred { name, .. } => {
+        ConstructorPath::Inferred { name, .. } => {
             try_visit!(visitor.visit_identifier(&name));
         }
     }
@@ -2157,8 +2261,8 @@ impl Pattern {
             | PatternKind::Or(sub_pats, _) => {
                 sub_pats.iter().for_each(|p| p.walk(action));
             }
-            PatternKind::Reference { pattern, .. } => {
-                pattern.walk(action);
+            PatternKind::PathNamed { fields, .. } => {
+                fields.iter().for_each(|field| field.pattern.walk(action));
             }
         }
     }

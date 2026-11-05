@@ -1,4 +1,4 @@
-// References derived from payloads, calls, and aggregates keep their referents alive.
+// Payload references returned through calls/views address independent binding copies.
 
 enum Node {
     case leaf(int64)
@@ -11,12 +11,12 @@ struct Captured {
 }
 
 func makeNode() -> Node {
-    var body = List[Node]()
+    var body = List[Node]::new()
     body.append(.leaf(1))
     body.append(.leaf(2))
     body.append(.leaf(3))
 
-    var names = List[string]()
+    var names = List[string]::new()
     names.append("x")
     names.append("y")
 
@@ -25,56 +25,53 @@ func makeNode() -> Node {
 
 func sumLeaves(_ nodes: &List[Node]) -> int64 {
     var total: int64 = 0
-    for node in nodes {
+    for node in *nodes {
         match node {
-            case .leaf(value) => total += *value
+            case .leaf(value) => total += value
             case _ => {}
         }
     }
     return total
 }
 
-// A payload reference escaping the frame that built the enum.
-func payloadEscapes() -> &List[Node] {
-    let node = makeNode()
-    match &node {
-        case .block(_, body) => return body
-        case _ => return &List[Node]()
+// The payload borrow outlives this helper, but never its caller-owned enum.
+func payloadEscapes(_ node: &Node) -> &List[Node] {
+    match *node {
+        case .block(_, body) => return &body
+        case _ => panic("expected block node")
     }
 }
 
 // The same reborrow, handed back through a call.
 func reborrow(_ node: &Node) -> &List[Node] {
-    match node {
-        case .block(_, body) => return body
-        case _ => return &List[Node]()
+    match *node {
+        case .block(_, body) => return &body
+        case _ => panic("expected block node")
     }
 }
 
-func payloadEscapesThroughCall() -> &List[Node] {
-    let node = makeNode()
-    return reborrow(&node)
+func payloadEscapesThroughCall(_ node: &Node) -> &List[Node] {
+    return reborrow(node)
 }
 
 // The same reborrow, stored in a struct by a callee.
 func captureFields(_ node: &Node) -> Optional[Captured] {
-    match node {
-        case .block(names, body) => return .some(Captured { names: names, body: body })
+    match *node {
+        case .block(names, body) => return .some(Captured { names: &names, body: &body })
         case _ => return .none
     }
 }
 
-func payloadEscapesInAggregate() -> Optional[Captured] {
-    let node = makeNode()
-    return captureFields(&node)
+func payloadEscapesInAggregate(_ node: &Node) -> Optional[Captured] {
+    return captureFields(node)
 }
 
 /// Allocates enough to reuse any memory a dangling reference would point at.
 func churnHeap() {
-    var ballast = List[List[int64]]()
+    var ballast = List[List[int64]]::new()
     var i = 0
     while i < 512 {
-        var chunk = List[int64]()
+        var chunk = List[int64]::new()
         var j = 0
         while j < 32 {
             chunk.append(j as int64)
@@ -86,17 +83,18 @@ func churnHeap() {
 }
 
 func main() {
-    let direct = payloadEscapes()
+    var owner: Node = makeNode()
+    direct := payloadEscapes(&owner)
     churnHeap()
-    assert(direct.len() == 3, "payload reference survives its frame")
+    assert(direct.len() == 3, "payload reference survives the helper call")
     assert(sumLeaves(direct) == 6, "payload reference still holds its elements")
 
-    let throughCall = payloadEscapesThroughCall()
+    throughCall := payloadEscapesThroughCall(&owner)
     churnHeap()
     assert(throughCall.len() == 3, "payload reference survives a call")
     assert(sumLeaves(throughCall) == 6, "payload reference through a call is intact")
 
-    let captured = match payloadEscapesInAggregate() {
+    captured := match payloadEscapesInAggregate(&owner) {
         case .some(value) => value
         case .none => {
             assert(false, "expected a block node")
@@ -107,5 +105,5 @@ func main() {
     assert(captured.names.len() == 2, "aggregate keeps its reference alive")
     assert(sumLeaves(captured.body) == 6, "aggregate reference is intact")
 
-    std.print("PASS: escape through payload reference\n")
+    std::print("PASS: escape through payload reference\n")
 }

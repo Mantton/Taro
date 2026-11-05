@@ -1,2 +1,2 @@
-import globcycle.a.Missing
+import globcycle::a::Missing
 func main() {}

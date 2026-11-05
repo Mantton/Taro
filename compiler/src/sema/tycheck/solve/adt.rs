@@ -2,11 +2,10 @@ use super::ConstraintSolver;
 use crate::{
     sema::{
         error::TypeError,
-        models::{Const, Ty, TyKind},
-        resolve::models::DefinitionKind,
+        models::{AdtKind, Const, EnumVariantKind, Ty, TyKind},
         tycheck::{
-            solve::{Goal, Obligation, SolverResult, StructLiteralGoalData},
-            utils::instantiate::instantiate_struct_definition_with_args,
+            solve::{Goal, LiteralConstructor, Obligation, SolverResult, StructLiteralGoalData},
+            utils::named_fields::named_fields,
         },
     },
     span::{Span, Spanned},
@@ -38,40 +37,92 @@ impl<'ctx> ConstraintSolver<'ctx> {
         &mut self,
         data: StructLiteralGoalData<'ctx>,
     ) -> SolverResult<'ctx> {
-        let struct_ty = self.icx.resolve_vars_if_possible(data.struct_ty);
+        let struct_ty = self.structurally_resolve(data.struct_ty);
 
         // Defer if the struct type is still an inference variable
         if struct_ty.is_infer() {
             return SolverResult::Deferred;
         }
 
-        // Extract ADT definition
-        let TyKind::Adt(adt_def, args) = struct_ty.kind() else {
+        if struct_ty.is_error() {
+            return SolverResult::Solved(vec![]);
+        }
+        let mut obligations = Vec::new();
+        let constructor = match data.constructor {
+            LiteralConstructor::Struct => None,
+            LiteralConstructor::Variant(id) => Some(id),
+            LiteralConstructor::InferredVariant { node_id, name } => {
+                let TyKind::Adt(def, args) = struct_ty.kind() else {
+                    return SolverResult::Error(vec![Spanned::new(
+                        TypeError::NotAStruct { ty: struct_ty },
+                        data.ty_span,
+                    )]);
+                };
+                if def.kind != AdtKind::Enum {
+                    return SolverResult::Error(vec![Spanned::new(
+                        TypeError::NotAStruct { ty: struct_ty },
+                        data.ty_span,
+                    )]);
+                }
+                let Some(head) = self.type_head_from_type(struct_ty) else {
+                    unreachable!()
+                };
+                let resolution = match self.resolve_static_member_resolution(
+                    head,
+                    struct_ty,
+                    name,
+                    data.ty_span,
+                ) {
+                    Ok(resolution) => resolution,
+                    Err(errors) => return SolverResult::Error(errors),
+                };
+                let crate::hir::Resolution::Definition(
+                    id,
+                    crate::sema::resolve::models::DefinitionKind::VariantConstructor(..),
+                ) = resolution
+                else {
+                    return SolverResult::Error(vec![Spanned::new(
+                        TypeError::NotStructVariant { name: name.symbol },
+                        data.ty_span,
+                    )]);
+                };
+                if !self
+                    .gcx()
+                    .get_enum_definition(def.id)
+                    .variants
+                    .iter()
+                    .any(|variant| {
+                        variant.ctor_def_id == id
+                            && matches!(variant.kind, EnumVariantKind::Struct(..))
+                    })
+                {
+                    return SolverResult::Error(vec![Spanned::new(
+                        TypeError::NotStructVariant { name: name.symbol },
+                        data.ty_span,
+                    )]);
+                }
+                self.record_value_resolution(node_id, resolution);
+                obligations.extend(self.constraints_for_def(def.id, Some(args), data.ty_span));
+                Some(id)
+            }
+        };
+        let Some(declared) = named_fields(self.gcx(), struct_ty, constructor) else {
             let error = Spanned::new(TypeError::NotAStruct { ty: struct_ty }, data.ty_span);
             return SolverResult::Error(vec![error]);
         };
-
-        // Verify it's a struct, not an enum
-        if self.gcx().definition_kind(adt_def.id) != DefinitionKind::Struct {
-            let error = Spanned::new(TypeError::NotAStruct { ty: struct_ty }, data.ty_span);
-            return SolverResult::Error(vec![error]);
-        }
-
-        // Get struct definition and fields
-        let struct_def = self.gcx().get_struct_definition(adt_def.id);
-        let struct_def = instantiate_struct_definition_with_args(self.gcx(), struct_def, args);
-        let mut obligations = Vec::new();
-        let mut used_fields = vec![false; struct_def.fields.len()];
+        let declared = declared.fields;
+        let mut used_fields = vec![false; declared.len()];
 
         // Match provided fields to struct definition fields
         for provided_field in &data.fields {
             let mut found = false;
-            for (idx, def_field) in struct_def.fields.iter().enumerate() {
+            for (idx, def_field) in declared.iter().enumerate() {
                 if def_field.name == provided_field.name {
-                    if !self
-                        .gcx()
-                        .is_visibility_allowed(def_field.visibility, self.current_def)
-                    {
+                    if def_field.visibility.is_some_and(|visibility| {
+                        !self
+                            .gcx()
+                            .is_visibility_allowed(visibility, self.current_def)
+                    }) {
                         let error = Spanned::new(
                             TypeError::FieldNotVisible {
                                 name: def_field.name,
@@ -90,6 +141,12 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     // member access (e.g. `Pair { a: input.b }`). Consumers
                     // resolve literal entries by field name instead.
 
+                    if let Some(hint) = provided_field.expectation {
+                        obligations.push(Obligation {
+                            location: provided_field.value_span,
+                            goal: Goal::Equal(hint, def_field.ty),
+                        });
+                    }
                     // Create coercion constraint: provided type -> expected type
                     obligations.push(Obligation {
                         location: provided_field.value_span,
@@ -118,11 +175,12 @@ impl<'ctx> ConstraintSolver<'ctx> {
         // Check for missing required fields
         for (idx, field_used) in used_fields.iter().enumerate() {
             if !field_used {
-                let missing_field = &struct_def.fields[idx];
-                if !self
-                    .gcx()
-                    .is_visibility_allowed(missing_field.visibility, self.current_def)
-                {
+                let missing_field = &declared[idx];
+                if missing_field.visibility.is_some_and(|visibility| {
+                    !self
+                        .gcx()
+                        .is_visibility_allowed(visibility, self.current_def)
+                }) {
                     let error = Spanned::new(
                         TypeError::FieldNotVisible {
                             name: missing_field.name,
@@ -131,6 +189,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         data.span,
                     );
                     return SolverResult::Error(vec![error]);
+                }
+                if data.base_span.is_some() || missing_field.default_provider.is_some() {
+                    continue;
                 }
                 let error = Spanned::new(
                     TypeError::MissingStructField {
@@ -143,6 +204,91 @@ impl<'ctx> ConstraintSolver<'ctx> {
             }
         }
 
+        if let Some(span) = data.base_span
+            && used_fields.iter().all(|used| *used)
+        {
+            self.gcx().dcx().emit_warning("redundant struct update base: all fields are explicitly supplied; the base is still evaluated".into(), Some(span));
+        }
         SolverResult::Solved(obligations)
+    }
+}
+
+#[cfg(test)]
+mod update_tests {
+    use crate::test_support::analyze_script_mir_diagnostics;
+    #[test]
+    fn struct_updates_infer_generics_and_read_reference_bases_explicitly() {
+        let source = r#"
+struct Pair[T] { first: T; second: T }
+func update[T](_ base: Pair[T], _ first: T) -> Pair[T] { Pair { first, ..base } }
+func fromReference[T](_ base: &Pair[T], _ first: T) -> Pair[T] { Pair { first, ..*base } }
+func main() { var base = Pair { first: 1_i32, second: 2_i32 }; var changed = update(base, 3_i32); var copied = fromReference(&base, 4_i32); }
+"#;
+        let diagnostics = analyze_script_mir_diagnostics(source);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+    #[test]
+    fn redundant_update_base_warns_without_rejecting_the_program() {
+        let source = "struct One { value: int32 }; func main() { var base = One { value: 1 }; var next = One { value: 2, ..base }; }";
+        crate::test_support::check_script(source, |_, _| {});
+        let diagnostics = analyze_script_mir_diagnostics(source);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("base is still evaluated"));
+    }
+    #[test]
+    fn updates_reject_enum_variants_initializers_and_nonmatching_value_types() {
+        for (source, expected) in [
+            (
+                "enum Choice { case value { x: int32; y: int32 } }; func f(_ base: Choice) -> Choice { .value { x: 1, ..base } }; func main() {}",
+                "enum variants cannot use",
+            ),
+            (
+                "enum Choice { case value { x: int32; y: int32 } }; func f(_ base: Choice) -> Choice { Choice::value { x: 1, ..base } }; func main() {}",
+                "enum variants cannot use",
+            ),
+            (
+                "struct Point { x: int32; y: int32 }; extend Point { init() { self.x = 1; self.y = 2 }; }; func f(_ base: Point) -> Point { Point { x: 3, ..base } }; func main() {}",
+                "declaring init",
+            ),
+            (
+                "struct Point { x: int32; y: int32 }; func f(_ base: &Point) -> Point { Point { x: 3, ..base } }; func main() {}",
+                "expected Point, found &Point",
+            ),
+            (
+                "struct Pair[T] { first: T; second: T }; func f(_ base: Pair[bool]) -> Pair[int32] { Pair[int32] { first: 3, ..base } }; func main() {}",
+                "bool",
+            ),
+        ] {
+            let diagnostics = analyze_script_mir_diagnostics(source);
+            assert!(
+                diagnostics.iter().any(|d| d.message.contains(expected)),
+                "{source}: {diagnostics:#?}"
+            );
+        }
+    }
+    #[test]
+    fn update_places_do_not_copy_the_whole_base() {
+        use crate::mir::{Operand, PlaceElem, Rvalue, StatementKind};
+        crate::test_support::analyze_script_built_mir(
+            "struct Pair { first: int32; second: int32 }; func update(_ base: Pair) -> Pair { Pair { first: 3, ..base } }; func main() {}",
+            |bodies, gcx| {
+                let body = bodies
+                    .iter()
+                    .find(|body| gcx.definition_ident(body.owner).symbol.as_str() == "update")
+                    .unwrap();
+                let operands: Vec<_> = body
+                    .basic_blocks
+                    .iter()
+                    .flat_map(|block| &block.statements)
+                    .filter_map(|statement| match &statement.kind {
+                        StatementKind::Assign(_, Rvalue::Aggregate { fields, .. }) => Some(fields),
+                        _ => None,
+                    })
+                    .flatten()
+                    .collect();
+                assert!(operands.iter().any(|operand| matches!(operand, Operand::Copy(place) if matches!(place.projection.last(), Some(PlaceElem::Field(index, _)) if index.index() == 1))));
+                assert!(!body.basic_blocks.iter().flat_map(|block| &block.statements).any(|statement| matches!(&statement.kind, StatementKind::Assign(_, Rvalue::Use(Operand::Copy(place))) if place.projection.is_empty() && matches!(body.locals[place.local].ty.kind(), crate::sema::models::TyKind::Adt(..)))));
+            },
+        );
     }
 }

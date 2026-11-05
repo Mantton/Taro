@@ -101,17 +101,17 @@ mod tests {
                 // spells its receiver as an inference variable already bound to T.
                 let solver = ConstraintSolver {
                     icx,
+                    coercions: 0,
                     obligations: Default::default(),
                     adjustments: Default::default(),
                     interface_calls: Default::default(),
                     integer_literals: Default::default(),
                     field_indices: Default::default(),
                     property_reads: Default::default(),
-                    property_writes: Default::default(),
                     overload_sources: Default::default(),
                     value_resolutions: Default::default(),
                     instantiation_args: Default::default(),
-                    compiler_call_contexts: Default::default(),
+                    opening_calls: Default::default(),
                     current_def: assoc_id,
                     assumption_constraints: &[],
                     param_env: ParamEnv::new(vec![Constraint::TypeEquality(
@@ -126,5 +126,58 @@ mod tests {
                 );
             },
         );
+    }
+    #[test]
+    fn function_pointer_unifies_inference_in_inputs_and_result() {
+        analyze_script("func main() {}", |_, gcx| {
+            let icx = Rc::new(InferCtx::new(gcx));
+            let parameter = icx.next_ty_var(Span::empty(FileID::from_raw(0)));
+            let function = |input, output| {
+                Ty::new(
+                    TyKind::FnPointer {
+                        effects: Default::default(),
+                        inputs: gcx.store.interners.intern_ty_list(vec![input]),
+                        output,
+                    },
+                    gcx,
+                )
+            };
+            TypeUnifier::new(icx.clone())
+                .unify(
+                    function(parameter, parameter),
+                    function(gcx.types.int32, gcx.types.int32),
+                )
+                .expect("a generic function value must infer its signature from context");
+            assert_eq!(icx.resolve_vars_if_possible(parameter), gcx.types.int32);
+        });
+    }
+
+    #[test]
+    fn function_pointer_unification_rejects_arity_and_result_mismatches() {
+        analyze_script("func main() {}", |_, gcx| {
+            let icx = Rc::new(InferCtx::new(gcx));
+            let function = |inputs, output| {
+                Ty::new(
+                    TyKind::FnPointer {
+                        effects: Default::default(),
+                        inputs: gcx.store.interners.intern_ty_list(inputs),
+                        output,
+                    },
+                    gcx,
+                )
+            };
+            let expected = function(vec![gcx.types.int32], gcx.types.int32);
+            let unifier = TypeUnifier::new(icx);
+            assert!(
+                unifier
+                    .unify(expected, function(vec![], gcx.types.int32))
+                    .is_err()
+            );
+            assert!(
+                unifier
+                    .unify(expected, function(vec![gcx.types.int32], gcx.types.bool))
+                    .is_err()
+            );
+        });
     }
 }

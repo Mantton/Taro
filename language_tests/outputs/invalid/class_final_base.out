@@ -1,0 +1,4 @@
+error: cannot inherit from a final class
+ -> language_tests/source_files/invalid/class_final_base.tr:2:15
+	class Derived: Base {}
+	               ^^^^

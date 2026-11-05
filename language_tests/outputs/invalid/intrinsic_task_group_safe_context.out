@@ -1,0 +1,4 @@
+error: call to unsafe function '__intrinsic_task_group_create' must be inside an unsafe { ... } block
+ -> language_tests/source_files/invalid/intrinsic_task_group_safe_context.tr:4:4
+	    __intrinsic_task_group_create[int32](false)
+	    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

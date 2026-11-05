@@ -1,0 +1,8 @@
+error: type 'Buffer' does not satisfy requirements for interface 'Readable'
+ -> language_tests/source_files/invalid/native_subscript_witness_identity.tr:3:18
+	conform Buffer to Readable { func __subscript_get(_ index: usize) -> int32 { 7 }; }
+	                  ^^^^^^^^
+info: missing required method '__subscript_get' with signature '(Self, usize) -> int32'
+ -> language_tests/source_files/invalid/native_subscript_witness_identity.tr:3:18
+	conform Buffer to Readable { func __subscript_get(_ index: usize) -> int32 { 7 }; }
+	                  ^^^^^^^^

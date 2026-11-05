@@ -1,0 +1,61 @@
+import std::encoding::{Codable, Decodable, Decoder}
+import std::result::Result
+
+enum TokenEvent: Codable {
+    case idle
+    case tuple(int32, string)
+    case person { name: string; age: int32 }
+}
+
+struct TokenRecord: Codable { name: string; event: TokenEvent }
+
+@test
+func tokenDecoderHandlesReorderedEnumEnvelopesAndNestedObjects() {
+    source := "{\"event\":{\"content\":{\"age\":37,\"name\":\"Ada\"},\"ignored\":[1,{\"x\":true}],\"kind\":\"person\"},\"name\":\"outer\"}"
+    record := std::json::decode[TokenRecord](source).unwrap()
+    std::runtime::collect()
+    std::assert(record.name == "outer", "outer object resumes after selected envelope")
+    match record.event {
+        case .person { name, age } => std::assert(name == "Ada" && age == 37, "reordered payload survives GC")
+        case _ => std::testing::fail("expected person")
+    }
+    tuple := std::json::decode[TokenEvent]("{\"content\":[7,\"seven\"],\"kind\":\"tuple\"}").unwrap()
+    match tuple {
+        case .tuple(number, text) => std::assert(number == 7 && text == "seven", "tuple content is an array")
+        case _ => std::testing::fail("expected tuple")
+    }
+    std::assert(std::json::decode[TokenEvent]("{\"kind\":\"idle\",\"content\":1}").isErr(), "unit variants reject content")
+}
+
+struct TokenName: Decodable { name: string }
+
+@test
+func tokenDecoderSelectsDuplicateValuesBeforeTypedConversion() {
+    first := std::json::Options::new().withDuplicateKeys(.useFirst)
+    last := std::json::Options::new().withDuplicateKeys(.useLast)
+    std::assert(std::json::decodeWithOptions[TokenName]("{\"name\":\"Ada\",\"name\":42}", first).unwrap().name == "Ada", "discarded last value need not fit field type")
+    std::assert(std::json::decodeWithOptions[TokenName]("{\"name\":42,\"name\":\"Grace\"}", last).unwrap().name == "Grace", "discarded first value need not fit field type")
+    std::assert(std::json::decodeWithOptions[TokenName]("{\"name\":\"Ada\",\"name\":[1,]}", first).isErr(), "discarded values must have valid syntax")
+    std::assert(std::json::decodeWithOptions[TokenName]("{\"name\":\"Ada\",\"extra\":{\"x\":1,\"x\":2}}", std::json::Options::new()).isErr(), "skipped fields still reject duplicates")
+}
+
+struct TokenDecoded { }
+// A global-free callback probe: errors distinguish custom construction from a
+// syntax prepass without depending on evaluation order of external effects.
+conform TokenDecoded to Decodable {
+    public static func decode[D: Decoder](from decoder: D) -> Result[Self, D::Error] {
+        return .err(decoder.error(.invalidValue, "custom decoder invoked"))
+    }
+}
+
+@test
+func tokenDecoderMakesValidationBeforeConstructionExplicit() {
+    match std::json::decode[TokenDecoded]("[") {
+        case .err(.codec(error)) => std::assert(error.message() == "custom decoder invoked", "default is single pass")
+        case _ => std::testing::fail("custom decoder should run before later syntax is known")
+    }
+    match std::json::decodeWithOptions[TokenDecoded]("[", std::json::Options::new().withValidationFirst(true)) {
+        case .err(.syntax(_)) => {}
+        case _ => std::testing::fail("validation first rejects malformed input before invoking custom decoder")
+    }
+}

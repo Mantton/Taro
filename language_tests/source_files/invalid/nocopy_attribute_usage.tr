@@ -1,0 +1,5 @@
+@NoCopy
+func invalid() {}
+@NoCopy("reason")
+struct Invalid {}
+func main() {}

@@ -1,0 +1,4 @@
+func forge(_ pointer: *mut uint8) -> [uint8] {
+    std::bytes::Buffer { state: pointer }.toBytes()
+}
+func main() {}

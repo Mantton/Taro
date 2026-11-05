@@ -5,6 +5,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -14,11 +15,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import disk_guard
+
 # Configuration
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 LANGUAGE_TESTS_DIR = PROJECT_ROOT / "language_tests"
 SOURCE_FILES_DIR = LANGUAGE_TESTS_DIR / "source_files"
 OUTPUTS_DIR = LANGUAGE_TESTS_DIR / "outputs"
+# Per-test wall-clock limit; override with TARO_LANGUAGE_TEST_TIMEOUT.
+TEST_TIMEOUT_SECONDS = int(os.environ.get("TARO_LANGUAGE_TEST_TIMEOUT", "300"))
+# Rewrite stdout/diagnostic snapshots that differ instead of failing; review
+# the resulting diff before committing it.
+BLESS_SNAPSHOTS = os.environ.get("TARO_LANGUAGE_TEST_BLESS") == "1"
 PACKAGE_FIXTURES_DIR = LANGUAGE_TESTS_DIR / "package_fixtures"
 BUILD_DIST_SCRIPT = PROJECT_ROOT / "development" / "scripts" / "build_dist.py"
 
@@ -36,13 +44,16 @@ TestRunResult = tuple[bool, str, TestDetails | None]
 
 
 @contextmanager
-def setup_test_environment(use_release: bool):
+def setup_test_environment(use_release: bool, existing_dist: Path | None = None):
     """Own the distribution and case artifacts through bootstrap and execution."""
     profile = "release" if use_release else "debug"
-    print(f"Bootstrapping distribution via build_dist.py ({profile})...")
     with tempfile.TemporaryDirectory(prefix="taro_tests_") as temporary:
         temp_dir = Path(temporary)
-        dist_dir = temp_dir / "dist"
+        dist_dir = existing_dist.resolve() if existing_dist else temp_dir / "dist"
+        if existing_dist:
+            print(f"Using existing distribution {dist_dir}")
+        else:
+            print(f"Bootstrapping distribution via build_dist.py ({profile})...")
         bootstrap_cmd = [
             sys.executable,
             str(BUILD_DIST_SCRIPT),
@@ -54,11 +65,13 @@ def setup_test_environment(use_release: bool):
             str(PROJECT_ROOT / "std"),
         ]
         try:
-            subprocess.run(
-                bootstrap_cmd,
-                cwd=PROJECT_ROOT,
-                check=True,
-            )
+            if not existing_dist:
+                subprocess.run(
+                    bootstrap_cmd,
+                    cwd=PROJECT_ROOT,
+                    env=dict(os.environ, TARO_HOME=str(dist_dir)),
+                    check=True,
+                )
         except subprocess.CalledProcessError as error:
             print("Failed to bootstrap distribution for language tests:")
             sys.exit(error.returncode or 1)
@@ -100,7 +113,7 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
         "expect_stderr_counts": [],
         "package_fixture": None,
     }
-    commands = {"CHECK_ONLY": "check", "TEST": "test", "BENCH": "bench", "BENCH_RELEASE": "bench"}
+    commands = {"VET": "vet", "CHECK_ONLY": "check", "TEST": "test", "BENCH": "bench", "BENCH_RELEASE": "bench"}
     fragments = {"EXPECT_STDOUT_CONTAINS", "EXPECT_STDERR_CONTAINS", "EXPECT_STDERR_NOT_CONTAINS"}
     values = fragments | {"STDIN", "ARGS", "ENV", "EXPECT_EXIT", "EXPECT_STDERR_COUNT", "TARGET", "PACKAGE"}
     mode = None
@@ -145,7 +158,9 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
                             raise ValueError("ENV requires KEY=value assignments")
                         result["env"][key] = env_value
                 elif name == "EXPECT_EXIT":
-                    result["expect_exit"] = int(value)
+                    # Fatal runtime statuses vary across OSes and may be
+                    # signals. Preserve the existing fixtures' nonzero oracle.
+                    result["expect_exit"] = "nonzero" if value == "nonzero" else int(value)
                 elif name == "EXPECT_STDERR_COUNT":
                     count_text, needle = value.split(maxsplit=1)
                     count = int(count_text)
@@ -216,7 +231,7 @@ def run_test(
         ]
 
         # All executable modes use per-case temporary paths, including test/bench.
-        if command != "check":
+        if command not in ("check", "vet"):
             cmd.extend(["-o", str(output_bin)])
 
         # Add --target flag if specified in test file
@@ -264,22 +279,49 @@ def run_test(
 
         process_env = os.environ.copy()
         process_env["TARO_HOME"] = str(env.taro_home)
+        # `taro run` caches each script's build under the system temp
+        # directory and never removes it; keep those caches in the run's own
+        # temporary directory so they are deleted with it.
+        child_temp = env.temp_dir / "tmp"
+        child_temp.mkdir(parents=True, exist_ok=True)
+        process_env["TMPDIR"] = str(child_temp)
         process_env.update(directives["env"])
 
-        # Run process
-        result = subprocess.run(
+        # Run process. A hung test (for example a runtime deadlock) must fail
+        # instead of stalling the suite; its own process group lets the
+        # timeout reach the compiled program as well as the `taro` driver.
+        process = subprocess.Popen(
             cmd,
-            input=directives["stdin"],
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             cwd=PROJECT_ROOT,
             env=process_env,
+            start_new_session=True,
         )
+        try:
+            stdout, stderr = process.communicate(
+                input=directives["stdin"], timeout=TEST_TIMEOUT_SECONDS
+            )
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            stdout, stderr = process.communicate()
+            return (
+                False,
+                f"Timed out after {TEST_TIMEOUT_SECONDS}s",
+                {"stderr": stderr, "stdout": stdout},
+            )
+        result = subprocess.CompletedProcess(cmd, process.returncode, stdout, stderr)
 
         expected_code = directives["expect_exit"]
         if expected_code is None and not is_invalid_test:
             expected_code = 0
-        if expected_code is not None and result.returncode != expected_code:
+        exit_matches = (
+            result.returncode != 0 if expected_code == "nonzero"
+            else expected_code is None or result.returncode == expected_code
+        )
+        if not exit_matches:
             return (
                 False,
                 "Unexpected exit code",
@@ -366,11 +408,15 @@ def run_test(
 
         if output_file_path.is_file():
             expected_output = output_file_path.read_text(encoding="utf-8")
-        elif is_invalid_test:
+        elif is_invalid_test and not BLESS_SNAPSHOTS:
             return False, "Missing diagnostic snapshot", {"error": str(output_file_path)}
         else:
             expected_output = ""
 
+        if actual_output != expected_output and BLESS_SNAPSHOTS:
+            output_file_path.parent.mkdir(parents=True, exist_ok=True)
+            output_file_path.write_text(actual_output, encoding="utf-8")
+            return True, "Blessed", None
         if actual_output != expected_output:
             return (
                 False,
@@ -502,7 +548,6 @@ def run_tests(
             )
             display_path = Path(codegen_variant) / relative_path
             success, msg, details = future.result()
-
             if success:
                 print(f"Running {display_path}... OK")
                 passed += 1
@@ -542,10 +587,23 @@ def main():
         help="Pass an explicit LLVM optimization level to every generated program.",
     )
     parser.add_argument(
+        "--gc-stress",
+        action="store_true",
+        help=(
+            "Run every program with TARO_GC_STRESS=1: collect at each allocation "
+            "and poll, poison freed cells and verify the heap after marking."
+        ),
+    )
+    parser.add_argument(
         "--jobs",
         "-j",
         type=positive_int,
         help="Number of concurrent workers. Defaults to min(selected_tests, CPU count). Use --jobs 1 for serial mode.",
+    )
+    parser.add_argument(
+        "--dist",
+        type=Path,
+        help="Reuse an already built distribution instead of bootstrapping one.",
     )
     profile_group = parser.add_mutually_exclusive_group()
     profile_group.add_argument(
@@ -562,11 +620,18 @@ def main():
         help="Build and run tests with debug compiler/runtime binaries.",
     )
     args = parser.parse_args()
+    if args.dist:
+        # Protect the explicitly selected SDK before startup cache pruning.
+        os.environ["TARO_HOME"] = str(args.dist.resolve())
+    disk_guard.enforce()
 
     try:
         test_files, skipped = discover_test_files(args.filter, args.manifest)
     except ValueError as error:
         parser.error(str(error))
+
+    if args.gc_stress:
+        os.environ["TARO_GC_STRESS"] = "1"
 
     codegen_profiles = (
         ["debug", "release"]
@@ -574,7 +639,7 @@ def main():
         else [args.codegen_profile]
     )
 
-    with setup_test_environment(args.release) as env:
+    with setup_test_environment(args.release, args.dist) as env:
         print(f"Running tests in {SOURCE_FILES_DIR}...")
         if args.filter:
             print(f"Filter: {args.filter}")
@@ -583,6 +648,8 @@ def main():
         print(f"Codegen profiles: {', '.join(codegen_profiles)}")
         if args.opt_level is not None:
             print(f"Optimization level: O{args.opt_level}")
+        if args.gc_stress:
+            print("GC stress: on")
         total = len(test_files) * len(codegen_profiles)
         jobs = resolve_jobs(args.jobs, total)
         if total > 0:
@@ -592,14 +659,18 @@ def main():
         failures: list[tuple[Path, str, TestDetails | None]] = []
         for codegen_profile in codegen_profiles:
             profile_passed, profile_failures = run_tests(
-                test_files, env, jobs, codegen_profile, args.opt_level
+                test_files,
+                env,
+                jobs,
+                codegen_profile,
+                args.opt_level,
             )
             passed += profile_passed
             failures.extend(profile_failures)
 
         print("-" * 40)
         elapsed = format_elapsed(time.perf_counter() - start_time)
-        summary = f"Total: {total}, Passed: {passed}, Failed: {total - passed}"
+        summary = f"Total: {total}, Passed: {passed}, Failed: {len(failures)}"
         if skipped > 0:
             summary += f", Skipped: {skipped}"
         summary += f", Elapsed: {elapsed}"
@@ -638,7 +709,7 @@ def main():
                     print("--- Error ---")
                     print(error)
 
-        if total != passed:
+        if failures:
             sys.exit(1)
 
 

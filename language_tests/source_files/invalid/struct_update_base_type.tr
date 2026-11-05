@@ -1,0 +1,3 @@
+struct Point { x: int32; y: int32 }
+func update(_ base: &Point) -> Point { Point { x: 3, ..base } }
+func main() {}

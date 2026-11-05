@@ -1,0 +1,2 @@
+public struct Row[T] { public tag: int32; public value: T; public count: int32 }
+public func make[T](_ value: T) -> Row[T] { Row { tag: 1, value, count: 2 } }

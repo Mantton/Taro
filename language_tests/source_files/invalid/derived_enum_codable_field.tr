@@ -1,0 +1,9 @@
+import std::encoding::Codable
+
+struct NotCodable {}
+enum InvalidEvent: Codable {
+    case valid(int32)
+    case invalid { value: NotCodable }
+}
+
+func main() {}

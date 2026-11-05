@@ -11,6 +11,6 @@ func bad[U](_ value: Box[U]) {
 }
 
 func main() {
-    let boxed = Box[int32] { value: 1 }
+    boxed := Box[int32] { value: 1 }
     bad(boxed)
 }

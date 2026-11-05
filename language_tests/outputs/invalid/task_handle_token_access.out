@@ -1,0 +1,4 @@
+error: field 'handle' of Task[int32] is not visible here
+ -> language_tests/source_files/invalid/task_handle_token_access.tr:2:51
+	func extract(_ task: &Task[int32]) -> *mut uint8 { task.handle }
+	                                                   ^^^^^^^^^^^

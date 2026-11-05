@@ -5,15 +5,16 @@ extern "taro_intrinsic" {
 
 /// An opaque handle to a captured task panic, carrying the original
 /// message and enough context to re-raise it with the original backtrace.
-/// Its backing storage is garbage-collected like other Taro values.
+/// Its immutable native string owns the serialized report; final release
+/// frees its bytes independently of the task frame or original report.
 @lang("PanicPayload")
 public struct PanicPayload {
     data: string
 }
 
-impl PanicPayload {
+extend PanicPayload {
     /// Returns the original panic message from the task that panicked.
-    public func message(&self) -> string {
+    public func message() -> string {
         __intrinsic_panic_payload_message(self.data)
     }
 
@@ -21,7 +22,7 @@ impl PanicPayload {
     ///
     /// - From a root-task context: crashes the program showing the original backtrace.
     /// - From a spawned-task context: becomes another `TaskError.panicked` at the outer level.
-    public func rethrow(self) -> ! {
+    public func rethrow() -> ! {
         __intrinsic_panic_payload_rethrow(self.data)
     }
 }

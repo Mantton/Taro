@@ -1,0 +1,4 @@
+error: `NoCopy` was removed; every value copies, so delete this bound or conformance
+ -> language_tests/source_files/invalid/marker_import_removed.tr:2:28
+	import std::marker::{Clone, NoCopy}
+	                            ^^^^^^

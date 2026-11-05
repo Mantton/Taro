@@ -1,0 +1,67 @@
+// ENV: TARO_GC_STRESS=1 TARO_WORKERS=4
+// Complete constructors snapshot their scalar fields before publishing the
+// result. Reference/string payloads, padding, shared replacement and null
+// niches must remain valid while later operand evaluation can collect.
+enum Mixed {
+    case packed { marker: uint8; target: &int32; weight: double; flag: bool; text: string }
+    case number(int64)
+    case wide([&int32; 8])
+}
+enum Niche {
+    case empty {}
+    case live(&int32)
+}
+
+@noinline
+func fresh(_ number: int32) -> &int32 {
+    var value = number
+    std::runtime::collect()
+    &value
+}
+
+@noinline
+func text() -> string {
+    std::runtime::collect()
+    "scalar " + "payload"
+}
+
+@noinline
+func make(_ number: int32) -> Mixed {
+    .packed { marker: 17, target: fresh(number), weight: 3.5, flag: true, text: text() }
+}
+
+@noinline
+func replace(_ value: &Mixed) { *value = .number(99) }
+
+func main() {
+    var iteration: int32 = 0
+    while iteration < 24 {
+        var original = make(iteration)
+        saved := original
+        replace(&original)
+        var niche: Niche = .live(fresh(iteration + 1))
+        nicheCopy := niche
+        niche = .empty {}
+        std::runtime::collect()
+        match saved {
+            case .packed { marker, target, weight, flag, text } => {
+                assert(marker == 17 && weight == 3.5 && flag, "mixed scalar payload and padding")
+                assert(*target == iteration && text == "scalar payload", "managed fields survive later calls")
+            }
+            case _ => panic("shared replacement must preserve the snapshot")
+        }
+        match original {
+            case .number(value) => assert(value == 99, "replacement tag and payload")
+            case _ => panic("wrong replacement variant")
+        }
+        match nicheCopy {
+            case .live(value) => assert(*value == iteration + 1, "niche payload survives replacement")
+            case _ => panic("wrong niche payload")
+        }
+        match niche {
+            case .empty {} => {}
+            case _ => panic("empty struct variant uses the null niche")
+        }
+        iteration += 1
+    }
+}

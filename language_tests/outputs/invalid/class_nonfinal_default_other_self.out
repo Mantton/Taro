@@ -1,0 +1,4 @@
+error: owned Self result must preserve the receiver's dynamic class; return self, required Self construction, or a proven Self result on that receiver
+ -> language_tests/source_files/invalid/class_nonfinal_default_other_self.tr:4:12
+	class Base: Factory {}
+	            ^^^^^^^

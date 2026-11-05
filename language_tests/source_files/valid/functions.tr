@@ -22,15 +22,15 @@ func first_arg(_ vals: int32...) -> int32 {
 
 func main() {
     // 1. Basic usage
-    let s = sum(1, 2, 3)
+    s := sum(1, 2, 3)
     assert(s == 6, "sum(1, 2, 3) == 6")
 
     // 2. Empty usage
-    let s0 = sum()
+    s0 := sum()
     assert(s0 == 0, "sum() == 0")
 
     // 3. Single arg
-    let s1 = sum(10)
+    s1 := sum(10)
     assert(s1 == 10, "sum(10) == 10")
 
     // 4. Argument count
@@ -49,7 +49,7 @@ func main() {
     // 7. Test with strings (ensure generics work)
     assert(count_strings("a", "b") == 2, "count_strings == 2")
 
-    std.print("PASS: Variadic functions\n")
+    std::print("PASS: Variadic functions\n")
 }
 
 func count_strings(_ vals: string...) -> usize {
@@ -67,6 +67,6 @@ func sum_with_base(with base: int32 = 5, _ vals: int32...) -> int32 {
 }
 
 func count_with_label(tag label: string, _ vals: int32...) -> usize {
-    let _ = label
+    var _ = label
     vals.len()
 }

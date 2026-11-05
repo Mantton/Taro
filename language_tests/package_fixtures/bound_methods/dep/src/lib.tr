@@ -1,0 +1,18 @@
+public struct Counter { value: int32 }
+extend Counter {
+    public func take() -> int32 { self.value }
+    public func read() -> int32 { self.value }
+}
+public func owned(_ value: int32) -> any Fn() -> int32 {
+    var counter: Counter = Counter { value }
+    counter.take
+}
+public func apply[T](_ value: T) -> T {
+    holder := Holder { value }
+    read := holder.read
+    read()
+}
+struct Holder[T] { value: T }
+extend[T] Holder[T] {
+    func read() -> T { self.value }
+}

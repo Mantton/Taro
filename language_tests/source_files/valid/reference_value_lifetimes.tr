@@ -1,0 +1,53 @@
+// TEST
+// ENV: TARO_WORKERS=4
+// Reference-containing values retain their selected storage across scopes.
+struct Selection { value: &int32 }
+enum Choice { case empty; case selected(Selection) }
+func read(_ value: &int32) -> int32 { *value }
+
+@test
+func innerScopesPreserveSelectedTargets() {
+    var outer: int32 = 0
+    var selection = Selection { value: &outer }
+    {
+        var inner: int32 = 1
+        selection = Selection { value: &inner }
+        assert(*selection.value == 1, "reference field selects the inner value")
+    }
+    assert(*selection.value == 1, "the reference retains its target after the inner scope")
+    selection = Selection { value: &outer }
+    assert(*selection.value == 0, "replacing a reference field selects fresh storage")
+
+    var saved: &int32 = &outer
+    {
+        pointer := &outer
+        saved = &*pointer
+    }
+    assert(*saved == 0, "ending a header's scope does not end its target's lifetime")
+}
+
+@test
+func referenceFieldsAndEnumPayloadsObserveWrites() {
+    var deferred = false
+    {
+        defer { deferred = true }
+        var value: int32 = 1
+        reference := &value
+        assert(read(reference) == 1, "reference parameter reads the selected value")
+        value = 2
+
+        selection := Selection { value: &value }
+        assert(*selection.value == 2, "struct field retains the reference value")
+        value = 3
+
+        var choice: Choice = .selected(Selection { value: &value })
+        match choice {
+            case .empty => panic("expected selected")
+            case .selected(selected) => assert(*selected.value == 3, "enum payload retains the reference value")
+        }
+        value = 4
+        assert(value == 4 && *reference == 4 && *selection.value == 4,
+            "writes remain visible through the surviving reference values")
+    }
+    assert(deferred, "defer executes after the reference-containing scope")
+}

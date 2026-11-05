@@ -1,0 +1,9 @@
+// CHECK_ONLY
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_CONTAINS: ambiguous
+// EXPECT_STDERR_NOT_CONTAINS: panicked
+interface Left { func read() -> int32 { 1 }; }
+interface Right { func read() -> int32 { 2 }; }
+class Base: Left, Right {}
+func check(_ value: Base) -> int32 { value.read() }
+func main() {}

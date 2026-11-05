@@ -14,7 +14,12 @@
 
 (interface_declaration) @class.around
 
-(impl_declaration) @class.around
+(extension_declaration) @class.around
+(conformance_declaration) @class.around
 (declaration_body) @class.inside
 
 (block) @block.around
+
+(class_declaration) @class.around
+(initializer_declaration) @function.around
+(initializer_declaration body: (block) @function.inside)

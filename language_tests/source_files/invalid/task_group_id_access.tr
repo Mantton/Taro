@@ -1,0 +1,7 @@
+import std::task::TaskGroup
+
+func expose(_ group: &TaskGroup[int32]) -> usize {
+    group.id
+}
+
+func main() {}

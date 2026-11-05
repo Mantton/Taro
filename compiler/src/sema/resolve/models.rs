@@ -32,7 +32,7 @@ pub enum DefinitionKind {
     AssociatedFunction,
     AssociatedConstant,
     AssociatedProperty,
-    AssociatedOperator,
+    AssociatedSubscript,
     AssociatedType,
     VariantConstructor(VariantCtorKind),
     OpaqueType,
@@ -60,9 +60,9 @@ impl DefinitionKind {
             DefinitionKind::AssociatedFunction => "associated function",
             DefinitionKind::AssociatedConstant => "associated constant",
             DefinitionKind::AssociatedProperty => "associated property",
+            DefinitionKind::AssociatedSubscript => "subscript",
             DefinitionKind::ConstParameter => "const parameter",
             DefinitionKind::ModuleVariable => "variable",
-            DefinitionKind::AssociatedOperator => "associated operator",
             DefinitionKind::OpaqueType => "opaque type",
         }
     }
@@ -77,7 +77,7 @@ pub enum VariantCtorKind {
 impl VariantCtorKind {
     pub fn from_variant(vdata: &ast::VariantKind) -> VariantCtorKind {
         match *vdata {
-            ast::VariantKind::Tuple(..) => VariantCtorKind::Function,
+            ast::VariantKind::Tuple(..) | ast::VariantKind::Struct(..) => VariantCtorKind::Function,
             ast::VariantKind::Unit => VariantCtorKind::Constant,
         }
     }
@@ -300,8 +300,6 @@ impl<'a> LexicalScope<'a> {
 
 pub enum LexicalScopeSource<'a> {
     Plain,
-    #[allow(unused)]
-    Definition(DefinitionID),
     Scoped(Scope<'a>),
 }
 
@@ -343,12 +341,37 @@ pub enum ResolutionError {
     IdentifierBoundMoreThanOnceInParameterList(Identifier),
     IdentifierBoundMoreThanOnceInSamePattern(Identifier),
     UnknownMember(Identifier),
+    WrongMemberSeparator {
+        name: Identifier,
+        qualified: bool,
+        span: Span,
+    },
     SpecializationDisallowed(Option<Resolution>, Span),
+}
+
+/// Explains a name the value-semantics pivot removed, instead of reporting
+/// an unknown symbol.
+pub fn removed_marker_message(name: &str) -> Option<String> {
+    let reason = match name {
+        "Copy" | "NoCopy" => "every value copies, so delete this bound or conformance",
+        "Sendable" => "values may cross tasks freely, so delete this bound or conformance",
+        "Escapable" => "every type is escapable, so delete this bound",
+        _ => return None,
+    };
+    Some(format!("`{name}` was removed; {reason}"))
 }
 
 impl ResolutionError {
     pub fn diag(&self, gcx: crate::compile::context::Gcx<'_>) -> Diagnostic {
         match self {
+            ResolutionError::UnknownSymbol(ident) | ResolutionError::UnknownMember(ident)
+                if removed_marker_message(gcx.symbol_text(ident.symbol).as_ref()).is_some() =>
+            {
+                Diagnostic::error(
+                    removed_marker_message(gcx.symbol_text(ident.symbol).as_ref()).unwrap(),
+                    Some(ident.span),
+                )
+            }
             ResolutionError::Expectation {
                 expectation,
                 provided,
@@ -421,6 +444,20 @@ impl ResolutionError {
                 Some(ident.span),
             ),
 
+            ResolutionError::WrongMemberSeparator {
+                name,
+                qualified,
+                span,
+            } => Diagnostic::error(
+                format!(
+                    "{} access to `{}` requires `{}`",
+                    if *qualified { "qualified" } else { "instance" },
+                    gcx.symbol_text(name.symbol),
+                    if *qualified { "::" } else { "." },
+                ),
+                Some(*span),
+            ),
+
             ResolutionError::SpecializationDisallowed(resolution, span) => Diagnostic::error(
                 format!(
                     "specialization is disallowed for {}",
@@ -445,6 +482,7 @@ pub struct BindingError {
 #[derive(Debug, Clone, Copy)]
 pub enum ResolutionSource {
     Type,
+    Constructor,
     TypeArgument,
     AliasTarget,
     ImplTarget,
@@ -458,6 +496,7 @@ impl ResolutionSource {
     pub fn namespace(&self) -> ScopeNamespace {
         match self {
             ResolutionSource::Type
+            | ResolutionSource::Constructor
             | ResolutionSource::TypeArgument
             | ResolutionSource::AliasTarget
             | ResolutionSource::ImplTarget
@@ -470,6 +509,13 @@ impl ResolutionSource {
 
     pub fn is_allowed(&self, res: &Resolution) -> bool {
         match self {
+            ResolutionSource::Constructor => {
+                ResolutionSource::Type.is_allowed(res)
+                    || matches!(
+                        res,
+                        Resolution::Definition(_, DefinitionKind::VariantConstructor(..))
+                    )
+            }
             ResolutionSource::Type => {
                 matches!(
                     res,
@@ -561,6 +607,7 @@ impl ResolutionSource {
     pub fn expected(&self) -> String {
         match self {
             ResolutionSource::Type => "type".into(),
+            ResolutionSource::Constructor => "struct type or named enum variant".into(),
             ResolutionSource::TypeArgument => "type or const argument".into(),
             ResolutionSource::AliasTarget => "type or interface".into(),
             ResolutionSource::ImplTarget => "type or interface".into(),
@@ -574,6 +621,7 @@ impl ResolutionSource {
     pub fn defer_to_type_checker(&self) -> bool {
         match self {
             ResolutionSource::Type => true,
+            ResolutionSource::Constructor => true,
             ResolutionSource::TypeArgument => true,
             ResolutionSource::AliasTarget => true,
             ResolutionSource::ImplTarget => true,
@@ -673,7 +721,7 @@ pub enum TypeHead {
     Parameter(DefinitionID),
     /// An anonymous closure type identity.
     Closure(DefinitionID),
-    Reference(ast::Mutability),
+    Reference,
     Pointer(ast::Mutability),
     Tuple(u16),
     Array,
@@ -690,7 +738,7 @@ impl TypeHead {
             TypeHead::Nominal(id) => gcx.symbol_text(gcx.definition_ident(id).symbol).into(),
             TypeHead::Parameter(id) => gcx.symbol_text(gcx.definition_ident(id).symbol).into(),
             TypeHead::Closure(_) => "closure".into(),
-            TypeHead::Reference(m) => format!("&{}_", m.display_str()),
+            TypeHead::Reference => "&_".into(),
             TypeHead::Pointer(m) => format!("*{}_", m.display_str()),
             TypeHead::Tuple(n) => format!("({})", ",".repeat(n as usize)),
             TypeHead::Array => "[_]".into(),
@@ -709,12 +757,30 @@ pub struct ResolutionOutput<'arena> {
     pub definition_scope_mapping: FxHashMap<DefinitionID, Scope<'arena>>,
     pub block_scope_mapping: FxHashMap<NodeID, Scope<'arena>>,
     pub expression_resolutions: FxHashMap<NodeID, ExpressionResolutionState>,
+    pub(crate) member_bracket_diagnostics:
+        FxHashMap<NodeID, crate::diagnostics::BracketDiagnostics>,
     pub root_scope: Scope<'arena>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Visibility {
     Public,
+    /// Visible throughout the defining package; owner carries a remappable ID.
+    Internal(DefinitionID),
     Private(DefinitionID),
-    FilePrivate(FileID),
+}
+
+impl Visibility {
+    /// A non-final class's required constructor must be callable by every
+    /// potential subclass. A private member is scoped to its owner, whereas
+    /// even a private class is visible in the owner's enclosing scope.
+    pub(crate) fn supports_required_initializer(self, class: Self) -> bool {
+        match (self, class) {
+            (Self::Public, _) => true,
+            (Self::Internal(owner), Self::Internal(scope) | Self::Private(scope)) => {
+                owner.package() == scope.package()
+            }
+            _ => false,
+        }
+    }
 }

@@ -1,42 +1,7 @@
 use super::*;
 
-/// Context for tracking binding modes during pattern matching.
-/// This enables "match ergonomics" - automatic dereferencing and binding mode adjustment.
-struct PatternContext<'ctx> {
-    /// Current default binding mode (starts as ByValue, becomes ByRef when auto-derefing)
-    default_mode: hir::BindingMode,
-    /// The adjusted scrutinee type after auto-derefs
-    adjusted_ty: Ty<'ctx>,
-}
-
-impl<'ctx> PatternContext<'ctx> {
-    fn new(scrutinee: Ty<'ctx>) -> Self {
-        Self {
-            default_mode: hir::BindingMode::ByValue,
-            adjusted_ty: scrutinee,
-        }
-    }
-
-    /// Update binding mode when matching a reference with a non-reference pattern.
-    /// This implements the match ergonomics rules.
-    fn adjust_for_reference(&mut self, mutability: hir::Mutability, inner_ty: Ty<'ctx>) {
-        self.default_mode = match (self.default_mode, mutability) {
-            // If already ByRef, stay ByRef (don't upgrade to ByRef(Mutable))
-            (hir::BindingMode::ByRef(_), hir::Mutability::Mutable) => self.default_mode,
-            // Otherwise, match the reference's mutability
-            (_, mutability) => hir::BindingMode::ByRef(mutability),
-        };
-        self.adjusted_ty = inner_ty;
-    }
-
-    /// Reset to ByValue mode (when encountering an explicit reference pattern)
-    fn reset_to_move(&mut self) {
-        self.default_mode = hir::BindingMode::ByValue;
-    }
-}
-
 impl<'ctx> Checker<'ctx> {
-    /// Entry point for pattern checking. Creates a PatternContext and delegates to check_pattern_with_context.
+    /// Structural match patterns read through references; bindings always copy values.
     pub(super) fn check_pattern(
         &self,
         pattern: &hir::Pattern,
@@ -44,131 +9,94 @@ impl<'ctx> Checker<'ctx> {
         scrutinee_node_id: NodeID,
         cs: &mut Cs<'ctx>,
     ) {
-        let mut ctx = PatternContext::new(scrutinee);
-        self.check_pattern_with_context(pattern, &mut ctx, scrutinee_node_id, cs);
+        let mut ctx = scrutinee;
+        self.check_pattern_with_context(pattern, &mut ctx, scrutinee_node_id, true, cs);
     }
 
-    /// Handles automatic dereferencing (match ergonomics).
-    /// If the scrutinee is a reference and the pattern is not a reference pattern,
-    /// automatically dereference and adjust the binding mode.
-    /// Records Dereference adjustments for each auto-deref.
-    fn check_pattern_with_context(
+    /// Local destructuring retains explicit value reads. Match/if-case targets
+    /// have structural autodereferencing; ordinary local declarations do not.
+    pub(super) fn check_local_pattern(
         &self,
         pattern: &hir::Pattern,
-        ctx: &mut PatternContext<'ctx>,
+        scrutinee: Ty<'ctx>,
         scrutinee_node_id: NodeID,
         cs: &mut Cs<'ctx>,
     ) {
-        use crate::sema::tycheck::solve::Adjustment;
+        let mut ty = scrutinee;
+        self.check_pattern_with_context(pattern, &mut ty, scrutinee_node_id, false, cs);
+    }
 
+    fn check_pattern_with_context(
+        &self,
+        pattern: &hir::Pattern,
+        ctx: &mut Ty<'ctx>,
+        scrutinee_node_id: NodeID,
+        autoderef: bool,
+        cs: &mut Cs<'ctx>,
+    ) {
         // Destructuring needs the initializer's structure before pending
         // coercions are solved. Do not force unrelated overloads to resolve.
         if !matches!(
             pattern.kind,
             hir::PatternKind::Binding { .. } | hir::PatternKind::Wildcard
-        ) && cs
-            .infer_cx
-            .resolve_vars_if_possible(ctx.adjusted_ty)
-            .is_infer()
+        ) && cs.infer_cx.resolve_vars_if_possible(*ctx).is_infer()
         {
             if let Some(scrutinee_ty) = cs.expr_ty(scrutinee_node_id) {
                 let resolved = cs.infer_cx.resolve_vars_if_possible(scrutinee_ty);
                 if !resolved.is_infer() {
-                    ctx.adjusted_ty = resolved;
+                    *ctx = resolved;
                 }
             }
         }
 
-        if matches!(pattern.kind, hir::PatternKind::Reference { .. })
-            && cs
-                .infer_cx
-                .resolve_vars_if_possible(ctx.adjusted_ty)
-                .is_infer()
-        {
-            cs.solve_intermediate();
-        }
-
-        // Auto-deref loop: if scrutinee is &T and pattern is NOT &pat, auto-deref
-        let mut adjustments = Vec::new();
-        while let TyKind::Reference(inner_ty, mutability) =
-            cs.infer_cx.resolve_vars_if_possible(ctx.adjusted_ty).kind()
-        {
-            // Don't auto-deref if this is an explicit reference pattern, or if it's a binding/wildcard
-            // which should consume the reference as-is (fixing a double-reference issue in MIR)
-            if matches!(
-                pattern.kind,
-                hir::PatternKind::Reference { .. }
-                    | hir::PatternKind::Binding { .. }
-                    | hir::PatternKind::Wildcard
-                    | hir::PatternKind::Rest
-            ) {
-                break;
+        // A structural pattern reads the referent. A plain identifier copies
+        // the reference itself; reference-typed payload bindings remain &T.
+        if !matches!(
+            pattern.kind,
+            hir::PatternKind::Binding { .. }
+                | hir::PatternKind::Wildcard
+                | hir::PatternKind::Rest
+                | hir::PatternKind::Or(..)
+        ) {
+            while let TyKind::Reference(inner) = cs.infer_cx.resolve_vars_if_possible(*ctx).kind() {
+                if !autoderef {
+                    self.gcx().dcx().emit_error(
+                        "local destructuring requires an explicit dereference".into(),
+                        Some(pattern.span),
+                    );
+                    self.mark_pattern_bindings_error(pattern);
+                    return;
+                }
+                *ctx = inner;
             }
-
-            // Record the dereference adjustment
-            adjustments.push(Adjustment::Dereference);
-
-            // Auto-deref: adjust the type and binding mode
-            ctx.adjust_for_reference(mutability, inner_ty);
-        }
-
-        // Record all adjustments on the scrutinee expression
-        if !adjustments.is_empty() {
-            self.results
-                .borrow_mut()
-                .record_node_adjustments(scrutinee_node_id, adjustments);
         }
 
         // Now check the pattern against the adjusted type
-        self.check_pattern_inner(pattern, ctx, cs);
+        self.check_pattern_inner(pattern, ctx, autoderef, cs);
     }
 
-    /// The actual pattern checking logic (renamed from check_pattern_structure).
-    /// Now takes a PatternContext to track binding modes.
+    /// Check the pattern against its value type.
     fn check_pattern_inner(
         &self,
         pattern: &hir::Pattern,
-        ctx: &mut PatternContext<'ctx>,
+        ctx: &mut Ty<'ctx>,
+        autoderef: bool,
         cs: &mut Cs<'ctx>,
     ) {
-        cs.record_expr_ty(pattern.id, ctx.adjusted_ty);
+        cs.record_expr_ty(pattern.id, *ctx);
         match &pattern.kind {
             hir::PatternKind::Wildcard => {}
             hir::PatternKind::Rest => {}
-            hir::PatternKind::Binding { mode, .. } => {
+            hir::PatternKind::Binding { .. } => {
                 let binding = self.get_local(pattern.id);
-
-                // Determine the actual binding mode:
-                // If the pattern has an explicit mode (not ByValue), use it.
-                // Otherwise, use the default mode from the context (for match ergonomics).
-                let actual_mode = if *mode == hir::BindingMode::ByValue {
-                    ctx.default_mode
-                } else {
-                    *mode
-                };
-
-                // Compute the binding's type based on the binding mode
-                let binding_ty = match actual_mode {
-                    hir::BindingMode::ByValue => ctx.adjusted_ty,
-                    hir::BindingMode::ByRef(mutability) => {
-                        let gcx = self.gcx();
-                        Ty::new(TyKind::Reference(ctx.adjusted_ty, mutability), gcx)
-                    }
-                };
-
-                // Record the inferred binding mode for later phases (THIR, MIR)
-                self.results
-                    .borrow_mut()
-                    .record_binding_mode(pattern.id, actual_mode);
-
-                cs.equal(binding_ty, binding.ty, pattern.span);
+                cs.equal(*ctx, binding.ty, pattern.span);
             }
             hir::PatternKind::Tuple(pats, _) => {
                 let has_rest = pats
                     .iter()
                     .any(|pat| matches!(pat.kind, hir::PatternKind::Rest));
                 if has_rest {
-                    let resolved_scrutinee = cs.infer_cx.resolve_vars_if_possible(ctx.adjusted_ty);
+                    let resolved_scrutinee = cs.infer_cx.resolve_vars_if_possible(*ctx);
                     let elem_tys = match resolved_scrutinee.kind() {
                         TyKind::Tuple(items) => items.to_vec(),
                         TyKind::Error => return,
@@ -199,22 +127,23 @@ impl<'ctx> Checker<'ctx> {
                         self.gcx(),
                     );
                     cs.record_expr_ty(pattern.id, tuple_ty);
-                    cs.equal(ctx.adjusted_ty, tuple_ty, pattern.span);
+                    cs.equal(*ctx, tuple_ty, pattern.span);
 
                     for (pat_index, field_index) in field_mapping {
-                        let mut sub_ctx = PatternContext::new(elem_tys[field_index]);
-                        sub_ctx.default_mode = ctx.default_mode;
+                        let mut sub_ctx = elem_tys[field_index];
+
                         self.check_pattern_with_context(
                             &pats[pat_index],
                             &mut sub_ctx,
                             pats[pat_index].id,
+                            autoderef,
                             cs,
                         );
                     }
                     return;
                 }
 
-                let elem_tys = match cs.infer_cx.resolve_vars_if_possible(ctx.adjusted_ty).kind() {
+                let elem_tys = match cs.infer_cx.resolve_vars_if_possible(*ctx).kind() {
                     TyKind::Tuple(items) if items.len() == pats.len() => items.to_vec(),
                     _ => pats
                         .iter()
@@ -227,30 +156,34 @@ impl<'ctx> Checker<'ctx> {
                     self.gcx(),
                 );
                 cs.record_expr_ty(pattern.id, tuple_ty);
-                cs.equal(ctx.adjusted_ty, tuple_ty, pattern.span);
+                cs.equal(*ctx, tuple_ty, pattern.span);
 
                 for (i, pat) in pats.iter().enumerate() {
-                    let mut sub_ctx = PatternContext::new(elem_tys[i]);
-                    sub_ctx.default_mode = ctx.default_mode;
-                    self.check_pattern_with_context(pat, &mut sub_ctx, pat.id, cs);
+                    let mut sub_ctx = elem_tys[i];
+
+                    self.check_pattern_with_context(pat, &mut sub_ctx, pat.id, autoderef, cs);
                 }
             }
             hir::PatternKind::Member(path) => {
-                let Some((variant, enum_ty)) = self.resolve_enum_variant_pattern(
-                    ctx.adjusted_ty,
-                    pattern.id,
-                    path,
-                    pattern.span,
-                    cs,
-                ) else {
+                let Some((variant, enum_ty)) =
+                    self.resolve_enum_variant_pattern(*ctx, pattern.id, path, pattern.span, cs)
+                else {
                     return;
                 };
 
                 if !matches!(variant.kind, crate::sema::models::EnumVariantKind::Unit) {
                     self.gcx().dcx().emit_error(
                         format!(
-                            "enum variant '{}' requires tuple fields",
-                            self.gcx().symbol_text(variant.name)
+                            "enum variant '{}' requires {} fields",
+                            self.gcx().symbol_text(variant.name),
+                            if matches!(
+                                variant.kind,
+                                crate::sema::models::EnumVariantKind::Struct(..)
+                            ) {
+                                "named"
+                            } else {
+                                "tuple"
+                            }
                         )
                         .into(),
                         Some(pattern.span),
@@ -258,17 +191,11 @@ impl<'ctx> Checker<'ctx> {
                     return;
                 }
 
-                cs.equal(ctx.adjusted_ty, enum_ty, pattern.span);
+                cs.equal(*ctx, enum_ty, pattern.span);
             }
             hir::PatternKind::PathTuple { path, fields, .. } => {
                 let Some((variant, enum_ty, variant_fields)) = self
-                    .resolve_enum_tuple_variant_pattern(
-                        ctx.adjusted_ty,
-                        pattern.id,
-                        path,
-                        pattern.span,
-                        cs,
-                    )
+                    .resolve_enum_tuple_variant_pattern(*ctx, pattern.id, path, pattern.span, cs)
                 else {
                     return;
                 };
@@ -284,28 +211,149 @@ impl<'ctx> Checker<'ctx> {
                     return;
                 };
 
-                cs.equal(ctx.adjusted_ty, enum_ty, pattern.span);
+                cs.equal(*ctx, enum_ty, pattern.span);
 
                 for (pat_index, field_index) in field_mapping {
-                    let mut sub_ctx = PatternContext::new(variant_fields[field_index].ty);
-                    sub_ctx.default_mode = ctx.default_mode;
+                    let field = variant_fields[field_index];
+                    let mut sub_ctx = field.ty;
+
                     self.check_pattern_with_context(
                         &fields[pat_index],
                         &mut sub_ctx,
                         fields[pat_index].id,
+                        autoderef,
                         cs,
                     );
                 }
             }
+            hir::PatternKind::PathNamed {
+                path, fields, rest, ..
+            } => {
+                let (ty, constructor) = match path {
+                    hir::ConstructorPath::Qualified { path } => {
+                        let (resolution, args, _) = self.resolve_value_path_resolution_with_args(
+                            path,
+                            pattern.span,
+                            false,
+                            cs,
+                        );
+                        if matches!(
+                            resolution,
+                            hir::Resolution::Definition(_, DefinitionKind::VariantConstructor(..))
+                        ) {
+                            self.record_value_path_resolution(pattern.id, &resolution);
+                            let Some((variant, ty)) = self.resolve_enum_variant_from_resolution(
+                                *ctx,
+                                resolution,
+                                pattern.span,
+                                cs,
+                                args,
+                            ) else {
+                                self.mark_pattern_bindings_error(pattern);
+                                return;
+                            };
+                            if !self.require_struct_variant(variant, pattern.span) {
+                                self.mark_pattern_bindings_error(pattern);
+                                return;
+                            }
+                            (ty, Some(variant.ctor_def_id))
+                        } else {
+                            let node = hir::Type {
+                                id: pattern.id,
+                                kind: hir::TypeKind::Nominal(path.clone()),
+                                span: pattern.span,
+                            };
+                            let ty = cs.structurally_resolve(self.lower_type(&node));
+                            self.add_type_constraints(ty, pattern.span, cs);
+                            cs.equal(*ctx, ty, pattern.span);
+                            (ty, None)
+                        }
+                    }
+                    hir::ConstructorPath::Inferred { name, span } => {
+                        let Some((variant, ty)) = self.resolve_inferred_enum_variant_pattern(
+                            *ctx, pattern.id, name, *span, cs,
+                        ) else {
+                            self.mark_pattern_bindings_error(pattern);
+                            return;
+                        };
+                        if !self.require_struct_variant(variant, pattern.span) {
+                            self.mark_pattern_bindings_error(pattern);
+                            return;
+                        }
+                        (ty, Some(variant.ctor_def_id))
+                    }
+                };
+                let gcx = self.gcx();
+                let Some(declared) =
+                    crate::sema::tycheck::utils::named_fields::named_fields(gcx, ty, constructor)
+                else {
+                    if !ty.is_error() {
+                        gcx.dcx().emit_error(
+                            "named patterns require a struct or named enum variant".into(),
+                            Some(pattern.span),
+                        );
+                    }
+                    self.mark_pattern_bindings_error(pattern);
+                    return;
+                };
+                cs.record_expr_ty(pattern.id, ty);
+                let mut used = vec![false; declared.fields.len()];
+                for field in fields {
+                    let Some((index, definition)) = declared
+                        .fields
+                        .iter()
+                        .enumerate()
+                        .find(|(_, candidate)| candidate.name == field.name.symbol)
+                    else {
+                        gcx.dcx().emit_error(
+                            format!(
+                                "no field '{}' on type {}",
+                                gcx.symbol_text(field.name.symbol),
+                                ty.format(gcx)
+                            ),
+                            Some(field.name.span),
+                        );
+                        self.mark_pattern_bindings_error(pattern);
+                        return;
+                    };
+                    if definition.visibility.is_some_and(|visibility| {
+                        !gcx.is_visibility_allowed(visibility, self.current_def)
+                    }) {
+                        gcx.dcx().emit_error(
+                            format!(
+                                "field '{}' of {} is not visible here",
+                                gcx.symbol_text(field.name.symbol),
+                                ty.format(gcx)
+                            ),
+                            Some(field.name.span),
+                        );
+                        self.mark_pattern_bindings_error(pattern);
+                        return;
+                    }
+                    used[index] = true;
+                    let mut field_ty = definition.ty;
+                    self.check_pattern_with_context(
+                        &field.pattern,
+                        &mut field_ty,
+                        field.pattern.id,
+                        autoderef,
+                        cs,
+                    );
+                }
+                if !rest && let Some(index) = used.iter().position(|used| !used) {
+                    gcx.dcx().emit_error(format!("named pattern is missing field '{}'; add `..` to ignore remaining fields", gcx.symbol_text(declared.fields[index].name)), Some(pattern.span));
+                    self.mark_pattern_bindings_error(pattern);
+                }
+            }
             hir::PatternKind::Or(patterns, _) => {
                 for pat in patterns {
-                    let mut sub_ctx = PatternContext::new(ctx.adjusted_ty);
-                    sub_ctx.default_mode = ctx.default_mode;
-                    self.check_pattern_with_context(pat, &mut sub_ctx, pat.id, cs);
+                    let mut sub_ctx = *ctx;
+
+                    self.check_pattern_with_context(pat, &mut sub_ctx, pat.id, autoderef, cs);
                 }
             }
             hir::PatternKind::Literal { value } => {
-                let expected = cs.infer_cx.resolve_vars_if_possible(ctx.adjusted_ty);
+                let expected = cs.infer_cx.resolve_vars_if_possible(*ctx);
                 if let hir::Literal::Integer { value, .. } = value
                     && *value < 0
                     && matches!(expected.kind(), TyKind::UInt(_))
@@ -320,44 +368,7 @@ impl<'ctx> Checker<'ctx> {
                     );
                 }
                 let lit_ty = self.synth_expression_literal(value, pattern.span, Some(expected), cs);
-                cs.equal(ctx.adjusted_ty, lit_ty, pattern.span);
-            }
-            hir::PatternKind::Reference { pattern, mutable } => {
-                let gcx = self.gcx();
-                // The scrutinee must be a reference type
-                let inner_ty = match cs.infer_cx.resolve_vars_if_possible(ctx.adjusted_ty).kind() {
-                    TyKind::Reference(inner, scrutinee_mut) => {
-                        // Check mutability compatibility:
-                        // Cannot match &mut pattern against immutable reference
-                        if *mutable == hir::Mutability::Mutable
-                            && scrutinee_mut != hir::Mutability::Mutable
-                        {
-                            gcx.dcx().emit_error(
-                                "cannot match `&mut` pattern against immutable reference".into(),
-                                Some(pattern.span),
-                            );
-                            return;
-                        }
-                        inner
-                    }
-                    TyKind::Error => return,
-                    _ => {
-                        gcx.dcx().emit_error(
-                            format!(
-                                "reference pattern requires reference type, found `{}`",
-                                ctx.adjusted_ty.format(gcx)
-                            )
-                            .into(),
-                            Some(pattern.span),
-                        );
-                        return;
-                    }
-                };
-                // Recursively check the inner pattern against the dereferenced type
-                // Reset binding mode to ByValue for explicit reference patterns
-                ctx.reset_to_move();
-                ctx.adjusted_ty = inner_ty;
-                self.check_pattern_inner(pattern, ctx, cs);
+                cs.equal(*ctx, lit_ty, pattern.span);
             }
         }
     }
@@ -439,23 +450,23 @@ impl<'ctx> Checker<'ctx> {
         &self,
         scrutinee: Ty<'ctx>,
         id: NodeID,
-        path: &hir::PatternPath,
+        path: &hir::ConstructorPath,
         span: Span,
         cs: &mut Cs<'ctx>,
     ) -> Option<(crate::sema::models::EnumVariant<'ctx>, Ty<'ctx>)> {
         match path {
-            hir::PatternPath::Qualified { path } => {
+            hir::ConstructorPath::Qualified { path } => {
                 // Note: Similar to value paths, we don't need to add type constraints
                 // for the base type in relative patterns like `Optional.none`.
                 // The base type is only used for name resolution.
-                let (resolution, base_args) =
+                let (resolution, base_args, _) =
                     self.resolve_value_path_resolution_with_args(path, span, true, cs);
                 self.record_value_path_resolution(id, &resolution);
                 self.resolve_enum_variant_from_resolution(
                     scrutinee, resolution, span, cs, base_args,
                 )
             }
-            hir::PatternPath::Inferred {
+            hir::ConstructorPath::Inferred {
                 name,
                 span: inferred_span,
             } => {
@@ -464,11 +475,32 @@ impl<'ctx> Checker<'ctx> {
         }
     }
 
+    pub(super) fn require_struct_variant(
+        &self,
+        variant: crate::sema::models::EnumVariant<'ctx>,
+        span: Span,
+    ) -> bool {
+        if matches!(
+            variant.kind,
+            crate::sema::models::EnumVariantKind::Struct(..)
+        ) {
+            return true;
+        }
+        self.gcx().dcx().emit_error(
+            format!(
+                "enum variant '{}' does not have named fields",
+                self.gcx().symbol_text(variant.name)
+            ),
+            Some(span),
+        );
+        false
+    }
+
     pub(super) fn resolve_enum_tuple_variant_pattern(
         &self,
         scrutinee: Ty<'ctx>,
         id: NodeID,
-        path: &hir::PatternPath,
+        path: &hir::ConstructorPath,
         span: Span,
         cs: &mut Cs<'ctx>,
     ) -> Option<(
@@ -614,7 +646,7 @@ impl<'ctx> Checker<'ctx> {
         cs: &mut Cs<'ctx>,
     ) -> Option<(crate::sema::models::EnumVariant<'ctx>, Ty<'ctx>)> {
         let gcx = self.gcx();
-        let scrutinee = cs.infer_cx.resolve_vars_if_possible(scrutinee);
+        let scrutinee = cs.structurally_resolve(scrutinee);
         // Scrutinee must be a concrete ADT type
         let TyKind::Adt(adt_def, args) = scrutinee.kind() else {
             gcx.dcx().emit_error(
@@ -710,9 +742,7 @@ impl<'ctx> Checker<'ctx> {
             hir::PatternKind::Binding { .. } => {
                 self.finalize_local(pattern.id, self.gcx().types.error);
             }
-            hir::PatternKind::Reference { pattern, .. } => {
-                self.mark_pattern_bindings_error(pattern);
-            }
+
             hir::PatternKind::Tuple(patterns, _)
             | hir::PatternKind::Or(patterns, _)
             | hir::PatternKind::PathTuple {
@@ -722,7 +752,91 @@ impl<'ctx> Checker<'ctx> {
                     self.mark_pattern_bindings_error(pat);
                 }
             }
+            hir::PatternKind::PathNamed { fields, .. } => {
+                for field in fields {
+                    self.mark_pattern_bindings_error(&field.pattern);
+                }
+            }
             _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod named_field_tests {
+    use crate::test_support::{analyze_script_diagnostics, analyze_script_mir_diagnostics};
+
+    #[test]
+    fn named_construction_and_value_patterns_typecheck() {
+        let diagnostics = analyze_script_mir_diagnostics(
+            r#"
+            struct Point[T] { x: T; y: T }
+            enum Shape[T] { case rect { width: T; height: T }; case empty {}; case dot(T) }
+            func make() -> Shape[int64] { .rect { height: 4, width: 3 } }
+            func read(_ shape: &Shape[int64]) -> int64 {
+                match shape {
+                    case .rect { height, width: w } => w
+                    case .empty {} => 0
+                    case .dot(value) => value
+                }
+            }
+            func point(_ value: Point[int64]) -> int64 {
+                match value { case Point { y: other, .. } => other; }
+            }
+            enum Maybe { case yes(int64); case no }
+            enum Container { case value { item: Maybe } }
+            func identity[T](_ value: T) -> T { value }
+            func change(_ shape: &Shape[int64]) { *shape = .empty {} }
+            func main() {
+                var shape: Shape[int64] = identity(.rect { width: 3, height: 4 })
+                change(&shape)
+                var container: Container = identity(.value { item: .yes(5) })
+                var Point { x, .. } = Point { x: 1_i64, y: 2_i64 }
+            }
+        "#,
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn named_fields_reject_wrong_shapes_and_incomplete_patterns() {
+        for (source, expected) in [
+            (
+                "enum E { case tuple(int32) }; func make() -> E { E::tuple { value: 1 } }; func main() {}",
+                "does not have named fields",
+            ),
+            (
+                "enum E { case item { x: int32; y: int32 } }; func make() -> E { E::item { x: 1 } }; func main() {}",
+                "missing field 'y'",
+            ),
+            (
+                "enum E { case item { x: int32 } }; func make() -> E { E::item { bad: 1 } }; func main() {}",
+                "no field 'bad'",
+            ),
+            (
+                "struct P { x: int32; y: int32 }; func read(_ p: P) { match p { case P { x } => {}; } }; func main() {}",
+                "named pattern is missing field 'y'",
+            ),
+            (
+                "enum E { case tuple(int32) }; func read(_ e: E) { match e { case .tuple { value } => {}; } }; func main() {}",
+                "does not have named fields",
+            ),
+            (
+                "struct P { x: int32 }; func read(_ p: P) { match p { case P { missing } => {}; } }; func main() {}",
+                "no field 'missing'",
+            ),
+            (
+                "enum E { case tuple(int32) }; func identity[T](_ value: T) -> T { value }; func main() { var value: E = identity(.tuple {}); }",
+                "does not have named fields",
+            ),
+        ] {
+            let diagnostics = analyze_script_diagnostics(source);
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains(expected)),
+                "expected {expected:?}: {diagnostics:#?}"
+            );
         }
     }
 }

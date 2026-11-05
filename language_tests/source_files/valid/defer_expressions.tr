@@ -1,0 +1,68 @@
+static var trace: int64 = 0
+static var arguments: int32 = 0
+func emit(_ value: int64) { trace = trace * 10 + value }
+func argument() -> int64 { arguments += 1; 7 }
+func first(_ value: int32) { trace = 10 + (value as int64) }
+func second(_ value: int32) { trace = 100 + (value as int64) }
+func delayedCall() {
+    var callback: (int32) -> () = first
+    var value: int32 = 1
+    defer callback(value)
+    callback = second
+    value = 2
+}
+func delayedArgument() { defer emit(argument()); assert(arguments == 0, "argument is not evaluated during registration") }
+final class Resource { id: int64 }
+extend Resource { init(_ id: int64) { self.id = id }; func close() { emit(self.id) }; }
+func delayedReceivers() {
+    var current = Resource(3)
+    snapshot := current
+    defer current.close()
+    defer snapshot.close()
+    current = Resource(4)
+}
+func nestedScopes() {
+    defer emit(1)
+    { defer emit(2); defer emit(3) }
+    emit(4)
+}
+func earlyExit(_ early: bool) -> int32 {
+    defer emit(1)
+    if early { defer emit(2); return 9 }
+    defer emit(3)
+    8
+}
+func beforeRegistration(_ early: bool) {
+    if early { return }
+    defer emit(7)
+}
+func delayedAssignment(_ values: List[int32]) {
+    var index: usize = 0
+    defer values[index] += 3
+    index = 1
+}
+func main() {
+    delayedCall()
+    assert(trace == 102, "callable and argument bindings are read during cleanup")
+    trace = 0
+    delayedArgument()
+    assert(trace == 7 && arguments == 1, "argument runs once during cleanup")
+    trace = 0
+    delayedReceivers()
+    assert(trace == 34, "snapshot local is ordinary; receiver rebinding remains visible")
+    trace = 0
+    nestedScopes()
+    assert(trace == 3241, "inline and block defers share scope and LIFO order")
+    trace = 0
+    assert(earlyExit(true) == 9 && trace == 21, "early return runs only registered cleanup")
+    trace = 0
+    assert(earlyExit(false) == 8 && trace == 31, "normal cleanup reverses registration order")
+    trace = 0
+    beforeRegistration(true)
+    assert(trace == 0, "an unreached defer is not registered")
+    beforeRegistration(false)
+    assert(trace == 7, "a reached defer runs")
+    var values: List[int32] = [1, 2]
+    delayedAssignment(values)
+    assert(values[0] == 1 && values[1] == 5, "assignment target and index are delayed")
+}

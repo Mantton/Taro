@@ -1,0 +1,5 @@
+class Base {}
+class Derived: Base {}
+func replace(_ slot: &Base) {}
+func invalid(_ slot: &Derived) { replace(slot) }
+func main() {}

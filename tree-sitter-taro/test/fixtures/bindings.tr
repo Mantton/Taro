@@ -1,0 +1,10 @@
+func main() {
+    count := 1
+    if var value = maybe && value > 0 {
+        count += value
+    }
+    while var value = next() { value += 1 }
+    if var first = maybe && var second = maybe && first == second { count += first }
+    guard var remaining = maybe else { return }
+    if case var .some(payload) = maybe { count += payload }
+}

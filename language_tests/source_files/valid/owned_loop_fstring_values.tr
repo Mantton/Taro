@@ -1,0 +1,58 @@
+// Parser-lowered f-strings publish the same loop roots as explicit formatting.
+
+struct FStringCounter {
+    count: usize
+    total: usize
+}
+
+extend FStringCounter {
+    static func new(_ total: usize) -> Self {
+        FStringCounter { count: 0, total }
+    }
+}
+
+extend FStringCounter {
+    var hasNext: bool {
+        get {
+            self.count < self.total
+        }
+    }
+}
+
+
+
+extend FStringCounter {
+    func run() -> usize {
+        var self = self
+        var lengths: usize = 0
+        while self.hasNext {
+            v := self.step()
+            guard var v else { break }
+            rendered := f"iter {v}"
+            lengths = lengths + std::string::stringLen(rendered)
+        }
+        return lengths
+    }
+}
+
+func main() {
+    // 50k iterations exceeds the 1 MiB GC_MIN_TRIGGER, forcing collections
+    // while formatPrintf is allocating and growing its Formatter buffer.
+    counter := FStringCounter::new(50000)
+    total := counter.run()
+
+    var digits: usize = 10 * 1 + 90 * 2 + 900 * 3 + 9000 * 4 + 40000 * 5
+    var expected: usize = 50000 * 5 + digits
+    assert(total == expected, "f-string length sum mismatch")
+
+    print("PASS: GC loop f-string roots\n")
+}
+
+
+extend &FStringCounter {
+    func step() -> usize? {
+        v := self.count
+        self.count += 1
+        return v
+    }
+}

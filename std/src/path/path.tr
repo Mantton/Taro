@@ -14,10 +14,10 @@
 /// filesystem.
 
 @cfg(family("unix"))
-import std.path.posix.*
+import std::path::posix::*
 
 @cfg(family("unix"))
-export std.path.posix.{
+export std::path::posix::{
     SEPARATOR,
     RelativeError,
     isSeparator,
@@ -39,7 +39,7 @@ export std.path.posix.{
 }
 
 @cfg(family("windows"))
-import std.path.windows.*
+import std::path::windows::*
 
 @cfg(family("windows"))
-export std.path.windows.*
+export std::path::windows::*

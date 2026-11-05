@@ -1,0 +1,6 @@
+// PACKAGE: internal_visibility_invalid
+// CHECK_ONLY
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_CONTAINS: field 'value' of Cell is not visible here
+// EXPECT_STDERR_CONTAINS: 'internalValue' is not visible here
+// EXPECT_STDERR_CONTAINS: type 'Hidden' is not visible here

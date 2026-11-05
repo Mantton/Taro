@@ -1,0 +1,9 @@
+Checking – vet_nocopy_aggregate
+warning: copy of @NoCopy value 'wrapped'; use a reference
+ -> language_tests/source_files/invalid/vet_nocopy_aggregate.tr:7:14
+	    copied := wrapped
+	              ^^^^^^^
+warning: copy of @NoCopy value 'tuple'; use a reference
+ -> language_tests/source_files/invalid/vet_nocopy_aggregate.tr:10:17
+	    tupleCopy := tuple
+	                 ^^^^^

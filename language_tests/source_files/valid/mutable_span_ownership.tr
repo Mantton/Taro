@@ -1,0 +1,15 @@
+func main() {
+    var items: [int32] = [1, 2]
+    {
+        var view: std::mem::Span[int32] = items.asSpan()
+        *view.at(0) = 3
+        var moved = view
+        *moved.at(1) = 4
+        var shared: std::mem::Span[int32] = moved
+        copied := shared
+        assert(*copied.at(0) == 3, "slice copies share elements")
+        assert(*shared.at(1) == 4, "slice headers can be copied")
+    }
+    assert(*items.at(0) == 3 && *items.at(1) == 4, "the owner remains usable after its views finish")
+    print("mutable span ownership ok\n")
+}

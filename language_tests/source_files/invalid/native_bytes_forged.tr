@@ -1,0 +1,3 @@
+func main() {
+    var forged: std::mem::NativeBytes = std::mem::NativeBytes::new(1)
+}

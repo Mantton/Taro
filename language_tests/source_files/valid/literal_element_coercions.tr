@@ -1,0 +1,26 @@
+// ENV: TARO_WORKERS=4
+interface Read { func read() -> int32; }
+struct First { value: int32 }
+struct Second { value: int32 }
+conform First to Read {
+    func read() -> int32 { self.value }
+}
+conform Second to Read {
+    func read() -> int32 { self.value }
+}
+func main() {
+    var list: List[any Read] = [First { value: 1 }, Second { value: 2 }]
+    assert(list[0].read() == 1 && list[1].read() == 2, "List literal elements get ordinary existential coercions")
+    var array: [any Read; 2] = [First { value: 3 }, Second { value: 4 }]
+    assert(array[0].read() == 3 && array[1].read() == 4, "fixed array elements are individually erased")
+    var pair: (any Read, any Read) = (First { value: 5 }, Second { value: 6 })
+    assert(pair.0.read() == 5 && pair.1.read() == 6, "tuple elements use their own contextual types")
+    var callbacks: [() -> int32; 1] = [() => 7_i32]
+    assert(callbacks[0]() == 7, "a noncapturing closure coerces before array storage")
+    var left: int32 = 11
+    var right: int32 = 13
+    var references: (&int32, &int32) = (&left, &right)
+    assert(*references.0 + *references.1 == 24, "tuple reference weakening records each reborrow")
+    left = 17
+    right = 19
+}

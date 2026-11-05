@@ -1,0 +1,42 @@
+// ENV: TARO_GC_STRESS=1
+// Whole array temporaries need no entry clear, but their elements and enclosing
+// return storage must remain valid while calls and loop polls can collect.
+enum Entry {
+    case live(&int32)
+    case empty
+}
+
+struct Group { entries: [Entry; 8] }
+
+@noinline
+func group(_ value: int32) -> Group {
+    var target = value
+    Group { entries: [.live(&target); 8] }
+}
+
+@noinline
+func emptyGroup() -> Group { Group { entries: [.empty; 8] } }
+
+func main() {
+    var iteration: int32 = 0
+    while iteration < 64 {
+        var original = group(iteration)
+        copied := original
+        original.entries[0] = .empty
+        empty := emptyGroup()
+        std::runtime::collect()
+        var index: usize = 0
+        while index < 8 {
+            match copied.entries[index] {
+                case .live(target) => assert(*target == iteration, "copied array retains its targets")
+                case .empty => panic("array copies have independent inline storage")
+            }
+            match empty.entries[index] {
+                case .empty => {}
+                case .live(_) => panic("empty array tags remain valid")
+            }
+            index += 1
+        }
+        iteration += 1
+    }
+}

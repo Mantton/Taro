@@ -26,6 +26,7 @@ pub enum TypeError<'ctx> {
     Apply(ApplyValidationError),
     NoOverloadMatches,
     AmbiguousOverload,
+    ExplicitMethodArguments(String),
     AmbiguousProperty {
         name: Symbol,
         on: Ty<'ctx>,
@@ -48,6 +49,12 @@ pub enum TypeError<'ctx> {
     },
     AmbiguousCallable {
         found: Ty<'ctx>,
+    },
+    DerefCycle {
+        ty: Ty<'ctx>,
+    },
+    NotStructVariant {
+        name: Symbol,
     },
     NotAStruct {
         ty: Ty<'ctx>,
@@ -84,13 +91,14 @@ pub enum TypeError<'ctx> {
         ty: Ty<'ctx>,
         interface: InterfaceReference<'ctx>,
     },
-    TargetedConformance(&'static str),
 
     ArgCountMismatch(usize, usize),
     ArgMismatch(ExpectedFound<GenericArgument<'ctx>>),
 
     LayoutIncompatibleCast(ExpectedFound<Ty<'ctx>>),
     UnsafePtrCastNeedsUnsafeBlock,
+    ErasedMethodUsesHiddenType,
+    UnsafePointerDereference,
     UnsafeCallNeedsUnsafeBlock {
         name: Symbol,
     },
@@ -132,6 +140,7 @@ impl<'ctx> TypeError<'ctx> {
             ),
             TypeError::Apply(e) => e.format(gcx),
             TypeError::NoOverloadMatches => "no overload matches this call".into(),
+            TypeError::ExplicitMethodArguments(message) => message.clone(),
             TypeError::AmbiguousOverload => {
                 "ambiguous overload; unable to pick a best candidate".into()
             }
@@ -185,12 +194,14 @@ impl<'ctx> TypeError<'ctx> {
                     found.format(gcx)
                 )
             }
+            TypeError::DerefCycle { ty } => format!("Deref lookup has a cycle or exceeds 32 steps at {}", ty.format(gcx)),
+            TypeError::NotStructVariant { name } => format!("enum variant '{}' does not have named fields", gcx.symbol_text(name)),
             TypeError::NotAStruct { ty } => {
                 format!("type {} is not a struct", ty.format(gcx))
             }
             TypeError::UnknownStructField { name, struct_ty } => {
                 format!(
-                    "no field '{}' on struct {}",
+                    "no field '{}' on type {}",
                     gcx.symbol_text(name),
                     struct_ty.format(gcx)
                 )
@@ -241,7 +252,6 @@ impl<'ctx> TypeError<'ctx> {
                     interface.format(gcx)
                 )
             }
-            TypeError::TargetedConformance(message) => message.into(),
 
             TypeError::ArgCountMismatch(expected, found) => {
                 format!("expected {} generic arguments, found {}", expected, found)
@@ -263,6 +273,12 @@ impl<'ctx> TypeError<'ctx> {
                     ef.found.format(gcx),
                     ef.expected.format(gcx)
                 )
+            }
+            TypeError::ErasedMethodUsesHiddenType => {
+                "cannot call an erased interface method whose arguments or result expose its hidden Self type".into()
+            }
+            TypeError::UnsafePointerDereference => {
+                "dereferencing a raw pointer requires an unsafe { ... } block".into()
             }
             TypeError::UnsafePtrCastNeedsUnsafeBlock => {
                 "cast involves pointers and is unsafe; must be inside an unsafe { ... } block"

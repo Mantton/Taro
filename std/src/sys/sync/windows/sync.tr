@@ -1,8 +1,7 @@
-import std.io.Error
-import std.mem.GcDesc
-import std.panic.todo
-import std.result.Result
-import std.sys.sync.{RawChannel, RawMutex, RawRwLock, ChannelTryRecvStatus}
+import std::io::Error
+import std::panic::todo
+import std::result::Result
+import std::sys::sync::{RawChannel, RawMutex, RawRwLock, ChannelTryRecvStatus}
 
 public func mapStatus(_ code: int32) -> Result[(), Error] {
     if code == 0 {
@@ -11,9 +10,10 @@ public func mapStatus(_ code: int32) -> Result[(), Error] {
     return .err(std.sys.io.windows.mapErrno(code))
 }
 
-public func channelCreate(
-    _ elemSize: usize,
-    _ elemDesc: *const GcDesc,
+/// Safety: element is the GC value descriptor of the channel's exact element
+/// type; queued messages are collected copies rooted until received.
+public unsafe func channelCreate(
+    _ element: *const uint8,
     _ capacity: usize,
     _ bounded: bool,
 ) -> Result[RawChannel, Error] {
@@ -28,11 +28,15 @@ public func channelClose(_ channel: &RawChannel) -> Result[(), Error] {
     todo("std.sys.sync.channelClose not implemented on windows yet")
 }
 
-public func channelTrySend(_ channel: &RawChannel, _ value_ptr: *const uint8) -> Result[(), Error] {
+/// Safety: value_ptr names one initialized value of the channel's exact
+/// element type. Success transfers ownership; failure leaves it with the caller.
+public unsafe func channelTrySend(_ channel: &RawChannel, _ value_ptr: *const uint8) -> Result[(), Error] {
     todo("std.sys.sync.channelTrySend not implemented on windows yet")
 }
 
-public func channelTryRecv(_ channel: &RawChannel, _ out_ptr: *mut uint8) -> Result[ChannelTryRecvStatus, Error] {
+/// Safety: out_ptr is aligned, writable uninitialized storage for the channel's
+/// exact element type. A successful value result transfers ownership there.
+public unsafe func channelTryRecv(_ channel: &RawChannel, _ out_ptr: *mut uint8) -> Result[ChannelTryRecvStatus, Error] {
     todo("std.sys.sync.channelTryRecv not implemented on windows yet")
 }
 

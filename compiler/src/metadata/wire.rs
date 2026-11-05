@@ -6,9 +6,9 @@ use crate::{
     sema::{
         models::{
             AdtDef, AdtKind, AliasDefinition, AliasKind, AssociatedTypeBinding,
-            AssociatedTypeDefinition, CaptureAccessKind, CaptureKind, CapturedVar, ClosureCaptures,
-            ClosureKind, ConformanceRecord, ConformanceRecordId, Const, ConstKind, ConstValue,
-            Constraint, EnumDefinition, EnumVariant, EnumVariantField, EnumVariantKind, FloatTy,
+            AssociatedTypeDefinition, CaptureKind, CapturedVar, ClosureCaptures, ClosureKind,
+            ConformanceRecord, ConformanceRecordId, Const, ConstKind, ConstValue, Constraint,
+            EnumDefinition, EnumVariant, EnumVariantField, EnumVariantKind, FloatTy,
             GenericArgument, GenericParameter, GenericParameterDefinition,
             GenericParameterDefinitionKind, Generics, InferTy, IntTy, InterfaceConstantRequirement,
             InterfaceDefinition, InterfaceMethodRequirement, InterfaceReference,
@@ -70,6 +70,11 @@ pub struct MetadataPayloadWire {
     pub std_items: Option<StdItemRegistryWire>,
     pub synthetic_definitions: Vec<SyntheticDefinitionWire>,
     pub emitted_instances: Vec<InstanceWire>,
+    pub class_dispatch_types: Vec<TyWire>,
+    pub class_dispatch_calls: Vec<InstanceWire>,
+    pub erased_opening_types: Vec<TyWire>,
+    pub erased_opening_calls: Vec<InstanceWire>,
+    pub class_super_calls: Vec<SpanWire>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,7 +94,7 @@ pub struct SymbolTableWire {
     pub symbols: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefIdWire {
     pub package: u32,
     pub index: u32,
@@ -188,7 +193,7 @@ pub enum DefinitionKindWire {
     AssociatedFunction,
     AssociatedConstant,
     AssociatedProperty,
-    AssociatedOperator,
+    AssociatedSubscript,
     AssociatedType,
     VariantConstructor(VariantCtorKindWire),
     OpaqueType,
@@ -242,8 +247,8 @@ pub enum ExpressionResolutionStateWire {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum VisibilityWire {
     Public,
+    Internal(DefIdWire),
     Private(DefIdWire),
-    FilePrivate(u32),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -297,9 +302,12 @@ pub struct TypeDatabaseWire {
     pub def_to_const: Vec<(DefIdWire, ConstWire)>,
     #[serde(default)]
     pub def_to_static_mutability: Vec<(DefIdWire, MutabilityWire)>,
-    #[serde(default)]
-    pub def_to_static_init: Vec<(DefIdWire, ConstWire)>,
+    pub def_to_class_default_contract: Vec<(DefIdWire, crate::sema::models::ClassDefaultContract)>,
+    pub erased_async_self_arguments: Vec<(DefIdWire, Vec<GenericArgumentWire>)>,
+    pub class_adoptions: Vec<(ConformanceRecordIdWire, Vec<ClassWitnessMethodWire>)>,
+
     pub def_to_fn_sig: Vec<(DefIdWire, LabeledFunctionSignatureWire)>,
+
     #[serde(default)]
     pub def_to_async_body_output: Vec<(DefIdWire, TyWire)>,
     pub def_to_struct_def: Vec<(DefIdWire, StructDefinitionWire)>,
@@ -310,6 +318,8 @@ pub struct TypeDatabaseWire {
     pub impl_to_target_ty: Vec<(DefIdWire, TyWire)>,
     pub type_head_to_impls: Vec<(TypeHeadWire, Vec<DefIdWire>)>,
     pub type_head_to_members: Vec<(TypeHeadWire, TypeMemberIndexWire)>,
+    pub native_subscripts: Vec<(DefIdWire, NativeSubscriptEntryWire)>,
+    pub class_subscripts: Vec<(DefIdWire, Vec<(DefIdWire, NativeSubscriptEntryWire)>)>,
     #[serde(default)]
     pub type_head_to_properties:
         Vec<(TypeHeadWire, Vec<(SymbolIdWire, ComputedPropertyEntryWire)>)>,
@@ -376,11 +386,14 @@ pub enum TyKindWire {
     Float(FloatTyWire),
     Adt(AdtDefWire, Vec<GenericArgumentWire>),
     Pointer(Box<TyWire>, MutabilityWire),
-    Reference(Box<TyWire>, MutabilityWire),
+    Reference(Box<TyWire>),
     Tuple(Vec<TyWire>),
     FnPointer {
         inputs: Vec<TyWire>,
         output: Box<TyWire>,
+        kind: ClosureKindWire,
+        is_unsafe: bool,
+        abi: Option<AbiWire>,
     },
     BoxedExistential {
         interfaces: Vec<InterfaceReferenceWire>,
@@ -392,6 +405,7 @@ pub enum TyKindWire {
     },
     Infer(InferTyWire),
     Parameter(GenericParameterWire),
+    ExistentialSelf(u32),
     Closure {
         closure_def_id: DefIdWire,
         kind: ClosureKindWire,
@@ -501,6 +515,7 @@ pub enum GenericArgumentWire {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StructFieldWire {
+    pub default_provider: Option<DefIdWire>,
     pub name: SymbolIdWire,
     pub ty: TyWire,
     pub mutability: MutabilityWire,
@@ -511,8 +526,47 @@ pub struct StructFieldWire {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StructDefinitionWire {
     pub adt_def: AdtDefWire,
+    pub class_info: Option<ClassInfoWire>,
+    pub has_initializer: bool,
     pub repr: StructReprWire,
     pub fields: Vec<StructFieldWire>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClassInfoWire {
+    pub base: Option<TyWire>,
+    pub methods: Vec<ClassMethodWire>,
+    pub initializers: Vec<ClassInitializerWire>,
+    pub payload: Option<DefIdWire>,
+    pub is_final: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClassInitializerWire {
+    pub definition: DefIdWire,
+    pub family: DefIdWire,
+    pub implementation: DefIdWire,
+    pub owner: TyWire,
+    pub is_convenience: bool,
+    pub is_required: bool,
+    pub is_inherited: bool,
+    pub delegations: Vec<DefIdWire>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClassMethodWire {
+    pub returns_self: bool,
+    pub family: DefIdWire,
+    pub implementation: DefIdWire,
+    pub owner: TyWire,
+    pub is_final: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClassWitnessMethodWire {
+    pub requirement: DefIdWire,
+    pub slot: ClassMethodWire,
+    pub is_registered: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -525,12 +579,14 @@ pub enum StructReprWire {
 pub struct EnumVariantFieldWire {
     pub label: Option<SymbolIdWire>,
     pub ty: TyWire,
+    pub mutability: MutabilityWire,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum EnumVariantKindWire {
     Unit,
     Tuple(Vec<EnumVariantFieldWire>),
+    Struct(Vec<EnumVariantFieldWire>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -632,8 +688,6 @@ pub struct InterfacePropertyRequirementWire {
     pub ty: TyWire,
     pub getter_id: DefIdWire,
     pub getter_is_required: bool,
-    pub setter_id: Option<DefIdWire>,
-    pub setter_is_required: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -674,7 +728,7 @@ pub struct ConformanceRecordWire {
     pub is_inline: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConformanceRecordIdWire {
     pub package: u32,
     pub index: u32,
@@ -686,7 +740,7 @@ pub enum TypeHeadWire {
     Nominal(DefIdWire),
     Parameter(DefIdWire),
     Closure(DefIdWire),
-    Reference(MutabilityWire),
+    Reference,
     Pointer(MutabilityWire),
     Tuple(u16),
     Array,
@@ -698,7 +752,6 @@ pub struct TypeMemberIndexWire {
     pub inherent_instance: Vec<(SymbolIdWire, MemberSetWire)>,
     pub trait_methods: Vec<((DefIdWire, SymbolIdWire), MemberSetWire)>,
     pub trait_methods_by_name: Vec<(SymbolIdWire, Vec<DefIdWire>)>,
-    pub operators: Vec<(OperatorKindWire, MemberSetWire)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -706,37 +759,24 @@ pub struct ComputedPropertyEntryWire {
     pub property_id: DefIdWire,
     pub ty: TyWire,
     pub getter_id: DefIdWire,
-    pub setter_id: Option<DefIdWire>,
     pub visibility: VisibilityWire,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NativeSubscriptEntryWire {
+    pub getter_is_default: bool,
+    pub setter_is_default: bool,
+    pub is_override: bool,
+    pub is_final: bool,
+    pub getter: Option<DefIdWire>,
+    pub setter: Option<DefIdWire>,
+    pub address: Option<DefIdWire>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemberSetWire {
     pub members: Vec<DefIdWire>,
     pub fingerprints: Vec<(u64, DefIdWire)>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum OperatorKindWire {
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Rem,
-    Eq,
-    Ne,
-    Gt,
-    Lt,
-    Ge,
-    Le,
-    BitAnd,
-    BitOr,
-    BitXor,
-    Shl,
-    Shr,
-    BitNot,
-    Neg,
-    Not,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -768,35 +808,25 @@ pub struct ClosureCapturesWire {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CapturedVarWire {
     pub source_id: u32,
+    pub root_ty: TyWire,
+    pub projection: Vec<(u32, TyWire)>,
     pub name: SymbolIdWire,
     pub ty: TyWire,
     pub capture_kind: CaptureKindWire,
-    pub access_kind: CaptureAccessKindWire,
+    pub source_immutable: bool,
     pub field_index: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CaptureKindWire {
     ByCopy,
-    ByRef { mutable: bool },
-    ByMove,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum CaptureAccessKindWire {
-    Read,
-    Mutate,
-    Move,
+    ByRef,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClosureKindWire {
     Fn,
-    FnMut,
-    FnOnce,
     AsyncFn,
-    AsyncFnMut,
-    AsyncFnOnce,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -817,11 +847,10 @@ pub enum SyntheticMethodKindWire {
     MemberwiseClone,
     MemberwiseHash,
     MemberwiseEquality,
+    MemberwiseEncode,
+    MemberwiseDecode,
     ClosureCall,
-    ClosureCallMut,
-    ClosureCallOnce,
     PropertyFieldGetter { field_index: u32 },
-    PropertyFieldSetter { field_index: u32 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -891,11 +920,14 @@ pub struct StdItemEntryWire {
     pub span: SpanWire,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StdItemWire {
     Optional,
     Result,
     List,
+    ListIterator,
+    ClassHandle,
+    AtomicHandle,
     Set,
     Dictionary,
     Range,
@@ -903,22 +935,19 @@ pub enum StdItemWire {
     MaybeUninit,
     Span,
     Benchmark,
-    Copy,
+    AnyObject,
     Clone,
-    Sendable,
     Hashable,
     Equatable,
+    Encodable,
+    Decodable,
     From,
     Iterator,
     Iterable,
     AsyncIterator,
     AsyncIterable,
     Fn,
-    FnMut,
     AsyncFn,
-    AsyncFnMut,
-    FnOnce,
-    AsyncFnOnce,
     Tuple,
     Add,
     AddAssign,
@@ -955,16 +984,111 @@ pub enum StdItemWire {
     ResultErrCtor,
     Task,
     PanicPayload,
-    Make,
+    Deref,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyntheticDefinitionWire {
+    pub kind: SyntheticDefinitionKindWire,
     pub id: DefIdWire,
     pub name: String,
     pub generics: GenericsWire,
     pub signature: LabeledFunctionSignatureWire,
     pub span: SpanWire,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SyntheticDefinitionKindWire {
+    ClassDecoder {
+        class: DefIdWire,
+        initializer: DefIdWire,
+    },
+    ClassDecodingInitializer {
+        class: DefIdWire,
+    },
+    ClassEncoder {
+        class: DefIdWire,
+    },
+    ClassPayload {
+        class: DefIdWire,
+    },
+    ClassPayloadInitializer {
+        class: DefIdWire,
+        initializer: DefIdWire,
+    },
+    InheritedClassInitializer {
+        class: DefIdWire,
+        initializer: DefIdWire,
+    },
+    InitializerEnvironment {
+        class: DefIdWire,
+        initializer: DefIdWire,
+    },
+    InheritedInitializerDefault {
+        initializer: DefIdWire,
+        provider: DefIdWire,
+    },
+    ClassInitializerDispatch {
+        initializer: DefIdWire,
+    },
+    ClassConvenienceInitializer {
+        initializer: DefIdWire,
+    },
+    ClassConstructionDescriptor {
+        class: DefIdWire,
+    },
+    ClassObjectDescriptor {
+        class: DefIdWire,
+    },
+    ErasedTakeAs {
+        context: DefIdWire,
+    },
+    ErasedAsRef {
+        context: DefIdWire,
+    },
+    ErasedPayloadReference {
+        context: DefIdWire,
+    },
+    StaticInitializer {
+        storage: DefIdWire,
+    },
+    StaticReference {
+        storage: DefIdWire,
+    },
+    ErasedAsyncSelf {
+        context: DefIdWire,
+        method: DefIdWire,
+    },
+    ErasedAsyncSelfDefault {
+        adapter: DefIdWire,
+        provider: DefIdWire,
+    },
+    ErasedDefault {
+        source: DefIdWire,
+        provider: DefIdWire,
+        parameter: usize,
+    },
+    ClassDefaultBody {
+        source: DefIdWire,
+    },
+    AdoptedClassDefault {
+        conformance: ConformanceRecordIdWire,
+        source: DefIdWire,
+    },
+    AdoptedClassDefaultArgument {
+        method: DefIdWire,
+        provider: DefIdWire,
+    },
+    Ordinary,
+    AsyncPoll,
+    BuiltinCopyClone,
+    FunctionPointerCall {
+        is_async: bool,
+    },
+    TupleClone,
+    ArrayClone,
+    ClosureClone,
+    PrimitiveOperator(StdItemWire),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1001,7 +1125,6 @@ pub struct BodyWire {
     pub basic_blocks: Vec<BasicBlockDataWire>,
     pub start_block: u32,
     pub return_local: u32,
-    pub escape_locals: Vec<bool>,
     pub phase: MirPhaseWire,
     #[serde(default)]
     pub is_async: bool,
@@ -1027,6 +1150,7 @@ pub struct LocalDeclWire {
 pub enum LocalKindWire {
     Param,
     User,
+    ConstructorSelf,
     Temp,
     Return,
 }
@@ -1048,21 +1172,17 @@ pub struct StatementWire {
 pub enum StatementKindWire {
     SourceScope(u32),
     StorageLive(u32),
+    StorageDead(u32),
     SetInitialized(u32),
     Assign(PlaceWire, RvalueWire),
+
     KeepAlive(OperandWire),
-    GcSafepoint(GcSafepointKindWire),
     Nop,
     SetDiscriminant {
         place: PlaceWire,
         variant_index: u32,
     },
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum GcSafepointKindWire {
-    Entry,
-    Loop,
+    GcSafepoint(mir::GcSafepointKind),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1088,15 +1208,16 @@ pub enum TerminatorKindWire {
     Call {
         func: OperandWire,
         args: Vec<OperandWire>,
-        devirt_hint: Option<DevirtHintWire>,
         destination: PlaceWire,
         target: u32,
         unwind: CallUnwindActionWire,
     },
+
     Yield {
         value: OperandWire,
         resume: u32,
         resume_arg: PlaceWire,
+        no_result: Option<u32>,
         cancel: u32,
         cancel_complete: u32,
         unwind: CallUnwindActionWire,
@@ -1107,13 +1228,6 @@ pub enum TerminatorKindWire {
 pub enum CallUnwindActionWire {
     Cleanup(u32),
     Terminate,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DevirtHintWire {
-    pub impl_def_id: DefIdWire,
-    pub impl_args: Vec<GenericArgumentWire>,
-    pub concrete_self_ty: TyWire,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1132,14 +1246,12 @@ pub enum PlaceElemWire {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum OperandWire {
     Copy(PlaceWire),
-    Move(PlaceWire),
     CopyWith(PlaceWire, CopyModifiersWire),
     Constant(ConstantWire),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct CopyModifiersWire {
-    pub take: bool,
     pub init: bool,
 }
 
@@ -1165,6 +1277,9 @@ pub enum ConstantKindWire {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RvalueWire {
     Use(OperandWire),
+    CopyValue {
+        source: PlaceWire,
+    },
     UnaryOp {
         op: UnaryOperatorWire,
         operand: OperandWire,
@@ -1180,14 +1295,13 @@ pub enum RvalueWire {
         kind: CastKindWire,
     },
     Ref {
-        mutable: bool,
+        place: PlaceWire,
+    },
+    CleanupAddress {
         place: PlaceWire,
     },
     Discriminant {
         place: PlaceWire,
-    },
-    Alloc {
-        ty: TyWire,
     },
     Zeroed {
         ty: TyWire,
@@ -1201,18 +1315,25 @@ pub enum RvalueWire {
         count: u32,
         element: TyWire,
     },
+    Alloc {
+        ty: TyWire,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CastKindWire {
     Numeric,
     BoxExistential,
-    ExistentialPack { concrete: TyWire },
     ExistentialUpcast,
+    ClassObjectOwner,
+    NativeClassHandle,
+    ClassUpcast,
+    ClassSelfResult,
     ExistentialTypeIs { target: TyWire },
     ExistentialTryCast { target: TyWire },
     Pointer,
     ClosureToFnPointer,
+    ClassFromOwner,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1467,7 +1588,7 @@ pub fn definition_kind_to_wire(v: DefinitionKind) -> DefinitionKindWire {
         DefinitionKind::AssociatedFunction => DefinitionKindWire::AssociatedFunction,
         DefinitionKind::AssociatedConstant => DefinitionKindWire::AssociatedConstant,
         DefinitionKind::AssociatedProperty => DefinitionKindWire::AssociatedProperty,
-        DefinitionKind::AssociatedOperator => DefinitionKindWire::AssociatedOperator,
+        DefinitionKind::AssociatedSubscript => DefinitionKindWire::AssociatedSubscript,
         DefinitionKind::AssociatedType => DefinitionKindWire::AssociatedType,
         DefinitionKind::VariantConstructor(v) => {
             DefinitionKindWire::VariantConstructor(variant_ctor_kind_to_wire(v))
@@ -1498,7 +1619,7 @@ pub fn definition_kind_from_wire(v: &DefinitionKindWire) -> DefinitionKind {
         DefinitionKindWire::AssociatedFunction => DefinitionKind::AssociatedFunction,
         DefinitionKindWire::AssociatedConstant => DefinitionKind::AssociatedConstant,
         DefinitionKindWire::AssociatedProperty => DefinitionKind::AssociatedProperty,
-        DefinitionKindWire::AssociatedOperator => DefinitionKind::AssociatedOperator,
+        DefinitionKindWire::AssociatedSubscript => DefinitionKind::AssociatedSubscript,
         DefinitionKindWire::AssociatedType => DefinitionKind::AssociatedType,
         DefinitionKindWire::VariantConstructor(v) => {
             DefinitionKind::VariantConstructor(variant_ctor_kind_from_wire(v))
@@ -1516,6 +1637,9 @@ wire_enum_conversions!(
         Optional,
         Result,
         List,
+        ListIterator,
+        ClassHandle,
+        AtomicHandle,
         Set,
         Dictionary,
         Range,
@@ -1523,22 +1647,19 @@ wire_enum_conversions!(
         MaybeUninit,
         Span,
         Benchmark,
-        Copy,
+        AnyObject,
         Clone,
-        Sendable,
         Hashable,
         Equatable,
+        Encodable,
+        Decodable,
         From,
         Iterator,
         Iterable,
         AsyncIterator,
         AsyncIterable,
         Fn,
-        FnMut,
         AsyncFn,
-        AsyncFnMut,
-        FnOnce,
-        AsyncFnOnce,
         Tuple,
         Add,
         AddAssign,
@@ -1575,7 +1696,7 @@ wire_enum_conversions!(
         ResultErrCtor,
         Task,
         PanicPayload,
-        Make,
+        Deref,
     ]
 );
 
@@ -1594,58 +1715,6 @@ wire_enum_conversions!(
     IntegerTypeSuffixWire,
     [I8, I16, I32, I64, U8, U16, U32, U64,]
 );
-
-#[inline]
-pub fn operator_kind_to_wire(v: hir::OperatorKind) -> OperatorKindWire {
-    match v {
-        hir::OperatorKind::Add | hir::OperatorKind::AddAssign => OperatorKindWire::Add,
-        hir::OperatorKind::Sub | hir::OperatorKind::SubAssign => OperatorKindWire::Sub,
-        hir::OperatorKind::Mul | hir::OperatorKind::MulAssign => OperatorKindWire::Mul,
-        hir::OperatorKind::Div | hir::OperatorKind::DivAssign => OperatorKindWire::Div,
-        hir::OperatorKind::Rem | hir::OperatorKind::RemAssign => OperatorKindWire::Rem,
-        hir::OperatorKind::Eq => OperatorKindWire::Eq,
-        hir::OperatorKind::Neq => OperatorKindWire::Ne,
-        hir::OperatorKind::Gt => OperatorKindWire::Gt,
-        hir::OperatorKind::Lt => OperatorKindWire::Lt,
-        hir::OperatorKind::Geq => OperatorKindWire::Ge,
-        hir::OperatorKind::Leq => OperatorKindWire::Le,
-        hir::OperatorKind::BitAnd | hir::OperatorKind::BitAndAssign => OperatorKindWire::BitAnd,
-        hir::OperatorKind::BitOr | hir::OperatorKind::BitOrAssign => OperatorKindWire::BitOr,
-        hir::OperatorKind::BitXor | hir::OperatorKind::BitXorAssign => OperatorKindWire::BitXor,
-        hir::OperatorKind::BitShl | hir::OperatorKind::BitShlAssign => OperatorKindWire::Shl,
-        hir::OperatorKind::BitShr | hir::OperatorKind::BitShrAssign => OperatorKindWire::Shr,
-        hir::OperatorKind::BitwiseNot => OperatorKindWire::BitNot,
-        hir::OperatorKind::Neg => OperatorKindWire::Neg,
-        hir::OperatorKind::Not => OperatorKindWire::Not,
-        hir::OperatorKind::BoolAnd => OperatorKindWire::BitAnd,
-        hir::OperatorKind::BoolOr => OperatorKindWire::BitOr,
-    }
-}
-
-#[inline]
-pub fn operator_kind_from_wire(v: &OperatorKindWire) -> hir::OperatorKind {
-    match v {
-        OperatorKindWire::Add => hir::OperatorKind::Add,
-        OperatorKindWire::Sub => hir::OperatorKind::Sub,
-        OperatorKindWire::Mul => hir::OperatorKind::Mul,
-        OperatorKindWire::Div => hir::OperatorKind::Div,
-        OperatorKindWire::Rem => hir::OperatorKind::Rem,
-        OperatorKindWire::Eq => hir::OperatorKind::Eq,
-        OperatorKindWire::Ne => hir::OperatorKind::Neq,
-        OperatorKindWire::Gt => hir::OperatorKind::Gt,
-        OperatorKindWire::Lt => hir::OperatorKind::Lt,
-        OperatorKindWire::Ge => hir::OperatorKind::Geq,
-        OperatorKindWire::Le => hir::OperatorKind::Leq,
-        OperatorKindWire::BitAnd => hir::OperatorKind::BitAnd,
-        OperatorKindWire::BitOr => hir::OperatorKind::BitOr,
-        OperatorKindWire::BitXor => hir::OperatorKind::BitXor,
-        OperatorKindWire::Shl => hir::OperatorKind::BitShl,
-        OperatorKindWire::Shr => hir::OperatorKind::BitShr,
-        OperatorKindWire::BitNot => hir::OperatorKind::BitwiseNot,
-        OperatorKindWire::Neg => hir::OperatorKind::Neg,
-        OperatorKindWire::Not => hir::OperatorKind::Not,
-    }
-}
 
 #[inline]
 pub fn literal_to_wire(v: &hir::Literal) -> LiteralWire {
@@ -1841,15 +1910,14 @@ wire_enum_conversions!(
     closure_kind_from_wire,
     ClosureKind,
     ClosureKindWire,
-    [Fn, FnMut, FnOnce, AsyncFn, AsyncFnMut, AsyncFnOnce,]
+    [Fn, AsyncFn,]
 );
 
 #[inline]
 pub fn capture_kind_to_wire(v: CaptureKind) -> CaptureKindWire {
     match v {
         CaptureKind::ByCopy => CaptureKindWire::ByCopy,
-        CaptureKind::ByRef { mutable } => CaptureKindWire::ByRef { mutable },
-        CaptureKind::ByMove => CaptureKindWire::ByMove,
+        CaptureKind::ByRef => CaptureKindWire::ByRef,
     }
 }
 
@@ -1857,18 +1925,9 @@ pub fn capture_kind_to_wire(v: CaptureKind) -> CaptureKindWire {
 pub fn capture_kind_from_wire(v: &CaptureKindWire) -> CaptureKind {
     match v {
         CaptureKindWire::ByCopy => CaptureKind::ByCopy,
-        CaptureKindWire::ByRef { mutable } => CaptureKind::ByRef { mutable: *mutable },
-        CaptureKindWire::ByMove => CaptureKind::ByMove,
+        CaptureKindWire::ByRef => CaptureKind::ByRef,
     }
 }
-
-wire_enum_conversions!(
-    capture_access_kind_to_wire,
-    capture_access_kind_from_wire,
-    CaptureAccessKind,
-    CaptureAccessKindWire,
-    [Read, Mutate, Move,]
-);
 
 #[inline]
 pub fn adt_def_to_wire(v: AdtDef) -> AdtDefWire {
@@ -1998,13 +2057,18 @@ pub fn ty_to_wire(v: Ty<'_>) -> TyWire {
             TyKind::Pointer(ty, m) => {
                 TyKindWire::Pointer(Box::new(ty_to_wire(ty)), mutability_to_wire(m))
             }
-            TyKind::Reference(ty, m) => {
-                TyKindWire::Reference(Box::new(ty_to_wire(ty)), mutability_to_wire(m))
-            }
+            TyKind::Reference(ty) => TyKindWire::Reference(Box::new(ty_to_wire(ty))),
             TyKind::Tuple(items) => {
                 TyKindWire::Tuple(items.iter().copied().map(ty_to_wire).collect())
             }
-            TyKind::FnPointer { inputs, output } => TyKindWire::FnPointer {
+            TyKind::FnPointer {
+                inputs,
+                output,
+                effects,
+            } => TyKindWire::FnPointer {
+                kind: closure_kind_to_wire(effects.kind),
+                is_unsafe: effects.is_unsafe,
+                abi: effects.abi.map(abi_to_wire),
                 inputs: inputs.iter().copied().map(ty_to_wire).collect(),
                 output: Box::new(ty_to_wire(output)),
             },
@@ -2022,6 +2086,7 @@ pub fn ty_to_wire(v: Ty<'_>) -> TyWire {
             },
             TyKind::Infer(v) => TyKindWire::Infer(infer_ty_to_wire(v)),
             TyKind::Parameter(v) => TyKindWire::Parameter(generic_param_to_wire(v)),
+            TyKind::ExistentialSelf(depth) => TyKindWire::ExistentialSelf(depth),
             TyKind::Closure {
                 closure_def_id,
                 kind,
@@ -2071,16 +2136,25 @@ pub fn ty_from_wire<'a>(gcx: GlobalContext<'a>, v: &TyWire) -> Ty<'a> {
         TyKindWire::Pointer(ty, m) => {
             TyKind::Pointer(ty_from_wire(gcx, ty), mutability_from_wire(m))
         }
-        TyKindWire::Reference(ty, m) => {
-            TyKind::Reference(ty_from_wire(gcx, ty), mutability_from_wire(m))
-        }
+        TyKindWire::Reference(ty) => TyKind::Reference(ty_from_wire(gcx, ty)),
         TyKindWire::Tuple(items) => {
             let items: Vec<_> = items.iter().map(|item| ty_from_wire(gcx, item)).collect();
             TyKind::Tuple(gcx.store.interners.intern_ty_list(items))
         }
-        TyKindWire::FnPointer { inputs, output } => {
+        TyKindWire::FnPointer {
+            inputs,
+            output,
+            kind,
+            is_unsafe,
+            abi,
+        } => {
             let inputs: Vec<_> = inputs.iter().map(|item| ty_from_wire(gcx, item)).collect();
             TyKind::FnPointer {
+                effects: crate::sema::models::FunctionPointerEffects {
+                    kind: closure_kind_from_wire(kind),
+                    is_unsafe: *is_unsafe,
+                    abi: abi.as_ref().map(abi_from_wire),
+                },
                 inputs: gcx.store.interners.intern_ty_list(inputs),
                 output: ty_from_wire(gcx, output),
             }
@@ -2107,6 +2181,7 @@ pub fn ty_from_wire<'a>(gcx: GlobalContext<'a>, v: &TyWire) -> Ty<'a> {
         }
         TyKindWire::Infer(v) => TyKind::Infer(infer_ty_from_wire(v)),
         TyKindWire::Parameter(v) => TyKind::Parameter(generic_param_from_wire(v)),
+        TyKindWire::ExistentialSelf(depth) => TyKind::ExistentialSelf(*depth),
         TyKindWire::Closure {
             closure_def_id,
             kind,
@@ -2255,22 +2330,16 @@ pub fn expression_resolution_state_from_wire(
 pub fn visibility_to_wire(v: Visibility) -> VisibilityWire {
     match v {
         Visibility::Public => VisibilityWire::Public,
+        Visibility::Internal(v) => VisibilityWire::Internal(def_to_wire(v)),
         Visibility::Private(v) => VisibilityWire::Private(def_to_wire(v)),
-        Visibility::FilePrivate(v) => VisibilityWire::FilePrivate(v.raw()),
     }
 }
 
-pub fn visibility_from_wire(v: &VisibilityWire, remap: FileRemap<'_>) -> Visibility {
+pub fn visibility_from_wire(v: &VisibilityWire) -> Visibility {
     match v {
         VisibilityWire::Public => Visibility::Public,
+        VisibilityWire::Internal(v) => Visibility::Internal(def_from_wire(v)),
         VisibilityWire::Private(v) => Visibility::Private(def_from_wire(v)),
-        VisibilityWire::FilePrivate(v) => Visibility::FilePrivate(
-            remap
-                .old_to_new
-                .get(v)
-                .copied()
-                .unwrap_or_else(|| FileID::from_raw(0)),
-        ),
     }
 }
 
@@ -2307,7 +2376,7 @@ pub fn type_head_to_wire(v: TypeHead) -> TypeHeadWire {
         TypeHead::Nominal(v) => TypeHeadWire::Nominal(def_to_wire(v)),
         TypeHead::Parameter(v) => TypeHeadWire::Parameter(def_to_wire(v)),
         TypeHead::Closure(v) => TypeHeadWire::Closure(def_to_wire(v)),
-        TypeHead::Reference(v) => TypeHeadWire::Reference(mutability_to_wire(v)),
+        TypeHead::Reference => TypeHeadWire::Reference,
         TypeHead::Pointer(v) => TypeHeadWire::Pointer(mutability_to_wire(v)),
         TypeHead::Tuple(v) => TypeHeadWire::Tuple(v),
         TypeHead::Array => TypeHeadWire::Array,
@@ -2321,7 +2390,7 @@ pub fn type_head_from_wire(v: &TypeHeadWire) -> TypeHead {
         TypeHeadWire::Nominal(v) => TypeHead::Nominal(def_from_wire(v)),
         TypeHeadWire::Parameter(v) => TypeHead::Parameter(def_from_wire(v)),
         TypeHeadWire::Closure(v) => TypeHead::Closure(def_from_wire(v)),
-        TypeHeadWire::Reference(v) => TypeHead::Reference(mutability_from_wire(v)),
+        TypeHeadWire::Reference => TypeHead::Reference,
         TypeHeadWire::Pointer(v) => TypeHead::Pointer(mutability_from_wire(v)),
         TypeHeadWire::Tuple(v) => TypeHead::Tuple(*v),
         TypeHeadWire::Array => TypeHead::Array,
@@ -2483,12 +2552,48 @@ pub fn struct_definition_to_wire(
     symbols: &mut SymbolTableBuilder,
 ) -> StructDefinitionWire {
     StructDefinitionWire {
+        class_info: v.class_info.map(|class| ClassInfoWire {
+            initializers: class
+                .initializers
+                .iter()
+                .map(|initializer| ClassInitializerWire {
+                    definition: def_to_wire(initializer.definition),
+                    family: def_to_wire(initializer.family),
+                    implementation: def_to_wire(initializer.implementation),
+                    owner: ty_to_wire(initializer.owner),
+                    is_convenience: initializer.is_convenience,
+                    is_required: initializer.is_required,
+                    is_inherited: initializer.is_inherited,
+                    delegations: initializer
+                        .delegations
+                        .iter()
+                        .map(|id| def_to_wire(*id))
+                        .collect(),
+                })
+                .collect(),
+            base: class.base.map(|ty| ty_to_wire(ty)),
+            methods: class
+                .methods
+                .iter()
+                .map(|method| ClassMethodWire {
+                    returns_self: method.returns_self,
+                    family: def_to_wire(method.family),
+                    implementation: def_to_wire(method.implementation),
+                    owner: ty_to_wire(method.owner),
+                    is_final: method.is_final,
+                })
+                .collect(),
+            payload: class.payload.map(def_to_wire),
+            is_final: class.is_final,
+        }),
         adt_def: adt_def_to_wire(v.adt_def),
+        has_initializer: v.has_initializer,
         repr: struct_repr_to_wire(v.repr),
         fields: v
             .fields
             .iter()
             .map(|field| StructFieldWire {
+                default_provider: field.default_provider.map(def_to_wire),
                 name: symbols.intern_symbol(field.name),
                 ty: ty_to_wire(field.ty),
                 mutability: mutability_to_wire(field.mutability),
@@ -2502,22 +2607,66 @@ pub fn struct_definition_to_wire(
 pub fn struct_definition_from_wire<'a>(
     gcx: GlobalContext<'a>,
     v: &StructDefinitionWire,
-    remap: FileRemap<'_>,
     symbols: SymbolTableRef<'_>,
 ) -> StructDefinition<'a> {
     let fields: Vec<_> = v
         .fields
         .iter()
         .map(|field| StructField {
+            default_provider: field.default_provider.as_ref().map(def_from_wire),
             name: Symbol::new(symbols.resolve_str(field.name)),
             ty: ty_from_wire(gcx, &field.ty),
             mutability: mutability_from_wire(&field.mutability),
             def_id: def_from_wire(&field.def_id),
-            visibility: visibility_from_wire(&field.visibility, remap),
+            visibility: visibility_from_wire(&field.visibility),
         })
         .collect();
     StructDefinition {
+        class_info: v
+            .class_info
+            .as_ref()
+            .map(|class| crate::sema::models::ClassInfo {
+                initializers: gcx.store.arenas.global.alloc_slice_copy(
+                    &class
+                        .initializers
+                        .iter()
+                        .map(|initializer| crate::sema::models::ClassInitializer {
+                            definition: def_from_wire(&initializer.definition),
+                            family: def_from_wire(&initializer.family),
+                            implementation: def_from_wire(&initializer.implementation),
+                            owner: ty_from_wire(gcx, &initializer.owner),
+                            is_convenience: initializer.is_convenience,
+                            is_required: initializer.is_required,
+                            is_inherited: initializer.is_inherited,
+                            delegations: gcx.store.arenas.global.alloc_slice_copy(
+                                &initializer
+                                    .delegations
+                                    .iter()
+                                    .map(def_from_wire)
+                                    .collect::<Vec<_>>(),
+                            ),
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+                base: class.base.as_ref().map(|ty| ty_from_wire(gcx, ty)),
+                methods: gcx.store.arenas.global.alloc_slice_copy(
+                    &class
+                        .methods
+                        .iter()
+                        .map(|method| crate::sema::models::ClassMethod {
+                            returns_self: method.returns_self,
+                            family: def_from_wire(&method.family),
+                            implementation: def_from_wire(&method.implementation),
+                            owner: ty_from_wire(gcx, &method.owner),
+                            is_final: method.is_final,
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+                payload: class.payload.as_ref().map(def_from_wire),
+                is_final: class.is_final,
+            }),
         adt_def: adt_def_from_wire(&v.adt_def),
+        has_initializer: v.has_initializer,
         repr: struct_repr_from_wire(&v.repr),
         fields: gcx.store.arenas.global.alloc_slice_copy(&fields),
     }
@@ -2552,15 +2701,21 @@ pub fn enum_definition_to_wire(
                 ctor_def_id: def_to_wire(variant.ctor_def_id),
                 kind: match variant.kind {
                     EnumVariantKind::Unit => EnumVariantKindWire::Unit,
-                    EnumVariantKind::Tuple(fields) => EnumVariantKindWire::Tuple(
-                        fields
+                    EnumVariantKind::Tuple(fields) | EnumVariantKind::Struct(fields) => {
+                        let fields = fields
                             .iter()
                             .map(|field| EnumVariantFieldWire {
                                 label: field.label.map(|v| symbols.intern_symbol(v)),
                                 ty: ty_to_wire(field.ty),
+                                mutability: mutability_to_wire(field.mutability),
                             })
-                            .collect(),
-                    ),
+                            .collect();
+                        if matches!(variant.kind, EnumVariantKind::Struct(..)) {
+                            EnumVariantKindWire::Struct(fields)
+                        } else {
+                            EnumVariantKindWire::Tuple(fields)
+                        }
+                    }
                 },
                 discriminant: variant.discriminant,
             })
@@ -2579,15 +2734,21 @@ pub fn enum_definition_from_wire<'a>(
         .map(|variant| {
             let kind = match &variant.kind {
                 EnumVariantKindWire::Unit => EnumVariantKind::Unit,
-                EnumVariantKindWire::Tuple(fields) => {
+                EnumVariantKindWire::Tuple(fields) | EnumVariantKindWire::Struct(fields) => {
                     let fields: Vec<_> = fields
                         .iter()
                         .map(|field| EnumVariantField {
                             label: field.label.map(|v| Symbol::new(symbols.resolve_str(v))),
                             ty: ty_from_wire(gcx, &field.ty),
+                            mutability: mutability_from_wire(&field.mutability),
                         })
                         .collect();
-                    EnumVariantKind::Tuple(gcx.store.arenas.global.alloc_slice_copy(&fields))
+                    let fields = gcx.store.arenas.global.alloc_slice_copy(&fields);
+                    if matches!(&variant.kind, EnumVariantKindWire::Struct(..)) {
+                        EnumVariantKind::Struct(fields)
+                    } else {
+                        EnumVariantKind::Tuple(fields)
+                    }
                 }
             };
             EnumVariant {
@@ -2676,8 +2837,6 @@ pub fn interface_requirements_to_wire(
                 ty: ty_to_wire(property.ty),
                 getter_id: def_to_wire(property.getter_id),
                 getter_is_required: property.getter_is_required,
-                setter_id: property.setter_id.map(def_to_wire),
-                setter_is_required: property.setter_is_required,
             })
             .collect(),
         types: v
@@ -2736,8 +2895,6 @@ pub fn interface_requirements_from_wire<'a>(
                     ty: ty_from_wire(gcx, &property.ty),
                     getter_id: def_from_wire(&property.getter_id),
                     getter_is_required: property.getter_is_required,
-                    setter_id: property.setter_id.as_ref().map(def_from_wire),
-                    setter_is_required: property.setter_is_required,
                 },
             )
             .collect(),
@@ -2829,7 +2986,6 @@ pub fn computed_property_entry_to_wire(
         property_id: def_to_wire(v.property_id),
         ty: ty_to_wire(v.ty),
         getter_id: def_to_wire(v.getter_id),
-        setter_id: v.setter_id.map(def_to_wire),
         visibility: visibility_to_wire(v.visibility),
     }
 }
@@ -2837,14 +2993,12 @@ pub fn computed_property_entry_to_wire(
 pub fn computed_property_entry_from_wire<'a>(
     gcx: GlobalContext<'a>,
     v: &ComputedPropertyEntryWire,
-    remap: FileRemap<'_>,
 ) -> crate::compile::context::ComputedPropertyEntry<'a> {
     crate::compile::context::ComputedPropertyEntry {
         property_id: def_from_wire(&v.property_id),
         ty: ty_from_wire(gcx, &v.ty),
         getter_id: def_from_wire(&v.getter_id),
-        setter_id: v.setter_id.as_ref().map(def_from_wire),
-        visibility: visibility_from_wire(&v.visibility, remap),
+        visibility: visibility_from_wire(&v.visibility),
     }
 }
 
@@ -2882,11 +3036,6 @@ pub fn type_member_index_to_wire(
                     ids.iter().copied().map(def_to_wire).collect(),
                 )
             })
-            .collect(),
-        operators: v
-            .operators
-            .iter()
-            .map(|(op, set)| (operator_kind_to_wire(*op), member_set_to_wire(set)))
             .collect(),
     }
 }
@@ -2938,11 +3087,6 @@ pub fn type_member_index_from_wire(
                     ids.iter().map(def_from_wire).collect::<Vec<_>>(),
                 )
             })
-            .collect(),
-        operators: v
-            .operators
-            .iter()
-            .map(|(op, set)| (operator_kind_from_wire(op), member_set_from_wire(set)))
             .collect(),
     }
 }
@@ -3059,10 +3203,16 @@ pub fn closure_captures_to_wire(
             .iter()
             .map(|capture| CapturedVarWire {
                 source_id: hir_node_to_wire(capture.source_id),
+                root_ty: ty_to_wire(capture.root_ty),
+                projection: capture
+                    .projection
+                    .iter()
+                    .map(|field| (field.field.index() as u32, ty_to_wire(field.ty)))
+                    .collect(),
                 name: symbols.intern_symbol(capture.name),
                 ty: ty_to_wire(capture.ty),
                 capture_kind: capture_kind_to_wire(capture.capture_kind),
-                access_kind: capture_access_kind_to_wire(capture.access_kind),
+                source_immutable: capture.source_immutable,
                 field_index: capture.field_index.index() as u32,
             })
             .collect(),
@@ -3081,10 +3231,21 @@ pub fn closure_captures_from_wire<'a>(
             .iter()
             .map(|capture| CapturedVar {
                 source_id: hir_node_from_wire(capture.source_id),
+                root_ty: ty_from_wire(gcx, &capture.root_ty),
+                projection: gcx.store.arenas.global.alloc_slice_clone(
+                    &capture
+                        .projection
+                        .iter()
+                        .map(|(field, ty)| crate::sema::models::CaptureProjection {
+                            field: crate::thir::FieldIndex::from_raw(*field),
+                            ty: ty_from_wire(gcx, ty),
+                        })
+                        .collect::<Vec<_>>(),
+                ),
                 name: Symbol::new(symbols.resolve_str(capture.name)),
                 ty: ty_from_wire(gcx, &capture.ty),
                 capture_kind: capture_kind_from_wire(&capture.capture_kind),
-                access_kind: capture_access_kind_from_wire(&capture.access_kind),
+                source_immutable: capture.source_immutable,
                 field_index: crate::thir::FieldIndex::from_raw(capture.field_index),
             })
             .collect(),
@@ -3102,16 +3263,11 @@ pub fn synthetic_method_info_to_wire(
             SyntheticMethodKind::MemberwiseClone => SyntheticMethodKindWire::MemberwiseClone,
             SyntheticMethodKind::MemberwiseHash => SyntheticMethodKindWire::MemberwiseHash,
             SyntheticMethodKind::MemberwiseEquality => SyntheticMethodKindWire::MemberwiseEquality,
+            SyntheticMethodKind::MemberwiseEncode => SyntheticMethodKindWire::MemberwiseEncode,
+            SyntheticMethodKind::MemberwiseDecode => SyntheticMethodKindWire::MemberwiseDecode,
             SyntheticMethodKind::ClosureCall => SyntheticMethodKindWire::ClosureCall,
-            SyntheticMethodKind::ClosureCallMut => SyntheticMethodKindWire::ClosureCallMut,
-            SyntheticMethodKind::ClosureCallOnce => SyntheticMethodKindWire::ClosureCallOnce,
             SyntheticMethodKind::PropertyFieldGetter(field_index) => {
                 SyntheticMethodKindWire::PropertyFieldGetter {
-                    field_index: field_index as u32,
-                }
-            }
-            SyntheticMethodKind::PropertyFieldSetter(field_index) => {
-                SyntheticMethodKindWire::PropertyFieldSetter {
                     field_index: field_index as u32,
                 }
             }
@@ -3163,14 +3319,11 @@ pub fn synthetic_method_info_from_wire<'a>(
             SyntheticMethodKindWire::MemberwiseClone => SyntheticMethodKind::MemberwiseClone,
             SyntheticMethodKindWire::MemberwiseHash => SyntheticMethodKind::MemberwiseHash,
             SyntheticMethodKindWire::MemberwiseEquality => SyntheticMethodKind::MemberwiseEquality,
+            SyntheticMethodKindWire::MemberwiseEncode => SyntheticMethodKind::MemberwiseEncode,
+            SyntheticMethodKindWire::MemberwiseDecode => SyntheticMethodKind::MemberwiseDecode,
             SyntheticMethodKindWire::ClosureCall => SyntheticMethodKind::ClosureCall,
-            SyntheticMethodKindWire::ClosureCallMut => SyntheticMethodKind::ClosureCallMut,
-            SyntheticMethodKindWire::ClosureCallOnce => SyntheticMethodKind::ClosureCallOnce,
             SyntheticMethodKindWire::PropertyFieldGetter { field_index } => {
                 SyntheticMethodKind::PropertyFieldGetter(field_index as usize)
-            }
-            SyntheticMethodKindWire::PropertyFieldSetter { field_index } => {
-                SyntheticMethodKind::PropertyFieldSetter(field_index as usize)
             }
         },
         self_ty: ty_from_wire(gcx, &v.self_ty),
@@ -3264,6 +3417,7 @@ pub fn synthetic_definition_to_wire(
     v: &SyntheticDefinition<'_>,
 ) -> SyntheticDefinitionWire {
     SyntheticDefinitionWire {
+        kind: synthetic_kind_to_wire(v.kind),
         id: def_to_wire(id),
         name: v.name.as_str().to_string(),
         generics: generics_to_wire(v.generics),
@@ -3298,6 +3452,7 @@ pub fn synthetic_definition_from_wire<'a>(
     (
         def_from_wire(&v.id),
         SyntheticDefinition {
+            kind: synthetic_kind_from_wire(&v.kind),
             name: Symbol::new(&v.name),
             generics,
             signature,
@@ -3306,12 +3461,227 @@ pub fn synthetic_definition_from_wire<'a>(
     )
 }
 
+fn synthetic_kind_to_wire(
+    kind: crate::sema::models::SyntheticDefinitionKind,
+) -> SyntheticDefinitionKindWire {
+    use crate::sema::models::SyntheticDefinitionKind as M;
+    use SyntheticDefinitionKindWire as W;
+    match kind {
+        M::ClassDecoder { class, initializer } => W::ClassDecoder {
+            class: def_to_wire(class),
+            initializer: def_to_wire(initializer),
+        },
+        M::ClassDecodingInitializer { class } => W::ClassDecodingInitializer {
+            class: def_to_wire(class),
+        },
+        M::ClassEncoder { class } => W::ClassEncoder {
+            class: def_to_wire(class),
+        },
+        M::ClassPayload { class } => W::ClassPayload {
+            class: def_to_wire(class),
+        },
+        M::ClassPayloadInitializer { class, initializer } => W::ClassPayloadInitializer {
+            class: def_to_wire(class),
+            initializer: def_to_wire(initializer),
+        },
+        M::InheritedClassInitializer { class, initializer } => W::InheritedClassInitializer {
+            class: def_to_wire(class),
+            initializer: def_to_wire(initializer),
+        },
+        M::InitializerEnvironment { class, initializer } => W::InitializerEnvironment {
+            class: def_to_wire(class),
+            initializer: def_to_wire(initializer),
+        },
+        M::InheritedInitializerDefault {
+            initializer,
+            provider,
+        } => W::InheritedInitializerDefault {
+            initializer: def_to_wire(initializer),
+            provider: def_to_wire(provider),
+        },
+        M::ClassInitializerDispatch { initializer } => W::ClassInitializerDispatch {
+            initializer: def_to_wire(initializer),
+        },
+        M::ClassConvenienceInitializer { initializer } => W::ClassConvenienceInitializer {
+            initializer: def_to_wire(initializer),
+        },
+        M::ClassConstructionDescriptor { class } => W::ClassConstructionDescriptor {
+            class: def_to_wire(class),
+        },
+        M::ClassObjectDescriptor { class } => W::ClassObjectDescriptor {
+            class: def_to_wire(class),
+        },
+        M::ErasedAsRef { context } => W::ErasedAsRef {
+            context: def_to_wire(context),
+        },
+        M::ErasedPayloadReference { context } => W::ErasedPayloadReference {
+            context: def_to_wire(context),
+        },
+        M::StaticInitializer { storage } => W::StaticInitializer {
+            storage: def_to_wire(storage),
+        },
+        M::StaticReference { storage } => W::StaticReference {
+            storage: def_to_wire(storage),
+        },
+        M::ErasedAsyncSelf { context, method } => W::ErasedAsyncSelf {
+            context: def_to_wire(context),
+            method: def_to_wire(method),
+        },
+        M::ErasedAsyncSelfDefault { adapter, provider } => W::ErasedAsyncSelfDefault {
+            adapter: def_to_wire(adapter),
+            provider: def_to_wire(provider),
+        },
+        M::ErasedDefault {
+            source,
+            provider,
+            parameter,
+        } => W::ErasedDefault {
+            source: def_to_wire(source),
+            provider: def_to_wire(provider),
+            parameter,
+        },
+        M::ErasedTakeAs { context } => W::ErasedTakeAs {
+            context: def_to_wire(context),
+        },
+        M::ClassDefaultBody { source } => W::ClassDefaultBody {
+            source: def_to_wire(source),
+        },
+        M::AdoptedClassDefault {
+            conformance,
+            source,
+        } => W::AdoptedClassDefault {
+            conformance: conformance_id_to_wire(conformance),
+            source: def_to_wire(source),
+        },
+        M::AdoptedClassDefaultArgument { method, provider } => W::AdoptedClassDefaultArgument {
+            method: def_to_wire(method),
+            provider: def_to_wire(provider),
+        },
+        M::Ordinary => W::Ordinary,
+        M::AsyncPoll => W::AsyncPoll,
+        M::BuiltinCopyClone => W::BuiltinCopyClone,
+        M::FunctionPointerCall { is_async } => W::FunctionPointerCall { is_async },
+        M::TupleClone => W::TupleClone,
+        M::ArrayClone => W::ArrayClone,
+        M::ClosureClone => W::ClosureClone,
+        M::PrimitiveOperator(item) => W::PrimitiveOperator(std_item_to_wire(item)),
+    }
+}
+fn synthetic_kind_from_wire(
+    kind: &SyntheticDefinitionKindWire,
+) -> crate::sema::models::SyntheticDefinitionKind {
+    use crate::sema::models::SyntheticDefinitionKind as M;
+    use SyntheticDefinitionKindWire as W;
+    match kind {
+        W::ClassDecoder { class, initializer } => M::ClassDecoder {
+            class: def_from_wire(class),
+            initializer: def_from_wire(initializer),
+        },
+        W::ClassDecodingInitializer { class } => M::ClassDecodingInitializer {
+            class: def_from_wire(class),
+        },
+        W::ClassEncoder { class } => M::ClassEncoder {
+            class: def_from_wire(class),
+        },
+        W::ClassPayload { class } => M::ClassPayload {
+            class: def_from_wire(class),
+        },
+        W::ClassPayloadInitializer { class, initializer } => M::ClassPayloadInitializer {
+            class: def_from_wire(class),
+            initializer: def_from_wire(initializer),
+        },
+        W::InheritedClassInitializer { class, initializer } => M::InheritedClassInitializer {
+            class: def_from_wire(class),
+            initializer: def_from_wire(initializer),
+        },
+        W::InitializerEnvironment { class, initializer } => M::InitializerEnvironment {
+            class: def_from_wire(class),
+            initializer: def_from_wire(initializer),
+        },
+        W::InheritedInitializerDefault {
+            initializer,
+            provider,
+        } => M::InheritedInitializerDefault {
+            initializer: def_from_wire(initializer),
+            provider: def_from_wire(provider),
+        },
+        W::ClassInitializerDispatch { initializer } => M::ClassInitializerDispatch {
+            initializer: def_from_wire(initializer),
+        },
+        W::ClassConvenienceInitializer { initializer } => M::ClassConvenienceInitializer {
+            initializer: def_from_wire(initializer),
+        },
+        W::ClassConstructionDescriptor { class } => M::ClassConstructionDescriptor {
+            class: def_from_wire(class),
+        },
+        W::ClassObjectDescriptor { class } => M::ClassObjectDescriptor {
+            class: def_from_wire(class),
+        },
+        W::ErasedAsRef { context } => M::ErasedAsRef {
+            context: def_from_wire(context),
+        },
+        W::ErasedPayloadReference { context } => M::ErasedPayloadReference {
+            context: def_from_wire(context),
+        },
+        W::StaticInitializer { storage } => M::StaticInitializer {
+            storage: def_from_wire(storage),
+        },
+        W::StaticReference { storage } => M::StaticReference {
+            storage: def_from_wire(storage),
+        },
+        W::ErasedAsyncSelf { context, method } => M::ErasedAsyncSelf {
+            context: def_from_wire(context),
+            method: def_from_wire(method),
+        },
+        W::ErasedAsyncSelfDefault { adapter, provider } => M::ErasedAsyncSelfDefault {
+            adapter: def_from_wire(adapter),
+            provider: def_from_wire(provider),
+        },
+        W::ErasedDefault {
+            source,
+            provider,
+            parameter,
+        } => M::ErasedDefault {
+            source: def_from_wire(source),
+            provider: def_from_wire(provider),
+            parameter: *parameter,
+        },
+        W::ErasedTakeAs { context } => M::ErasedTakeAs {
+            context: def_from_wire(context),
+        },
+        W::ClassDefaultBody { source } => M::ClassDefaultBody {
+            source: def_from_wire(source),
+        },
+        W::AdoptedClassDefault {
+            conformance,
+            source,
+        } => M::AdoptedClassDefault {
+            conformance: conformance_id_from_wire(&conformance),
+            source: def_from_wire(source),
+        },
+        W::AdoptedClassDefaultArgument { method, provider } => M::AdoptedClassDefaultArgument {
+            method: def_from_wire(method),
+            provider: def_from_wire(provider),
+        },
+        W::Ordinary => M::Ordinary,
+        W::AsyncPoll => M::AsyncPoll,
+        W::BuiltinCopyClone => M::BuiltinCopyClone,
+        W::FunctionPointerCall { is_async } => M::FunctionPointerCall {
+            is_async: *is_async,
+        },
+        W::TupleClone => M::TupleClone,
+        W::ArrayClone => M::ArrayClone,
+        W::ClosureClone => M::ClosureClone,
+        W::PrimitiveOperator(item) => M::PrimitiveOperator(std_item_from_wire(item)),
+    }
+}
+
 wire_enum_conversions!(
     local_kind_to_wire,
     local_kind_from_wire,
     mir::LocalKind,
     LocalKindWire,
-    [Param, User, Temp, Return,]
+    [Param, User, ConstructorSelf, Temp, Return,]
 );
 
 wire_enum_conversions!(
@@ -3440,11 +3810,10 @@ pub fn mir_constant_from_wire<'a>(gcx: GlobalContext<'a>, v: &ConstantWire) -> m
 pub fn operand_to_wire(v: &mir::Operand<'_>) -> OperandWire {
     match v {
         mir::Operand::Copy(v) => OperandWire::Copy(place_to_wire(v)),
-        mir::Operand::Move(v) => OperandWire::Move(place_to_wire(v)),
+
         mir::Operand::CopyWith(v, modifiers) => OperandWire::CopyWith(
             place_to_wire(v),
             CopyModifiersWire {
-                take: modifiers.take,
                 init: modifiers.init,
             },
         ),
@@ -3455,11 +3824,10 @@ pub fn operand_to_wire(v: &mir::Operand<'_>) -> OperandWire {
 pub fn operand_from_wire<'a>(gcx: GlobalContext<'a>, v: &OperandWire) -> mir::Operand<'a> {
     match v {
         OperandWire::Copy(v) => mir::Operand::Copy(place_from_wire(gcx, v)),
-        OperandWire::Move(v) => mir::Operand::Move(place_from_wire(gcx, v)),
+
         OperandWire::CopyWith(v, modifiers) => mir::Operand::CopyWith(
             place_from_wire(gcx, v),
             mir::CopyModifiers {
-                take: modifiers.take,
                 init: modifiers.init,
             },
         ),
@@ -3471,10 +3839,12 @@ pub fn cast_kind_to_wire(v: &mir::CastKind<'_>) -> CastKindWire {
     match v {
         mir::CastKind::Numeric => CastKindWire::Numeric,
         mir::CastKind::BoxExistential => CastKindWire::BoxExistential,
-        mir::CastKind::ExistentialPack { concrete } => CastKindWire::ExistentialPack {
-            concrete: ty_to_wire(*concrete),
-        },
         mir::CastKind::ExistentialUpcast => CastKindWire::ExistentialUpcast,
+        mir::CastKind::ClassObjectOwner => CastKindWire::ClassObjectOwner,
+        mir::CastKind::NativeClassHandle => CastKindWire::NativeClassHandle,
+        mir::CastKind::ClassFromOwner => CastKindWire::ClassFromOwner,
+        mir::CastKind::ClassSelfResult => CastKindWire::ClassSelfResult,
+        mir::CastKind::ClassUpcast => CastKindWire::ClassUpcast,
         mir::CastKind::ExistentialTypeIs { target } => CastKindWire::ExistentialTypeIs {
             target: ty_to_wire(*target),
         },
@@ -3490,10 +3860,12 @@ pub fn cast_kind_from_wire<'a>(gcx: GlobalContext<'a>, v: &CastKindWire) -> mir:
     match v {
         CastKindWire::Numeric => mir::CastKind::Numeric,
         CastKindWire::BoxExistential => mir::CastKind::BoxExistential,
-        CastKindWire::ExistentialPack { concrete } => mir::CastKind::ExistentialPack {
-            concrete: ty_from_wire(gcx, concrete),
-        },
         CastKindWire::ExistentialUpcast => mir::CastKind::ExistentialUpcast,
+        CastKindWire::ClassObjectOwner => mir::CastKind::ClassObjectOwner,
+        CastKindWire::NativeClassHandle => mir::CastKind::NativeClassHandle,
+        CastKindWire::ClassFromOwner => mir::CastKind::ClassFromOwner,
+        CastKindWire::ClassSelfResult => mir::CastKind::ClassSelfResult,
+        CastKindWire::ClassUpcast => mir::CastKind::ClassUpcast,
         CastKindWire::ExistentialTypeIs { target } => mir::CastKind::ExistentialTypeIs {
             target: ty_from_wire(gcx, target),
         },
@@ -3582,7 +3954,13 @@ pub fn aggregate_kind_from_wire<'a>(
 
 pub fn rvalue_to_wire(v: &mir::Rvalue<'_>) -> RvalueWire {
     match v {
+        mir::Rvalue::Alloc { ty } => RvalueWire::Alloc {
+            ty: ty_to_wire(*ty),
+        },
         mir::Rvalue::Use(v) => RvalueWire::Use(operand_to_wire(v)),
+        mir::Rvalue::CopyValue { source } => RvalueWire::CopyValue {
+            source: place_to_wire(source),
+        },
         mir::Rvalue::UnaryOp { op, operand } => RvalueWire::UnaryOp {
             op: unary_op_to_wire(*op),
             operand: operand_to_wire(operand),
@@ -3597,15 +3975,14 @@ pub fn rvalue_to_wire(v: &mir::Rvalue<'_>) -> RvalueWire {
             ty: ty_to_wire(*ty),
             kind: cast_kind_to_wire(kind),
         },
-        mir::Rvalue::Ref { mutable, place } => RvalueWire::Ref {
-            mutable: *mutable,
+        mir::Rvalue::Ref { place } => RvalueWire::Ref {
+            place: place_to_wire(place),
+        },
+        mir::Rvalue::CleanupAddress { place } => RvalueWire::CleanupAddress {
             place: place_to_wire(place),
         },
         mir::Rvalue::Discriminant { place } => RvalueWire::Discriminant {
             place: place_to_wire(place),
-        },
-        mir::Rvalue::Alloc { ty } => RvalueWire::Alloc {
-            ty: ty_to_wire(*ty),
         },
         mir::Rvalue::Zeroed { ty } => RvalueWire::Zeroed {
             ty: ty_to_wire(*ty),
@@ -3628,7 +4005,13 @@ pub fn rvalue_to_wire(v: &mir::Rvalue<'_>) -> RvalueWire {
 
 pub fn rvalue_from_wire<'a>(gcx: GlobalContext<'a>, v: &RvalueWire) -> mir::Rvalue<'a> {
     match v {
+        RvalueWire::Alloc { ty } => mir::Rvalue::Alloc {
+            ty: ty_from_wire(gcx, ty),
+        },
         RvalueWire::Use(v) => mir::Rvalue::Use(operand_from_wire(gcx, v)),
+        RvalueWire::CopyValue { source } => mir::Rvalue::CopyValue {
+            source: place_from_wire(gcx, source),
+        },
         RvalueWire::UnaryOp { op, operand } => mir::Rvalue::UnaryOp {
             op: unary_op_from_wire(op),
             operand: operand_from_wire(gcx, operand),
@@ -3643,15 +4026,14 @@ pub fn rvalue_from_wire<'a>(gcx: GlobalContext<'a>, v: &RvalueWire) -> mir::Rval
             ty: ty_from_wire(gcx, ty),
             kind: cast_kind_from_wire(gcx, kind),
         },
-        RvalueWire::Ref { mutable, place } => mir::Rvalue::Ref {
-            mutable: *mutable,
+        RvalueWire::Ref { place } => mir::Rvalue::Ref {
+            place: place_from_wire(gcx, place),
+        },
+        RvalueWire::CleanupAddress { place } => mir::Rvalue::CleanupAddress {
             place: place_from_wire(gcx, place),
         },
         RvalueWire::Discriminant { place } => mir::Rvalue::Discriminant {
             place: place_from_wire(gcx, place),
-        },
-        RvalueWire::Alloc { ty } => mir::Rvalue::Alloc {
-            ty: ty_from_wire(gcx, ty),
         },
         RvalueWire::Zeroed { ty } => mir::Rvalue::Zeroed {
             ty: ty_from_wire(gcx, ty),
@@ -3687,19 +4069,20 @@ pub fn statement_to_wire(v: &mir::Statement<'_>) -> StatementWire {
             mir::StatementKind::StorageLive(local) => {
                 StatementKindWire::StorageLive(local.index() as u32)
             }
+            mir::StatementKind::StorageDead(local) => {
+                StatementKindWire::StorageDead(local.index() as u32)
+            }
             mir::StatementKind::SetInitialized(local) => {
                 StatementKindWire::SetInitialized(local.index() as u32)
             }
             mir::StatementKind::Assign(place, rvalue) => {
                 StatementKindWire::Assign(place_to_wire(place), rvalue_to_wire(rvalue))
             }
+
             mir::StatementKind::KeepAlive(operand) => {
                 StatementKindWire::KeepAlive(operand_to_wire(operand))
             }
-            mir::StatementKind::GcSafepoint(kind) => StatementKindWire::GcSafepoint(match kind {
-                mir::GcSafepointKind::Entry => GcSafepointKindWire::Entry,
-                mir::GcSafepointKind::Loop => GcSafepointKindWire::Loop,
-            }),
+            mir::StatementKind::GcSafepoint(kind) => StatementKindWire::GcSafepoint(*kind),
             mir::StatementKind::Nop => StatementKindWire::Nop,
             mir::StatementKind::SetDiscriminant {
                 place,
@@ -3726,6 +4109,9 @@ pub fn statement_from_wire<'a>(
             StatementKindWire::StorageLive(local) => {
                 mir::StatementKind::StorageLive(mir::LocalId::from_raw(*local))
             }
+            StatementKindWire::StorageDead(local) => {
+                mir::StatementKind::StorageDead(mir::LocalId::from_raw(*local))
+            }
             StatementKindWire::SetInitialized(local) => {
                 mir::StatementKind::SetInitialized(mir::LocalId::from_raw(*local))
             }
@@ -3733,13 +4119,11 @@ pub fn statement_from_wire<'a>(
                 place_from_wire(gcx, place),
                 rvalue_from_wire(gcx, rvalue),
             ),
+
             StatementKindWire::KeepAlive(operand) => {
                 mir::StatementKind::KeepAlive(operand_from_wire(gcx, operand))
             }
-            StatementKindWire::GcSafepoint(kind) => mir::StatementKind::GcSafepoint(match kind {
-                GcSafepointKindWire::Entry => mir::GcSafepointKind::Entry,
-                GcSafepointKindWire::Loop => mir::GcSafepointKind::Loop,
-            }),
+            StatementKindWire::GcSafepoint(kind) => mir::StatementKind::GcSafepoint(*kind),
             StatementKindWire::Nop => mir::StatementKind::Nop,
             StatementKindWire::SetDiscriminant {
                 place,
@@ -3771,31 +4155,6 @@ pub fn unwind_from_wire(v: &CallUnwindActionWire) -> mir::CallUnwindAction {
     }
 }
 
-fn devirt_hint_to_wire(v: &mir::DevirtHint<'_>) -> DevirtHintWire {
-    DevirtHintWire {
-        impl_def_id: def_to_wire(v.impl_def_id),
-        impl_args: v
-            .impl_args
-            .iter()
-            .map(|arg| generic_arg_to_wire(*arg))
-            .collect(),
-        concrete_self_ty: ty_to_wire(v.concrete_self_ty),
-    }
-}
-
-fn devirt_hint_from_wire<'a>(gcx: GlobalContext<'a>, v: &DevirtHintWire) -> mir::DevirtHint<'a> {
-    mir::DevirtHint {
-        impl_def_id: def_from_wire(&v.impl_def_id),
-        impl_args: gcx.store.interners.intern_generic_args(
-            v.impl_args
-                .iter()
-                .map(|arg| generic_arg_from_wire(gcx, arg))
-                .collect(),
-        ),
-        concrete_self_ty: ty_from_wire(gcx, &v.concrete_self_ty),
-    }
-}
-
 pub fn terminator_to_wire(v: &mir::Terminator<'_>) -> TerminatorWire {
     TerminatorWire {
         kind: match &v.kind {
@@ -3821,22 +4180,22 @@ pub fn terminator_to_wire(v: &mir::Terminator<'_>) -> TerminatorWire {
             mir::TerminatorKind::Call {
                 func,
                 args,
-                devirt_hint,
                 destination,
                 target,
                 unwind,
             } => TerminatorKindWire::Call {
                 func: operand_to_wire(func),
                 args: args.iter().map(operand_to_wire).collect(),
-                devirt_hint: devirt_hint.as_ref().map(devirt_hint_to_wire),
                 destination: place_to_wire(destination),
                 target: target.index() as u32,
                 unwind: unwind_to_wire(*unwind),
             },
+
             mir::TerminatorKind::Yield {
                 value,
                 resume,
                 resume_arg,
+                no_result,
                 cancel,
                 cancel_complete,
                 unwind,
@@ -3844,6 +4203,7 @@ pub fn terminator_to_wire(v: &mir::Terminator<'_>) -> TerminatorWire {
                 value: operand_to_wire(value),
                 resume: resume.index() as u32,
                 resume_arg: place_to_wire(resume_arg),
+                no_result: no_result.map(|block| block.index() as u32),
                 cancel: cancel.index() as u32,
                 cancel_complete: cancel_complete.index() as u32,
                 unwind: unwind_to_wire(*unwind),
@@ -3882,24 +4242,22 @@ pub fn terminator_from_wire<'a>(
             TerminatorKindWire::Call {
                 func,
                 args,
-                devirt_hint,
                 destination,
                 target,
                 unwind,
             } => mir::TerminatorKind::Call {
                 func: operand_from_wire(gcx, func),
                 args: args.iter().map(|arg| operand_from_wire(gcx, arg)).collect(),
-                devirt_hint: devirt_hint
-                    .as_ref()
-                    .map(|hint| devirt_hint_from_wire(gcx, hint)),
                 destination: place_from_wire(gcx, destination),
                 target: mir::BasicBlockId::from_raw(*target),
                 unwind: unwind_from_wire(unwind),
             },
+
             TerminatorKindWire::Yield {
                 value,
                 resume,
                 resume_arg,
+                no_result,
                 cancel,
                 cancel_complete,
                 unwind,
@@ -3907,6 +4265,7 @@ pub fn terminator_from_wire<'a>(
                 value: operand_from_wire(gcx, value),
                 resume: mir::BasicBlockId::from_raw(*resume),
                 resume_arg: place_from_wire(gcx, resume_arg),
+                no_result: no_result.map(mir::BasicBlockId::from_raw),
                 cancel: mir::BasicBlockId::from_raw(*cancel),
                 cancel_complete: mir::BasicBlockId::from_raw(*cancel_complete),
                 unwind: unwind_from_wire(unwind),
@@ -3950,7 +4309,6 @@ pub fn mir_body_to_wire(v: &mir::Body<'_>) -> BodyWire {
             .collect(),
         start_block: v.start_block.index() as u32,
         return_local: v.return_local.index() as u32,
-        escape_locals: v.escape_locals.clone(),
         phase: mir_phase_to_wire(v.phase),
         is_async: v.is_async,
     }
@@ -3962,6 +4320,8 @@ pub fn mir_body_from_wire<'a>(
     remap: FileRemap<'_>,
 ) -> mir::Body<'a> {
     mir::Body {
+        escape_locals: Vec::new(),
+
         owner: def_from_wire(&v.owner),
         source_scopes: v
             .source_scopes
@@ -4004,7 +4364,6 @@ pub fn mir_body_from_wire<'a>(
             .collect(),
         start_block: mir::BasicBlockId::from_raw(v.start_block),
         return_local: mir::LocalId::from_raw(v.return_local),
-        escape_locals: v.escape_locals.clone(),
         phase: mir_phase_from_wire(&v.phase),
         is_async: v.is_async,
     }
@@ -4513,7 +4872,7 @@ pub fn resolution_output_from_wire<'a>(
         definition_to_visibility: wire
             .definition_to_visibility
             .iter()
-            .map(|(def, vis)| (def_from_wire(def), visibility_from_wire(vis, remap)))
+            .map(|(def, vis)| (def_from_wire(def), visibility_from_wire(vis)))
             .collect(),
         file_scope_mapping: wire
             .file_scope_mapping
@@ -4530,6 +4889,9 @@ pub fn resolution_output_from_wire<'a>(
             .map(|(def, scope)| (def_from_wire(def), scope_by_id(*scope)))
             .collect(),
         block_scope_mapping: FxHashMap::default(),
+        // Source-only speculative diagnostics never cross a package boundary;
+        // exported checked MIR already contains the chosen bracket branch.
+        member_bracket_diagnostics: FxHashMap::default(),
         expression_resolutions: wire
             .expression_resolutions
             .iter()
@@ -4564,11 +4926,47 @@ pub fn type_database_to_wire(
             .iter()
             .map(|(def, mutability)| (def_to_wire(*def), mutability_to_wire(*mutability)))
             .collect(),
-        def_to_static_init: db
-            .def_to_static_init
+
+        def_to_class_default_contract: db
+            .def_to_class_default_contract
             .iter()
-            .map(|(def, value)| (def_to_wire(*def), const_to_wire(*value)))
+            .map(|(id, contract)| (def_to_wire(*id), *contract))
             .collect(),
+        erased_async_self_arguments: db
+            .erased_async_self_arguments
+            .iter()
+            .map(|(id, args)| {
+                (
+                    def_to_wire(*id),
+                    args.iter().copied().map(generic_arg_to_wire).collect(),
+                )
+            })
+            .collect(),
+        class_adoptions: db
+            .class_adoptions
+            .iter()
+            .map(|adoption| {
+                (
+                    conformance_id_to_wire(adoption.conformance),
+                    adoption
+                        .methods
+                        .iter()
+                        .map(|method| ClassWitnessMethodWire {
+                            requirement: def_to_wire(method.requirement),
+                            slot: ClassMethodWire {
+                                returns_self: method.slot.returns_self,
+                                family: def_to_wire(method.slot.family),
+                                implementation: def_to_wire(method.slot.implementation),
+                                owner: ty_to_wire(method.slot.owner),
+                                is_final: method.slot.is_final,
+                            },
+                            is_registered: method.is_registered,
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
+
         def_to_fn_sig: db
             .def_to_fn_sig
             .iter()
@@ -4648,6 +5046,50 @@ pub fn type_database_to_wire(
                 (
                     type_head_to_wire(*head),
                     type_member_index_to_wire(members, symbols),
+                )
+            })
+            .collect(),
+        class_subscripts: db
+            .class_subscripts
+            .iter()
+            .map(|(class, entries)| {
+                (
+                    def_to_wire(*class),
+                    entries
+                        .iter()
+                        .map(|(id, entry)| {
+                            (
+                                def_to_wire(*id),
+                                NativeSubscriptEntryWire {
+                                    getter: entry.getter.map(def_to_wire),
+                                    setter: entry.setter.map(def_to_wire),
+                                    address: entry.address.map(def_to_wire),
+                                    getter_is_default: entry.getter_is_default,
+                                    setter_is_default: entry.setter_is_default,
+                                    is_override: entry.is_override,
+                                    is_final: entry.is_final,
+                                },
+                            )
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
+        native_subscripts: db
+            .native_subscripts
+            .iter()
+            .map(|(&id, entry)| {
+                (
+                    def_to_wire(id),
+                    NativeSubscriptEntryWire {
+                        getter: entry.getter.map(def_to_wire),
+                        setter: entry.setter.map(def_to_wire),
+                        address: entry.address.map(def_to_wire),
+                        getter_is_default: entry.getter_is_default,
+                        setter_is_default: entry.setter_is_default,
+                        is_override: entry.is_override,
+                        is_final: entry.is_final,
+                    },
                 )
             })
             .collect(),
@@ -4859,6 +5301,51 @@ pub fn type_database_from_wire<'a>(
     let placeholder_span = Span::empty(placeholder_file);
 
     TypeDatabase {
+        def_to_class_default_contract: wire
+            .def_to_class_default_contract
+            .iter()
+            .map(|(id, contract)| (def_from_wire(id), *contract))
+            .collect(),
+        erased_async_self_arguments: wire
+            .erased_async_self_arguments
+            .iter()
+            .map(|(id, args)| {
+                (
+                    def_from_wire(id),
+                    gcx.store.interners.intern_generic_args(
+                        args.iter()
+                            .map(|arg| generic_arg_from_wire(gcx, arg))
+                            .collect(),
+                    ),
+                )
+            })
+            .collect(),
+        class_adoptions: wire
+            .class_adoptions
+            .iter()
+            .map(
+                |(conformance, methods)| crate::sema::models::ClassAdoption {
+                    conformance: conformance_id_from_wire(conformance),
+                    methods: gcx.store.arenas.global.alloc_slice_copy(
+                        &methods
+                            .iter()
+                            .map(|method| crate::sema::models::ClassWitnessMethod {
+                                requirement: def_from_wire(&method.requirement),
+                                slot: crate::sema::models::ClassMethod {
+                                    returns_self: method.slot.returns_self,
+                                    family: def_from_wire(&method.slot.family),
+                                    implementation: def_from_wire(&method.slot.implementation),
+                                    owner: ty_from_wire(gcx, &method.slot.owner),
+                                    is_final: method.slot.is_final,
+                                },
+                                is_registered: method.is_registered,
+                            })
+                            .collect::<Vec<_>>(),
+                    ),
+                },
+            )
+            .collect(),
+
         def_to_ty: wire
             .def_to_ty
             .iter()
@@ -4873,11 +5360,6 @@ pub fn type_database_from_wire<'a>(
             .def_to_static_mutability
             .iter()
             .map(|(def, mutability)| (def_from_wire(def), mutability_from_wire(mutability)))
-            .collect(),
-        def_to_static_init: wire
-            .def_to_static_init
-            .iter()
-            .map(|(def, value)| (def_from_wire(def), const_from_wire(gcx, value)))
             .collect(),
         def_to_fn_sig: wire
             .def_to_fn_sig
@@ -4904,7 +5386,7 @@ pub fn type_database_from_wire<'a>(
                     .store
                     .arenas
                     .struct_definitions
-                    .alloc(struct_definition_from_wire(gcx, st, remap, symbols));
+                    .alloc(struct_definition_from_wire(gcx, st, symbols));
                 (def_from_wire(def), st)
             })
             .collect(),
@@ -4982,6 +5464,50 @@ pub fn type_database_from_wire<'a>(
                 )
             })
             .collect(),
+        class_subscripts: wire
+            .class_subscripts
+            .iter()
+            .map(|(class, entries)| {
+                (
+                    def_from_wire(class),
+                    entries
+                        .iter()
+                        .map(|(id, entry)| {
+                            (
+                                def_from_wire(id),
+                                crate::compile::context::NativeSubscriptEntry {
+                                    getter: entry.getter.as_ref().map(def_from_wire),
+                                    setter: entry.setter.as_ref().map(def_from_wire),
+                                    address: entry.address.as_ref().map(def_from_wire),
+                                    getter_is_default: entry.getter_is_default,
+                                    setter_is_default: entry.setter_is_default,
+                                    is_override: entry.is_override,
+                                    is_final: entry.is_final,
+                                },
+                            )
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
+        native_subscripts: wire
+            .native_subscripts
+            .iter()
+            .map(|(id, entry)| {
+                (
+                    def_from_wire(id),
+                    crate::compile::context::NativeSubscriptEntry {
+                        getter: entry.getter.as_ref().map(def_from_wire),
+                        setter: entry.setter.as_ref().map(def_from_wire),
+                        address: entry.address.as_ref().map(def_from_wire),
+                        getter_is_default: entry.getter_is_default,
+                        setter_is_default: entry.setter_is_default,
+                        is_override: entry.is_override,
+                        is_final: entry.is_final,
+                    },
+                )
+            })
+            .collect(),
         type_head_to_properties: wire
             .type_head_to_properties
             .iter()
@@ -4993,7 +5519,7 @@ pub fn type_database_from_wire<'a>(
                         .map(|(name, property)| {
                             (
                                 Symbol::new(symbols.resolve_str(*name)),
-                                computed_property_entry_from_wire(gcx, property, remap),
+                                computed_property_entry_from_wire(gcx, property),
                             )
                         })
                         .collect(),
@@ -5016,9 +5542,7 @@ pub fn type_database_from_wire<'a>(
                                 ),
                                 entries
                                     .iter()
-                                    .map(|entry| {
-                                        computed_property_entry_from_wire(gcx, entry, remap)
-                                    })
+                                    .map(|entry| computed_property_entry_from_wire(gcx, entry))
                                     .collect(),
                             )
                         })
@@ -5203,6 +5727,14 @@ pub fn type_database_from_wire<'a>(
 mod tests {
     use super::*;
 
+    #[test]
+    fn internal_visibility_roundtrips_with_its_defining_package_identity() {
+        let owner = DefinitionID::new(PackageIndex::from_raw(7), DefinitionIndex::from_raw(19));
+        let visibility = Visibility::Internal(owner);
+        let encoded = visibility_to_wire(visibility);
+        assert_eq!(visibility_from_wire(&encoded), visibility);
+    }
+
     fn minimal_resolution_wire() -> ResolutionOutputWire {
         ResolutionOutputWire {
             resolutions: vec![],
@@ -5226,6 +5758,84 @@ mod tests {
     }
 
     #[test]
+    fn enum_payload_mutability_and_labels_roundtrip_through_wire() {
+        crate::mir::test_support::with_test_gcx(|gcx| {
+            let definition = DefinitionID::new(
+                crate::PackageIndex::new(2),
+                crate::sema::resolve::models::DefinitionIndex::from_raw(7),
+            );
+            let fields = gcx.store.arenas.global.alloc_slice_copy(&[
+                EnumVariantField {
+                    label: Some(gcx.intern_symbol("fixed")),
+                    ty: gcx.types.int32,
+                    mutability: hir::Mutability::Immutable,
+                },
+                EnumVariantField {
+                    label: Some(gcx.intern_symbol("editable")),
+                    ty: gcx.types.int32,
+                    mutability: hir::Mutability::Mutable,
+                },
+            ]);
+            let item = EnumVariant {
+                name: gcx.intern_symbol("item"),
+                def_id: definition,
+                ctor_def_id: definition,
+                kind: EnumVariantKind::Struct(fields),
+                discriminant: 0,
+            };
+            let variants = gcx.store.arenas.global.alloc_slice_copy(&[
+                item,
+                EnumVariant {
+                    kind: EnumVariantKind::Struct(&[]),
+                    ..item
+                },
+                EnumVariant {
+                    kind: EnumVariantKind::Tuple(&[]),
+                    ..item
+                },
+                EnumVariant {
+                    kind: EnumVariantKind::Unit,
+                    ..item
+                },
+                EnumVariant {
+                    kind: EnumVariantKind::Tuple(fields),
+                    ..item
+                },
+            ]);
+            let original = EnumDefinition {
+                adt_def: AdtDef {
+                    id: definition,
+                    kind: AdtKind::Enum,
+                },
+                variants,
+            };
+            let mut symbols = SymbolTableBuilder::default();
+            let wire = enum_definition_to_wire(&original, &mut symbols);
+            let table = symbols.finish();
+            let invalid = Cell::new(None);
+            let restored =
+                enum_definition_from_wire(gcx, &wire, SymbolTableRef::new(&table, &invalid));
+            let EnumVariantKind::Struct(decoded) = restored.variants[0].kind else {
+                panic!("struct payload")
+            };
+            assert_eq!(decoded, fields);
+            assert!(matches!(
+                restored.variants[1].kind,
+                EnumVariantKind::Struct([])
+            ));
+            assert!(matches!(
+                restored.variants[2].kind,
+                EnumVariantKind::Tuple([])
+            ));
+            assert!(matches!(restored.variants[3].kind, EnumVariantKind::Unit));
+            assert!(
+                matches!(restored.variants[4].kind, EnumVariantKind::Tuple(decoded) if decoded == fields)
+            );
+            assert!(invalid.get().is_none());
+        });
+    }
+
+    #[test]
     fn symbol_table_ref_marks_invalid_symbol_id() {
         let table = SymbolTableWire {
             symbols: vec!["alpha".into()],
@@ -5242,8 +5852,28 @@ mod tests {
 
     #[test]
     fn from_std_item_roundtrips_through_wire() {
-        let wire = std_item_to_wire(hir::StdItem::From);
-        assert_eq!(std_item_from_wire(&wire), hir::StdItem::From);
+        for item in [
+            hir::StdItem::From,
+            hir::StdItem::Span,
+            hir::StdItem::ListIterator,
+            hir::StdItem::ClassHandle,
+            hir::StdItem::AnyObject,
+        ] {
+            let wire = std_item_to_wire(item);
+            assert_eq!(std_item_from_wire(&wire), item);
+        }
+    }
+
+    #[test]
+    fn primitive_operator_roles_survive_metadata_roundtrip() {
+        // The role is part of the helper's identity, not merely its display
+        // name: importing Sub as Add would silently change generic behavior.
+        for &item in crate::mir::primitive_operators::ITEMS {
+            for kind in [crate::sema::models::SyntheticDefinitionKind::PrimitiveOperator(item)] {
+                let wire = synthetic_kind_to_wire(kind);
+                assert_eq!(synthetic_kind_from_wire(&wire), kind);
+            }
+        }
     }
 
     #[test]
@@ -5257,6 +5887,100 @@ mod tests {
             let wire = abi_to_wire(abi);
             assert_eq!(abi_from_wire(&wire), abi);
         }
+    }
+
+    #[test]
+    fn managed_allocation_roundtrips_without_instance_placement_state() {
+        crate::mir::test_support::with_test_gcx(|gcx| {
+            let value = mir::Rvalue::Alloc {
+                ty: gcx.types.int32,
+            };
+            let decoded = rvalue_from_wire(gcx, &rvalue_to_wire(&value));
+            assert!(matches!(decoded, mir::Rvalue::Alloc { ty } if ty == gcx.types.int32));
+            let mut body = crate::mir::test_support::minimal_body(gcx);
+            body.escape_locals.fill(true);
+            let span = body.locals[body.return_local].span;
+            let files = FxHashMap::from_iter([(span.file.index() as u32, span.file)]);
+            let decoded = mir_body_from_wire(
+                gcx,
+                &mir_body_to_wire(&body),
+                FileRemap { old_to_new: &files },
+            );
+            assert!(
+                decoded.escape_locals.is_empty(),
+                "placement must be recomputed for each concrete instance"
+            );
+        });
+    }
+
+    #[test]
+    fn cleanup_storage_address_roundtrips_as_a_raw_pointer_not_a_borrow() {
+        crate::mir::test_support::with_test_gcx(|gcx| {
+            let mut body = crate::mir::test_support::minimal_body(gcx);
+            let source = crate::mir::test_support::push_temp(&mut body, gcx.types.int32);
+            let pointer = Ty::new(
+                TyKind::Pointer(gcx.types.int32, hir::Mutability::Mutable),
+                gcx,
+            );
+            let destination = crate::mir::test_support::push_temp(&mut body, pointer);
+            let value = mir::Rvalue::CleanupAddress {
+                place: mir::Place::from_local(source),
+            };
+            let decoded = rvalue_from_wire(gcx, &rvalue_to_wire(&value));
+            assert!(
+                matches!(&decoded, mir::Rvalue::CleanupAddress { place } if place.local == source)
+            );
+            body.basic_blocks[body.start_block]
+                .statements
+                .push(mir::Statement {
+                    span: body.locals[source].span,
+                    kind: mir::StatementKind::Assign(mir::Place::from_local(destination), decoded),
+                });
+            assert!(
+                crate::mir::optimize::validate::validate_body_structure(
+                    gcx,
+                    &body,
+                    "cleanup storage address wire roundtrip"
+                )
+                .is_ok()
+            );
+        });
+    }
+
+    #[test]
+    fn reference_capture_and_address_roundtrip_through_wire() {
+        crate::mir::test_support::with_test_gcx(|gcx| {
+            assert!(matches!(
+                capture_kind_from_wire(&capture_kind_to_wire(CaptureKind::ByRef)),
+                CaptureKind::ByRef
+            ));
+            let mut body = crate::mir::test_support::minimal_body(gcx);
+            let ty = Ty::new(TyKind::Reference(gcx.types.int32), gcx);
+            let source = crate::mir::test_support::push_temp(&mut body, ty);
+            body.locals[source].mutable = false;
+            let destination =
+                crate::mir::test_support::push_temp(&mut body, Ty::new(TyKind::Reference(ty), gcx));
+            let value = mir::Rvalue::Ref {
+                place: mir::Place::from_local(source),
+            };
+            let decoded = rvalue_from_wire(gcx, &rvalue_to_wire(&value));
+            assert!(matches!(&decoded, mir::Rvalue::Ref { place } if place.local == source));
+            body.basic_blocks[body.start_block]
+                .statements
+                .push(mir::Statement {
+                    span: body.locals[source].span,
+                    kind: mir::StatementKind::Assign(mir::Place::from_local(destination), decoded),
+                });
+            assert!(
+                crate::mir::optimize::validate::validate_body_structure(
+                    gcx,
+                    &body,
+                    "reference capture wire roundtrip"
+                )
+                .is_ok()
+            );
+            assert!(crate::mir::optimize::validate::validate_mutability(gcx, &body).is_ok());
+        });
     }
 
     #[test]
@@ -5439,11 +6163,197 @@ mod tests {
     }
 
     #[test]
+    fn struct_initializer_and_defaults_survive_metadata() {
+        crate::mir::test_support::with_test_gcx(|gcx| {
+            let definition = crate::mir::test_support::minimal_body(gcx).owner;
+            let original = StructDefinition {
+                class_info: None,
+                adt_def: AdtDef {
+                    id: definition,
+                    kind: AdtKind::Struct,
+                },
+                has_initializer: true,
+                repr: StructRepr::Taro,
+                fields: gcx.store.arenas.global.alloc_slice_copy(&[StructField {
+                    default_provider: Some(definition),
+                    name: gcx.intern_symbol("value"),
+                    ty: gcx.types.int32,
+                    mutability: crate::hir::Mutability::Immutable,
+                    def_id: definition,
+                    visibility: Visibility::Public,
+                }]),
+            };
+            let mut symbols = SymbolTableBuilder::default();
+            let wire = struct_definition_to_wire(&original, &mut symbols);
+            let table = symbols.finish();
+            let invalid = Cell::new(None);
+            let decoded =
+                struct_definition_from_wire(gcx, &wire, SymbolTableRef::new(&table, &invalid));
+            assert!(decoded.has_initializer);
+            assert_eq!(decoded.fields[0].default_provider, Some(definition));
+            assert_eq!(decoded.fields[0].ty, gcx.types.int32);
+        });
+    }
+
+    #[test]
+    fn nominal_class_metadata_roundtrips() {
+        crate::mir::test_support::with_test_gcx(|gcx| {
+            let id = crate::mir::test_support::minimal_body(gcx).owner;
+            for is_final in [false, true] {
+                let class = Ty::new(
+                    TyKind::Adt(
+                        AdtDef {
+                            id,
+                            kind: AdtKind::Struct,
+                        },
+                        crate::sema::models::GenericArguments::empty(),
+                    ),
+                    gcx,
+                );
+                let initializers = gcx.store.arenas.global.alloc_slice_copy(&[
+                    crate::sema::models::ClassInitializer {
+                        definition: id,
+                        family: id,
+                        implementation: id,
+                        owner: class,
+                        is_convenience: is_final,
+                        is_required: !is_final,
+                        is_inherited: false,
+                        delegations: gcx.store.arenas.global.alloc_slice_copy(&[id]),
+                    },
+                ]);
+                let original = StructDefinition {
+                    adt_def: AdtDef {
+                        id,
+                        kind: AdtKind::Struct,
+                    },
+                    class_info: Some(crate::sema::models::ClassInfo {
+                        initializers,
+                        base: None,
+                        methods: &[],
+                        payload: Some(id),
+                        is_final,
+                    }),
+                    has_initializer: true,
+                    repr: StructRepr::Taro,
+                    fields: &[],
+                };
+                let mut symbols = SymbolTableBuilder::default();
+                let wire = struct_definition_to_wire(&original, &mut symbols);
+                let table = symbols.finish();
+                let invalid = Cell::new(None);
+                let decoded =
+                    struct_definition_from_wire(gcx, &wire, SymbolTableRef::new(&table, &invalid));
+                assert_eq!(decoded.class_info, original.class_info);
+                assert!(decoded.has_initializer);
+            }
+        });
+    }
+
+    #[test]
+    fn inherited_initializer_synthetic_kinds_roundtrip() {
+        let class = crate::hir::DefinitionID::new(
+            crate::PackageIndex::new(3),
+            crate::sema::resolve::models::DefinitionIndex::from_raw(17),
+        );
+        let initializer = crate::hir::DefinitionID::new(
+            crate::PackageIndex::new(2),
+            crate::sema::resolve::models::DefinitionIndex::from_raw(29),
+        );
+        for kind in [
+            crate::sema::models::SyntheticDefinitionKind::ErasedTakeAs { context: class },
+            crate::sema::models::SyntheticDefinitionKind::ErasedAsRef { context: class },
+            crate::sema::models::SyntheticDefinitionKind::ErasedPayloadReference { context: class },
+            crate::sema::models::SyntheticDefinitionKind::ErasedDefault {
+                source: class,
+                provider: initializer,
+                parameter: 2,
+            },
+            crate::sema::models::SyntheticDefinitionKind::ErasedAsyncSelf {
+                context: class,
+                method: initializer,
+            },
+            crate::sema::models::SyntheticDefinitionKind::ErasedAsyncSelfDefault {
+                adapter: class,
+                provider: initializer,
+            },
+            crate::sema::models::SyntheticDefinitionKind::ClassInitializerDispatch { initializer },
+            crate::sema::models::SyntheticDefinitionKind::ClassConvenienceInitializer {
+                initializer,
+            },
+            crate::sema::models::SyntheticDefinitionKind::ClassConstructionDescriptor { class },
+            crate::sema::models::SyntheticDefinitionKind::ClassObjectDescriptor { class },
+            crate::sema::models::SyntheticDefinitionKind::ClassDefaultBody {
+                source: initializer,
+            },
+            crate::sema::models::SyntheticDefinitionKind::InheritedClassInitializer {
+                class,
+                initializer,
+            },
+            crate::sema::models::SyntheticDefinitionKind::InitializerEnvironment {
+                class,
+                initializer,
+            },
+            crate::sema::models::SyntheticDefinitionKind::InheritedInitializerDefault {
+                initializer,
+                provider: class,
+            },
+        ] {
+            assert_eq!(
+                synthetic_kind_from_wire(&synthetic_kind_to_wire(kind)),
+                kind
+            );
+        }
+    }
+
+    #[test]
     fn struct_repr_roundtrip_through_wire() {
         for repr in [StructRepr::Taro, StructRepr::C] {
             let wire = struct_repr_to_wire(repr);
             let decoded = struct_repr_from_wire(&wire);
             assert_eq!(decoded, repr);
         }
+    }
+}
+
+#[cfg(test)]
+mod function_pointer_effect_tests {
+    #[test]
+    fn function_pointer_effects_survive_wire_round_trip() {
+        crate::test_support::with_test_gcx(|gcx| {
+            use crate::sema::models::{ClosureKind, FunctionPointerEffects, Ty, TyKind};
+            for effects in [
+                FunctionPointerEffects::default(),
+                FunctionPointerEffects {
+                    kind: ClosureKind::AsyncFn,
+                    ..Default::default()
+                },
+                FunctionPointerEffects {
+                    is_unsafe: true,
+                    ..Default::default()
+                },
+                FunctionPointerEffects {
+                    abi: Some(crate::hir::Abi::C),
+                    ..Default::default()
+                },
+            ] {
+                let pointer = Ty::new(
+                    TyKind::FnPointer {
+                        effects,
+                        inputs: gcx.store.interners.intern_ty_list(vec![gcx.types.int32]),
+                        output: gcx.types.int32,
+                    },
+                    gcx,
+                );
+                assert_eq!(
+                    pointer,
+                    super::ty_from_wire(gcx, &super::ty_to_wire(pointer))
+                );
+                assert_eq!(
+                    crate::sema::models::callable_signature(pointer).is_some(),
+                    !effects.is_unsafe && effects.abi.is_none()
+                );
+            }
+        });
     }
 }

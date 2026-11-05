@@ -9,8 +9,8 @@ struct Outer {
     inner: Holder;
 }
 
-func describe(_ value: any std.fmt.Display) -> string {
-    return std.sprintf("%v", value)
+func describe(_ value: any std::fmt::Display) -> string {
+    return std::sprintf("%v", value)
 }
 
 func wrap(_ value: Optional[int64]) -> int64 {
@@ -25,9 +25,9 @@ func fieldThroughReference(_ holder: &Holder) -> string {
 }
 
 func main() {
-    let holder = Holder { num: 42, text: "taro" }
-    let tuple = (7_i64, "second")
-    let outer = Outer { inner: Holder { num: 9, text: "nested" } }
+    holder := Holder { num: 42, text: "taro" }
+    tuple := (7_i64, "second")
+    outer := Outer { inner: Holder { num: 9, text: "nested" } }
 
     // Boxing a projection into an existential.
     assert(describe(holder.num) == "42", "field boxes into existential")
@@ -41,11 +41,11 @@ func main() {
     assert(wrap(tuple.0) == 7, "tuple element wraps into Optional")
 
     // Annotated bindings take the same coercion path.
-    let boxed: any std.fmt.Display = holder.num
+    var boxed: any std::fmt::Display = holder.num
     assert(describe(boxed) == "42", "annotated binding boxes field")
 
-    let opt: Optional[int64] = holder.num
+    var opt: Optional[int64] = holder.num
     assert(wrap(opt) == 42, "annotated binding wraps field")
 
-    std.print("PASS: projection coercions\n")
+    std::print("PASS: projection coercions\n")
 }

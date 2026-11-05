@@ -1,0 +1,13 @@
+interface Getter { func valueRef() async -> &int32; }
+struct Counter { value: int32 }
+conform Counter to Getter {
+    func valueRef() async -> &int32 { await std::testing::yieldNow(); &self.value }
+}
+func main() async {
+    var erased: any Getter = Counter { value: 7 } // any Getter; owns a NoCopy Counter in private local storage.
+    var result: &int32 = await erased.valueRef() // &int32; retains the erased receiver container's access.
+    assert(*result == 7, "async borrowed witness result")
+    erased = Counter { value: 11 } // Last dependent use releases the receiver borrow.
+    var second: &int32 = await erased.valueRef()
+    assert(*second == 11, "replacement preserves later async dispatch")
+}

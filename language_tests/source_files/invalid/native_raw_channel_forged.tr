@@ -1,0 +1,4 @@
+func forge(_ pointer: *mut uint8) -> std::sys::sync::RawChannel {
+    std::sys::sync::RawChannel { owner: pointer }
+}
+func main() {}

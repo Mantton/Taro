@@ -1,6 +1,0 @@
-func callSharedMutable(_ f: &any FnMut() -> int32) -> int32 {
-    f()
-}
-
-func main() {
-}

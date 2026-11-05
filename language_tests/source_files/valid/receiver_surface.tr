@@ -1,0 +1,45 @@
+interface Readable {
+    func read() -> int32
+}
+
+interface Factory {
+    static func make() -> Self
+}
+
+struct Counter {
+    count: int32
+}
+
+extend Counter {
+    func value() -> int32 { self.count }
+
+    func intoValue() -> int32 { self.count }
+}
+
+conform Counter to Readable {
+    func read() -> int32 { self.count }
+}
+
+conform Counter to Factory {
+    static func make() -> Self { Self { count: 7 } }
+}
+
+func inspect[T: Readable](_ value: &T) -> int32 { value.read() }
+func build[T: Factory]() -> T { T::make() }
+func free() -> int32 { 9 }
+
+func main() {
+    var counter: Counter = build[Counter]()
+    assert(inspect(&counter) == 7, "implicit value witness")
+    assert(Readable::read(counter) == 7, "explicit value UFCS")
+    counter.increment()
+    assert(counter.value() == 8, "mutable receiver")
+    assert(counter.intoValue() == 8, "owned receiver")
+    assert(free() == 9, "free functions remain receiver free")
+    print("receiver surface\n")
+}
+
+
+extend &Counter {
+    func increment() { self.count += 1 }
+}

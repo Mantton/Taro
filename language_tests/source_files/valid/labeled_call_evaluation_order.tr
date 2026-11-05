@@ -1,0 +1,44 @@
+static var trace: int32 = 0
+
+func record(_ digit: int32) -> int32 {
+    trace = trace * 10 + digit
+    digit
+}
+
+func pair(left: int32, right: int32) -> int32 { left * 10 + right }
+func defaults(left: int32 = record(9), middle: int32, right: int32) -> int32 {
+    left * 100 + middle * 10 + right
+}
+
+struct Token { digit: int32 }
+func token(_ digit: int32) -> Token { Token { digit: record(digit) } }
+func consume(first: Token, last: Token) -> int32 { first.digit * 10 + last.digit }
+
+struct Recorder {}
+extend Recorder {
+    func receiver() -> Recorder { record(5); Recorder {} }
+    func combine(left: int32, right: int32) -> int32 { left * 10 + right }
+}
+
+func main() {
+    trace = 0
+    paired := pair(right: record(7), left: record(3))
+    assert(paired == 37, "argument labels determine parameter positions")
+    assert(trace == 73, "supplied arguments evaluate once in source order")
+
+    trace = 0
+    defaulted := defaults(right: record(2), middle: record(1))
+    assert(defaulted == 912, "defaults fill omitted parameters")
+    assert(trace == 219, "supplied arguments run before omitted defaults")
+
+    trace = 0
+    consumed := consume(last: token(7), first: token(3))
+    assert(consumed == 37, "noncopyable arguments reach their labeled parameters")
+    assert(trace == 73, "noncopyable arguments evaluate once in source order")
+
+    trace = 0
+    recorder := Recorder {}
+    combined := recorder.receiver().combine(right: record(7), left: record(3))
+    assert(combined == 37, "method labels select parameters")
+    assert(trace == 573, "receiver precedes arguments in source order")
+}

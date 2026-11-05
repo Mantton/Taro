@@ -1,0 +1,39 @@
+import std::cmp::{Ord, Ordering, PartialOrd}
+import std::ops::PartialEq
+
+struct Entry { order: int32 }
+conform Entry to PartialEq {
+    func eq( _ other: Self) -> bool { self.order == other.order }
+}
+conform Entry to PartialOrd {
+    func partialCmp( _ other: Self) -> Ordering? { .some(self.cmp(other)) }
+}
+conform Entry to Ord {
+    func cmp( _ other: Self) -> Ordering {
+        if self.order == 1 && other.order == 2 {
+            panic("expected comparator failure")
+        }
+        self.order.cmp(other.order)
+    }
+}
+
+func main() async {
+    var (report, reports) = match std::sync::bounded[int32](1) {
+        case .ok(pair) => pair
+        case .err(_) => panic("report channel")
+    }
+    failed := std::task::spawn(() => {
+        var values: [Entry] = [Entry { order: 3 }, Entry { order: 2 }, Entry { order: 1 }]
+        defer {
+            var sum: int32 = values.at(0).order + values.at(1).order + values.at(2).order
+            var _ = report.trySend(sum)
+        }
+        values.sort()
+    })
+    match await failed.result() {
+        case .err(.panicked(_)) => {}
+        case _ => panic("expected comparator panic")
+    }
+    var sum: int32 = (await reports.recv()).unwrap()
+    assert(sum == 6, "sort must restore its moved key before unwinding")
+}

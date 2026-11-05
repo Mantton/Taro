@@ -1,0 +1,9 @@
+interface ListSize { func size() -> usize; }
+conform List[int32] to ListSize {
+    func size() -> usize { self.len() }
+}
+func size[T: ListSize](_ value: &T) -> usize { value.size() }
+func main() {
+    var value: [int32] = [1, 2]
+    assert(size(&value) == 2, "interface owner may conform a foreign type")
+}

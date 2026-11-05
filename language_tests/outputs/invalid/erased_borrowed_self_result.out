@@ -1,0 +1,4 @@
+error: cannot call an erased interface method whose arguments or result expose its hidden Self type
+ -> language_tests/source_files/invalid/erased_borrowed_self_result.tr:5:19
+	    saved := value.view()
+	                   ^^^^

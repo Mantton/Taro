@@ -1,0 +1,10 @@
+struct FactoryBox[T] { value: T }
+
+extend[T] FactoryBox[T] {
+    static func new(value: T) async -> Self { Self { value } }
+    static func new(other: T) async -> Self { Self { value: other } }
+}
+
+func main() async {
+    var box: FactoryBox[int32] = FactoryBox::new(value: 7)
+}

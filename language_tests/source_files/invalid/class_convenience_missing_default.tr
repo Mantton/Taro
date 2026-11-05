@@ -1,0 +1,6 @@
+// EXPECT_STDERR_CONTAINS: Expected exactly 1 argument
+class Base { value: int32 }
+extend Base { init(_ value: int32) { self.value = value }; convenience init() { self.init(7) } }
+class Child: Base { extra: int32 }
+extend Child { override init(_ value: int32) { super.init(value); self.extra = 1 } }
+func main() { var child: Child = Child() }

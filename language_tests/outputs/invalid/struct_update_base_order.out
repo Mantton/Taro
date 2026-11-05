@@ -1,0 +1,4 @@
+error: a struct update base must appear once and at the end
+ -> language_tests/source_files/invalid/struct_update_base_order.tr:2:54
+	func update(_ base: Point) -> Point { Point { ..base, x: 3 } }
+	                                                      ^

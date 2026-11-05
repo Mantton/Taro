@@ -1,0 +1,18 @@
+import std::ops::Add
+func main() {
+    var a: int32 = 20
+    var b: int32 = 2
+    assert(dep::instantiate() == 7, "dependency primitive witness")
+    assert(dep::add(&a, &b) == 22, "imported generic primitive witness")
+    var x: uint8 = 10
+    var y: uint8 = 3
+    assert(dep::add(&x, &y) == 13, "fresh imported specialization")
+    var erased: any Add[int32, Output = int32] = dep::erased(a)
+    assert(erased.add(b) == 22, "dependency-produced operator witness table")
+    var display: any std::fmt::Display = dep::display(a)
+    assert(display is int32, "type identity survives package metadata hydration")
+    match display as? any Add[int32, Output = int32] {
+        case .some(adder) => assert(adder.add(b) == 22, "dependency conformance metadata")
+        case .none => panic("lost dependency primitive conformance")
+    }
+}

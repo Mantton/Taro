@@ -19,29 +19,29 @@ namespace Outer {
     }
 }
 
-func makeQualifiedValue() -> Outer.Inner.Value {
-    return Outer.Inner.Value { n: 7 }
+func makeQualifiedValue() -> Outer::Inner::Value {
+    return Outer::Inner::Value { n: 7 }
 }
 
 func main() {
-    let x = Math.TWO
+    x := Math::TWO
     assert(x == 2, "Math.TWO should be 2")
 
-    let pi = Math.PI
+    pi := Math::PI
     assert(pi > 3.14 && pi < 3.15, "Math.PI should be approximately 3.14159")
 
-    let e = Math.E
+    e := Math::E
     assert(e > 2.71 && e < 2.72, "Math.E should be approximately 2.71828")
 
-    let empty = Strings.EMPTY
+    empty := Strings::EMPTY
     assert(empty == "", "Strings.EMPTY should be empty string")
 
-    let space = Strings.SPACE
+    space := Strings::SPACE
     assert(space == " ", "Strings.SPACE should be single space")
 
-    let value = Outer.Inner.Value { n: 11 }
+    value := Outer::Inner::Value { n: 11 }
     assert(value.n == 11, "qualified struct literal")
     assert(makeQualifiedValue().n == 7, "qualified struct literal return")
 
-    std.print("PASS: namespace declaration coverage\n")
+    std::print("PASS: namespace declaration coverage\n")
 }

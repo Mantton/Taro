@@ -1,0 +1,34 @@
+// Nominal parameter order differs at every constructor forwarding boundary.
+class Base[X, Y] { first: X; second: Y }
+extend[B, A] Base[A, B] {
+    init[Tag](_ first: A, _ second: B, tag: Tag) {
+        self.first = first
+        self.second = second
+    }
+    func firstValue() -> &A { &self.first }
+    func secondValue() -> &B { &self.second }
+}
+class Child[T]: Base[bool, [T; 2]] { count: int32 = 7 }
+final class Grandchild[T]: Child[T] { extra: int32 = 9 }
+class ListChild: Base[int32, List[string]] { count: int32 = 11 }
+class SizedRoot[T] { count: usize }
+extend[T] SizedRoot[T] {
+    init[const N: usize](_ values: [T; N]) { self.count = N }
+}
+final class SizedChild[T]: SizedRoot[T] {}
+func main() {
+    var sized: SizedChild[int32] = SizedChild[int32]([1, 2, 3])
+    assert(sized.count == 3, "inherited own const parameter")
+    var child: Child[int32] = Child[int32](true, [2, 3], tag: "child")
+    var grandchild: Grandchild[int32] = Grandchild[int32](false, [5, 7], tag: true)
+    var list: ListChild = ListChild(13, ["left", "right"], tag: 17)
+    var direct: Base[int32, bool] = Base[int32, bool](19, true, tag: 23)
+    assert(*child.firstValue(), "inherited reordered bool")
+    assert(child.secondValue()[1] == 3, "nested array substitution")
+    assert(!*grandchild.firstValue(), "second inherited hop")
+    assert(grandchild.secondValue()[0] == 5, "grandchild generic payload")
+    assert(grandchild.count + grandchild.extra == 16, "both derived defaults")
+    assert(*list.firstValue() == 13, "noncopyable generic payload prefix")
+    assert(list.secondValue()[1] == "right", "noncopyable payload moves through entry")
+    assert(*direct.firstValue() == 19 && *direct.secondValue(), "direct constructor also maps extension order")
+}

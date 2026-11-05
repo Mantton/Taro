@@ -1,0 +1,4 @@
+error: no overload matches this call
+ -> language_tests/source_files/invalid/span_raw_parts_safe.tr:2:4
+	    std::mem::Span[int32]::from(pointer, length)
+	    ^^^^^^^^^^^^^^^^^^^^^^^^^^^

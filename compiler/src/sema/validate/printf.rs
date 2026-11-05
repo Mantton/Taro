@@ -11,10 +11,10 @@ pub fn run<'ctx>(
     results: &TypeCheckResults<'ctx>,
 ) -> CompileResult<()> {
     let targets = FormatTargets {
-        printf_def: find_std_format_function(gcx, "printf"),
-        sprintf_def: find_std_format_function(gcx, "sprintf"),
+        printf_defs: find_std_format_functions(gcx, "printf"),
+        sprintf_defs: find_std_format_functions(gcx, "sprintf"),
     };
-    if targets.printf_def.is_none() && targets.sprintf_def.is_none() {
+    if targets.printf_defs.is_empty() && targets.sprintf_defs.is_empty() {
         return Ok(());
     }
 
@@ -27,23 +27,30 @@ pub fn run<'ctx>(
     Ok(())
 }
 
-fn find_std_format_function(gcx: GlobalContext<'_>, name: &str) -> Option<DefinitionID> {
-    let std_pkg = gcx.std_package_index()?;
+fn find_std_format_functions(gcx: GlobalContext<'_>, name: &str) -> Vec<DefinitionID> {
+    let Some(std_pkg) = gcx.std_package_index() else {
+        return Vec::new();
+    };
     let output = gcx.resolution_output(std_pkg);
-    output.definition_to_ident.iter().find_map(|(id, ident)| {
-        let kind = output.definition_to_kind.get(id)?;
-        if *kind == DefinitionKind::Function && gcx.symbol_eq(ident.symbol, name) {
-            Some(*id)
-        } else {
-            None
-        }
-    })
+    // All overloads are formatting entry points, including the typed
+    // single-value overload. Hash-map iteration must not choose the API.
+    output
+        .definition_to_ident
+        .iter()
+        .filter_map(|(id, ident)| {
+            let kind = output.definition_to_kind.get(id)?;
+            if *kind == DefinitionKind::Function && gcx.symbol_eq(ident.symbol, name) {
+                Some(*id)
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
-#[derive(Clone, Copy)]
 struct FormatTargets {
-    printf_def: Option<DefinitionID>,
-    sprintf_def: Option<DefinitionID>,
+    printf_defs: Vec<DefinitionID>,
+    sprintf_defs: Vec<DefinitionID>,
 }
 
 struct Actor<'ctx, 'results> {
@@ -177,10 +184,10 @@ impl<'ctx> Actor<'ctx, '_> {
 
     fn format_function_name(&self, callee: &hir::Expression) -> Option<&'static str> {
         let target = self.resolve_call_target(callee)?;
-        if Some(target) == self.targets.printf_def {
+        if self.targets.printf_defs.contains(&target) {
             return Some("printf");
         }
-        if Some(target) == self.targets.sprintf_def {
+        if self.targets.sprintf_defs.contains(&target) {
             return Some("sprintf");
         }
         None
@@ -259,5 +266,41 @@ fn describe_specifier(spec: u8) -> String {
         format!("%{}", spec as char)
     } else {
         format!("%\\x{spec:02x}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn format_literal_validation_covers_every_overload() {
+        // A minimal provider registry lets the real validator resolve these
+        // std function identities without bootstrapping the complete library.
+        let diagnostics = crate::test_support::analyze_language_item_script(
+            r#"
+enum Result[T, E] {
+    case ok(T)
+    case err(E)
+}
+func printf(_ format: string, _ value: int32) {}
+func printf(_ format: string, _ value: bool) {}
+func sprintf(_ format: string, _ value: int32) -> string { "" }
+func sprintf(_ format: string, _ value: bool) -> string { "" }
+func main() {
+    printf("%q", 1_i32)
+    printf("%q", true)
+    var first = sprintf("%q", 1_i32)
+    var second = sprintf("%q", true)
+}
+"#,
+            false,
+            &[(crate::hir::StdItem::Result, "Result")],
+        );
+        assert_eq!(diagnostics.len(), 4, "{diagnostics:#?}");
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.message.contains("unknown specifier '%q'")),
+            "{diagnostics:#?}"
+        );
     }
 }

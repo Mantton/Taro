@@ -1,0 +1,4 @@
+error: unknown symbol `make`
+ -> language_tests/source_files/invalid/removed_gc_make.tr:1:25
+	func main() { removed := make(1) }
+	                         ^^^^

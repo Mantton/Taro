@@ -1,7 +1,7 @@
 // CHECK_ONLY
 // EXPECT_STDERR_CONTAINS: warning: disallowed label
-
+// NO_INCREMENTAL
 func main() {
-    misplaced: let value = 1
-    let _ = value
+    misplaced: var value = 1
+    var _ = value
 }

@@ -1,0 +1,7 @@
+interface Readable { subscript(index: usize) -> int32 { get } }
+func generic[T: Readable](_ value: T) {
+    value[0 as usize] = 7
+    reference := &value[0 as usize]
+}
+func erased(_ value: any Readable) { value[0 as usize] += 1 }
+func main() {}

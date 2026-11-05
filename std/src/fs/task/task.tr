@@ -1,8 +1,7 @@
-import std.collections.List
-import std.io.Error
-import std.marker.Sendable
-import std.mem.{MutableSpan, Span}
-import std.result.Result
+import std::collections::List
+import std::io::Error
+import std::mem::{Span}
+import std::result::Result
 
 func withAsyncFileContext[T](_ result: Result[T, Error], _ operation: string, _ path: string) -> Result[T, Error] {
     match result {
@@ -12,11 +11,11 @@ func withAsyncFileContext[T](_ result: Result[T, Error], _ operation: string, _ 
 }
 
 func asyncFileFromRaw(
-    _ stream: std.sys.io.RawAsyncStream,
+    _ stream: std::sys::io::RawAsyncStream,
     _ path: string,
     _ operation: string,
 ) -> Result[AsyncFile, Error] {
-    match std.io.task.fromRaw(stream) {
+    match std::io::task::fromRaw(stream) {
         case .ok(inner) => return .ok(AsyncFile { inner, path })
         case .err(err) => return .err(err.withOperation(operation).withPath(path))
     }
@@ -30,8 +29,8 @@ public struct OpenOptions {
     truncateFlag: bool
 }
 
-impl OpenOptions {
-    public func new() -> Self {
+extend OpenOptions {
+    public static func new() -> Self {
         OpenOptions {
             readFlag: false,
             writeFlag: false,
@@ -40,34 +39,121 @@ impl OpenOptions {
             truncateFlag: false,
         }
     }
+}
 
-    public func read(&mut self, _ enabled: bool) -> &mut Self {
+public struct AsyncFile {
+    inner: std::io::task::AsyncStream
+    path: string
+}
+
+extend AsyncFile {
+    public static func open(_ path: string) -> Result[AsyncFile, Error] {
+        openRes := std::sys::fs::openReadOnly(path)
+        var file = match openRes {
+            case .ok(value) => value
+            case .err(err) => return .err(err.withOperation("open").withPath(path))
+        }
+
+        streamRes := std::sys::fs::intoAsyncStream(&file)
+        match streamRes {
+            case .ok(stream) => return asyncFileFromRaw(stream, path, "open")
+            case .err(err) => {
+                var _ = std::sys::fs::close(&file)
+                return .err(err.withOperation("open").withPath(path))
+            }
+        }
+    }
+
+    public static func create(_ path: string) -> Result[AsyncFile, Error] {
+        openRes := std::sys::fs::createWrite(path)
+        var file = match openRes {
+            case .ok(value) => value
+            case .err(err) => return .err(err.withOperation("create").withPath(path))
+        }
+
+        streamRes := std::sys::fs::intoAsyncStream(&file)
+        match streamRes {
+            case .ok(stream) => return asyncFileFromRaw(stream, path, "create")
+            case .err(err) => {
+                var _ = std::sys::fs::close(&file)
+                return .err(err.withOperation("create").withPath(path))
+            }
+        }
+    }
+
+    /// Stops new operations through all shared copies. If a native operation
+    /// is in flight, success acknowledges the request; OS close is deferred
+    /// until it finishes. Deferred close errors are reported on stderr and in
+    /// runtime statistics. Explicit close is required; collection does not close.
+    public func close() -> Result[(), Error] {
+        withAsyncFileContext(self.inner.close(), "close", self.path)
+    }
+
+    public func read(_ buf: Span[uint8]) async -> Result[usize, Error] {
+        withAsyncFileContext(await self.inner.read(buf), "read", self.path)
+    }
+
+    public func write(_ buf: Span[uint8]) async -> Result[usize, Error] {
+        withAsyncFileContext(await self.inner.write(buf), "write", self.path)
+    }
+
+    public func flush() async -> Result[(), Error] {
+        withAsyncFileContext(await self.inner.flush(), "flush", self.path)
+    }
+
+    public func readExact(_ buf: Span[uint8]) async -> Result[(), Error] {
+        withAsyncFileContext(await self.inner.readExact(buf), "read exact", self.path)
+    }
+
+    public func readAtLeast(_ min: usize, _ buf: Span[uint8]) async -> Result[usize, Error] {
+        withAsyncFileContext(await self.inner.readAtLeast(min, buf), "read at least", self.path)
+    }
+
+    public func readAll() async -> Result[List[uint8], Error] {
+        withAsyncFileContext(await self.inner.readAll(), "read", self.path)
+    }
+
+    public func readToString() async -> Result[string, Error] {
+        withAsyncFileContext(await self.inner.readToString(), "read", self.path)
+    }
+
+    public func writeAll(_ buf: Span[uint8]) async -> Result[(), Error] {
+        withAsyncFileContext(await self.inner.writeAll(buf), "write all", self.path)
+    }
+
+    public func writeString(_ s: string) async -> Result[(), Error] {
+        withAsyncFileContext(await self.inner.writeString(s), "write all", self.path)
+    }
+}
+
+extend &OpenOptions {
+    public func read(_ enabled: bool) -> &OpenOptions {
         self.readFlag = enabled
         return self
     }
 
-    public func write(&mut self, _ enabled: bool) -> &mut Self {
+    public func write(_ enabled: bool) -> &OpenOptions {
         self.writeFlag = enabled
         return self
     }
 
-    public func append(&mut self, _ enabled: bool) -> &mut Self {
+    public func append(_ enabled: bool) -> &OpenOptions {
         self.appendFlag = enabled
         return self
     }
 
-    public func create(&mut self, _ enabled: bool) -> &mut Self {
+    public func create(_ enabled: bool) -> &OpenOptions {
         self.createFlag = enabled
         return self
     }
 
-    public func truncate(&mut self, _ enabled: bool) -> &mut Self {
+    public func truncate(_ enabled: bool) -> &OpenOptions {
         self.truncateFlag = enabled
         return self
     }
 
-    public func open(&self, _ path: string) -> Result[AsyncFile, Error] {
-        let openRes = std.sys.fs.openWithOptions(
+    public func open(_ path: string) -> Result[AsyncFile, Error] {
+        openRes := std::sys::fs::openWithOptions(
             path,
             self.readFlag,
             self.writeFlag,
@@ -80,98 +166,15 @@ impl OpenOptions {
             case .err(err) => return .err(err.withOperation("open").withPath(path))
         }
 
-        let streamRes = std.sys.fs.intoAsyncStream(&mut file)
-        let stream = match streamRes {
+        streamRes := std::sys::fs::intoAsyncStream(&file)
+        stream := match streamRes {
             case .ok(value) => value
             case .err(err) => {
-                let _ = std.sys.fs.close(&mut file)
+                var _ = std::sys::fs::close(&file)
                 return .err(err.withOperation("open").withPath(path))
             }
         }
 
         return asyncFileFromRaw(stream, path, "open")
-    }
-}
-
-public struct AsyncFile {
-    inner: std.io.task.AsyncStream
-    path: string
-}
-
-impl Sendable for AsyncFile {}
-
-impl AsyncFile {
-    public func open(_ path: string) -> Result[AsyncFile, Error] {
-        let openRes = std.sys.fs.openReadOnly(path)
-        var file = match openRes {
-            case .ok(value) => value
-            case .err(err) => return .err(err.withOperation("open").withPath(path))
-        }
-
-        let streamRes = std.sys.fs.intoAsyncStream(&mut file)
-        match streamRes {
-            case .ok(stream) => return asyncFileFromRaw(stream, path, "open")
-            case .err(err) => {
-                let _ = std.sys.fs.close(&mut file)
-                return .err(err.withOperation("open").withPath(path))
-            }
-        }
-    }
-
-    public func create(_ path: string) -> Result[AsyncFile, Error] {
-        let openRes = std.sys.fs.createWrite(path)
-        var file = match openRes {
-            case .ok(value) => value
-            case .err(err) => return .err(err.withOperation("create").withPath(path))
-        }
-
-        let streamRes = std.sys.fs.intoAsyncStream(&mut file)
-        match streamRes {
-            case .ok(stream) => return asyncFileFromRaw(stream, path, "create")
-            case .err(err) => {
-                let _ = std.sys.fs.close(&mut file)
-                return .err(err.withOperation("create").withPath(path))
-            }
-        }
-    }
-
-    public func close(&self) -> Result[(), Error] {
-        withAsyncFileContext(self.inner.close(), "close", self.path)
-    }
-
-    public func read(&self, _ buf: MutableSpan[uint8]) async -> Result[usize, Error] {
-        withAsyncFileContext(await self.inner.read(buf), "read", self.path)
-    }
-
-    public func write(&self, _ buf: Span[uint8]) async -> Result[usize, Error] {
-        withAsyncFileContext(await self.inner.write(buf), "write", self.path)
-    }
-
-    public func flush(&self) async -> Result[(), Error] {
-        withAsyncFileContext(await self.inner.flush(), "flush", self.path)
-    }
-
-    public func readExact(&self, _ buf: MutableSpan[uint8]) async -> Result[(), Error] {
-        withAsyncFileContext(await self.inner.readExact(buf), "read exact", self.path)
-    }
-
-    public func readAtLeast(&self, _ min: usize, _ buf: MutableSpan[uint8]) async -> Result[usize, Error] {
-        withAsyncFileContext(await self.inner.readAtLeast(min, buf), "read at least", self.path)
-    }
-
-    public func readAll(&self) async -> Result[List[uint8], Error] {
-        withAsyncFileContext(await self.inner.readAll(), "read", self.path)
-    }
-
-    public func readToString(&self) async -> Result[string, Error] {
-        withAsyncFileContext(await self.inner.readToString(), "read", self.path)
-    }
-
-    public func writeAll(&self, _ buf: Span[uint8]) async -> Result[(), Error] {
-        withAsyncFileContext(await self.inner.writeAll(buf), "write all", self.path)
-    }
-
-    public func writeString(&self, _ s: string) async -> Result[(), Error] {
-        withAsyncFileContext(await self.inner.writeString(s), "write all", self.path)
     }
 }

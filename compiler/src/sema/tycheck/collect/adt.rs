@@ -18,8 +18,29 @@ struct Actor<'ctx> {
 impl HirVisitor for Actor<'_> {
     fn visit_declaration(&mut self, node: &hir::Declaration) -> Self::Result {
         match &node.kind {
-            hir::DeclarationKind::Struct(_) => {
+            hir::DeclarationKind::Struct(value) => {
                 self.cache_adt_type(node.id, AdtKind::Struct);
+                if let Some(header) = value.class_header {
+                    let TyKind::Adt(adt_def, _) = self.context.get_type(node.id).kind() else {
+                        unreachable!()
+                    };
+                    self.context.cache_struct_definition(
+                        node.id,
+                        crate::sema::models::StructDefinition {
+                            adt_def,
+                            class_info: Some(crate::sema::models::ClassInfo {
+                                initializers: &[],
+                                base: None,
+                                methods: &[],
+                                payload: None,
+                                is_final: header.is_final,
+                            }),
+                            has_initializer: false,
+                            repr: crate::sema::models::StructRepr::Taro,
+                            fields: &[],
+                        },
+                    );
+                }
             }
             hir::DeclarationKind::Enum(_) => {
                 self.cache_adt_type(node.id, AdtKind::Enum);

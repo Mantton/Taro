@@ -1,0 +1,8 @@
+error: call to unsafe function 'channelTrySend' must be inside an unsafe { ... } block
+ -> language_tests/source_files/invalid/sync_raw_transfer_unsafe.tr:2:12
+	    var _ = std::sys::sync::channelTrySend(&channel, input)
+	            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+error: call to unsafe function 'channelTryRecv' must be inside an unsafe { ... } block
+ -> language_tests/source_files/invalid/sync_raw_transfer_unsafe.tr:3:12
+	    var _ = std::sys::sync::channelTryRecv(&channel, output)
+	            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

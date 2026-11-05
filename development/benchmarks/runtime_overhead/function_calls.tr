@@ -9,5 +9,5 @@ func main() {
         total = addOne(total)
         iteration += 1
     }
-    std.printf("%v\n", total)
+    std::printf("%v\n", total)
 }

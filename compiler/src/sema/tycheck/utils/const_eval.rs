@@ -290,6 +290,8 @@ fn eval_const_cast<'ctx>(
         return None;
     };
 
+    let target_ty = crate::sema::tycheck::utils::normalize_aliases(gcx, target_ty);
+    let source_ty = source_ty.map(|ty| crate::sema::tycheck::utils::normalize_aliases(gcx, ty));
     let converted = match (value, target_ty.kind()) {
         (ConstValue::Integer(value), TyKind::Int(_) | TyKind::UInt(_)) => {
             ConstValue::Integer(value)
@@ -493,6 +495,7 @@ fn eval_const_binary<'ctx>(
     };
 
     match op {
+        BinOp::IdentityEql | BinOp::IdentityNeq => type_error(),
         BinOp::Add => match (lhs, rhs) {
             (ConstValue::Integer(a), ConstValue::Integer(b)) => a
                 .checked_add(b)
@@ -641,8 +644,8 @@ struct IntegerLayout {
     bits: u32,
 }
 
-fn integer_layout(gcx: GlobalContext<'_>, ty: Ty<'_>) -> Option<IntegerLayout> {
-    match ty.kind() {
+fn integer_layout<'ctx>(gcx: GlobalContext<'ctx>, ty: Ty<'ctx>) -> Option<IntegerLayout> {
+    match crate::sema::tycheck::utils::normalize_aliases(gcx, ty).kind() {
         TyKind::Int(kind) => Some(IntegerLayout {
             signed: true,
             bits: match kind {
@@ -718,7 +721,7 @@ const RESULT: int32 = BASE + 2
 const BASE: int32 = 40
 
 func main() {
-    let _: int32 = RESULT
+    var _: int32 = RESULT
 }
 "#,
         );
@@ -810,8 +813,8 @@ const SAFE_AND: bool = false && (1 / 0 == 0)
 const SAFE_OR: bool = true || (1 / 0 == 0)
 
 func main() {
-    let _: bool = SAFE_AND
-    let _: bool = SAFE_OR
+    var _: bool = SAFE_AND
+    var _: bool = SAFE_OR
 }
 "#,
         );
@@ -827,8 +830,8 @@ const SELECTED_TRUE: int32 = if true { 42 } else { 1 / 0 }
 const SELECTED_FALSE: int32 = if false { 1 / 0 } else { 24 }
 
 func main() {
-    let _: int32 = SELECTED_TRUE
-    let _: int32 = SELECTED_FALSE
+    var _: int32 = SELECTED_TRUE
+    var _: int32 = SELECTED_FALSE
 }
 "#,
         );
@@ -846,10 +849,10 @@ const LETTER_CODE: uint32 = LETTER as uint32
 const RATIO: float = 1.5 as float
 
 func main() {
-    let _: uint8 = BYTE
-    let _: rune = LETTER
-    let _: uint32 = LETTER_CODE
-    let _: float = RATIO
+    var _: uint8 = BYTE
+    var _: rune = LETTER
+    var _: uint32 = LETTER_CODE
+    var _: float = RATIO
 }
 "#,
         );
@@ -929,7 +932,7 @@ func main() {}
 const MASK: uint8 = ~0
 
 func main() {
-    let _: uint8 = MASK
+    var _: uint8 = MASK
 }
 "#,
         );

@@ -1,5 +1,4 @@
-import monkey.code.Instructions
-import monkey.object.Closure
+import monkey::object::Closure
 
 /// One call in progress.
 ///
@@ -9,7 +8,7 @@ import monkey.object.Closure
 ///
 /// Small and copyable, so the frame stack can be storage reserved once and
 /// written into by index rather than a list that grows and shrinks.
-public struct Frame: Copy {
+public struct Frame {
     public closure: &Closure
     /// The offset of the next instruction to read.
     ///
@@ -21,12 +20,9 @@ public struct Frame: Copy {
     public base: usize
 }
 
-impl Frame {
-    public func new(_ closure: &Closure, _ base: usize) -> Self {
+extend Frame {
+    public static func new(_ closure: &Closure, _ base: usize) -> Self {
         return Frame { closure: closure, ip: 0, base: base }
     }
 
-    public func instructions(&self) -> &Instructions {
-        return &self.closure.function.instructions
-    }
 }

@@ -1,0 +1,22 @@
+class Base { value: int32 }
+extend Base { init(_ value: int32) { self.value = value } }
+conform Base to PartialEq {
+    func eq(_ other: Base) -> bool { self.value == other.value }
+    func neq(_ other: Base) -> bool { self.value != other.value }
+}
+class Derived: Base { stamp: int32 = 7 }
+conform Derived to PartialEq[Derived] {
+    func eq(_ other: Derived) -> bool { self.value == other.value && self.stamp == other.stamp }
+    func neq(_ other: Derived) -> bool { !(self.value == other.value && self.stamp == other.stamp) }
+}
+func equal[T: PartialEq[T]](_ left: &T, _ right: &T) -> bool { *left == *right }
+func inherited[T: PartialEq[Base]](_ left: &T, _ right: &Base) -> bool { left.eq(*right) }
+func main() {
+    var left: Derived = Derived(3) // Derived; also inherits PartialEq[Base].
+    var right: Derived = Derived(3) // Derived; its own PartialEq[Derived] is distinct.
+    var base: Base = right // Base; same right object with the base static type.
+    assert(equal(&left, &right), "same-type generic equality uses the distinct subclass conformance")
+    assert(inherited(&left, &base), "inherited generic interface arguments remain Base")
+    right.stamp = 9
+    assert(!equal(&left, &right) && inherited(&left, &base), "the two conformances retain their independent fixed RHS types")
+}

@@ -10,78 +10,103 @@ instruction selection and native optimization.
 - `-O0`, `-O1`, `-O2`, `-O3`, `-Os`, and `-Oz` override LLVM optimization.
 - `--overflow-checks` and `--no-overflow-checks` override the profile default.
 
-Functions containing compiler stack maps use SelectionDAG. Rootless O0
+Functions containing diagnostic stack maps use SelectionDAG. Other O0
 functions may use GlobalISel on supported AArch64 targets.
 
 ## MIR Pipeline
 
-Each body has three forms:
+Source MIR tracks definite initialization, references, and control flow. The
+compiler emits typed GC layouts and precise roots; asynchronous functions become
+frame constructors and synthesized poll bodies.
 
-1. **Canonical MIR** is locally cleaned, with async functions lowered to
-   constructors and synthesized poll/drop bodies, and is the input to MIR inlining.
-2. **Shared MIR** has completed inlining, lowering, propagation, coalescing,
-   and cleanup.
-3. **Instance MIR** is finalized for concrete generic arguments with escape
-   placement and safepoints before LLVM lowering.
+1. **Canonical MIR** is locally simplified and transformed for async execution.
+2. **Shared MIR** completes inlining, lowering, propagation and coalescing.
+3. **Instance MIR** specializes generic arguments and simplifies concrete bodies
+   before LLVM lowering.
 
-Canonical and shared MIR are stored in dependency metadata. Instance MIR and
-escape summaries are session-local, so source and cached dependencies use the
-same finalization path.
+Canonical/shared MIR and GC layout information are stored in dependency metadata.
+Metadata format and runtime ABI identities reject incompatible artifacts; rebuild
+the compiler and attached standard library after changing the reference format.
 
-The MIR inliner is deterministic. It does not inline recursive call-graph
-edges, always respects `@noinline`, and treats `@inline` as a profitability
-override rather than permission to violate ABI, depth, or growth limits. MIR is
-the only stage allowed to inline across a collecting operation.
+The deterministic MIR inliner avoids recursive call-graph edges, respects
+`@noinline`, and treats `@inline` as a profitability override within ABI, depth
+and growth limits. Safe references use one pointer word. Escaping references
+keep their storage alive through GC reachability; raw pointers retain their
+explicit unsafe lifetime and initialization obligations.
 
-Escape analysis is keyed by concrete `Instance`. It follows references through
-assignments, aggregates, control-flow joins, cleanup edges, and resolved direct
-calls. Nonescaping managed allocations use stack storage. Unresolved indirect,
-virtual, C, and blocking calls remain conservative. Field projections share
-their base local, and overlapping loop allocations remain managed.
+## Values and Call Boundaries
 
-## Safepoints and Roots
+Structs and arrays copy as ordinary values. Class and collection headers share
+their managed targets; strings copy their immutable pointer/length header.
+There are no ARC retain/release operations, destructors or runtime borrow guards.
+Enum payloads are initialized before publishing their discriminant.
 
-Calls have one GC effect: `NoGc`, `ManagedSafepoint`, `RuntimeSafepoint`, or
-`BlockingSafepoint`. Runtime entries must declare their effect. Managed bodies
-receive an entry poll and enough loop polls to cover every CFG cycle, except
-short, acyclic leaf bodies that the compiler proves safe to execute without a
-poll. Those leaves contain no calls or allocations and return within a bounded
-MIR instruction budget.
+A class-field reference points inside the selected managed object. Taking or
+returning it does not require boxing the local class-handle slot. The field
+access intrinsic's escape contract follows the handle to its object; taking a
+reference to the handle variable itself still preserves that variable's storage.
 
-Each collecting site records only initialized locals live at that site. Calls
-retain values live across normal and cleanup continuations; runtime and
-blocking calls also retain published GC-bearing arguments. Allocations retain
-values live after the allocation. `std.runtime.keepAlive(value)` extends
-liveness without emitting a call.
+Runtime calls are classified `Direct`, `Callback` or `Blocking`. These categories
+control native call boundaries and collector cooperation. Foreign code cannot
+create compiler intrinsic privileges by choosing a familiar symbol name.
 
-Aggregate fields are evaluated before their contiguous stores. A compiler-only
-publication marker makes a completed tuple, struct, or closure visible to root
-analysis. Enum payloads are stored before their discriminator. No safepoint may
-split either publication sequence.
+## Shared-Memory Accesses
 
-Every physical LLVM function containing a collecting site is `noinline`, has
-tail-call elimination disabled, and includes synchronous unwind metadata. This
-also applies to rootless polls: the collector must preserve and traverse the
-physical frame. Functions without collecting sites remain eligible for LLVM
-inlining.
+Places reached through a pointer (any MIR `Deref`, class fields and the
+handles leading to them) may be shared with other threads. Their loads and
+stores go through `build_shared_load`/`build_shared_store`. Typed raw-pointer
+`read`/`write` operations use the same lowering. Typed `copyTo` and
+`copyToNonoverlapping` use word-atomic copies for aligned pointer-bearing
+elements; their intrinsic byte count must cover whole elements. Explicit byte
+copies remain unsafe byte operations and provide no typed-pointer guarantee:
+
+- A pointer leaf is accessed with one `unordered` atomic load or store at
+  pointer alignment, which LLVM may not split, merge into wider accesses or
+  re-read.
+- Aggregates with up to eight scalar leaves are split per field. Only pointer
+  leaves become atomic; other leaves stay plain.
+- Larger pointer-bearing aggregates move through an entry-block temporary
+  with `llvm.memmove.element.unordered.atomic` (element size 8). Large MIR
+  assignments of pointer-bearing values use the same intrinsic instead of
+  `memmove`. Its libcall, `__llvm_memmove_element_unordered_atomic_8`, lives
+  in the runtime and copies one atomic word at a time.
+- Pointer-free values, packed structs and thread-private locals keep plain
+  accesses.
+
+Codegen emits no `noalias` attributes, so shared references cannot be
+miscompiled as unaliased. The rationale and the language-level contract are in
+`docs/async-runtime.md` (Shared Memory). `valid/race_pointer_words_never_tear`
+is the litmus test; `codegen::llvm::shared_access_tests` pins the emitted IR.
 
 ## PC Metadata
 
 Native Taro objects have a linked `.pcmeta.o` sidecar generated from LLVM stack
 maps. The runtime consumes Taro's normalized format, not LLVM's experimental
-section.
+section. PC schema7 stores call/allocation/poll/blocking/panic sites, their selectors,
+logical source frames and typed root locations. A shared layout graph describes
+heap, static and stack storage, including tagged payloads and repeated elements.
 
-Each collecting frame publishes a nonzero selector before its stack-map anchor.
-The return PC identifies the function; the selector identifies the executed
-site. Sites sharing a machine address remain separate, preventing roots from
-mutually exclusive paths from being combined.
+Each diagnostic site publishes a nonzero selector before its stack-map anchor.
+The return PC identifies the physical function; the selector identifies the
+executed source site. LLVM may duplicate or coalesce machine locations without
+combining distinct source diagnostics. Root operands identify live initialized storage; the selector distinguishes
+source states when machine locations are shared.
 
-Stack, heap, static, and buffer scanning share an indexed typed-layout graph.
-It supports pointers, references, aggregates, fixed repeats, and tagged
-variants. Tagged layouts scan only the active variant, and niche-pointer
-optionals use their native representation. Raw and interior pointers are strong
-roots resolved to their containing managed allocation. Static roots register an
-address and exact descriptor.
+Private local values of at most two pointer words use separate collector spill
+slots. Their working storage can promote to registers; immediately before a
+collecting call or on a poll's slow branch, codegen publishes the current value
+with a volatile store into its typed root slot. The ordinary poll path does not
+spill roots. Initialization of
+partially constructed private values remains defined, including zero bytes in
+fields not yet assigned. Larger inline values, address-taken locals, indirect
+ABI storage, and value arguments whose addresses may be materialized by callable
+shims retain stable storage and preserved initialization. References into that
+storage continue to observe the actual value rather than a collector snapshot.
+
+Physical functions carrying diagnostic sites preserve their frame, disable tail
+calls and retain unwind metadata. Logical frames preserve source provenance when
+MIR inlining places several Taro functions in one physical frame. Stack-overflow
+protection is installed independently on native execution/callback threads.
 
 ## Outputs and LTO
 
@@ -120,8 +145,8 @@ single-file artifacts live under the system temporary directory at
 The compiler loads target-specific std metadata and native code from:
 
 ```text
-$TARO_HOME/lib/taro/std/<target-triple>/std.taro_meta
-$TARO_HOME/lib/taro/std/<target-triple>/std.o
+$TARO_HOME/lib/taro/std/<target-triple>/std::taro_meta
+$TARO_HOME/lib/taro/std/<target-triple>/std::o
 ```
 
 Rebuild `dist/` after compiler or metadata changes. To build std from source
@@ -150,3 +175,50 @@ Native linking currently supports Darwin and Linux. Same-OS Darwin
 cross-architecture links use the host SDK. Cross-architecture Linux links
 require a compatible `--linker` or `--sysroot`; cross-OS links require both.
 LLVM object/bitcode emission does not require a native linker.
+
+## Scanner Initialization and Root Publication
+
+The following invariants apply to scanner bytes independently of source-level
+initialization. A source value may still be uninitialized when all its potential
+pointer slots have been made safe for the collector to inspect.
+
+- `gc_sites::storage_live_covers_observations` may defer entry zeroing only when
+  one `StorageLive` dominates every read, write and address formation.
+  `Rvalue::addressed_place` exhaustively classifies address-forming rvalues;
+  introducing a new rvalue requires updating that match. Call arguments can also
+  expose storage and remain part of `gc_frame`'s address-taking analysis.
+- `storage_live_is_fully_copied` crosses only explicitly harmless markers to a
+  whole-slot copy in the same block. Unknown statements stop the proof. Partial
+  stores, addresses, polls and erased copies that can allocate retain zeroing.
+- `gc_storage::insert_temporary_storage_lifetimes` applies only to unescaped,
+  unaddressed compiler temporaries with no existing lifetime boundary. Its first
+  observation dominates every use. Async bodies and any cyclic CFG remain
+  conservative; `gc_safepoints::has_cycle` checks the CFG before polls exist.
+- Private values at most two pointer words may use a separate spill slot.
+  Every collecting path publishes the current bytes before its selector/map;
+  address-taken values retain their real storage. The size threshold is a
+  profitability choice, never a relaxation of root liveness or initialization.
+- `effects::is_pointer_offset_wrapper` admits only its explicit bounded set of
+  scalar operations and one known noncollecting intrinsic. Every unrecognized
+  statement, terminator, call or type rejects the exception. Loop and recursive
+  cooperation must remain after inlining.
+- Recursive wrapper inlining follows the actual source expansion ancestry and
+  retains physical-owner, depth and growth stops. Shared dependency MIR stays
+  immutable; concrete instance optimization must not depend on package order.
+- A collecting site reads a fresh selector and current typed layout, including
+  enum tags and reference indirections. No cache may retain live root values or
+  a prior frame's base. Guarded matches retain their value snapshots.
+
+`development/scripts/test_gc_stress.py` is the periodic focused stress gate for
+these contracts. Run it after MIR/root-protocol changes and before accepting a
+new optimization family; it is not required for every documentation edit.
+
+Physical frame recovery is a separate platform contract. Apple libunwind's
+`_Unwind_GetCFA` exposes the cursor's current SP; the reader must not subtract
+LLVM's static frame size again. The native ARM64 frame regression checks this
+against the live SP. Other targets retain their existing CFA recipe. PC root
+maps alone do not describe every caller transition: a frameless witness thunk
+can preserve FP while changing SP and the saved return PC. The
+[frame-recipe probe](../development/benchmarks/stack_walker/README.md) inspects
+LLVM stack maps, unwind data and machine code without replacing the production
+reader. The rejected FP-only path is absent from the runtime.

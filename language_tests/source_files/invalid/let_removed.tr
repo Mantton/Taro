@@ -1,0 +1,11 @@
+// `let` was removed: untyped single-name locals become `name := value`,
+// everything else becomes `var`.
+static let LIMIT: int32 = 3
+
+func main() {
+    let count = 1
+    let typed: int32 = 2
+    let (a, b) = (count, typed)
+    var maybe: int32? = .some(a + b)
+    if let value = maybe { maybe = .some(value + LIMIT) }
+}

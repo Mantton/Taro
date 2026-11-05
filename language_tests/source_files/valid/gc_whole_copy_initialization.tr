@@ -1,0 +1,43 @@
+struct Handle { target: &int32 }
+struct Pair { first: Handle; second: Handle }
+
+@noinline
+func make(_ number: int32) -> Handle {
+    std::runtime::collect()
+    var target = number
+    Handle { target: &target }
+}
+
+@noinline
+func inspect(_ value: &Handle) -> int32 {
+    std::runtime::collect()
+    *value.target
+}
+
+@inline
+func forward(_ value: Handle) -> int32 { inspect(&value) }
+
+@inline
+func retain(_ value: Handle) -> &Handle { &value }
+
+func main() {
+    var retained: [&Handle] = []
+    var index: int32 = 0
+    while index < 8 {
+        // The second call collects while the aggregate is partially built.
+        var pair = Pair { first: make(index), second: make(index + 100) }
+        assert(forward(pair.first) == index, "copied receiver remains rooted")
+        assert(forward(pair.second) == index + 100, "partial construction retains earlier fields")
+        *pair.first.target = index + 10
+        assert(forward(pair.first) == index + 10, "copied handles share their mutable targets")
+        // Escaping parameter cells must remain fresh on each inlined call.
+        retained.append(retain(pair.first))
+        std::runtime::collect()
+        index += 1
+    }
+    var offset: usize = 0
+    while offset < retained.len() {
+        assert(inspect(retained[offset]) == offset as int32 + 10, "escaped receivers survive later lifetimes")
+        offset += 1
+    }
+}

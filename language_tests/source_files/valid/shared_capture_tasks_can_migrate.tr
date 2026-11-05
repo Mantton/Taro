@@ -1,0 +1,22 @@
+// Shared GC capture storage has no worker affinity.
+// ENV: TARO_WORKERS=2
+func main() async {
+    var state = std::sync::Mutex[bool]::new(false).unwrap()
+    shared := &state
+    child := std::task::spawn(() async => {
+        (await shared.lock()).unwrap()
+        *shared.value() = true
+        shared.unlock().unwrap()
+    })
+    start := std::time::Instant::now()
+    var observed = false
+    // Keep the originating worker busy. Another worker must run the child.
+    while !observed && start.elapsed().seconds() < 3 {
+        if state.tryLock().unwrap() {
+            observed = *state.value()
+            state.unlock().unwrap()
+        }
+    }
+    assert(observed, "shared capture task must run while its originating worker is busy")
+    (await child.result()).unwrap()
+}

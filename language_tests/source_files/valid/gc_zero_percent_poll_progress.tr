@@ -1,0 +1,16 @@
+// ENV: TARO_GC_STRESS=0 TARO_GC_PERCENT=0
+// Zero-percent pacing collects under allocation pressure, not forever at each
+// poll after a collection. Keep more than the minimum trigger alive so the
+// old goal == live_bytes case is exercised.
+func main() {
+    live := List[uint8]::new(withCapacity: 2_097_152 as usize)
+    live.append(42_u8)
+    std::runtime::collect()
+    before := std::runtime::gcStats().collections
+    var i = 0_i32
+    while i < 128 { i += 1 }
+    after := std::runtime::gcStats().collections
+    assert(after == before, "nonallocating polls must not retrigger zero-percent GC")
+    assert(live[0] == 42_u8, "backing remains live")
+    std::runtime::keepAlive(live)
+}

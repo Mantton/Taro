@@ -114,9 +114,12 @@ pub(crate) fn analyze_script<R>(
         true,
         HarnessMode::None,
         |compiler| {
-            let (package, _) = compiler
-                .analyze()
-                .unwrap_or_else(|_| panic!("test analysis"));
+            let (package, _) = compiler.analyze().unwrap_or_else(|_| {
+                panic!(
+                    "test analysis failed: {:#?}",
+                    compiler.context.dcx().take_recorded_diagnostics()
+                )
+            });
             f(package, compiler.context)
         },
     )
@@ -124,6 +127,120 @@ pub(crate) fn analyze_script<R>(
 
 pub(crate) fn analyze_script_diagnostics(source: &str) -> Vec<DiagnosticRecord> {
     analyze_diagnostics(&[("main.tr", source)], true, false)
+}
+
+pub(crate) fn analyze_language_item_script(
+    source: &str,
+    build_mir: bool,
+    items: &[(hir::StdItem, &str)],
+) -> Vec<DiagnosticRecord> {
+    with_source_compiler(
+        &[("main.tr", source)],
+        true,
+        HarnessMode::None,
+        |compiler| {
+            let result = compiler.analyze_for_diagnostics_with_items(build_mir, items);
+            let dcx = compiler.context.dcx();
+            assert!(result.is_ok() || dcx.has_error());
+            dcx.take_recorded_diagnostics()
+        },
+    )
+}
+
+/// Inspect canonical MIR after the real source checking/lowering pipeline.
+/// The context also retains pre-inline MIR for evaluation-order regressions.
+pub(crate) fn check_script<R>(
+    source: &str,
+    f: impl for<'ctx> FnOnce(hir::Package, Gcx<'ctx>) -> R,
+) -> R {
+    with_source_compiler(
+        &[("main.tr", source)],
+        true,
+        HarnessMode::None,
+        |compiler| {
+            let package = compiler.check().unwrap_or_else(|_| {
+                panic!(
+                    "test checking failed: {:#?}",
+                    compiler.context.dcx().take_recorded_diagnostics()
+                )
+            });
+            f(package, compiler.context)
+        },
+    )
+}
+
+/// Inspect source-form MIR before ownership checking/lowering removes its
+/// access operations. This helper does not publish unchecked canonical MIR.
+pub(crate) fn analyze_script_built_mir<R>(
+    source: &str,
+    f: impl for<'ctx> FnOnce(Vec<crate::mir::Body<'ctx>>, Gcx<'ctx>) -> R,
+) -> R {
+    analyze_script_built_mir_with_items(source, &[], f)
+}
+
+/// Install only the allocation-family identities needed by a lowering fixture.
+/// Source semantics are checked normally before registering these test items;
+/// this does not bypass production standard-library validation.
+pub(crate) fn analyze_script_built_mir_with_items<R>(
+    source: &str,
+    items: &[(hir::StdItem, &str)],
+    f: impl for<'ctx> FnOnce(Vec<crate::mir::Body<'ctx>>, Gcx<'ctx>) -> R,
+) -> R {
+    with_source_compiler(
+        &[("main.tr", source)],
+        true,
+        HarnessMode::None,
+        |compiler| {
+            let (package, results) = compiler.analyze().unwrap_or_else(|_| {
+                panic!(
+                    "source analysis: {:#?}",
+                    compiler.context.dcx().take_recorded_diagnostics()
+                )
+            });
+            if !items.is_empty() {
+                let gcx = compiler.context;
+                gcx.store.std_provider_index.set(Some(gcx.package_index()));
+                let registry = crate::sema::std_items::StdItemRegistry::from_entries(
+                    items.iter().map(|(item, name)| {
+                        let declaration = package
+                            .root
+                            .declarations
+                            .iter()
+                            .find(|declaration| declaration.identifier.symbol.as_str() == *name)
+                            .expect("fixture allocation-family declaration");
+                        (
+                            *item,
+                            crate::sema::std_items::StdItemEntry {
+                                def_id: declaration.id,
+                                def_kind: gcx.definition_kind(declaration.id),
+                                span: declaration.identifier.span,
+                            },
+                        )
+                    }),
+                );
+                gcx.store
+                    .std_items
+                    .borrow_mut()
+                    .replace((gcx.package_index(), registry));
+            }
+            let package = crate::thir::package::build_package(&package, compiler.context, results)
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "source THIR: {:#?}",
+                        compiler.context.dcx().take_recorded_diagnostics()
+                    )
+                });
+            let bodies = package
+                .functions
+                .values()
+                .filter(|function| function.body.is_some())
+                .map(|function| {
+                    crate::mir::builder::MirBuilder::build_function(compiler.context, function)
+                })
+                .collect();
+            f(bodies, compiler.context)
+        },
+    )
 }
 
 pub(crate) fn analyze_script_mir_diagnostics(source: &str) -> Vec<DiagnosticRecord> {
@@ -149,5 +266,36 @@ fn analyze_diagnostics(
             "analysis failed without diagnostics"
         );
         dcx.take_recorded_diagnostics()
+    })
+}
+
+/// Real class semantics with a minimal allocator provider, without making
+/// unfinished class interoperability available to normal source programs.
+pub(crate) fn analyze_native_class_fixture<R>(
+    source: &str,
+    classes: &[&str],
+    items: &[(hir::StdItem, &str)],
+    f: impl for<'ctx> FnOnce(hir::Package, Vec<crate::mir::Body<'ctx>>, Gcx<'ctx>) -> R,
+) -> R {
+    analyze_native_fixture(&[("main.tr", source)], true, classes, items, f)
+}
+
+fn analyze_native_fixture<R>(
+    files: &[(&str, &str)],
+    is_script: bool,
+    classes: &[&str],
+    items: &[(hir::StdItem, &str)],
+    f: impl for<'ctx> FnOnce(hir::Package, Vec<crate::mir::Body<'ctx>>, Gcx<'ctx>) -> R,
+) -> R {
+    with_source_compiler(files, is_script, HarnessMode::None, |compiler| {
+        let (package, bodies) = compiler
+            .native_class_fixture(classes, items)
+            .unwrap_or_else(|_| {
+                panic!(
+                    "class fixture: {:#?}",
+                    compiler.context.dcx().take_recorded_diagnostics()
+                )
+            });
+        f(package, bodies, compiler.context)
     })
 }

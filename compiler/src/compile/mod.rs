@@ -79,11 +79,6 @@ impl TimingReport {
     }
 }
 
-pub enum CompilationKind {
-    Package,
-    Executable,
-}
-
 impl<'state> Compiler<'state> {
     pub fn new(
         context: &'state CompilerContext<'state>,
@@ -186,8 +181,11 @@ impl<'state> Compiler<'state> {
             timings.push_elapsed("mir.build", phase_started_at);
 
             let phase_started_at = Instant::now();
-            specialize::collect::collect_instances(package, self.context);
+            specialize::collect::collect_instances(package, self.context)?;
             timings.push_elapsed("specialize.collect_instances", phase_started_at);
+            // Specialization can expose an invalid erased/generic method ABI.
+            // Stop before declaring or emitting placeholder abstract instances.
+            self.context.dcx().ok()?;
 
             let phase_started_at = Instant::now();
             let (artifact, codegen_timings) =
@@ -229,6 +227,16 @@ impl<'state> Compiler<'state> {
     }
 
     pub fn check(&mut self) -> CompileResult<hir::Package> {
+        self.check_with_vet(false)
+    }
+
+    /// Advisory copy checks run only on explicit vet requests. Normal checking
+    /// and code generation preserve the language's ordinary value semantics.
+    pub fn vet(&mut self) -> CompileResult<hir::Package> {
+        self.check_with_vet(true)
+    }
+
+    fn check_with_vet(&mut self, vet: bool) -> CompileResult<hir::Package> {
         let total_started_at = Instant::now();
         let package_name = self.context.config.name.to_string();
         let mut timings = TimingReport::default();
@@ -238,7 +246,7 @@ impl<'state> Compiler<'state> {
             let thir = self.build_semantic_thir_with_timings(&package, results, &mut timings)?;
 
             let phase_started_at = Instant::now();
-            let _ = mir::package::build_package(thir, self.context)?;
+            let _ = mir::package::build_package_with_vet(thir, self.context, vet)?;
             timings.push_elapsed("mir.build", phase_started_at);
             Ok(package)
         })();
@@ -269,9 +277,7 @@ impl<'state> Compiler<'state> {
     )> {
         let package = self.lower_to_hir_with_timings(timings, false)?;
 
-        let phase_started_at = Instant::now();
-        sema::validate::validate_package(&package, self.context)?;
-        timings.push_elapsed("sema.validate", phase_started_at);
+        self.context.dcx().ok()?;
 
         let phase_started_at = Instant::now();
         let results = if self.context.config.debug.timings {
@@ -301,12 +307,47 @@ impl<'state> Compiler<'state> {
 
     #[cfg(test)]
     pub(crate) fn analyze_for_diagnostics(&mut self, build_mir: bool) -> CompileResult<()> {
+        self.analyze_for_diagnostics_with_items(build_mir, &[])
+    }
+
+    /// Install a minimal, explicit language-item registry for compiler unit
+    /// fixtures, without weakening production validation of a complete std.
+    #[cfg(test)]
+    pub(crate) fn analyze_for_diagnostics_with_items(
+        &mut self,
+        build_mir: bool,
+        items: &[(hir::StdItem, &str)],
+    ) -> CompileResult<()> {
         let mut timings = TimingReport::default();
         let package = self.lower_to_hir_with_timings(&mut timings, true)?;
-
-        let phase_started_at = Instant::now();
-        let _ = sema::validate::validate_package(&package, self.context);
-        timings.push_elapsed("sema.validate", phase_started_at);
+        if !items.is_empty() {
+            self.context
+                .store
+                .std_provider_index
+                .set(Some(self.context.package_index()));
+            let registry =
+                sema::std_items::StdItemRegistry::from_entries(items.iter().map(|(item, name)| {
+                    let declaration = package
+                        .root
+                        .declarations
+                        .iter()
+                        .find(|declaration| declaration.identifier.symbol.as_str() == *name)
+                        .expect("fixture language item declaration");
+                    (
+                        *item,
+                        sema::std_items::StdItemEntry {
+                            def_id: declaration.id,
+                            def_kind: self.context.definition_kind(declaration.id),
+                            span: declaration.identifier.span,
+                        },
+                    )
+                }));
+            self.context
+                .store
+                .std_items
+                .borrow_mut()
+                .replace((self.context.package_index(), registry));
+        }
 
         let phase_started_at = Instant::now();
         let results = sema::tycheck::typecheck_package(&package, self.context).ok();
@@ -335,6 +376,102 @@ impl<'state> Compiler<'state> {
         }
 
         Ok(())
+    }
+
+    /// Exercise the class semantic/MIR implementation before the public source
+    /// gate opens. Resolution already represents class names as struct kinds;
+    /// mark only the requested fixture HIR headers, then use real typechecking
+    /// and MIR building. This does not weaken the production syntax gate.
+    #[cfg(test)]
+    pub(crate) fn native_class_fixture(
+        &mut self,
+        classes: &[&str],
+        items: &[(hir::StdItem, &str)],
+    ) -> CompileResult<(hir::Package, Vec<mir::Body<'state>>)> {
+        let mut timings = TimingReport::default();
+        let mut package = self.lower_to_hir_with_timings(&mut timings, true)?;
+        for declaration in &mut package.root.declarations {
+            if classes.contains(&declaration.identifier.symbol.as_str()) {
+                let hir::DeclarationKind::Struct(value) = &mut declaration.kind else {
+                    panic!("class fixture must name a struct header");
+                };
+                value.class_header = Some(hir::ClassHeader { is_final: true });
+            }
+        }
+        self.context
+            .store
+            .std_provider_index
+            .set(Some(self.context.package_index()));
+        let registry =
+            sema::std_items::StdItemRegistry::from_entries(items.iter().map(|(item, name)| {
+                let declaration = package
+                    .root
+                    .declarations
+                    .iter()
+                    .find(|declaration| declaration.identifier.symbol.as_str() == *name)
+                    .expect("fixture language item");
+                (
+                    *item,
+                    sema::std_items::StdItemEntry {
+                        def_id: declaration.id,
+                        def_kind: self.context.definition_kind(declaration.id),
+                        span: declaration.identifier.span,
+                    },
+                )
+            }));
+        // Async-for fixtures need the Optional constructor/variant identities
+        // too, just as the real std-item collector derives them from its enum.
+        let mut fixture_entries: Vec<_> = registry.entries().collect();
+        if let Some(optional) = registry.get(hir::StdItem::Optional)
+            && let Some(declaration) = package
+                .root
+                .declarations
+                .iter()
+                .find(|decl| decl.id == optional.def_id)
+            && let hir::DeclarationKind::Enum(definition) = &declaration.kind
+        {
+            for variant in &definition.variants {
+                let (kind, constructor) = match variant.identifier.symbol.as_str() {
+                    "some" => (
+                        hir::StdItem::OptionalSomeVariant,
+                        hir::StdItem::OptionalSomeCtor,
+                    ),
+                    "none" => (
+                        hir::StdItem::OptionalNoneVariant,
+                        hir::StdItem::OptionalNoneCtor,
+                    ),
+                    _ => continue,
+                };
+                for (item, id) in [(kind, variant.def_id), (constructor, variant.ctor_def_id)] {
+                    fixture_entries.push((
+                        item,
+                        sema::std_items::StdItemEntry {
+                            def_id: id,
+                            def_kind: self.context.definition_kind(id),
+                            span: variant.span,
+                        },
+                    ));
+                }
+            }
+        }
+        let registry = sema::std_items::StdItemRegistry::from_entries(fixture_entries);
+        self.context
+            .store
+            .std_items
+            .borrow_mut()
+            .replace((self.context.package_index(), registry));
+        self.context.dcx().ok()?;
+        let results = sema::tycheck::typecheck_package(&package, self.context)?;
+        sema::validate::validate_post_typecheck(&package, self.context, &results)?;
+        let thir = crate::thir::package::build_package(&package, self.context, results)?;
+        let bodies = thir
+            .functions
+            .values()
+            .filter(|function| function.body.is_some())
+            .map(|function| mir::builder::MirBuilder::build_function(self.context, function))
+            .collect::<Vec<_>>();
+        mir::class_defaults::collect(self.context, bodies.iter())?;
+        Ok((package, bodies))
     }
 
     fn lower_to_hir_with_timings(

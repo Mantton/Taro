@@ -1,0 +1,91 @@
+import std::ops::AddAssign
+
+struct Record { value: int32 }
+struct Workspace { records: List[Record] }
+
+conform &Record to AddAssign[Record] {
+    func addAssign( _ rhs: Record) { self.value += rhs.value }
+}
+
+enum Entry {
+    case empty
+    case record(Record)
+}
+
+func first(_ values: List[Record]) -> &Record { &values[0] }
+func edit(_ record: &Record) { record.value += 1 }
+func identity[T](_ value: T) -> T { value }
+func answer() -> int32 { 42 }
+
+static var order: int32 = 0
+func rhs() -> Record { order = 1; Record { value: 10 } }
+func destination(_ values: &List[Record]) -> &List[Record] {
+    order = order * 10 + 2
+    values
+}
+func position() -> usize { order = order * 10 + 3; 0 }
+
+func main() {
+    var records: List[Record] = [Record { value: 1 }, Record { value: 2 }]
+    var index: usize = 0
+    var saved: &Record = &records[index]
+    assert(saved.value == 1, "reference stored inline element")
+    records[index] = Record { value: 3 }
+    records[index].increment()
+    edit(&records[index])
+    assert(first(records).value == 5, "reference receiver and explicit element reference")
+    first(records).value = 7
+    var amount: Record = Record { value: 2 }
+    records[index] += amount
+    assert(records[index].value == 9 && amount.value == 2, "compound assignment updates storage and copies its RHS")
+
+    var matrix: List[List[Record]] = [[Record { value: 11 }], [Record { value: 13 }]]
+    matrix[0][0].increment()
+    edit(&matrix[1][0])
+    assert(matrix[0][0].value == 12 && matrix[1][0].value == 14, "nested index projections")
+
+    var entries: List[Entry] = [Entry::record(Record { value: 17 })]
+    match entries[0] {
+        case .record(record) => { record.value += 1; entries[0] = .record(record) }
+        case .empty => panic("expected record")
+    }
+    match entries[0] {
+        case .record(record) => assert(record.value == 18, "enum value pattern copy")
+        case .empty => panic("expected record")
+    }
+    entries[0] = .empty
+    entries.append(Entry::record(Record { value: 19 }))
+    assert(entries.len() == 2 as usize, "enum slots remain valid across replacement and growth")
+
+    var workspace: Workspace = Workspace { records: [Record { value: 21 }] }
+    workspace.records[0].increment()
+    assert(workspace.records[0].value == 22, "a stored collection field remains an indexed place")
+
+    var fixed: [int32; 2] = [1_i32, 2_i32]
+    fixed[0] += fixed[0]
+    assert(fixed[0] == 2, "primitive RHS is snapshotted before mutable indexing")
+
+    var values: std::collections::Dictionary[string, Record] = std::collections::Dictionary[string, Record]::new()
+    values.set(key: "before", value: Record { value: 23 })
+    var key: string = "before"
+    var found: Record = values[key]
+    key = "after"
+    assert(found.value == 23, "dictionary reads return values independent of key rebinding")
+    values["before"] = Record { value: 29 }
+    assert(values["before"].value == 29, "existing-entry indexed replacement")
+
+    var callbacks: List[() -> int32] = [answer]
+    assert(callbacks[0]() == 42, "a callable index result is an ordinary call target")
+    assert(identity[int32](31) == 31, "explicit function specialization remains available")
+
+    destination(&records)[position()] = rhs()
+    assert(order == 123 && records[0].value == 10, "RHS then destination then index, each once")
+    order = 0
+    destination(&records)[position()] += rhs()
+    assert(order == 123 && records[0].value == 20, "compound assignment keeps the same evaluation order")
+}
+
+
+extend &Record {
+    func increment() { self.value += 1 }
+}

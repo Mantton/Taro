@@ -1,0 +1,44 @@
+struct Payload { value: int32 }
+enum Choice { case empty; case left(Payload); case right(Payload) }
+enum Nested { case wrapped(&Choice) }
+func read(_ choice: &Choice) -> int32 {
+    match choice {
+        case .empty => 0
+        case .left(value) | .right(value) => value.value
+    }
+}
+func replace(_ choice: &Choice) -> bool { *choice = .empty; false }
+func main() {
+    var choice: Choice = .left(Payload { value: 7 })
+    reference := &choice
+    match reference {
+        case .left(value) => { value.value = 99; assert(read(reference) == 7, "autoderef bindings are independent values") }
+        case _ => panic("left expected")
+    }
+    match &&choice {
+        case .left(value) | .right(value) => assert(value.value == 7, "multiple reference layers and or-patterns")
+        case .empty => panic("payload expected")
+    }
+    if case .left(value) = reference { value.value += 1; assert(value.value == 8, "if-case copies payloads") }
+    var nested: Nested = .wrapped(reference)
+    match nested {
+        case .wrapped(.left(value)) => assert(value.value == 7, "nested structural reference reads")
+        case _ => panic("nested left expected")
+    }
+    match reference {
+        case .left(value) if replace(reference) => panic("guard should reject")
+        case .left(value) => assert(value.value == 7, "guard cannot invalidate a previously inspected variant")
+        case _ => panic("snapshot expected")
+    }
+    assert(read(reference) == 0, "guard can replace the original enum")
+    choice = .right(Payload { value: 12 })
+    match reference {
+        case .empty => panic("right expected")
+        case whole => { *whole = .empty }
+    }
+    assert(read(reference) == 0, "plain identifier binding copies the reference itself")
+    pair := &(1, 2)
+    match pair {
+        case (first, second) => assert(first + second == 3, "tuple targets autoderef")
+    }
+}

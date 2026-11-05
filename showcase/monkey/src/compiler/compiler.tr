@@ -1,6 +1,6 @@
-import monkey.ast.{Program, Statement, Expression, HashEntry, PrefixOperator, InfixOperator}
-import monkey.code.{Instruction, Instructions, Opcode}
-import monkey.object.{Object, CompiledFunction, boxCompiledFunction, allBuiltins}
+import monkey::ast::{Program, Statement, Expression, HashEntry, PrefixOperator, InfixOperator}
+import monkey::code::{Instruction, Instructions, Opcode}
+import monkey::object::{Object, CompiledFunction, allBuiltins}
 
 /// Why compilation failed.
 ///
@@ -22,26 +22,26 @@ public enum CompileError {
     case jumpOutOfRange(target: usize)
 }
 
-impl CompileError {
-    public func describe(&self) -> string {
+extend CompileError {
+    public func describe() -> string {
         match self {
             case .undefinedVariable(name) => {
-                return sprintf("undefined variable %s", *name)
+                return sprintf("undefined variable %s", name)
             }
             case .tooManyConstants => return "too many constants: the pool holds at most 65536"
             case .tooManyGlobals => return "too many global bindings: at most 65536"
             case .tooManyLocals(function) => {
-                return sprintf("too many local bindings in %s: at most 256", *function)
+                return sprintf("too many local bindings in %s: at most 256", function)
             }
             case .tooManyFreeVariables => return "too many captured variables: at most 256"
             case .tooManyArguments(found) => {
-                return sprintf("too many arguments: %v, at most 256", *found)
+                return sprintf("too many arguments: %v, at most 256", found)
             }
             case .tooManyElements(found) => {
-                return sprintf("literal has too many elements: %v, at most 65536", *found)
+                return sprintf("literal has too many elements: %v, at most 65536", found)
             }
             case .jumpOutOfRange(target) => {
-                return sprintf("jump target %v is beyond the reach of a jump", *target)
+                return sprintf("jump target %v is beyond the reach of a jump", target)
             }
         }
     }
@@ -54,7 +54,7 @@ public struct Bytecode {
 }
 
 /// An instruction already emitted, remembered so it can be revisited.
-struct EmittedInstruction: Copy {
+struct EmittedInstruction {
     opcode: Opcode
     position: usize
 }
@@ -71,10 +71,10 @@ struct CompilationScope {
     previous: Optional[EmittedInstruction]
 }
 
-impl CompilationScope {
-    func new() -> Self {
+extend CompilationScope {
+    static func new() -> Self {
         return CompilationScope {
-            instructions: Instructions.new(),
+            instructions: Instructions::new(),
             last: .none,
             previous: .none,
         }
@@ -100,76 +100,45 @@ func operand8(_ value: usize, _ overflow: CompileError) -> Result[uint8, Compile
 /// Turns a Monkey program into bytecode.
 public struct Compiler {
     constants: List[Object]
-    symbols: &mut SymbolTable
+    symbols: &SymbolTable
     /// The tables enclosing `symbols`, innermost last.
-    enclosing: List[&mut SymbolTable]
+    enclosing: List[&SymbolTable]
     /// A stack of scopes, one per function being compiled, outermost first.
     scopes: List[CompilationScope]
 }
 
-impl Compiler {
-    public func new() -> Self {
-        var symbols = SymbolTable.new()
-        // Builtins are known before any source is read, and every table agrees
-        // on their indices, so they are bound once at the outermost scope.
-        let builtins = allBuiltins()
-        for builtin in &builtins {
-            symbols.defineBuiltin(builtin.index(), builtin.name())
-        }
-        return Compiler.withState(boxSymbolTable(symbols), List[Object]())
-    }
-
-    /// A compiler continuing from an earlier one's names and constants.
-    ///
-    /// The REPL compiles each line separately but the machine keeps running, so
-    /// a later line has to resolve names the earlier ones bound and index into
-    /// the same constant pool.
-    public func withState(_ symbols: &mut SymbolTable, _ constants: List[Object]) -> Self {
-        var scopes = List[CompilationScope]()
-        scopes.append(CompilationScope.new())
-        return Compiler {
-            constants: constants,
-            symbols: symbols,
-            enclosing: List[&mut SymbolTable](),
-            scopes: scopes,
-        }
-    }
-
+extend &Compiler {
     /// The names this compiler resolved against, for a later one to continue from.
-    public func symbolTable(&mut self) -> &mut SymbolTable {
+    public func symbolTable() -> &SymbolTable {
         return self.symbols
     }
 
     /// What has been compiled so far.
-    public func bytecode(&self) -> Bytecode {
-        var constants = List[Object]()
-        for constant in &self.constants {
-            constants.append(constant.clone())
-        }
-        var instructions = Instructions.new()
-        instructions.extend(self.currentInstructions())
-        return Bytecode { instructions: instructions, constants: constants }
+    public func bytecode() -> Bytecode {
+        var instructions = Instructions::new()
+        instructions.appendInstructions(self.currentInstructions())
+        return Bytecode { instructions: instructions, constants: self.constants.copy() }
     }
 
-    func currentIndex(&self) -> usize {
+    func currentIndex() -> usize {
         return self.scopes.len() - 1
     }
 
-    func currentInstructions(&self) -> &Instructions {
-        let index = self.scopes.len() - 1
-        return &self.scopes.at(index).instructions
+    func currentInstructions() -> Instructions {
+        index := self.scopes.len() - 1
+        return self.scopes[index].instructions
     }
 
     /// Appends `instruction`.
-    func emit(&mut self, _ instruction: Instruction) {
-        let _ = self.emitAt(instruction)
+    func emit(_ instruction: Instruction) {
+        var _ = self.emitAt(instruction)
     }
 
     /// Appends `instruction`, answering where it landed so it can be patched.
-    func emitAt(&mut self, _ instruction: Instruction) -> usize {
-        let index = self.currentIndex()
-        var scope = self.scopes.at(index)
-        let position = scope.instructions.emit(instruction)
+    func emitAt(_ instruction: Instruction) -> usize {
+        index := self.currentIndex()
+        scope := &self.scopes[index]
+        position := scope.instructions.emit(instruction)
         scope.previous = scope.last
         scope.last = .some(EmittedInstruction { opcode: instruction.opcode(), position: position })
         return position
@@ -179,19 +148,19 @@ impl Compiler {
     ///
     /// Answers `false` for an empty scope because `last` is `.none` there, with
     /// no separate length check to remember.
-    func lastInstructionIs(&self, _ opcode: Opcode) -> bool {
-        let index = self.scopes.len() - 1
-        match &self.scopes.at(index).last {
+    func lastInstructionIs(_ opcode: Opcode) -> bool {
+        index := self.scopes.len() - 1
+        match self.scopes.at(index).last {
             case .some(emitted) => return emitted.opcode == opcode
             case .none => return false
         }
     }
 
     /// Takes back the instruction just emitted.
-    func removeLastInstruction(&mut self) {
-        let index = self.currentIndex()
-        var scope = self.scopes.at(index)
-        let position = match &scope.last {
+    func removeLastInstruction() {
+        index := self.currentIndex()
+        scope := &self.scopes[index]
+        position := match scope.last {
             case .some(emitted) => emitted.position
             case .none => return
         }
@@ -205,30 +174,30 @@ impl Compiler {
     /// A function body's last expression is its result, but as a statement it
     /// was compiled to leave nothing behind. Rewriting the pop is what turns the
     /// value it discarded into the one the call answers with.
-    func replaceLastPopWithReturn(&mut self) {
+    func replaceLastPopWithReturn() {
         self.removeLastInstruction()
         self.emit(.returnValue)
     }
 
     /// Adds `value` to the constant pool, answering the index that names it.
-    func addConstant(&mut self, _ value: Object) -> Result[uint16, CompileError] {
+    func addConstant(_ value: Object) -> Result[uint16, CompileError] {
         self.constants.append(value)
         return operand16(self.constants.len() - 1, .tooManyConstants)
     }
 
     /// Begins a nested function.
-    func enterScope(&mut self) {
-        self.scopes.append(CompilationScope.new())
-        let outer = self.symbols
+    func enterScope() {
+        self.scopes.append(CompilationScope::new())
+        outer := self.symbols
         self.enclosing.append(outer)
-        self.symbols = boxSymbolTable(SymbolTable.enclosedBy(outer))
+        self.symbols = SymbolTable::enclosedBy(outer)
     }
 
     /// Ends the nested function, answering the instructions it compiled to.
-    func leaveScope(&mut self) -> Instructions {
-        let finished = match self.scopes.pop() {
+    func leaveScope() -> Instructions {
+        finished := match self.scopes.pop() {
             case .some(scope) => scope.instructions
-            case .none => Instructions.new()
+            case .none => Instructions::new()
         }
         match self.enclosing.pop() {
             case .some(outer) => self.symbols = outer
@@ -238,25 +207,25 @@ impl Compiler {
     }
 
     /// Compiles a whole program.
-    public func compile(&mut self, _ program: &Program) -> Result[(), CompileError] {
-        for statement in &program.statements {
+    public func compile(_ program: Program) -> Result[(), CompileError] {
+        for statement in program.statements {
             self.compileStatement(statement)!
         }
         return .ok(())
     }
 
-    func compileBlock(&mut self, _ statements: &List[Statement]) -> Result[(), CompileError] {
+    func compileBlock(_ statements: List[Statement]) -> Result[(), CompileError] {
         for statement in statements {
             self.compileStatement(statement)!
         }
         return .ok(())
     }
 
-    func compileStatement(&mut self, _ statement: &Statement) -> Result[(), CompileError] {
+    func compileStatement(_ statement: Statement) -> Result[(), CompileError] {
         match statement {
             case .bind(name, value) => {
-                let symbol = self.symbols.define(*name)
-                self.compileBoundExpression(value, named: *name)!
+                symbol := self.symbols.define(name)
+                self.compileBoundExpression(value, named: name)!
                 self.emitStore(symbol)!
                 return .ok(())
             }
@@ -276,14 +245,14 @@ impl Compiler {
     }
 
     /// Emits the store for a name that has just been bound.
-    func emitStore(&mut self, _ symbol: Symbol) -> Result[(), CompileError] {
+    func emitStore(_ symbol: Symbol) -> Result[(), CompileError] {
         match symbol.scope {
             case .global => {
-                let slot = operand16(symbol.index, .tooManyGlobals)!
+                slot := operand16(symbol.index, .tooManyGlobals)!
                 self.emit(.setGlobal(slot))
             }
             case .local => {
-                let slot = operand8(symbol.index, .tooManyLocals(function: symbol.name))!
+                slot := operand8(symbol.index, .tooManyLocals(function: symbol.name))!
                 self.emit(.setLocal(slot))
             }
             // A builtin, a captured variable and a function's own name are all
@@ -294,22 +263,22 @@ impl Compiler {
     }
 
     /// Emits the load for a resolved name.
-    func emitLoad(&mut self, _ symbol: Symbol) -> Result[(), CompileError] {
+    func emitLoad(_ symbol: Symbol) -> Result[(), CompileError] {
         match symbol.scope {
             case .global => {
-                let slot = operand16(symbol.index, .tooManyGlobals)!
+                slot := operand16(symbol.index, .tooManyGlobals)!
                 self.emit(.getGlobal(slot))
             }
             case .local => {
-                let slot = operand8(symbol.index, .tooManyLocals(function: symbol.name))!
+                slot := operand8(symbol.index, .tooManyLocals(function: symbol.name))!
                 self.emit(.getLocal(slot))
             }
             case .builtin => {
-                let slot = operand8(symbol.index, .tooManyGlobals)!
+                slot := operand8(symbol.index, .tooManyGlobals)!
                 self.emit(.getBuiltin(slot))
             }
             case .free => {
-                let slot = operand8(symbol.index, .tooManyFreeVariables)!
+                slot := operand8(symbol.index, .tooManyFreeVariables)!
                 self.emit(.getFree(slot))
             }
             case .function => {
@@ -319,16 +288,16 @@ impl Compiler {
         return .ok(())
     }
 
-    func compileExpression(&mut self, _ expression: &Expression) -> Result[(), CompileError] {
+    func compileExpression(_ expression: Expression) -> Result[(), CompileError] {
         match expression {
             case .integer(value) => {
-                let index = self.addConstant(.integer(*value))!
+                index := self.addConstant(.integer(value))!
                 self.emit(.constant(index))
                 return .ok(())
             }
 
             case .text(value) => {
-                let index = self.addConstant(.text(*value))!
+                index := self.addConstant(.text(value))!
                 self.emit(.constant(index))
                 return .ok(())
             }
@@ -337,7 +306,7 @@ impl Compiler {
                 // `true` and `false` are opcodes rather than constants: there
                 // are only two of them, so naming them directly is smaller than
                 // an index into the pool.
-                if *value {
+                if value {
                     self.emit(.pushTrue)
                 } else {
                     self.emit(.pushFalse)
@@ -346,9 +315,9 @@ impl Compiler {
             }
 
             case .identifier(name) => {
-                let symbol = match self.symbols.resolve(*name) {
+                symbol := match self.symbols.resolve(name) {
                     case .some(found) => found
-                    case .none => return .err(.undefinedVariable(*name))
+                    case .none => return .err(.undefinedVariable(name))
                 }
                 return self.emitLoad(symbol)
             }
@@ -362,14 +331,14 @@ impl Compiler {
                 return .ok(())
             }
 
-            case .infix(left, op, right) => return self.compileInfix(*left, *op, *right)
+            case .infix(left, op, right) => return self.compileInfix(*left, op, *right)
 
             case .conditional(condition, consequence, alternative, hasAlternative) => {
                 return self.compileConditional(
                     *condition,
                     consequence,
                     alternative,
-                    *hasAlternative,
+                    hasAlternative,
                 )
             }
 
@@ -377,20 +346,20 @@ impl Compiler {
                 for element in elements {
                     self.compileExpression(element)!
                 }
-                let count = operand16(elements.len(), .tooManyElements(found: elements.len()))!
+                count := operand16(elements.len(), .tooManyElements(found: elements.len()))!
                 self.emit(.array(count))
                 return .ok(())
             }
 
             case .hash(entries) => {
                 for entry in entries {
-                    self.compileExpression(&entry.key)!
-                    self.compileExpression(&entry.value)!
+                    self.compileExpression(entry.key)!
+                    self.compileExpression(entry.value)!
                 }
                 // Keys and values alternate on the stack, so the operand counts
                 // both halves of every pair.
-                let values = entries.len() * 2
-                let count = operand16(values, .tooManyElements(found: entries.len()))!
+                values := entries.len() * 2
+                count := operand16(values, .tooManyElements(found: entries.len()))!
                 self.emit(.hash(count))
                 return .ok(())
             }
@@ -411,7 +380,7 @@ impl Compiler {
                 for argument in arguments {
                     self.compileExpression(argument)!
                 }
-                let count = operand8(
+                count := operand8(
                     arguments.len(),
                     .tooManyArguments(found: arguments.len()),
                 )!
@@ -430,8 +399,7 @@ impl Compiler {
     /// null. Knowing the name here lets the body resolve it to the closure being
     /// called instead of to the binding it is on its way into.
     func compileBoundExpression(
-        &mut self,
-        _ expression: &Expression,
+        _ expression: Expression,
         named name: string,
     ) -> Result[(), CompileError] {
         match expression {
@@ -443,10 +411,9 @@ impl Compiler {
     }
 
     func compileInfix(
-        &mut self,
-        _ left: &Expression,
+        _ left: Expression,
         _ op: InfixOperator,
-        _ right: &Expression,
+        _ right: Expression,
     ) -> Result[(), CompileError] {
         // There is no "less than" instruction. Compiling `a < b` as `b > a`
         // reorders the operands at compile time, which costs the machine
@@ -479,31 +446,30 @@ impl Compiler {
     }
 
     func compileConditional(
-        &mut self,
-        _ condition: &Expression,
-        _ consequence: &List[Statement],
-        _ alternative: &List[Statement],
+        _ condition: Expression,
+        _ consequence: List[Statement],
+        _ alternative: List[Statement],
         _ hasAlternative: bool,
     ) -> Result[(), CompileError] {
         self.compileExpression(condition)!
 
         // Both jumps go out with a placeholder, because neither destination is
         // known until the branch after it has been compiled.
-        let skipConsequence = self.emitAt(.jumpNotTruthy(0))
+        skipConsequence := self.emitAt(.jumpNotTruthy(0))
         self.compileBlock(consequence)!
-        if self.lastInstructionIs(Opcode.pop) {
+        if self.lastInstructionIs(Opcode::pop) {
             // A conditional is an expression, so its branch has to leave a
             // value behind rather than discard one.
             self.removeLastInstruction()
         }
 
-        let skipAlternative = self.emitAt(.jump(0))
-        let afterConsequence = self.currentInstructions().len()
+        skipAlternative := self.emitAt(.jump(0))
+        afterConsequence := self.currentInstructions().len()
         self.patch(skipConsequence, to: afterConsequence)!
 
         if hasAlternative {
             self.compileBlock(alternative)!
-            if self.lastInstructionIs(Opcode.pop) {
+            if self.lastInstructionIs(Opcode::pop) {
                 self.removeLastInstruction()
             }
         } else {
@@ -512,23 +478,22 @@ impl Compiler {
             self.emit(.pushNull)
         }
 
-        let afterAlternative = self.currentInstructions().len()
+        afterAlternative := self.currentInstructions().len()
         self.patch(skipAlternative, to: afterAlternative)!
         return .ok(())
     }
 
     /// Points the jump at `position` to `target`.
-    func patch(&mut self, _ position: usize, to target: usize) -> Result[(), CompileError] {
-        let destination = operand16(target, .jumpOutOfRange(target: target))!
-        let index = self.currentIndex()
+    func patch(_ position: usize, to target: usize) -> Result[(), CompileError] {
+        destination := operand16(target, .jumpOutOfRange(target: target))!
+        index := self.currentIndex()
         self.scopes.at(index).instructions.patchJump(at: position, to: destination)
         return .ok(())
     }
 
     func compileFunction(
-        &mut self,
-        _ parameters: &List[string],
-        _ body: &List[Statement],
+        _ parameters: List[string],
+        _ body: List[Statement],
         _ name: Optional[string],
     ) -> Result[(), CompileError] {
         self.enterScope()
@@ -537,53 +502,82 @@ impl Compiler {
         // it rather than the other way round.
         match name {
             case .some(bound) => {
-                let _ = self.symbols.defineFunctionName(bound)
+                var _ = self.symbols.defineFunctionName(bound)
             }
             case .none => {}
         }
 
         for parameter in parameters {
-            let _ = self.symbols.define(*parameter)
+            var _ = self.symbols.define(parameter)
         }
 
         self.compileBlock(body)!
 
         // A body ending in an expression answers with it; one ending in a
         // binding, or an empty one, answers with null.
-        if self.lastInstructionIs(Opcode.pop) {
+        if self.lastInstructionIs(Opcode::pop) {
             self.replaceLastPopWithReturn()
         }
-        if !self.lastInstructionIs(Opcode.returnValue) {
+        if !self.lastInstructionIs(Opcode::returnValue) {
             self.emit(.returnNothing)
         }
 
-        let captured = self.capturedSymbols()
-        let localCount = self.symbols.definitionCount()
-        let instructions = self.leaveScope()
+        captured := self.capturedSymbols()
+        localCount := self.symbols.definitionCount()
+        instructions := self.leaveScope()
 
         // The captured values are loaded in the enclosing scope, where they are
         // still reachable, and the machine pops them into the closure.
-        for symbol in &captured {
-            self.emitLoad(*symbol)!
+        for symbol in captured {
+            self.emitLoad(symbol)!
         }
 
-        let function = CompiledFunction {
+        function := CompiledFunction {
             instructions: instructions,
             localCount: localCount,
             parameterCount: parameters.len(),
         }
-        let index = self.addConstant(.compiledFunction(boxCompiledFunction(function)))!
-        let freeCount = operand8(captured.len(), .tooManyFreeVariables)!
+        index := self.addConstant(.compiledFunction(&function))!
+        freeCount := operand8(captured.len(), .tooManyFreeVariables)!
         self.emit(.closure(constant: index, free: freeCount))
         return .ok(())
     }
 
     /// The symbols the function being compiled captured from outside it.
-    func capturedSymbols(&self) -> List[Symbol] {
-        var captured = List[Symbol]()
-        for symbol in &self.symbols.free {
-            captured.append(*symbol)
+    func capturedSymbols() -> List[Symbol] {
+        var captured = List[Symbol]::new()
+        for symbol in self.symbols.free {
+            captured.append(symbol)
         }
         return captured
+    }
+}
+
+extend Compiler {
+    public static func new() -> Self {
+        var symbols = SymbolTable::new()
+        // Builtins are known before any source is read, and every table agrees
+        // on their indices, so they are bound once at the outermost scope.
+        builtins := allBuiltins()
+        for builtin in builtins {
+            symbols.defineBuiltin(builtin.index(), builtin.name())
+        }
+        return Compiler::withState(symbols, List[Object]::new())
+    }
+
+    /// A compiler continuing from an earlier one's names and constants.
+    ///
+    /// The REPL compiles each line separately but the machine keeps running, so
+    /// a later line has to resolve names the earlier ones bound and index into
+    /// the same constant pool.
+    public static func withState(_ symbols: &SymbolTable, _ constants: List[Object]) -> Self {
+        var scopes = List[CompilationScope]::new()
+        scopes.append(CompilationScope::new())
+        return Compiler {
+            constants: constants,
+            symbols: symbols,
+            enclosing: List[&SymbolTable]::new(),
+            scopes: scopes,
+        }
     }
 }

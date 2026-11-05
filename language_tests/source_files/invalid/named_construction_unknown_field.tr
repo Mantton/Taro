@@ -1,0 +1,2 @@
+enum Shape { case rect { width: int32 } }
+func main() { var shape = Shape::rect { width: 1, depth: 2 } }

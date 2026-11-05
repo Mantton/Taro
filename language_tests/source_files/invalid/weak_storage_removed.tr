@@ -1,0 +1,8 @@
+// Weak references use the explicit std::weak::Weak[T] API (G27f).
+class Node { value: int32 }
+struct Holder {
+    weak parent: Node?
+}
+func main() {
+    weak var target: Node? = .none
+}

@@ -1,0 +1,7 @@
+public final class HiddenDecoder: std::encoding::Decodable { value: int32 }
+extend HiddenDecoder {
+    private init[D: std::encoding::Decoder](from decoder: D) -> Result[Self, D::Error] {
+        self.value = decoder.decodeInt32()!
+    }
+}
+func main() {}

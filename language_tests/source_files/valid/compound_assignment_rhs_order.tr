@@ -1,0 +1,15 @@
+func destination(_ value: &int32) -> &int32 {
+    *value = 1
+    value
+}
+
+func source(_ value: &int32) -> int32 {
+    *value = 10
+    2
+}
+
+func main() {
+    var value: int32 = 0
+    *destination(&value) += source(&value)
+    assert(value == 3, "compound assignment evaluates RHS before resolving its destination")
+}

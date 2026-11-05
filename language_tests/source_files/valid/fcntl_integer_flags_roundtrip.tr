@@ -1,0 +1,11 @@
+func main() {
+    var fds: [int32; 2] = [-1_i32, -1_i32]
+    var storage: *mut int32 = unsafe { (&fds as *mut [int32; 2]) as *mut int32 }
+    assert(unsafe { std::libc::pipe(storage) } == 0_i32, "pipe")
+    defer { var _ = std::libc::close(fds[0]); var _ = std::libc::close(fds[1]) }
+    var fd: int32 = fds[0]
+    assert(std::libc::fcntl(fd, std::libc::F_SETFD, std::libc::FD_CLOEXEC) == 0_i32, "set descriptor flag")
+    assert((std::libc::fcntl(fd, std::libc::F_GETFD, 0_i32) & std::libc::FD_CLOEXEC) != 0_i32, "read set descriptor flag")
+    assert(std::libc::fcntl(fd, std::libc::F_SETFD, 0_i32) == 0_i32, "clear descriptor flag")
+    assert((std::libc::fcntl(fd, std::libc::F_GETFD, 0_i32) & std::libc::FD_CLOEXEC) == 0_i32, "read cleared descriptor flag")
+}

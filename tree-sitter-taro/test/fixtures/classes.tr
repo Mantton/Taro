@@ -1,0 +1,35 @@
+class Base { readonly id: int32 }
+extend Base {
+    public required init(_ id: int32) { self.id = id }
+    public convenience init() { self.init(0) }
+    public func read() -> int32 { self.id }
+}
+
+final class Derived: Base { value: int32 }
+extend Derived {
+    public required override init(_ id: int32) {
+        super.init(id)
+        self.value = id
+    }
+    public override func read() -> int32 { self.value }
+}
+
+final class Node {
+    parent: std::weak::Weak[Node]?
+    readonly id: int32
+}
+extend Node {
+    init(_ id: int32) {
+        self.parent = .none
+        self.id = id
+    }
+}
+
+func main() {
+    var target = Node(1)
+    weak := std::weak::Weak[Node]::new(&target)
+    saved := weak.value()
+    assert(saved.isSome(), "explicit weak snapshot")
+    std::runtime::keepAlive(&target)
+    assert(Derived(3).read() == 3, "inherited initializer and override")
+}

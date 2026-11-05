@@ -1,0 +1,9 @@
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_CONTAINS: cannot take references to self or its fields during initialization
+// EXPECT_STDERR_NOT_CONTAINS: panicked
+static var saved: Optional[&int32] = .none
+interface Retain { func retain(); }
+conform &int32 to Retain { func retain() { saved = .some(self) }; }
+class Example { value: int32 }
+extend Example { init() { self.value = 1; self.value.retain() }; }
+func main() { value := Example() }

@@ -1,3 +1,4 @@
+pub(crate) mod class_layout;
 use crate::{
     compile::context::GlobalContext,
     error::CompileResult,
@@ -15,6 +16,7 @@ mod impls;
 pub mod infer;
 pub mod lower;
 pub(crate) mod opaque;
+mod overloads;
 pub mod results;
 pub mod solve;
 pub mod utils;
@@ -27,7 +29,7 @@ pub struct TypecheckPhaseTiming {
     pub duration: Duration,
 }
 
-const TYPECHECK_PHASE_COUNT: usize = 21;
+const TYPECHECK_PHASE_COUNT: usize = 25;
 
 pub fn resolve_conformance_witness<'ctx>(
     context: GlobalContext<'ctx>,
@@ -126,6 +128,7 @@ fn run_typecheck_pipeline<'ctx>(
     run_typecheck_phase(phase_timings, "sema.typecheck.collect.function", || {
         collect::function::run(package, context)
     })?; // Collect Function Type Signatures
+    collect::subscript::run(package, context);
     run_typecheck_phase(phase_timings, "sema.typecheck.collect.variant", || {
         collect::variant::run(package, context)
     })?; // Collect Enum Variant Definitions
@@ -137,12 +140,29 @@ fn run_typecheck_pipeline<'ctx>(
         "sema.typecheck.collect.interface.requirements",
         || collect::interface::requirements::run(package, context),
     )?; // Collect Interface Requirements
+    run_typecheck_phase(phase_timings, "sema.typecheck.collect.lifecycle", || {
+        collect::lifecycle::register(package, context)
+    })?;
     run_typecheck_phase(phase_timings, "sema.typecheck.impls.member", || {
         impls::member::run(package, context)
     })?; // Collect Impl Block Members
     run_typecheck_phase(phase_timings, "sema.typecheck.collect.conformances", || {
         collect::conformances::run(package, context)
-    })?; // Collect Conformances
+    })?;
+    crate::sema::lowering::class_codable::prepare(context)?;
+    run_typecheck_phase(
+        phase_timings,
+        "sema.typecheck.impls.class_adoptions",
+        || impls::class_adoptions::run(package, context),
+    )?;
+    run_typecheck_phase(phase_timings, "sema.typecheck.impls.classes", || {
+        impls::classes::run(package, context)
+    })?;
+    impls::class_adoptions::refresh(context);
+    run_typecheck_phase(phase_timings, "sema.typecheck.impls.initializers", || {
+        impls::initializers::run(package, context)
+    })?;
+    crate::sema::lowering::class_codable::validate(context)?;
     run_typecheck_phase(
         phase_timings,
         "sema.typecheck.collect.interface.conform",
@@ -153,6 +173,15 @@ fn run_typecheck_pipeline<'ctx>(
     run_typecheck_phase(phase_timings, "sema.typecheck.wf", || {
         wf::run(package, context)
     })?;
+    run_typecheck_phase(
+        phase_timings,
+        "sema.typecheck.cache_default_signatures",
+        || {
+            crate::sema::lowering::class_defaults::cache_provider_signatures(context);
+            Ok(())
+        },
+    )?;
+
     // Check Body
     run_typecheck_phase(phase_timings, "sema.typecheck.check", || {
         check::run(package, context)

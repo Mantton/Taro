@@ -1,0 +1,3 @@
+interface ReadValue { var value: int32 { get }; }
+conform std::sync::Mutex[int32] to ReadValue {}
+func main() {}

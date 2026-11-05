@@ -1,0 +1,4 @@
+error: unknown symbol `allocBytes`
+ -> language_tests/source_files/invalid/removed_gc_bytes.tr:1:35
+	func main() { removed := std::mem::allocBytes(1) }
+	                                   ^^^^^^^^^^

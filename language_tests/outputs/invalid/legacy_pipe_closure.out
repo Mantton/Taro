@@ -1,0 +1,4 @@
+error: closures use `(parameters) => body`; pipe closures are no longer supported
+ -> language_tests/source_files/invalid/legacy_pipe_closure.tr:2:17
+	    operation := |value: int32| value + 1
+	                 ^

@@ -4,39 +4,39 @@
 /// intentional: they make escaping allocations and return ABIs observable in
 /// both languages instead of relying on either compiler's current heuristics.
 
-struct BenchValue: Copy {
+struct BenchValue {
     kind: int64
     payload: int64
 }
 
 struct BenchScope {
     values: Dictionary[string, BenchValue]
-    outer: Optional[&mut BenchScope]
+    outer: Optional[&BenchScope]
 }
 
-impl BenchScope {
-    func new() -> Self {
+extend BenchScope {
+    static func new() -> Self {
         return BenchScope {
-            values: Dictionary[string, BenchValue](),
+            values: Dictionary[string, BenchValue]::new(),
             outer: .none,
         }
     }
 
-    func enclosedBy(_ outer: &mut BenchScope) -> Self {
+    static func enclosedBy(_ outer: &BenchScope) -> Self {
         return BenchScope {
-            values: Dictionary[string, BenchValue](),
+            values: Dictionary[string, BenchValue]::new(),
             outer: .some(outer),
         }
     }
 
-    func define(&mut self, _ name: string, _ value: BenchValue) {
+    func define( _ name: string, _ value: BenchValue) {
         self.values.set(key: name, value: value)
     }
 
     @noinline
-    func lookup(&self, _ name: string) -> BenchValue? {
+    func lookup( _ name: string) -> BenchValue? {
         match self.values.get(&name) {
-            case .some(value) => return .some(*value)
+            case .some(value) => return .some(value)
             case .none => {}
         }
 
@@ -48,14 +48,14 @@ impl BenchScope {
 }
 
 @noinline
-func boxScope(_ scope: BenchScope) -> &mut BenchScope {
+func boxScope(_ scope: BenchScope) -> &BenchScope {
     var boxed = scope
-    return &mut boxed
+    return &boxed
 }
 
 @noinline
-func makeChildScope(_ outer: &mut BenchScope, _ value: int64) -> &mut BenchScope {
-    let child = boxScope(BenchScope.enclosedBy(outer))
+func makeChildScope(_ outer: &BenchScope, _ value: int64) -> &BenchScope {
+    child := boxScope(BenchScope::enclosedBy(outer))
     child.define("x", BenchValue { kind: 1, payload: value })
     return child
 }
@@ -64,71 +64,66 @@ func requireValue(_ value: BenchValue?) -> BenchValue {
     match value {
         case .some(found) => return found
         case .none => {
-            std.panic.panic("benchmark lookup unexpectedly missed")
+            panic("benchmark lookup unexpectedly missed")
         }
     }
 }
 
 func environmentChurn(_ iterations: int64) -> int64 {
-    let root = boxScope(BenchScope.new())
+    root := boxScope(BenchScope::new())
     root.define("fibonacci", BenchValue { kind: 7, payload: 11 })
 
     var checksum = 0 as int64
     var iteration = 0 as int64
     while iteration < iterations {
-        let child = makeChildScope(root, iteration)
-        let local = requireValue(child.lookup("x"))
-        let outer = requireValue(child.lookup("fibonacci"))
+        child := makeChildScope(root, iteration)
+        local := requireValue(child.lookup("x"))
+        outer := requireValue(child.lookup("fibonacci"))
         checksum += local.kind + local.payload + outer.kind + outer.payload
-        std.runtime.keepAlive(child)
         iteration += 1
     }
 
-    std.runtime.keepAlive(root)
     return checksum
 }
 
 func environmentLookup(_ iterations: int64) -> int64 {
-    let root = boxScope(BenchScope.new())
+    root := boxScope(BenchScope::new())
     root.define("fibonacci", BenchValue { kind: 7, payload: 11 })
-    let child = makeChildScope(root, 23)
+    child := makeChildScope(root, 23)
 
     var checksum = 0 as int64
     var iteration = 0 as int64
     while iteration < iterations {
-        let local = requireValue(child.lookup("x"))
-        let outer = requireValue(child.lookup("fibonacci"))
+        local := requireValue(child.lookup("x"))
+        outer := requireValue(child.lookup("fibonacci"))
         checksum += local.kind + local.payload + outer.kind + outer.payload
         iteration += 1
     }
 
-    std.runtime.keepAlive(child)
-    std.runtime.keepAlive(root)
     return checksum
 }
 
 func dictionaryLookup(_ iterations: int64) -> int64 {
-    var values = Dictionary[string, BenchValue]()
+    var values = Dictionary[string, BenchValue]::new()
     values.set(key: "fibonacci", value: BenchValue { kind: 7, payload: 11 })
-    let key = "fibonacci"
+    key := "fibonacci"
 
     var checksum = 0 as int64
     var iteration = 0 as int64
     while iteration < iterations {
         match values.get(&key) {
             case .some(value) => checksum += value.kind + value.payload
-            case .none => std.panic.panic("benchmark dictionary lookup unexpectedly missed")
+            case .none => panic("benchmark dictionary lookup unexpectedly missed")
         }
         iteration += 1
     }
 
-    std.runtime.keepAlive(&values)
     return checksum
 }
 
 @noinline
 func buildArguments(_ value: int64) -> List[BenchValue] {
-    var arguments = List[BenchValue]()
+    var arguments = List[BenchValue]::new()
     arguments.append(BenchValue { kind: 1, payload: value })
     arguments.append(BenchValue { kind: 1, payload: value + 1 })
     return arguments
@@ -143,7 +138,7 @@ func argumentList(_ iterations: int64) -> int64 {
     var checksum = 0 as int64
     var iteration = 0 as int64
     while iteration < iterations {
-        let arguments = buildArguments(iteration)
+        arguments := buildArguments(iteration)
         checksum += consumeArguments(&arguments)
         iteration += 1
     }
@@ -160,13 +155,13 @@ func resultLeaf(_ value: int64) -> Result[int64, int64] {
 
 @noinline
 func resultMiddle(_ value: int64) -> Result[int64, int64] {
-    let next = resultLeaf(value)!
+    next := resultLeaf(value)!
     return .ok(next * 3)
 }
 
 @noinline
 func resultTop(_ value: int64) -> Result[int64, int64] {
-    let next = resultMiddle(value)!
+    next := resultMiddle(value)!
     return .ok(next - 2)
 }
 
@@ -176,7 +171,7 @@ func resultSuccess(_ iterations: int64) -> int64 {
     while iteration < iterations {
         match resultTop(iteration) {
             case .ok(value) => checksum += value
-            case .err(_) => std.panic.panic("success benchmark returned an error")
+            case .err(_) => panic("success benchmark returned an error")
         }
         iteration += 1
     }
@@ -197,15 +192,14 @@ func smallAllocation(_ iterations: int64) -> int64 {
     var checksum = 0 as int64
     var iteration = 0 as int64
     while iteration < iterations {
-        let node = makeNode(iteration)
+        node := makeNode(iteration)
         checksum += node.value
-        std.runtime.keepAlive(node)
         iteration += 1
     }
     return checksum
 }
 
-func durationToNanos(_ duration: std.time.Duration) -> uint64 {
+func durationToNanos(_ duration: std::time::Duration) -> uint64 {
     return (duration.seconds() * 1000000000_u64) + (duration.subsecNanos() as uint64)
 }
 
@@ -238,44 +232,44 @@ func runCase(_ name: string, _ iterations: int64) -> int64 {
         return smallAllocation(iterations)
     }
 
-    std.panic.panic("unreachable benchmark case")
+    panic("unreachable benchmark case")
 }
 
 func usage() {
-    std.eprint("usage: host_gap <case> <positive-iterations>\n")
+    std::eprint("usage: host_gap <case> <positive-iterations>\n")
 }
 
 func main() {
-    let arguments = std.env.args()
+    arguments := std::env::args()
     if arguments.len() != 3 {
         usage()
-        std.process.exit(2)
+        std::process::exit(2)
     }
 
-    let caseName = arguments.at(1)
+    caseName := arguments.at(1)
     if !knownCase(caseName) {
-        std.eprintf("unknown benchmark case: %s\n", caseName)
+        std::eprintf("unknown benchmark case: %s\n", caseName)
         usage()
-        std.process.exit(2)
+        std::process::exit(2)
     }
 
     var iterations = 0 as int64
-    match int64.parse(arguments.at(2)) {
+    match int64::parse(arguments.at(2)) {
         case .ok(value) => iterations = value
         case .err(_) => {
             usage()
-            std.process.exit(2)
+            std::process::exit(2)
         }
     }
     if iterations < 1 {
         usage()
-        std.process.exit(2)
+        std::process::exit(2)
     }
 
-    let started = std.time.Instant.now()
-    let checksum = runCase(caseName, iterations)
-    let elapsedNanos = durationToNanos(started.elapsed())
-    std.printf(
+    started := std::time::Instant::now()
+    checksum := runCase(caseName, iterations)
+    elapsedNanos := durationToNanos(started.elapsed())
+    std::printf(
         "benchmark case=%s iterations=%d elapsed_ns=%d checksum=%d\n",
         caseName,
         iterations,

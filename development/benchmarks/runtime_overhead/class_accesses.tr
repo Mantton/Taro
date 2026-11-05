@@ -1,0 +1,90 @@
+// Per-operation costs of class field access in release builds: reads, stores,
+// compound assignment, a non-inlined getter, a returned field reference, a held
+// field reference, and allocation of a small class object. Each phase reports
+// nanoseconds per operation over FIELD_ITERATIONS (or ALLOC_ITERATIONS) and
+// folds results into a checksum so no phase is dead.
+const FIELD_ITERATIONS: int64 = 10000000
+const ALLOC_ITERATIONS: int64 = 1000000
+
+final class Counter { value: int64 }
+extend Counter {
+    init(_ value: int64) { self.value = value }
+    @noinline
+    func get() -> int64 { self.value }
+    @noinline
+    func valueRef() -> &int64 { &self.value }
+}
+
+func nanos(_ duration: std::time::Duration) -> uint64 {
+    duration.seconds() * 1000000000_u64 + duration.subsecNanos() as uint64
+}
+
+func perOperation(_ start: std::time::Instant, _ operations: int64) -> uint64 {
+    nanos(start.elapsed()) / operations as uint64
+}
+
+func main() {
+    counter := Counter(1)
+    var total: int64 = 0
+    var index: int64 = 0
+
+    var start = std::time::Instant::now()
+    while index < FIELD_ITERATIONS {
+        total += counter.value
+        index += 1
+    }
+    readNs := perOperation(start, FIELD_ITERATIONS)
+
+    index = 0
+    start = std::time::Instant::now()
+    while index < FIELD_ITERATIONS {
+        counter.value = index
+        index += 1
+    }
+    storeNs := perOperation(start, FIELD_ITERATIONS)
+
+    index = 0
+    start = std::time::Instant::now()
+    while index < FIELD_ITERATIONS {
+        counter.value += 1
+        index += 1
+    }
+    compoundNs := perOperation(start, FIELD_ITERATIONS)
+    total += counter.value
+
+    index = 0
+    start = std::time::Instant::now()
+    while index < FIELD_ITERATIONS {
+        total += counter.get()
+        index += 1
+    }
+    getterNs := perOperation(start, FIELD_ITERATIONS)
+
+    index = 0
+    start = std::time::Instant::now()
+    while index < FIELD_ITERATIONS {
+        total += *counter.valueRef()
+        index += 1
+    }
+    returnedNs := perOperation(start, FIELD_ITERATIONS)
+
+    index = 0
+    start = std::time::Instant::now()
+    while index < FIELD_ITERATIONS {
+        var held: &int64 = &counter.value
+        total += *held
+        index += 1
+    }
+    heldNs := perOperation(start, FIELD_ITERATIONS)
+
+    index = 0
+    start = std::time::Instant::now()
+    while index < ALLOC_ITERATIONS {
+        node := Counter(index)
+        total += node.value
+        index += 1
+    }
+    allocNs := perOperation(start, ALLOC_ITERATIONS)
+
+    std::printf("class_accesses read_ns=%d store_ns=%d compound_ns=%d getter_ns=%d returned_ref_ns=%d held_ref_ns=%d alloc_ns=%d checksum=%d\n", readNs, storeNs, compoundNs, getterNs, returnedNs, heldNs, allocNs, total)
+}

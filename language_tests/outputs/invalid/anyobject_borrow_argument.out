@@ -1,0 +1,4 @@
+error: type '&Counter' does not conform to interface 'AnyObject'
+ -> language_tests/source_files/invalid/anyobject_borrow_argument.tr:8:4
+	    useObject(&counter)
+	    ^^^^^^^^^

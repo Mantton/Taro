@@ -1,0 +1,3 @@
+struct Counter { readonly first: int32; second: int32 }
+extend Counter { init() { self.first = 1; self.first = 2; self.second = 3 } }
+func main() { counter := Counter() }

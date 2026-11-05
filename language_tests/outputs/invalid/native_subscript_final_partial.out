@@ -1,0 +1,4 @@
+error: cannot override a final subscript
+ -> language_tests/source_files/invalid/native_subscript_final_partial.tr:6:29
+	extend Grandchild { override subscript(index: usize) -> int32 { address { &self.value } } }
+	                             ^^^^^^^^^

@@ -1,4 +1,5 @@
 use super::*;
+use crate::sema::models::{CaptureKind, ClosureKind};
 
 impl<'ctx> Checker<'ctx> {
     pub(super) fn synth_closure_expression(
@@ -10,6 +11,7 @@ impl<'ctx> Checker<'ctx> {
     ) -> Ty<'ctx> {
         let gcx = self.gcx();
         let effective_async = closure.is_async
+            || closure_body_has_await(&closure.body)
             || self.is_forced_async_closure_expr(expression.id)
             || expectation.is_some_and(|ty| {
                 crate::sema::tycheck::utils::callable::existential_callable(
@@ -18,6 +20,10 @@ impl<'ctx> Checker<'ctx> {
                 )
                 .is_some_and(|callable| callable.is_async())
             });
+
+        // GC closures capture by reference even when they escape: escape
+        // analysis heapifies the captured variables instead (G17).
+        let owns_captures = closure.snapshot_captures;
 
         // Collect closure parameter IDs (these are NOT captures)
         let param_ids: rustc_hash::FxHashSet<NodeID> =
@@ -75,7 +81,13 @@ impl<'ctx> Checker<'ctx> {
         }
 
         let expected_return = if let Some(ret_ty) = &closure.return_ty {
-            self.lower_type(ret_ty)
+            // Like explicit parameters, an explicit result also feeds the
+            // contextual signature, binding generic outputs such as `U`.
+            let explicit_ty = self.lower_type(ret_ty);
+            if let Some(expected_return) = expected_output {
+                cs.equal(expected_return, explicit_ty, ret_ty.span);
+            }
+            explicit_ty
         } else if let Some(expected_return) = expected_output {
             expected_return
         } else {
@@ -87,6 +99,7 @@ impl<'ctx> Checker<'ctx> {
         // tail expression.
         let (return_ty, body_ty) = self.with_return_ty(Some(expected_return), || {
             let prev_async_depth = self.async_depth.get();
+            let prev_await_scope = self.await_scope.replace(None);
             if effective_async {
                 self.async_depth.set(prev_async_depth + 1);
             }
@@ -160,6 +173,7 @@ impl<'ctx> Checker<'ctx> {
                 self.async_depth.set(prev_async_depth);
             }
 
+            self.await_scope.set(prev_await_scope);
             (expected_return, body_ty)
         });
         cs.record_expr_ty(closure.body.id, body_ty);
@@ -167,8 +181,12 @@ impl<'ctx> Checker<'ctx> {
         // Resolve what we can so we don't cache infer vars in closure signatures.
         cs.solve_intermediate();
         let adjustments = cs.resolved_adjustments();
-        let expr_tys = cs.resolved_expr_types();
-        let interface_calls = cs.resolved_interface_calls();
+        let expr_tys = cs
+            .resolved_expr_types()
+            .into_iter()
+            .map(|(id, ty)| (id, cs.structurally_resolve(ty)))
+            .collect();
+        let field_indices = cs.resolved_field_indices();
         let return_ty = cs.infer_cx.resolve_vars_if_possible(return_ty);
         let param_tys: Vec<_> = param_tys
             .into_iter()
@@ -184,43 +202,48 @@ impl<'ctx> Checker<'ctx> {
             checker: self,
             adjustments: &adjustments,
             expr_tys: &expr_tys,
-            interface_calls: &interface_calls,
+            field_indices: &field_indices,
         };
-        collector.collect_expr(&closure.body, UseContext::Value);
+        collector.collect_expr(&closure.body);
 
         // Build capture list with types and capture kinds
         let mut captures = Vec::new();
-        for (field_index, node_id) in collector.order.iter().enumerate() {
-            if param_ids.contains(node_id) {
+        for (field_index, place) in collector.order.iter().enumerate() {
+            if param_ids.contains(&place.root) {
                 continue;
             }
             let info = collector
                 .info
-                .get(node_id)
+                .get(place)
                 .expect("capture info should exist");
             // Get the type of the captured variable from local bindings
-            let binding = self.get_local(*node_id);
-            let ty = cs.infer_cx.resolve_vars_if_possible(binding.ty);
-            let capture_kind = classify_capture_kind(
-                gcx,
-                self.current_def,
-                ty,
-                info.usage,
-                closure.is_move,
-                effective_async,
-            );
+            let binding = self.get_local(place.root);
+            let root_ty = cs.structurally_resolve(binding.ty);
+            let projection = gcx.store.arenas.global.alloc_slice_clone(&info.projection);
+            let ty = projection.last().map_or(root_ty, |field| field.ty);
+            let capture_kind = if owns_captures {
+                CaptureKind::ByCopy
+            } else {
+                CaptureKind::ByRef
+            };
 
             captures.push(crate::sema::models::CapturedVar {
-                source_id: *node_id,
+                source_id: place.root,
+                root_ty,
+                projection,
                 name: info.name,
                 ty,
                 capture_kind,
-                access_kind: info.usage.access_kind,
+                source_immutable: !binding.mutable,
                 field_index: crate::thir::FieldIndex::from_raw(field_index as u32),
             });
         }
 
-        let closure_kind = infer_closure_kind(effective_async, &captures);
+        let closure_kind = if effective_async {
+            ClosureKind::AsyncFn
+        } else {
+            ClosureKind::Fn
+        };
 
         gcx.cache_closure_captures(
             closure.def_id,
@@ -250,6 +273,14 @@ impl<'ctx> Checker<'ctx> {
                 },
             );
         }
+
+        // The generated closure body has the enclosing generic parameters and
+        // must also retain their declaration bounds (not pending call goals).
+        // Otherwise a shared capture of T: Copy is incorrectly moved from &T.
+        gcx.update_constraints(
+            closure.def_id,
+            crate::sema::tycheck::constraints::canonical_constraints_of(gcx, self.current_def),
+        );
 
         // Create the closure type first (we need it for the body function signature)
         let closure_ty = Ty::new(
@@ -410,39 +441,55 @@ impl<'ctx> Checker<'ctx> {
             ..old_sig.clone()
         };
 
+        if let Some(method) = self.results.borrow().bound_method_closure(closure_def_id) {
+            // Synthetic declarations must track finalized closure types too;
+            // get_signature consults this declaration before the ordinary cache.
+            let signature = gcx.store.arenas.global.alloc(new_sig.clone());
+            gcx.register_synthetic_definition(
+                closure_def_id,
+                crate::sema::models::SyntheticDefinition {
+                    kind: crate::sema::models::SyntheticDefinitionKind::Ordinary,
+                    name: gcx.intern_symbol("$boundMethod"),
+                    generics: gcx.generics_of(closure_def_id),
+                    signature,
+                    span: method.closure.span,
+                },
+            );
+            gcx.cache_type(closure_def_id, Ty::from_labeled_signature(gcx, signature));
+        }
         gcx.cache_signature(closure_def_id, new_sig);
     }
 }
 
-#[derive(Clone, Copy)]
-struct CaptureUsage {
-    access_kind: crate::sema::models::CaptureAccessKind,
-    by_ref: Option<hir::Mutability>,
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct CapturePlace {
+    root: NodeID,
+    fields: Vec<crate::thir::FieldIndex>,
 }
 
-impl Default for CaptureUsage {
-    fn default() -> Self {
-        Self {
-            access_kind: crate::sema::models::CaptureAccessKind::Read,
-            by_ref: None,
+struct CaptureInfo<'ctx> {
+    name: Symbol,
+    projection: Vec<crate::sema::models::CaptureProjection<'ctx>>,
+}
+
+/// Only awaits executed by this closure affect its callable capability. A
+/// nested closure's suspension does not make its enclosing closure async.
+fn closure_body_has_await(expr: &hir::Expression) -> bool {
+    struct AwaitFinder {
+        found: bool,
+    }
+    impl hir::HirVisitor for AwaitFinder {
+        fn visit_expression(&mut self, node: &hir::Expression) {
+            match &node.kind {
+                hir::ExpressionKind::Await(_) => self.found = true,
+                hir::ExpressionKind::Closure(_) => {}
+                _ => hir::walk_expression(self, node),
+            }
         }
     }
-}
-
-struct CaptureInfo {
-    name: Symbol,
-    usage: CaptureUsage,
-}
-
-#[derive(Clone, Copy)]
-enum UseContext {
-    Value,
-    /// Read a captured place without moving the complete base value.
-    Read,
-    Place,
-    Borrow {
-        mutable: bool,
-    },
+    let mut finder = AwaitFinder { found: false };
+    finder.visit_expression(expr);
+    finder.found
 }
 
 fn closure_body_has_explicit_return(expr: &hir::Expression) -> bool {
@@ -476,9 +523,9 @@ struct CaptureCollector<'a, 'ctx> {
     /// IDs of variables declared inside the closure body (NOT captures)
     local_decls: rustc_hash::FxHashSet<NodeID>,
     /// Capture order (first-seen)
-    order: Vec<NodeID>,
+    order: Vec<CapturePlace>,
     /// Capture info keyed by NodeID
-    info: rustc_hash::FxHashMap<NodeID, CaptureInfo>,
+    info: rustc_hash::FxHashMap<CapturePlace, CaptureInfo<'ctx>>,
     /// Reference to the checker for accessing local bindings
     checker: &'a Checker<'ctx>,
     /// Adjustments recorded during type checking
@@ -486,109 +533,151 @@ struct CaptureCollector<'a, 'ctx> {
     /// Fully resolved expression types used to distinguish copying a projected
     /// field from moving it out of the captured aggregate.
     expr_tys: &'a rustc_hash::FxHashMap<NodeID, Ty<'ctx>>,
-    interface_calls:
-        &'a rustc_hash::FxHashMap<NodeID, crate::sema::tycheck::solve::InterfaceCallInfo>,
+    field_indices: &'a rustc_hash::FxHashMap<NodeID, usize>,
 }
 
 impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
-    fn stronger_access(
-        lhs: crate::sema::models::CaptureAccessKind,
-        rhs: crate::sema::models::CaptureAccessKind,
-    ) -> crate::sema::models::CaptureAccessKind {
-        use crate::sema::models::CaptureAccessKind;
-
-        match (lhs, rhs) {
-            (CaptureAccessKind::Move, _) | (_, CaptureAccessKind::Move) => CaptureAccessKind::Move,
-            (CaptureAccessKind::Mutate, _) | (_, CaptureAccessKind::Mutate) => {
-                CaptureAccessKind::Mutate
-            }
-            (CaptureAccessKind::Read, CaptureAccessKind::Read) => CaptureAccessKind::Read,
-        }
+    fn record_capture(&mut self, id: NodeID, name: Symbol) {
+        self.record_projected_capture(id, name, vec![]);
     }
 
-    fn record_capture(&mut self, id: NodeID, name: Symbol, usage: CaptureUsage) {
-        let entry = self.info.entry(id).or_insert_with(|| {
-            self.order.push(id);
-            CaptureInfo {
-                name,
-                usage: CaptureUsage::default(),
-            }
-        });
-        entry.usage.access_kind = Self::stronger_access(entry.usage.access_kind, usage.access_kind);
-        match (entry.usage.by_ref, usage.by_ref) {
-            (_, Some(hir::Mutability::Mutable)) => {
-                entry.usage.by_ref = Some(hir::Mutability::Mutable);
-            }
-            (None, Some(hir::Mutability::Immutable)) => {
-                entry.usage.by_ref = Some(hir::Mutability::Immutable);
-            }
-            _ => {}
+    fn record_projected_capture(
+        &mut self,
+        root: NodeID,
+        name: Symbol,
+        projection: Vec<crate::sema::models::CaptureProjection<'ctx>>,
+    ) {
+        let place = CapturePlace {
+            root,
+            fields: projection.iter().map(|field| field.field).collect(),
+        };
+        if self
+            .order
+            .iter()
+            .any(|existing| existing.root == root && place.fields.starts_with(&existing.fields))
+        {
+            return;
         }
+        let mut position = self.order.len();
+        let descendants = self
+            .order
+            .iter()
+            .enumerate()
+            .filter_map(|(index, existing)| {
+                (existing.root == root && existing.fields.starts_with(&place.fields))
+                    .then_some((index, existing.clone()))
+            })
+            .collect::<Vec<_>>();
+        for (index, descendant) in descendants {
+            position = position.min(index);
+            self.info.remove(&descendant);
+        }
+        self.order
+            .retain(|existing| self.info.contains_key(existing));
+        self.order.insert(position, place.clone());
+        self.info.insert(place, CaptureInfo { name, projection });
     }
 
-    fn capture_usage(
+    /// Only inline named fields participate in precision. Dereferencing a
+    /// reference/raw pointer retains the existing token-capture rules instead.
+    fn stored_projection(
         &self,
         expr: &hir::Expression,
-        ctx: UseContext,
-        local_ty: Ty<'ctx>,
-    ) -> CaptureUsage {
-        match ctx {
-            UseContext::Read => CaptureUsage::default(),
-            UseContext::Borrow { mutable } => CaptureUsage {
-                access_kind: if mutable {
-                    crate::sema::models::CaptureAccessKind::Mutate
-                } else {
-                    crate::sema::models::CaptureAccessKind::Read
-                },
-                by_ref: Some(if mutable {
-                    hir::Mutability::Mutable
-                } else {
-                    hir::Mutability::Immutable
-                }),
-            },
-            UseContext::Place => CaptureUsage {
-                access_kind: crate::sema::models::CaptureAccessKind::Mutate,
-                by_ref: Some(hir::Mutability::Mutable),
-            },
-            UseContext::Value => {
-                if let Some(adjustments) = self.adjustments.get(&expr.id) {
-                    if adjustments
-                        .iter()
-                        .any(|adj| matches!(adj, Adjustment::BorrowMutable))
-                    {
-                        return CaptureUsage {
-                            access_kind: crate::sema::models::CaptureAccessKind::Mutate,
-                            by_ref: Some(hir::Mutability::Mutable),
-                        };
-                    }
-                    if adjustments
-                        .iter()
-                        .any(|adj| matches!(adj, Adjustment::BorrowImmutable))
-                    {
-                        return CaptureUsage {
-                            access_kind: crate::sema::models::CaptureAccessKind::Read,
-                            by_ref: Some(hir::Mutability::Immutable),
-                        };
-                    }
-                }
-
-                CaptureUsage {
-                    access_kind: if self
-                        .checker
-                        .gcx()
-                        .is_type_copyable_in_def(local_ty, self.checker.current_def)
-                    {
-                        crate::sema::models::CaptureAccessKind::Read
-                    } else {
-                        crate::sema::models::CaptureAccessKind::Move
-                    },
-                    by_ref: None,
-                }
+    ) -> Option<(
+        NodeID,
+        Symbol,
+        Vec<crate::sema::models::CaptureProjection<'ctx>>,
+    )> {
+        match &expr.kind {
+            hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => {
+                let hir::Resolution::LocalVariable(root) = path.resolution else {
+                    return None;
+                };
+                let name = path.segments.last()?.identifier.symbol;
+                Some((root, name, vec![]))
             }
+            hir::ExpressionKind::Member { target, .. }
+            | hir::ExpressionKind::TupleAccess(target, _) => {
+                let gcx = self.checker.gcx();
+                let target_ty = crate::sema::tycheck::utils::normalize_aliases(
+                    gcx,
+                    *self.expr_tys.get(&target.id)?,
+                );
+                // Object fields are behind identity, not inline capture
+                // storage. Capture the handle (or an enclosing struct field
+                // containing it), and access current object state at invocation.
+                if gcx.is_class_type(target_ty) {
+                    return None;
+                }
+                if !matches!(
+                    target_ty.kind(),
+                    TyKind::Tuple(_)
+                        | TyKind::Adt(
+                            crate::sema::models::AdtDef {
+                                kind: crate::sema::models::AdtKind::Struct,
+                                ..
+                            },
+                            _
+                        )
+                ) || self.adjustments.get(&target.id).is_some_and(|adjustments| {
+                    adjustments
+                        .iter()
+                        .any(|adjustment| matches!(adjustment, Adjustment::Dereference))
+                }) {
+                    return None;
+                }
+                let field = crate::thir::FieldIndex::from_usize(*self.field_indices.get(&expr.id)?);
+                let (root, name, mut projection) = self.stored_projection(target)?;
+                if let Some(class) = gcx.class_for_payload(target_ty) {
+                    // Lifecycle self is private inline storage. Keep capture
+                    // identity aligned with its physical base-prefix tree,
+                    // rather than treating a flattened source index as bytes.
+                    let mut owner = target_ty;
+                    for index in gcx.class_field_payload_path(class, field.index())? {
+                        let TyKind::Adt(def, args) = owner.kind() else {
+                            return None;
+                        };
+                        let stored = gcx.get_struct_definition(def.id).fields[index as usize];
+                        owner = crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args(
+                            gcx, stored.ty, args,
+                        );
+                        projection.push(crate::sema::models::CaptureProjection {
+                            field: crate::thir::FieldIndex::from_raw(index),
+                            ty: owner,
+                        });
+                    }
+                    return Some((root, name, projection));
+                }
+                let capture_ty = *self.expr_tys.get(&expr.id)?;
+                projection.push(crate::sema::models::CaptureProjection {
+                    field,
+                    ty: capture_ty,
+                });
+                Some((root, name, projection))
+            }
+            _ => None,
         }
     }
 
-    fn maybe_capture(&mut self, expr: &hir::Expression, path: &hir::ResolvedPath, ctx: UseContext) {
+    fn maybe_capture_projection(&mut self, expr: &hir::Expression) -> bool {
+        let Some((root, name, projection)) = self.stored_projection(expr) else {
+            return false;
+        };
+        if projection.is_empty()
+            || self.param_ids.contains(&root)
+            || self.local_decls.contains(&root)
+            || self.checker.try_get_local(root).is_none()
+        {
+            return false;
+        }
+        self.record_projected_capture(root, name, projection);
+        true
+    }
+
+    /// Captures share the enclosing variable, so only a direct write to the
+    /// captured place counts as mutation.
+
+    fn maybe_capture(&mut self, path: &hir::ResolvedPath) {
         let hir::ResolvedPath::Resolved(path) = path else {
             return;
         };
@@ -603,7 +692,7 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
         if self.local_decls.contains(&id) {
             return;
         }
-        let Some(binding) = self.checker.try_get_local(id) else {
+        let Some(_) = self.checker.try_get_local(id) else {
             return;
         };
 
@@ -612,8 +701,7 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
             .last()
             .map(|s| s.identifier.symbol)
             .unwrap_or_else(|| self.checker.gcx().intern_symbol("_"));
-        let usage = self.capture_usage(expr, ctx, binding.ty);
-        self.record_capture(id, name, usage);
+        self.record_capture(id, name);
     }
 
     fn collect_block(&mut self, block: &hir::Block) {
@@ -621,7 +709,7 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
             self.collect_statement(stmt);
         }
         if let Some(tail) = block.tail.as_deref() {
-            self.collect_expr(tail, UseContext::Value);
+            self.collect_expr(tail);
         }
     }
 
@@ -629,12 +717,12 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
         match &stmt.kind {
             hir::StatementKind::Declaration(_) => {}
             hir::StatementKind::Expression(expr) => {
-                self.collect_expr(expr, UseContext::Value);
+                self.collect_expr(expr);
             }
             hir::StatementKind::Variable(local) => {
                 // First collect captures from the initializer (before registering the local)
                 if let Some(init) = local.initializer.as_deref() {
-                    self.collect_expr(init, UseContext::Value);
+                    self.collect_expr(init);
                 }
                 // Mark every binding introduced by this local pattern as scoped to the closure body.
                 self.collect_pattern_bindings(&local.pattern);
@@ -649,14 +737,42 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                 condition,
                 else_block,
             } => {
-                self.collect_expr(condition, UseContext::Value);
+                self.collect_expr(condition);
                 self.collect_block(else_block);
             }
         }
     }
 
-    fn collect_expr(&mut self, expr: &hir::Expression, ctx: UseContext) {
+    fn collect_expr(&mut self, expr: &hir::Expression) {
+        if matches!(expr.kind, hir::ExpressionKind::Call { .. }) {
+            let selected = self
+                .checker
+                .results
+                .borrow()
+                .elaborated_method_calls
+                .get(&expr.id)
+                .cloned();
+            if let Some(selected) = selected {
+                self.collect_expr(&selected);
+                return;
+            }
+        }
+        if self.maybe_capture_projection(expr) {
+            return;
+        }
         match &expr.kind {
+            hir::ExpressionKind::MemberBrackets { .. } => {
+                let selected = self
+                    .checker
+                    .results
+                    .borrow()
+                    .selected_brackets
+                    .get(&expr.id)
+                    .cloned();
+                if let Some(selected) = selected {
+                    self.collect_expr(&selected);
+                }
+            }
             hir::ExpressionKind::Literal(_) | hir::ExpressionKind::Malformed => {}
             hir::ExpressionKind::Closure(closure) => {
                 // For nested closures, propagate their captures to our capture list.
@@ -675,68 +791,49 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                         if self.local_decls.contains(&cap.source_id) {
                             continue;
                         }
-                        let Some(binding) = self.checker.try_get_local(cap.source_id) else {
+                        if self.checker.try_get_local(cap.source_id).is_none() {
                             continue;
-                        };
+                        }
                         // Propagate the capture - the nested closure needs this variable,
                         // so we must capture it too to make it available
-                        let usage = match cap.capture_kind {
-                            crate::sema::models::CaptureKind::ByCopy => CaptureUsage::default(),
-                            crate::sema::models::CaptureKind::ByRef { mutable } => CaptureUsage {
-                                access_kind: if mutable {
-                                    crate::sema::models::CaptureAccessKind::Mutate
-                                } else {
-                                    crate::sema::models::CaptureAccessKind::Read
-                                },
-                                by_ref: Some(if mutable {
-                                    hir::Mutability::Mutable
-                                } else {
-                                    hir::Mutability::Immutable
-                                }),
-                            },
-                            crate::sema::models::CaptureKind::ByMove => {
-                                let copyable = self
-                                    .checker
-                                    .gcx()
-                                    .is_type_copyable_in_def(binding.ty, self.checker.current_def);
-                                CaptureUsage {
-                                    access_kind: if copyable {
-                                        crate::sema::models::CaptureAccessKind::Read
-                                    } else {
-                                        crate::sema::models::CaptureAccessKind::Move
-                                    },
-                                    by_ref: None,
-                                }
-                            }
-                        };
-                        self.record_capture(cap.source_id, cap.name, usage);
+                        self.record_projected_capture(
+                            cap.source_id,
+                            cap.name,
+                            cap.projection.to_vec(),
+                        );
                     }
                 }
             }
             hir::ExpressionKind::Path(path) => {
-                self.maybe_capture(expr, path, ctx);
+                self.maybe_capture(path);
             }
             hir::ExpressionKind::Member { target, .. } => {
-                self.collect_expr(target, self.projection_base_context(expr, ctx));
+                self.collect_expr(target);
+            }
+            hir::ExpressionKind::Index { target, index, .. } => {
+                self.collect_expr(target);
+                for argument in index {
+                    self.collect_expr(&argument.expression);
+                }
             }
             hir::ExpressionKind::InferredMember { .. } => {}
             hir::ExpressionKind::Array(items) | hir::ExpressionKind::Tuple(items) => {
                 for item in items {
-                    self.collect_expr(item, UseContext::Value);
+                    self.collect_expr(item);
                 }
             }
             hir::ExpressionKind::Repeat { value, .. } => {
-                self.collect_expr(value, UseContext::Value);
+                self.collect_expr(value);
             }
             hir::ExpressionKind::If(expr) => {
-                self.collect_expr(&expr.condition, UseContext::Value);
-                self.collect_expr(&expr.then_block, UseContext::Value);
+                self.collect_expr(&expr.condition);
+                self.collect_expr(&expr.then_block);
                 if let Some(else_block) = expr.else_block.as_deref() {
-                    self.collect_expr(else_block, UseContext::Value);
+                    self.collect_expr(else_block);
                 }
             }
             hir::ExpressionKind::Match(expr) => {
-                self.collect_expr(&expr.value, UseContext::Value);
+                self.collect_expr(&expr.value);
                 for arm in &expr.arms {
                     let mut arm_bindings = Vec::new();
                     self.collect_pattern_binding_ids(&arm.pattern, &mut arm_bindings);
@@ -744,9 +841,9 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                         self.local_decls.insert(*binding_id);
                     }
                     if let Some(guard) = arm.guard.as_deref() {
-                        self.collect_expr(guard, UseContext::Value);
+                        self.collect_expr(guard);
                     }
-                    self.collect_expr(&arm.body, UseContext::Value);
+                    self.collect_expr(&arm.body);
                     for binding_id in arm_bindings {
                         self.local_decls.remove(&binding_id);
                     }
@@ -754,28 +851,14 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
             }
             hir::ExpressionKind::Return { value } => {
                 if let Some(value) = value.as_deref() {
-                    self.collect_expr(value, UseContext::Value);
+                    self.collect_expr(value);
                 }
             }
             hir::ExpressionKind::Break { .. } | hir::ExpressionKind::Continue { .. } => {}
             hir::ExpressionKind::Call { callee, arguments } => {
-                let callee_context = self
-                    .expr_tys
-                    .get(&callee.id)
-                    .and_then(|ty| {
-                        crate::sema::tycheck::utils::callable::existential_callable(
-                            self.checker.gcx(),
-                            *ty,
-                        )
-                    })
-                    .and_then(|callable| callable.receiver_mutability())
-                    .map(|mutability| UseContext::Borrow {
-                        mutable: mutability == hir::Mutability::Mutable,
-                    })
-                    .unwrap_or(UseContext::Value);
-                self.collect_expr(callee, callee_context);
+                self.collect_expr(callee);
                 for arg in arguments {
-                    self.collect_expr(&arg.expression, UseContext::Value);
+                    self.collect_expr(&arg.expression);
                 }
             }
             hir::ExpressionKind::MethodCall {
@@ -783,93 +866,54 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                 arguments,
                 ..
             } => {
-                let receiver_context = self
-                    .interface_calls
-                    .get(&expr.id)
-                    .and_then(|info| {
-                        let kind = crate::sema::models::callable_kind(
-                            self.checker.gcx(),
-                            info.method_interface,
-                        )?;
-                        match kind {
-                            crate::sema::models::ClosureKind::Fn
-                            | crate::sema::models::ClosureKind::AsyncFn => {
-                                Some(UseContext::Borrow { mutable: false })
-                            }
-                            crate::sema::models::ClosureKind::FnMut
-                            | crate::sema::models::ClosureKind::AsyncFnMut => {
-                                Some(UseContext::Borrow { mutable: true })
-                            }
-                            _ => None,
-                        }
-                    })
-                    .unwrap_or(UseContext::Value);
-                self.collect_expr(receiver, receiver_context);
+                self.collect_expr(receiver);
                 for arg in arguments {
-                    self.collect_expr(&arg.expression, UseContext::Value);
+                    self.collect_expr(&arg.expression);
                 }
             }
-            hir::ExpressionKind::Reference(value, mutability) => {
-                let mutable = matches!(mutability, hir::Mutability::Mutable);
-                self.collect_expr(value, UseContext::Borrow { mutable });
+            hir::ExpressionKind::Reference(value) => {
+                self.collect_expr(value);
             }
-            hir::ExpressionKind::Dereference(value) => {
-                self.collect_expr(value, ctx);
-            }
+            hir::ExpressionKind::Dereference(value) => self.collect_expr(value),
             hir::ExpressionKind::Binary(_, lhs, rhs) => {
-                self.collect_expr(lhs, UseContext::Value);
-                self.collect_expr(rhs, UseContext::Value);
+                self.collect_expr(lhs);
+                self.collect_expr(rhs);
             }
             hir::ExpressionKind::AssignOp(_, lhs, rhs) => {
-                self.collect_expr(lhs, UseContext::Place);
-                self.collect_expr(rhs, UseContext::Value);
+                self.collect_expr(lhs);
+                self.collect_expr(rhs);
             }
             hir::ExpressionKind::Unary(_, value)
             | hir::ExpressionKind::Propagate(value)
             | hir::ExpressionKind::CastAs(value, _)
             | hir::ExpressionKind::CastAsTry(value, _)
             | hir::ExpressionKind::TypeIs(value, _) => {
-                self.collect_expr(value, UseContext::Value);
+                self.collect_expr(value);
             }
             hir::ExpressionKind::TupleAccess(value, _) => {
-                self.collect_expr(value, self.projection_base_context(expr, ctx));
+                self.collect_expr(value);
             }
             hir::ExpressionKind::Assign(lhs, rhs) => {
-                self.collect_expr(lhs, UseContext::Place);
-                self.collect_expr(rhs, UseContext::Value);
+                self.collect_expr(lhs);
+                self.collect_expr(rhs);
             }
             hir::ExpressionKind::PatternBinding(binding) => {
-                self.collect_expr(&binding.expression, UseContext::Value);
+                self.collect_expr(&binding.expression);
             }
             hir::ExpressionKind::Block(block) | hir::ExpressionKind::UnsafeBlock(block) => {
                 self.collect_block(block);
             }
             hir::ExpressionKind::StructLiteral(literal) => {
                 for field in &literal.fields {
-                    self.collect_expr(&field.expression, UseContext::Value);
+                    self.collect_expr(&field.expression);
+                }
+                if let Some(base) = &literal.base {
+                    self.collect_expr(base);
                 }
             }
             hir::ExpressionKind::Await(value) => {
-                self.collect_expr(value, UseContext::Value);
+                self.collect_expr(value);
             }
-        }
-    }
-
-    fn projection_base_context(&self, expr: &hir::Expression, ctx: UseContext) -> UseContext {
-        match ctx {
-            // Once an outer projection is known to copy its result, every base
-            // projection is only read to reach that value.
-            UseContext::Read => UseContext::Read,
-            UseContext::Value
-                if self.expr_tys.get(&expr.id).is_some_and(|ty| {
-                    self.checker
-                        .gcx()
-                        .is_type_copyable_in_def(*ty, self.checker.current_def)
-                }) =>
-            {
-                UseContext::Read
-            }
-            other => other,
         }
     }
 
@@ -889,12 +933,15 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                     self.collect_pattern_binding_ids(pattern, binding_ids);
                 }
             }
-            hir::PatternKind::Reference { pattern, .. } => {
-                self.collect_pattern_binding_ids(pattern, binding_ids);
-            }
+
             hir::PatternKind::PathTuple { fields, .. } => {
                 for pattern in fields {
                     self.collect_pattern_binding_ids(pattern, binding_ids);
+                }
+            }
+            hir::PatternKind::PathNamed { fields, .. } => {
+                for field in fields {
+                    self.collect_pattern_binding_ids(&field.pattern, binding_ids);
                 }
             }
             hir::PatternKind::Wildcard
@@ -905,146 +952,206 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
     }
 }
 
-fn classify_capture_kind<'ctx>(
-    gcx: Gcx<'ctx>,
-    owner: DefinitionID,
-    ty: Ty<'ctx>,
-    usage: CaptureUsage,
-    is_move_closure: bool,
-    is_async: bool,
-) -> crate::sema::models::CaptureKind {
-    if is_move_closure {
-        if gcx.is_type_copyable_in_def(ty, owner) {
-            return crate::sema::models::CaptureKind::ByCopy;
+fn closure_self_ty<'ctx>(_gcx: Gcx<'ctx>, closure_ty: Ty<'ctx>, _kind: ClosureKind) -> Ty<'ctx> {
+    // Copying the environment preserves its shared capture cells. Repeated and
+    // suspended calls therefore observe the same captured variables.
+    closure_ty
+}
+
+#[cfg(test)]
+mod context_tests {
+    use crate::test_support::{analyze_script_diagnostics, analyze_script_mir_diagnostics};
+
+    #[test]
+    fn invoking_a_captured_callable_uses_its_receiver_mode() {
+        for source in [
+            "func main() { inner := () => 7_i32; outer := () => inner(); a := outer(); b := outer(); c := inner() }",
+            "func main() { inner := () => 7_i32; outer := () => inner(); a := outer(); b := outer() }",
+            "func main() { var count: int32 = 0; var inner = () => { count += 1; count }; var outer = () => inner(); a := outer(); b := outer(); c := inner(); result := count }",
+            "func main() { var count: int32 = 0; var inner = () => { count += 1; count }; token := &inner; var outer = () => token(); a := outer(); b := outer(); result := count }",
+        ] {
+            let errors = analyze_script_mir_diagnostics(source);
+            assert!(errors.is_empty(), "{source}\n{errors:#?}");
         }
-        return crate::sema::models::CaptureKind::ByMove;
     }
-    if matches!(
-        usage.access_kind,
-        crate::sema::models::CaptureAccessKind::Move
-    ) {
-        return crate::sema::models::CaptureKind::ByMove;
+
+    #[test]
+    fn invoking_a_value_capture_can_repeat() {
+        let errors = analyze_script_mir_diagnostics(
+            "struct Owned { value: int32 }\nfunc main() { value := Owned { value: 7 }; inner := () => value; outer := () => inner(); a := outer(); b := outer() }",
+        );
+        assert!(errors.is_empty(), "{errors:#?}");
     }
-    if let Some(mutability) = usage.by_ref {
-        // An implicit immutable borrow (for example, an `&self` method call)
-        // does not require an async closure to borrow a Copy local. Store the
-        // value instead so an owned/escaping future cannot retain a pointer to
-        // the caller's short-lived closure argument.
-        if is_async
-            && matches!(mutability, hir::Mutability::Immutable)
-            && gcx.is_type_copyable_in_def(ty, owner)
-        {
-            return crate::sema::models::CaptureKind::ByCopy;
+
+    /// Captures are by reference (G17): writes after capture are observed and
+    /// do not conflict, and capturing closures flow through generic code.
+    #[test]
+    fn reference_captures_allow_later_writes_and_generic_escape() {
+        for source in [
+            "func main() { var count: int32 = 7; read := () => count; count = 9; result := read() }",
+            "func own[T](_ value: T) -> T { value }\nfunc main() { var count: int32 = 7; read := own(() => count); count = 9; result := read() }",
+            "func own[T](_ value: T) -> T { value }\nfunc main() { var count: int32 = 7; read := () => count; escaped := own(read) }",
+        ] {
+            let diagnostics = analyze_script_mir_diagnostics(source);
+            assert!(diagnostics.is_empty(), "{source}\n{diagnostics:#?}");
         }
-        return crate::sema::models::CaptureKind::ByRef {
-            mutable: matches!(mutability, hir::Mutability::Mutable),
-        };
     }
-    if gcx.is_type_copyable_in_def(ty, owner) {
-        crate::sema::models::CaptureKind::ByCopy
-    } else {
-        crate::sema::models::CaptureKind::ByMove
+
+    #[test]
+    fn await_in_a_local_closure_infers_async_call_diagnostics() {
+        let diagnostics = analyze_script_diagnostics(
+            "func tick() async -> int32 { 7 }\nfunc main() { run := () => { await tick() }; value := run() }",
+        );
+        assert!(
+            diagnostics.iter().any(|d| d
+                .message
+                .contains("async calls require an enclosing `await` expression")),
+            "{diagnostics:#?}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.message.contains("await is only allowed")),
+            "{diagnostics:#?}"
+        );
+    }
+
+    #[test]
+    fn nested_async_closure_does_not_make_its_parent_async() {
+        let diagnostics = analyze_script_diagnostics(
+            "func tick() async -> int32 { 7 }\nfunc main() { outer := () => { inner := () => { await tick() }; 9 }; value := outer() }",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 }
 
-fn infer_closure_kind(
-    is_async: bool,
-    captures: &[crate::sema::models::CapturedVar<'_>],
-) -> crate::sema::models::ClosureKind {
-    if is_async {
-        let mut kind = crate::sema::models::ClosureKind::AsyncFn;
-        for capture in captures {
-            if matches!(
-                capture.capture_kind,
-                crate::sema::models::CaptureKind::ByMove
-            ) || matches!(
-                capture.access_kind,
-                crate::sema::models::CaptureAccessKind::Move
-            ) {
-                return crate::sema::models::ClosureKind::AsyncFnOnce;
-            }
-            if matches!(
-                capture.access_kind,
-                crate::sema::models::CaptureAccessKind::Mutate
-            ) || matches!(
-                capture.capture_kind,
-                crate::sema::models::CaptureKind::ByRef { mutable: true }
-            ) {
-                kind = crate::sema::models::ClosureKind::AsyncFnMut;
-            }
-        }
-        return kind;
+#[cfg(test)]
+mod precise_capture_tests {
+    use crate::test_support::analyze_script_mir_diagnostics;
+
+    const TYPES: &str = "struct Item { value: int32 }\nstruct Pair { left: Item; right: Item }\n";
+
+    #[test]
+    fn nested_inferred_capture_paths_are_fully_resolved_before_publication() {
+        crate::test_support::check_script(
+            "struct Wrapper[T] { value: T }\nfunc main() { build := () => { wrapper := Wrapper { value: 7 }; read := () => wrapper.value; read() }; var result: int32 = build() }",
+            |_, gcx| {
+                gcx.with_session_type_database(|database| {
+                    let mut projected = 0;
+                    for captures in database.closure_captures.values() {
+                        for capture in &captures.captures {
+                            if capture.projection.is_empty() {
+                                continue;
+                            }
+                            projected += 1;
+                            assert!(
+                                !capture.root_ty.contains_inference(),
+                                "{:?}",
+                                capture.root_ty
+                            );
+                            assert!(!capture.ty.contains_inference(), "{:?}", capture.ty);
+                            assert!(
+                                capture
+                                    .projection
+                                    .iter()
+                                    .all(|field| !field.ty.contains_inference())
+                            );
+                        }
+                    }
+                    assert_eq!(projected, 1);
+                });
+            },
+        );
     }
 
-    let mut kind = crate::sema::models::ClosureKind::Fn;
+    #[test]
+    fn unused_borrowed_fields_do_not_make_an_owned_capture_dependent() {
+        let errors = crate::test_support::analyze_script_mir_diagnostics(
+            "struct View { value: int32; other: &int32 }\nfunc own[T](_ value: T) -> T { value }\nfunc main() { var outside: int32 = 9; view := View { value: 7, other: &outside }; read := own(() => view.value); observed := read() }",
+        );
+        assert!(errors.is_empty(), "{errors:#?}");
+    }
 
-    for capture in captures {
-        match capture.access_kind {
-            crate::sema::models::CaptureAccessKind::Move => {
-                return if is_async {
-                    crate::sema::models::ClosureKind::AsyncFnOnce
-                } else {
-                    crate::sema::models::ClosureKind::FnOnce
-                };
-            }
-            crate::sema::models::CaptureAccessKind::Mutate => {
-                kind = if is_async {
-                    crate::sema::models::ClosureKind::AsyncFnMut
-                } else {
-                    crate::sema::models::ClosureKind::FnMut
-                };
-            }
-            crate::sema::models::CaptureAccessKind::Read => {
-                if matches!(
-                    capture.capture_kind,
-                    crate::sema::models::CaptureKind::ByRef { mutable: true }
-                ) {
-                    kind = if is_async {
-                        crate::sema::models::ClosureKind::AsyncFnMut
-                    } else {
-                        crate::sema::models::ClosureKind::FnMut
-                    };
+    #[test]
+    fn prefix_merging_keeps_earliest_use_order_and_round_trips_paths() {
+        crate::test_support::analyze_script_built_mir(
+            &format!(
+                "{TYPES}func inspect(_ item: &Item) -> int32 {{ item.value }}\nfunc main() {{ pair := Pair {{ left: Item {{ value: 7 }}, right: Item {{ value: 9 }} }}; read := () => {{ first := pair.left.value; second := pair.right.value; first + second + inspect(&pair.left) }}; observed := read() }}"
+            ),
+            |bodies, gcx| {
+                let captures = bodies
+                    .iter()
+                    .find_map(|body| gcx.get_closure_captures(body.owner))
+                    .unwrap();
+                let paths = captures
+                    .captures
+                    .iter()
+                    .map(|capture| {
+                        capture
+                            .projection
+                            .iter()
+                            .map(|field| field.field.index())
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(paths, [vec![0], vec![1, 0]]);
+                assert_eq!(
+                    captures.captures[0].source_id,
+                    captures.captures[1].source_id
+                );
+                use crate::metadata::wire::{self, SymbolTableBuilder, SymbolTableRef};
+                let mut symbols = SymbolTableBuilder::default();
+                let wire = wire::closure_captures_to_wire(&captures, &mut symbols);
+                let wire: wire::ClosureCapturesWire =
+                    bincode::deserialize(&bincode::serialize(&wire).unwrap()).unwrap();
+                let symbols = symbols.finish();
+                let invalid = std::cell::Cell::new(None);
+                let restored = wire::closure_captures_from_wire(
+                    gcx,
+                    &wire,
+                    SymbolTableRef::new(&symbols, &invalid),
+                );
+                for (original, restored) in captures.captures.iter().zip(&restored.captures) {
+                    assert_eq!(original.root_ty, restored.root_ty);
+                    assert_eq!(original.ty, restored.ty);
+                    assert_eq!(original.projection, restored.projection);
+                    assert_eq!(original.field_index, restored.field_index);
                 }
-            }
+                assert!(invalid.get().is_none());
+            },
+        );
+    }
+
+    #[test]
+    fn projected_captures_leave_disjoint_storage_usable() {
+        for body in [
+            "read := () => pair.left.value; pair.right.value = 11; observed := read()",
+            "var edit = () => { pair.left.value += 1 }; pair.right.value = 11; edit(); observed := pair.left.value",
+            "take := () => pair.left; other := pair.right; item := take()",
+            "read := () => pair.left.value; pair.left.value = 11; observed := read(); item := pair.left",
+            "read := () => { inner := () => pair.left.value; inner() }; pair.right.value = 11; observed := read()",
+            "take := () => { inner := () => pair.left; inner() }; other := pair.right; item := take()",
+        ] {
+            let source = format!(
+                "{TYPES}func main() {{ var pair = Pair {{ left: Item {{ value: 7 }}, right: Item {{ value: 9 }} }}; {body} }}"
+            );
+            let errors = analyze_script_mir_diagnostics(&source);
+            assert!(errors.is_empty(), "{body}\n{errors:#?}");
         }
     }
 
-    kind
-}
-
-fn closure_self_ty<'ctx>(
-    gcx: Gcx<'ctx>,
-    closure_ty: Ty<'ctx>,
-    kind: crate::sema::models::ClosureKind,
-) -> Ty<'ctx> {
-    match kind {
-        crate::sema::models::ClosureKind::Fn => {
-            Ty::new(TyKind::Pointer(closure_ty, hir::Mutability::Immutable), gcx)
+    #[test]
+    fn projected_captures_do_not_lock_the_captured_field() {
+        for body in [
+            "read := () => pair.left.value; pair.left.value = 11; observed := read()",
+            "var edit = () => { pair.left.value += 1 }; observed := pair.left.value; edit()",
+            "read := () => { first := pair.left.value; inspect(&pair) + first }; pair.right.value = 11; observed := read()",
+        ] {
+            let source = format!(
+                "{TYPES}func inspect(_ pair: &Pair) -> int32 {{ pair.right.value }}\nfunc main() {{ var pair = Pair {{ left: Item {{ value: 7 }}, right: Item {{ value: 9 }} }}; {body} }}"
+            );
+            let errors = analyze_script_mir_diagnostics(&source);
+            assert!(errors.is_empty(), "{body}\n{errors:#?}");
         }
-        crate::sema::models::ClosureKind::AsyncFn => {
-            let owns_copyable_environment = match closure_ty.kind() {
-                TyKind::Closure { closure_def_id, .. } => gcx
-                    .get_closure_captures(closure_def_id)
-                    .is_some_and(|captures| {
-                        captures.captures.iter().all(|capture| {
-                            matches!(
-                                capture.capture_kind,
-                                crate::sema::models::CaptureKind::ByCopy
-                            )
-                        })
-                    }),
-                _ => false,
-            };
-            if owns_copyable_environment {
-                closure_ty
-            } else {
-                Ty::new(TyKind::Pointer(closure_ty, hir::Mutability::Immutable), gcx)
-            }
-        }
-        crate::sema::models::ClosureKind::FnMut | crate::sema::models::ClosureKind::AsyncFnMut => {
-            Ty::new(TyKind::Pointer(closure_ty, hir::Mutability::Mutable), gcx)
-        }
-        crate::sema::models::ClosureKind::FnOnce
-        | crate::sema::models::ClosureKind::AsyncFnOnce => closure_ty,
     }
 }

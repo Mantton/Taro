@@ -2,22 +2,22 @@ type int = isize
 
 interface ValueContainer {
     type Item
-    func get(&self) -> Self.Item
+    func get() -> Self::Item
 }
 
 struct IntBox {
     value: int
 }
 
-impl ValueContainer for IntBox {
+conform IntBox to ValueContainer {
     type Item = int
-    func get(&self) -> int {
+    func get() -> int {
         self.value
     }
 }
 
-func takeItem[T: ValueContainer](_ c: T) -> T.Item {
-    let v: T.Item = c.get()
+func takeItem[T: ValueContainer](_ c: T) -> T::Item {
+    var v: T::Item = c.get()
     v
 }
 
@@ -26,7 +26,7 @@ func requireIntItem[T: ValueContainer[Item = int]](_ c: T) -> int {
 }
 
 interface Entity {
-    func identifier(&self) -> usize
+    func identifier() -> usize
 }
 
 interface Aircraft: Entity, Usable[bool] {}
@@ -34,17 +34,17 @@ interface Usable[T] {}
 
 interface CollectionLike {
     type Item
-    func len(&self) -> usize
+    func len() -> usize
 }
 
 interface AssocA {
     type Element
-    func first(self) -> Self.Element
+    func first() -> Self::Element
 }
 
 interface AssocB {
     type Element
-    func second(self) -> Self.Element
+    func second() -> Self::Element
 }
 
 struct MyData {
@@ -54,8 +54,8 @@ struct MyData {
     flag: rune
 }
 
-impl Entity for MyData {
-    func identifier(&self) -> usize {
+conform MyData to Entity {
+    func identifier() -> usize {
         self.id
     }
 }
@@ -66,53 +66,53 @@ struct AssocContainer {
     cap: usize
 }
 
-impl CollectionLike for AssocContainer {
-    type Item = Folder.Section.Side
-    func len(&self) -> usize {
+conform AssocContainer to CollectionLike {
+    type Item = Folder::Section::Side
+    func len() -> usize {
         self.len
     }
 }
 
 struct AmbiguousSelf {}
 
-impl AssocA for AmbiguousSelf {
+conform AmbiguousSelf to AssocA {
     type Element = int32
 
-    func first(self) -> Self.Element {
+    func first() -> Self::Element {
         1
     }
 }
 
-impl AssocB for AmbiguousSelf {
+conform AmbiguousSelf to AssocB {
     type Element = bool
 
-    func second(self) -> Self.Element {
+    func second() -> Self::Element {
         true
     }
 }
 
-type OptionalString = std.prelude.Optional[string]
+type OptionalString = std::prelude::Optional[string]
 
 struct Folder {}
-impl Folder {
+extend Folder {
     type Section = Page
 
-    func use(&self, _ page: Self.Section) {}
+    func use( _ page: Self::Section) {}
 }
 
 struct Page {}
-impl Page {
+extend Page {
     type Side = rune
 }
 
 func main() {
-    let box = IntBox { value: 42 }
+    box := IntBox { value: 42 }
     assert(takeItem(box) == 42, "associated type retrieval failed")
 
-    let box2 = IntBox { value: 123 }
+    box2 := IntBox { value: 123 }
     assert(requireIntItem(box2) == 123, "associated type constraint binding failed")
 
-    let d = MyData {
+    d := MyData {
         id: 123,
         name: "Test",
         isRegistered: true,
@@ -120,20 +120,20 @@ func main() {
     }
     assert(d.identifier() == 123, "interface method implementation check")
 
-    let c = AssocContainer {
+    c := AssocContainer {
         data: unsafe { 0 as *mut uint8 },
         len: 10,
         cap: 20,
     }
     assert(c.len() == 10, "collection implementation check")
 
-    let maybeName: OptionalString = .some("ok")
+    var maybeName: OptionalString = .some("ok")
     assert(maybeName.isSome(), "type alias over associated-type file should typecheck")
 
-    let ambiguousA = AmbiguousSelf {}
+    ambiguousA := AmbiguousSelf {}
     assert(ambiguousA.first() == 1, "impl-local Self.Element should resolve to AssocA.Element")
-    let ambiguousB = AmbiguousSelf {}
+    ambiguousB := AmbiguousSelf {}
     assert(ambiguousB.second(), "impl-local Self.Element should resolve to AssocB.Element")
 
-    std.print("PASS: Associated types\n")
+    std::print("PASS: Associated types\n")
 }

@@ -1,0 +1,4 @@
+func forge(_ pointer: *mut uint8) -> std::sys::sync::RawRwLock {
+    std::sys::sync::RawRwLock { owner: pointer }
+}
+func main() {}

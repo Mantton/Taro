@@ -1,6 +1,6 @@
 interface Named {
     var name: string {
-        get(&self) {
+        get {
             "taro"
         }
     };
@@ -13,6 +13,6 @@ func readName[T: Named](_ value: &T) -> string {
 }
 
 func main() {
-    let user = User {}
+    user := User {}
     readName(&user)
 }

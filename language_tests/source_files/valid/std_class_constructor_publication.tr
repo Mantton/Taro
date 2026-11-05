@@ -1,0 +1,11 @@
+// Release-built std constructs classes through the compiler's publication
+// helper. Under GC storage that helper must stay a call: codegen replaces its
+// body, and an inlined native copy published the class header twice.
+func main() {
+    path := "taro_std_class_constructor_publication.txt"
+    assert(std::fs::writeString(path, "gc").isOk(), "File::create publishes its state once")
+    var file = std::fs::File::open(path).unwrap()
+    var _ = file.close()
+    var _ = std::fs::removeFile(path)
+    print("PASS: std class constructors publish once\n")
+}

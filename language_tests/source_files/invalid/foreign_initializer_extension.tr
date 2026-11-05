@@ -1,0 +1,4 @@
+extend List[int32] {
+    init() {}
+}
+func main() {}

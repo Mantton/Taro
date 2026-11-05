@@ -1,0 +1,6 @@
+[package]
+name = "github.com/taro-story/g34-client"
+kind = "executable"
+
+[require]
+"github.com/taro-story/g34-library" = { path = "../library", alias = "library" }

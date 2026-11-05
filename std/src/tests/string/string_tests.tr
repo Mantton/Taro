@@ -1,14 +1,14 @@
 // Tests for std.string helper methods and Add operator overloading.
 
 func assertStringParts(
-    _ actual: &std.collections.List[string],
-    _ expected: std.mem.Span[string],
+    _ actual: &std::collections::List[string],
+    _ expected: std::mem::Span[string],
     _ message: string,
 ) {
-    std.testing.assertEqual(actual.len(), expected.len(), message)
+    std::testing::assertEqual(actual.len(), expected.len(), message)
     var index: usize = 0
     while index < expected.len() {
-        std.testing.assertEqual(*actual.at(index), *expected.at(index), message)
+        std::testing::assertEqual(*actual.at(index), *expected.at(index), message)
         index += 1
     }
 }
@@ -17,362 +17,362 @@ func assertStringParts(
 
 @test
 func testIsEmptyOnEmptyString() {
-    let s = ""
-    std.testing.assertTrue(s.isEmpty(), "empty string should be isEmpty")
+    s := ""
+    std::testing::assertTrue(s.isEmpty(), "empty string should be isEmpty")
 }
 
 @test
 func testIsEmptyOnNonEmptyString() {
-    let s = "hello"
-    std.testing.assertFalse(s.isEmpty(), "non-empty string should not be isEmpty")
+    s := "hello"
+    std::testing::assertFalse(s.isEmpty(), "non-empty string should not be isEmpty")
 }
 
 // ─── concat ───────────────────────────────────────────────────────────────────
 
 @test
 func testConcatTwoStrings() {
-    let a = "hello"
-    let b = " world"
-    let result = a.concat(b)
-    std.testing.assertEqual(result, "hello world", "concat should join strings")
+    a := "hello"
+    b := " world"
+    result := a.concat(b)
+    std::testing::assertEqual(result, "hello world", "concat should join strings")
 }
 
 @test
 func testConcatWithEmptyLeft() {
-    let a = ""
-    let b = "world"
-    let result = a.concat(b)
-    std.testing.assertEqual(result, "world", "concat with empty lhs should return rhs")
+    a := ""
+    b := "world"
+    result := a.concat(b)
+    std::testing::assertEqual(result, "world", "concat with empty lhs should return rhs")
 }
 
 @test
 func testConcatWithEmptyRight() {
-    let a = "hello"
-    let b = ""
-    let result = a.concat(b)
-    std.testing.assertEqual(result, "hello", "concat with empty rhs should return lhs")
+    a := "hello"
+    b := ""
+    result := a.concat(b)
+    std::testing::assertEqual(result, "hello", "concat with empty rhs should return lhs")
 }
 
 @test
 func testConcatBothEmpty() {
-    let a = ""
-    let b = ""
-    let result = a.concat(b)
-    std.testing.assertEqual(result, "", "concat of two empties should be empty")
+    a := ""
+    b := ""
+    result := a.concat(b)
+    std::testing::assertEqual(result, "", "concat of two empties should be empty")
 }
 
 // ─── Add operator (+) ─────────────────────────────────────────────────────────
 
 @test
 func testAddOperator() {
-    let result = "foo" + "bar"
-    std.testing.assertEqual(result, "foobar", "string + string should concatenate")
+    result := "foo" + "bar"
+    std::testing::assertEqual(result, "foobar", "string + string should concatenate")
 }
 
 @test
 func testAddOperatorWithEmpty() {
-    let result = "" + "abc"
-    std.testing.assertEqual(result, "abc", "empty + string should return string")
+    result := "" + "abc"
+    std::testing::assertEqual(result, "abc", "empty + string should return string")
 }
 
 // ─── contains ─────────────────────────────────────────────────────────────────
 
 @test
 func testContainsPresent() {
-    let s = "hello world"
-    std.testing.assertTrue(s.contains("world"), "should contain 'world'")
+    s := "hello world"
+    std::testing::assertTrue(s.contains("world"), "should contain 'world'")
 }
 
 @test
 func testContainsAbsent() {
-    let s = "hello world"
-    std.testing.assertFalse(s.contains("xyz"), "should not contain 'xyz'")
+    s := "hello world"
+    std::testing::assertFalse(s.contains("xyz"), "should not contain 'xyz'")
 }
 
 @test
 func testContainsEmptyNeedle() {
-    let s = "hello"
-    std.testing.assertTrue(s.contains(""), "any string contains empty string")
+    s := "hello"
+    std::testing::assertTrue(s.contains(""), "any string contains empty string")
 }
 
 @test
 func testContainsSelf() {
-    let s = "hello"
-    std.testing.assertTrue(s.contains("hello"), "string contains itself")
+    s := "hello"
+    std::testing::assertTrue(s.contains("hello"), "string contains itself")
 }
 
 @test
 func testContainsNeedleLongerThanHaystack() {
-    let s = "hi"
-    std.testing.assertFalse(s.contains("hello"), "short string should not contain longer needle")
+    s := "hi"
+    std::testing::assertFalse(s.contains("hello"), "short string should not contain longer needle")
 }
 
 @test
 func testContainsAtStart() {
-    let s = "abcdef"
-    std.testing.assertTrue(s.contains("abc"), "should find needle at start")
+    s := "abcdef"
+    std::testing::assertTrue(s.contains("abc"), "should find needle at start")
 }
 
 @test
 func testContainsAtEnd() {
-    let s = "abcdef"
-    std.testing.assertTrue(s.contains("def"), "should find needle at end")
+    s := "abcdef"
+    std::testing::assertTrue(s.contains("def"), "should find needle at end")
 }
 
 // ─── startsWith ───────────────────────────────────────────────────────────────
 
 @test
 func testStartsWithMatch() {
-    let s = "hello world"
-    std.testing.assertTrue(s.startsWith("hello"), "should start with 'hello'")
+    s := "hello world"
+    std::testing::assertTrue(s.startsWith("hello"), "should start with 'hello'")
 }
 
 @test
 func testStartsWithNoMatch() {
-    let s = "hello world"
-    std.testing.assertFalse(s.startsWith("world"), "should not start with 'world'")
+    s := "hello world"
+    std::testing::assertFalse(s.startsWith("world"), "should not start with 'world'")
 }
 
 @test
 func testStartsWithEmptyPrefix() {
-    let s = "hello"
-    std.testing.assertTrue(s.startsWith(""), "any string starts with empty prefix")
+    s := "hello"
+    std::testing::assertTrue(s.startsWith(""), "any string starts with empty prefix")
 }
 
 @test
 func testStartsWithFullMatch() {
-    let s = "hello"
-    std.testing.assertTrue(s.startsWith("hello"), "string starts with itself")
+    s := "hello"
+    std::testing::assertTrue(s.startsWith("hello"), "string starts with itself")
 }
 
 @test
 func testStartsWithPrefixLongerThanString() {
-    let s = "hi"
-    std.testing.assertFalse(s.startsWith("hello"), "short string should not start with longer prefix")
+    s := "hi"
+    std::testing::assertFalse(s.startsWith("hello"), "short string should not start with longer prefix")
 }
 
 // ─── endsWith ─────────────────────────────────────────────────────────────────
 
 @test
 func testEndsWithMatch() {
-    let s = "hello world"
-    std.testing.assertTrue(s.endsWith("world"), "should end with 'world'")
+    s := "hello world"
+    std::testing::assertTrue(s.endsWith("world"), "should end with 'world'")
 }
 
 @test
 func testEndsWithNoMatch() {
-    let s = "hello world"
-    std.testing.assertFalse(s.endsWith("hello"), "should not end with 'hello'")
+    s := "hello world"
+    std::testing::assertFalse(s.endsWith("hello"), "should not end with 'hello'")
 }
 
 @test
 func testEndsWithEmptySuffix() {
-    let s = "hello"
-    std.testing.assertTrue(s.endsWith(""), "any string ends with empty suffix")
+    s := "hello"
+    std::testing::assertTrue(s.endsWith(""), "any string ends with empty suffix")
 }
 
 @test
 func testEndsWithFullMatch() {
-    let s = "hello"
-    std.testing.assertTrue(s.endsWith("hello"), "string ends with itself")
+    s := "hello"
+    std::testing::assertTrue(s.endsWith("hello"), "string ends with itself")
 }
 
 @test
 func testEndsWithSuffixLongerThanString() {
-    let s = "hi"
-    std.testing.assertFalse(s.endsWith("hello"), "short string should not end with longer suffix")
+    s := "hi"
+    std::testing::assertFalse(s.endsWith("hello"), "short string should not end with longer suffix")
 }
 
 // ─── substring ────────────────────────────────────────────────────────────────
 
 @test
 func testSubstringMiddle() {
-    let s = "hello world"
-    let result = s.substring(6, 5)
-    std.testing.assertEqual(result, "world", "substring(6, 5) of 'hello world' should be 'world'")
+    s := "hello world"
+    result := s.substring(6, 5)
+    std::testing::assertEqual(result, "world", "substring(6, 5) of 'hello world' should be 'world'")
 }
 
 @test
 func testSubstringFromStart() {
-    let s = "hello world"
-    let result = s.substring(0, 5)
-    std.testing.assertEqual(result, "hello", "substring(0, 5) should be 'hello'")
+    s := "hello world"
+    result := s.substring(0, 5)
+    std::testing::assertEqual(result, "hello", "substring(0, 5) should be 'hello'")
 }
 
 @test
 func testSubstringZeroCount() {
-    let s = "hello"
-    let result = s.substring(2, 0)
-    std.testing.assertEqual(result, "", "substring with count 0 should be empty")
+    s := "hello"
+    result := s.substring(2, 0)
+    std::testing::assertEqual(result, "", "substring with count 0 should be empty")
 }
 
 @test
 func testSubstringFullString() {
-    let s = "hello"
-    let result = s.substring(0, 5)
-    std.testing.assertEqual(result, "hello", "substring of entire string should equal original")
+    s := "hello"
+    result := s.substring(0, 5)
+    std::testing::assertEqual(result, "hello", "substring of entire string should equal original")
 }
 
 @test
 @expectPanic
 func testSubstringOutOfBounds() {
-    let s = "hello"
-    let _ = s.substring(3, 5)
+    s := "hello"
+    var _ = s.substring(3, 5)
 }
 
 // ─── byteAt ──────────────────────────────────────────────────────────────────
 
 @test
 func testByteAtFirst() {
-    let s = "ABC"
-    std.testing.assertEqual(s.byteAt(0), 65_u8, "byteAt(0) of 'ABC' should be 65 (A)")
+    s := "ABC"
+    std::testing::assertEqual(s.byteAt(0), 65_u8, "byteAt(0) of 'ABC' should be 65 (A)")
 }
 
 @test
 func testByteAtMiddle() {
-    let s = "ABC"
-    std.testing.assertEqual(s.byteAt(1), 66_u8, "byteAt(1) of 'ABC' should be 66 (B)")
+    s := "ABC"
+    std::testing::assertEqual(s.byteAt(1), 66_u8, "byteAt(1) of 'ABC' should be 66 (B)")
 }
 
 @test
 func testByteAtLast() {
-    let s = "ABC"
-    std.testing.assertEqual(s.byteAt(2), 67_u8, "byteAt(2) of 'ABC' should be 67 (C)")
+    s := "ABC"
+    std::testing::assertEqual(s.byteAt(2), 67_u8, "byteAt(2) of 'ABC' should be 67 (C)")
 }
 
 @test
 @expectPanic
 func testByteAtOutOfBounds() {
-    let s = "ABC"
-    let _ = s.byteAt(3)
+    s := "ABC"
+    var _ = s.byteAt(3)
 }
 
 // ─── lengths and searching ───────────────────────────────────────────────────
 
 @test
 func testStringByteLenRuneCountAndFind() {
-    let value = "aπ🚀π"
-    std.testing.assertEqual(value.byteLen(), 9 as usize, "byteLen should report encoded bytes")
-    std.testing.assertEqual(value.runeCount(), 4 as usize, "runeCount should report decoded runes")
+    value := "aπ🚀π"
+    std::testing::assertEqual(value.byteLen(), 9 as usize, "byteLen should report encoded bytes")
+    std::testing::assertEqual(value.runeCount(), 4 as usize, "runeCount should report decoded runes")
 
-    std.testing.assertEqual(value.find("π").unwrap(), 1 as usize, "find should return the first byte index")
-    std.testing.assertEqual(value.rfind("π").unwrap(), 7 as usize, "rfind should return the last byte index")
-    std.testing.assertEqual(value.find("").unwrap(), 0 as usize, "empty find should match at the start")
-    std.testing.assertEqual(value.rfind("").unwrap(), 9 as usize, "empty rfind should match at the end")
-    std.testing.assertTrue(value.find("missing").isNone(), "find should return none for an absent needle")
-    std.testing.assertTrue(value.rfind("missing").isNone(), "rfind should return none for an absent needle")
+    std::testing::assertEqual(value.find("π").unwrap(), 1 as usize, "find should return the first byte index")
+    std::testing::assertEqual(value.rfind("π").unwrap(), 7 as usize, "rfind should return the last byte index")
+    std::testing::assertEqual(value.find("").unwrap(), 0 as usize, "empty find should match at the start")
+    std::testing::assertEqual(value.rfind("").unwrap(), 9 as usize, "empty rfind should match at the end")
+    std::testing::assertTrue(value.find("missing").isNone(), "find should return none for an absent needle")
+    std::testing::assertTrue(value.rfind("missing").isNone(), "rfind should return none for an absent needle")
 }
 
 // ─── splitting and lines ─────────────────────────────────────────────────────
 
 @test
 func testStringSplitPreservesEmptyFields() {
-    let actual = "a,,b,".split(",")
-    let expected: [string; 4] = ["a", "", "b", ""]
+    actual := "a,,b,".split(",")
+    var expected: [string; 4] = ["a", "", "b", ""]
     assertStringParts(&actual, expected.asSpan(), "split should preserve leading, adjacent, and trailing fields")
 
-    let empty = "".split(",")
-    let expectedEmpty: [string; 1] = [""]
+    empty := "".split(",")
+    var expectedEmpty: [string; 1] = [""]
     assertStringParts(&empty, expectedEmpty.asSpan(), "non-empty separator should split empty input once")
 }
 
 @test
 func testStringSplitEmptySeparatorUsesRuneBoundaries() {
-    let actual = "aπ🚀".split("")
-    let expected: [string; 3] = ["a", "π", "🚀"]
+    actual := "aπ🚀".split("")
+    var expected: [string; 3] = ["a", "π", "🚀"]
     assertStringParts(&actual, expected.asSpan(), "empty separator should split by decoded rune")
 
-    let empty = "".split("")
-    std.testing.assertEqual(empty.len(), 0 as usize, "empty input and separator should produce no fields")
+    empty := "".split("")
+    std::testing::assertEqual(empty.len(), 0 as usize, "empty input and separator should produce no fields")
 }
 
 @test
 func testStringSplitOnce() {
     match "key=value=tail".splitOnce("=") {
         case .some(parts) => {
-            std.testing.assertEqual(parts.0, "key", "splitOnce should return bytes before the first match")
-            std.testing.assertEqual(parts.1, "value=tail", "splitOnce should return bytes after the first match")
+            std::testing::assertEqual(parts.0, "key", "splitOnce should return bytes before the first match")
+            std::testing::assertEqual(parts.1, "value=tail", "splitOnce should return bytes after the first match")
         }
-        case .none => std.testing.fail("splitOnce should find an existing separator")
+        case .none => std::testing::fail("splitOnce should find an existing separator")
     }
 
     match "value".splitOnce("") {
         case .some(parts) => {
-            std.testing.assertEqual(parts.0, "", "empty splitOnce separator should match at the start")
-            std.testing.assertEqual(parts.1, "value", "empty splitOnce separator should leave the value after it")
+            std::testing::assertEqual(parts.0, "", "empty splitOnce separator should match at the start")
+            std::testing::assertEqual(parts.1, "value", "empty splitOnce separator should leave the value after it")
         }
-        case .none => std.testing.fail("empty splitOnce separator should always match")
+        case .none => std::testing::fail("empty splitOnce separator should always match")
     }
-    std.testing.assertTrue("value".splitOnce("missing").isNone(), "splitOnce should return none when absent")
+    std::testing::assertTrue("value".splitOnce("missing").isNone(), "splitOnce should return none when absent")
 }
 
 @test
 func testStringLinesHandlesLfCrLfAndTrailingTerminators() {
-    let actual = "first\r\nsecond\n\nlast\n".lines()
-    let expected: [string; 4] = ["first", "second", "", "last"]
+    actual := "first\r\nsecond\n\nlast\n".lines()
+    var expected: [string; 4] = ["first", "second", "", "last"]
     assertStringParts(&actual, expected.asSpan(), "lines should strip terminators without a synthetic tail")
 
-    let empty = "".lines()
-    std.testing.assertEqual(empty.len(), 0 as usize, "empty input should contain no lines")
+    empty := "".lines()
+    std::testing::assertEqual(empty.len(), 0 as usize, "empty input should contain no lines")
 }
 
 // ─── trimming, replacement, and repetition ──────────────────────────────────
 
 @test
 func testStringTrimUsesUnicodeWhitespace() {
-    let value = "\t\u{00A0}  hello π \u{3000}\n"
-    std.testing.assertEqual(value.trim(), "hello π", "trim should remove Unicode whitespace from both ends")
-    std.testing.assertEqual(value.trimStart(), "hello π \u{3000}\n", "trimStart should preserve trailing whitespace")
-    std.testing.assertEqual(value.trimEnd(), "\t\u{00A0}  hello π", "trimEnd should preserve leading whitespace")
-    std.testing.assertEqual("\u{2003}\t".trim(), "", "all-whitespace input should trim to empty")
+    value := "\t\u{00A0}  hello π \u{3000}\n"
+    std::testing::assertEqual(value.trim(), "hello π", "trim should remove Unicode whitespace from both ends")
+    std::testing::assertEqual(value.trimStart(), "hello π \u{3000}\n", "trimStart should preserve trailing whitespace")
+    std::testing::assertEqual(value.trimEnd(), "\t\u{00A0}  hello π", "trimEnd should preserve leading whitespace")
+    std::testing::assertEqual("\u{2003}\t".trim(), "", "all-whitespace input should trim to empty")
 }
 
 @test
 func testStringReplaceAndReplaceAll() {
-    let value = "one fish two fish"
-    std.testing.assertEqual(value.replace("fish", "cat"), "one cat two fish", "replace should change the first match")
-    std.testing.assertEqual(value.replaceAll("fish", "cat"), "one cat two cat", "replaceAll should change every match")
-    std.testing.assertEqual("aaaa".replaceAll("aa", "b"), "bb", "replaceAll matches should not overlap")
-    std.testing.assertEqual("abc".replace("", "-"), "-abc", "replace should use the first empty boundary")
-    std.testing.assertEqual("aπ".replaceAll("", "-"), "-a-π-", "replaceAll empty matches should use rune boundaries")
-    std.testing.assertEqual(value.replace("missing", "x"), value, "replace should preserve input when absent")
+    value := "one fish two fish"
+    std::testing::assertEqual(value.replace("fish", "cat"), "one cat two fish", "replace should change the first match")
+    std::testing::assertEqual(value.replaceAll("fish", "cat"), "one cat two cat", "replaceAll should change every match")
+    std::testing::assertEqual("aaaa".replaceAll("aa", "b"), "bb", "replaceAll matches should not overlap")
+    std::testing::assertEqual("abc".replace("", "-"), "-abc", "replace should use the first empty boundary")
+    std::testing::assertEqual("aπ".replaceAll("", "-"), "-a-π-", "replaceAll empty matches should use rune boundaries")
+    std::testing::assertEqual(value.replace("missing", "x"), value, "replace should preserve input when absent")
 }
 
 @test
 func testStringRepeat() {
-    std.testing.assertEqual("ab".repeat(3 as usize), "ababab", "repeat should concatenate the requested copies")
-    std.testing.assertEqual("ab".repeat(0 as usize), "", "zero repetitions should be empty")
-    std.testing.assertEqual("".repeat(100 as usize), "", "empty input should stay empty")
+    std::testing::assertEqual("ab".repeat(3 as usize), "ababab", "repeat should concatenate the requested copies")
+    std::testing::assertEqual("ab".repeat(0 as usize), "", "zero repetitions should be empty")
+    std::testing::assertEqual("".repeat(100 as usize), "", "empty input should stay empty")
 }
 
 @test
 @expectPanic
 func testStringRepeatRejectsOverflowingCapacity() {
-    let _ = "ab".repeat(std.mem.maxBufferCapacity[uint8]())
+    var _ = "ab".repeat(std::mem::maxBufferCapacity[uint8]())
 }
 
 // ─── explicit byte and rune slicing ─────────────────────────────────────────
 
 @test
 func testStringByteAndRuneSlicesAreExplicit() {
-    let value = "aπ🚀z"
-    std.testing.assertEqual(value.sliceBytes(1, 2), "π", "sliceBytes should use byte indexes and counts")
-    std.testing.assertEqual(value.sliceRunes(1, 2), "π🚀", "sliceRunes should use decoded rune indexes and counts")
-    std.testing.assertEqual(value.sliceRunes(4, 0), "", "empty rune slice at the end should succeed")
+    value := "aπ🚀z"
+    std::testing::assertEqual(value.sliceBytes(1, 2), "π", "sliceBytes should use byte indexes and counts")
+    std::testing::assertEqual(value.sliceRunes(1, 2), "π🚀", "sliceRunes should use decoded rune indexes and counts")
+    std::testing::assertEqual(value.sliceRunes(4, 0), "", "empty rune slice at the end should succeed")
 
-    let partial = value.sliceBytes(1, 1)
-    std.testing.assertEqual(partial.byteLen(), 1 as usize, "byte slicing may intentionally split UTF-8")
-    std.testing.assertEqual(partial.byteAt(0), 0xcf_u8, "byte slicing should preserve the requested raw byte")
+    partial := value.sliceBytes(1, 1)
+    std::testing::assertEqual(partial.byteLen(), 1 as usize, "byte slicing may intentionally split UTF-8")
+    std::testing::assertEqual(partial.byteAt(0), 0xcf_u8, "byte slicing should preserve the requested raw byte")
 }
 
 @test
 @expectPanic
 func testStringRuneSliceRejectsOutOfBoundsStart() {
-    let _ = "abc".sliceRunes(4, 0)
+    var _ = "abc".sliceRunes(4, 0)
 }
 
 @test
 @expectPanic
 func testStringRuneSliceRejectsOutOfBoundsCount() {
-    let _ = "abc".sliceRunes(2, 2)
+    var _ = "abc".sliceRunes(2, 2)
 }

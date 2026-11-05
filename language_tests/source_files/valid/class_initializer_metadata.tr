@@ -1,0 +1,2 @@
+// PACKAGE: class_initializer_inheritance
+// Imported designated/convenience contexts preserve subclass allocation and visibility.

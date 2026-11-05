@@ -1,0 +1,32 @@
+// Nominal arguments and base-extension arguments occupy separate private slots.
+interface Marker {}
+struct Box[T] { value: T }
+conform[T] Box[T] to Marker {}
+class Base[T] { value: T; tags: usize }
+extend[U] Base[Box[U]] {
+    init[Tag, const M: usize](_ value: Box[U], tag: [Tag; M], flag: bool = true) {
+        self.value = value
+        self.tags = M
+        assert(flag, "inherited default argument uses its source environment")
+    }
+    func get() -> &Box[U] { &self.value }
+}
+class Child[T: Marker, V, const N: usize]: Base[T] {
+    extra: V? = .none
+    dimension: usize = N
+}
+final class Grandchild[T: Marker, V, const N: usize]: Child[T, V, N] { sentinel: int32 = 17 }
+func forward[T, V](_ value: Box[T]) -> Grandchild[Box[T], V, 3] {
+    Grandchild[Box[T], V, 3](value, tag: [true, false])
+}
+func main() {
+    var first: Child[Box[int32], bool, 3] = Child[Box[int32], bool, 3](Box[int32] { value: 7 }, tag: [true, false])
+    var explicit: Child[Box[int32], bool, 5] = Child[Box[int32], bool, 5]::init[bool, 2](Box[int32] { value: 9 }, tag: [false, true])
+    var owned: Grandchild[Box[List[string]], bool, 3] = forward[List[string], bool](Box[List[string]] { value: ["kept", "payload"] })
+    assert(first.value.value == 7 && explicit.value.value == 9, "ordinary and explicit init-own arguments")
+    assert(first.extra.isNone() && owned.extra.isNone(), "unrelated nominal parameter survives inheritance")
+    assert(first.dimension == 3 && explicit.dimension == 5, "class const arguments retain their own coordinates")
+    assert(owned.get().value[1] == "payload", "noncopyable payload through two context environments")
+    assert(owned.tags == 2 && owned.dimension == 3, "initializer-own const differs from class const")
+    assert(owned.sentinel == 17, "most-derived defaults")
+}

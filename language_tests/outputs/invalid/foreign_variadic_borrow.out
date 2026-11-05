@@ -1,0 +1,4 @@
+error: foreign variadic declarations cannot use safe references; use raw pointers
+ -> language_tests/source_files/invalid/foreign_variadic_borrow.tr:2:9
+	    func native(_ value: &int32, _ args: int32...)
+	         ^^^^^^

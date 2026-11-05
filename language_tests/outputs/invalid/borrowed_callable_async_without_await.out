@@ -1,0 +1,4 @@
+error: async calls require an enclosing `await` expression
+ -> language_tests/source_files/invalid/borrowed_callable_async_without_await.tr:5:4
+	    borrowed(&operation)()
+	    ^^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,13 @@
+func makeValues() -> List[int32] { [11_i32] }
+func main() {
+    var values: List[int32] = [1_i32]
+    var update = () => { values[0] += 1 }
+    update()
+    assert(values[0] == 2, "indexed writes infer a mutable collection capture")
+    var count: int32 = 0
+    var callbacks: List[any Fn() -> int32] = [() => { count += 1; count }]
+    assert(callbacks[0]() == 1, "an indexed FnMut call borrows mutable element storage")
+    assert(callbacks[0]() == 2, "an indexed FnMut environment persists")
+    var saved: &int32 = &makeValues()[0]
+    assert(*saved == 11, "temporary owner is extended for an indexed borrowed initializer")
+}

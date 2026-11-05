@@ -1,0 +1,220 @@
+import std::http::{Body, Error, Handler, Options, Request, Response, Server}
+import std::mem::Span
+import std::result::Result
+
+final class StreamingEcho {
+    entered: std::sync::atomic::Bool
+    first: (&Request)?
+    calls: int32
+}
+extend StreamingEcho {
+    init() {
+        self.entered = std::sync::atomic::Bool::new(false)
+        self.first = .none
+        self.calls = 0_i32
+    }
+}
+conform StreamingEcho to Handler {
+    public func handle(_ request: &Request) async -> Result[Response, Error] {
+        self.entered.store(true)
+        if self.calls == 0_i32 { self.first = .some(request) }
+        self.calls += 1_i32
+        text := (await request.body.readToString())!
+        return .ok(Response::text(200_u16, request.url.concat(text)))
+    }
+}
+@test
+func httpDispatchesHeadersBeforeRequestBodyArrives() async {
+    server := Server::bind(std::net::SocketAddress::localhost(0_u16)).unwrap()
+    handler := StreamingEcho()
+    running := std::task::spawn(() async => { return await server.serve(handler) })
+    socket := (await std::net::TcpStream::connect(server.localAddress().unwrap())).unwrap()
+    defer { var _ = socket.close(); var _ = server.close() }
+    (await socket.write("POST /early HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\nConnection: close\r\n\r\n")).unwrap()
+    while !handler.entered.load() { await std::testing::yieldNow() }
+    (await socket.write("hello")).unwrap()
+    text := await httpReadAll(socket)
+    std::assert(text.endsWith("/earlyhello"), "handler runs before upload finishes and then pulls it incrementally")
+    server.close().unwrap(); (await running.result()).unwrap().unwrap()
+}
+@test
+func httpKeepAliveRetainsPipelineBytesAndDistinctRequestIdentity() async {
+    server := Server::bind(std::net::SocketAddress::localhost(0_u16)).unwrap()
+    handler := StreamingEcho()
+    running := std::task::spawn(() async => { return await server.serve(handler) })
+    socket := (await std::net::TcpStream::connect(server.localAddress().unwrap())).unwrap()
+    defer { var _ = socket.close(); var _ = server.close() }
+    (await socket.write("POST /first HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1\r\n\r\nxPOST /second HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n1\r\ny\r\n0\r\n\r\n")).unwrap()
+    text := await httpReadAll(socket)
+    std::assert(text.contains("/firstx") && text.endsWith("/secondy"), "both sequential exchanges preserve framing and over-read bytes")
+    server.close().unwrap(); (await running.result()).unwrap().unwrap()
+    std::runtime::collect()
+    std::assert(handler.calls == 2_i32 && handler.first.unwrap().url == "/first", "retained request reference is never reused")
+}
+@test
+func httpUnreadBodyDisablesReuseInsteadOfParsingItAsAnotherRequest() async {
+    server := Server::bind(std::net::SocketAddress::localhost(0_u16)).unwrap()
+    running := std::task::spawn(() async => { return await server.serve(contractFunction) })
+    text := await httpRaw(server, "POST /ok HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\n\r\nJUNKGET /error HTTP/1.1\r\nHost: localhost\r\n\r\n")
+    std::assert(text.contains("Connection: close") && !text.contains("500"), "unread bytes cannot become a second request")
+    server.close().unwrap(); (await running.result()).unwrap().unwrap()
+}
+@test
+func httpShutdownClosesIdlePersistentConnections() async {
+    server := Server::bind(std::net::SocketAddress::localhost(0_u16)).unwrap()
+    running := std::task::spawn(() async => { return await server.serve(contractFunction) })
+    socket := (await std::net::TcpStream::connect(server.localAddress().unwrap())).unwrap()
+    defer { var _ = socket.close() }
+    // A socket waiting for its first head must not hold graceful shutdown open.
+    await std::task::sleep(std::time::Duration::fromMillis(5_u64))
+    (await server.shutdown(std::time::Duration::fromMillis(100_u64))).unwrap()
+    (await running.result()).unwrap().unwrap()
+}
+
+final class DelayedResponseSource {
+    release: std::sync::atomic::Bool
+    sent: bool
+    closed: std::sync::atomic::Bool
+}
+extend DelayedResponseSource {
+    init() { self.release = std::sync::atomic::Bool::new(false); self.sent = false; self.closed = std::sync::atomic::Bool::new(false) }
+}
+conform DelayedResponseSource to std::http::BodySource {
+    public func read(_ into: Span[uint8]) async -> Result[usize, std::io::Error] {
+        while !self.release.load() { await std::testing::yieldNow() }
+        if self.sent { return .ok(0) }
+        *into.at(0) = 120_u8; self.sent = true
+        return .ok(1)
+    }
+    public func close() -> Result[(), std::io::Error] { self.closed.store(true); return .ok(()) }
+}
+struct DelayedResponseHandler { source: DelayedResponseSource }
+conform DelayedResponseHandler to Handler {
+    public func handle(_ request: &Request) async -> Result[Response, Error] {
+        var response = Response::new(200_u16)
+        // A known length does not make a delayed stream ready.
+        response.body = Body::fromSource(self.source, length: .some(1))
+        return .ok(response)
+    }
+}
+@test
+func httpClientReturnsAtHeadersBeforeStreamingResponseIsAvailable() async {
+    source := DelayedResponseSource()
+    server := Server::bind(std::net::SocketAddress::localhost(0_u16)).unwrap()
+    running := std::task::spawn(() async => { return await server.serve(DelayedResponseHandler { source }) })
+    client := std::http::Client::new().unwrap()
+    defer { client.close(); var _ = server.close() }
+    response := (await client.get(httpUrl(server, "/stream"))).unwrap()
+    std::assert(!source.release.load(), "send returns before producer has delivered content")
+    source.release.store(true)
+    std::assert((await response.body.readToString()).unwrap() == "x", "body is consumed incrementally afterward")
+    server.close().unwrap(); (await running.result()).unwrap().unwrap()
+    std::assert(source.closed.load(), "stream producer is closed")
+}
+
+@test
+func httpClientReusesOnlyCompletelyConsumedResponseConnections() async {
+    var options = Options::new(); options.timeoutMillis = 500_u64
+    server := Server::bindWithOptions(std::net::SocketAddress::localhost(0_u16), options).unwrap()
+    defer { var _ = server.close() }
+    worker := std::task::spawn(() async => {
+        connection := (await server.accept()).unwrap()
+        defer { connection.close() }
+        var index: int32 = 0
+        while index < 2_i32 {
+            request := (await connection.request()).unwrap()
+            (await request.body.readAll()).unwrap()
+            (await connection.respond(Response::text(200_u16, request.url))).unwrap()
+            index += 1_i32
+        }
+    })
+    client := std::http::Client::withOptions(options).unwrap()
+    defer { client.close() }
+    var index: int32 = 0
+    while index < 2_i32 {
+        response := (await client.get(httpUrl(server, "/reuse"))).unwrap()
+        std::assert((await response.body.readToString()).unwrap() == "/reuse", "same accepted socket handles both requests")
+        std::runtime::collect()
+        index += 1_i32
+    }
+    (await worker.result()).unwrap()
+}
+@test
+func httpPersistentBuffersDoNotReplayPreviousBodyBytes() async {
+    var options = Options::new(); options.maxHeaderBytes = 32768
+    server := Server::bindWithOptions(std::net::SocketAddress::localhost(0_u16), options).unwrap()
+    defer { var _ = server.close() }
+    worker := std::task::spawn(() async => {
+        // Accept once: every upload and response must reuse this connection.
+        connection := (await server.accept()).unwrap()
+        defer { connection.close() }
+        var index: int32 = 0
+        while index < 4_i32 {
+            request := (await connection.request()).unwrap()
+            text := (await request.body.readToString()).unwrap()
+            std::runtime::collect()
+            var response = Response::text(200_u16, text)
+            // A head larger than the output scratch must still use the
+            // ordinary write path, without truncating or replaying bytes.
+            if index == 0_i32 { response.headers.add("x-padding", text).unwrap() }
+            (await connection.respond(response)).unwrap()
+            index += 1_i32
+        }
+    })
+    client := std::http::Client::withOptions(options).unwrap()
+    defer { client.close() }
+    var index: int32 = 0
+    while index < 4_i32 {
+        builder := std::string::Builder::new()
+        // A multi-buffer body followed by a short one catches stale tails.
+        count := if index == 3_i32 { 0_i32 } else if index % 2_i32 == 0_i32 { 1031_i32 } else { 1_i32 }
+        var part: int32 = 0
+        while part < count { builder.writeString("0123456789abcdef"); part += 1_i32 }
+        if index != 3_i32 { builder.writeString(std::sprintf("-%d", index)) }
+        text := builder.toString()
+        var request = Request::new("POST", httpUrl(server, "/buffers"))
+        request.body = Body::fromString(text)
+        response := (await client.send(&request)).unwrap()
+        std::runtime::collect()
+        std::assert((await response.body.readToString()).unwrap() == text, "persistent buffers retain only this exchange's initialized bytes")
+        index += 1_i32
+    }
+    (await worker.result()).unwrap()
+}
+
+@test
+func httpClosingUnreadResponseClosesItsSocketInsteadOfPoolingIt() async {
+    server := Server::bind(std::net::SocketAddress::localhost(0_u16)).unwrap()
+    defer { var _ = server.close() }
+    worker := std::task::spawn(() async => {
+        connection := (await server.accept()).unwrap()
+        defer { connection.close() }
+        request := (await connection.request()).unwrap()
+        (await request.body.readAll()).unwrap()
+        (await connection.respond(Response::text(200_u16, "unread"))).unwrap()
+        std::assert((await connection.request()).isErr(), "abandoned response causes peer EOF")
+    })
+    client := std::http::Client::new().unwrap()
+    defer { client.close() }
+    response := (await client.get(httpUrl(server, "/abandon"))).unwrap()
+    response.close().unwrap()
+    (await worker.result()).unwrap()
+}
+
+@test
+func httpShutdownDeadlineClosesActiveSocketsAndReturnsPromptly() async {
+    server := Server::bind(std::net::SocketAddress::localhost(0_u16)).unwrap()
+    gate := GateHandler()
+    running := std::task::spawn(() async => { return await server.serve(gate) })
+    client := std::http::Client::new().unwrap()
+    defer { client.close(); var _ = server.close(); gate.release.store(true) }
+    request := std::task::spawn(() async => { return await client.get(httpUrl(server, "/shutdown")) })
+    while gate.entered.load() == 0_i32 { await std::testing::yieldNow() }
+    match await server.shutdown(std::time::Duration::fromMillis(5_u64)) {
+        case .err(error) => std::assert(error.kind == std::http::ErrorKind::timeout, "deadline is reported")
+        case .ok(_) => std::testing::fail("blocked handler should exceed shutdown deadline")
+    }
+    std::assert((await request.result()).unwrap().isErr(), "deadline closes the active network exchange")
+    gate.release.store(true)
+    (await running.result()).unwrap().unwrap()
+}

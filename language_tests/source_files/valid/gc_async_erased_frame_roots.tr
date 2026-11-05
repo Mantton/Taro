@@ -1,0 +1,94 @@
+// Erased async values, Self results, generic opening and async callables held
+// by suspended frames survive forced collection (G61 with G20 frame tracing).
+// ENV: TARO_WORKERS=1
+extern "C" {
+    unsafe func __gc__test_probe_create(_ target: *const uint8) -> *mut uint8
+    unsafe func __gc__test_collect_probe_is_live(_ probe: *mut uint8) -> bool
+}
+func collectAsyncErased() {
+    probe := unsafe { __gc__test_probe_create(0 as *const uint8) }
+    var _ = unsafe { __gc__test_collect_probe_is_live(probe) }
+}
+interface AsyncLabel { func label() -> string; }
+struct LabelValue { text: string }
+conform LabelValue to AsyncLabel {
+    func label() -> string { self.text }
+}
+interface AsyncCounter {
+    func read() async -> int32
+    func advance( _ amount: int32) async -> Self
+    func next() async -> Self
+    func label() -> string
+}
+struct AsyncCounterValue { number: int32; nested: any AsyncLabel; words: [int64; 16] }
+conform AsyncCounterValue to AsyncCounter {
+    func label() -> string { self.nested.label() }
+    func read() async -> int32 {
+        collectAsyncErased()
+        await std::testing::yieldNow()
+        collectAsyncErased()
+        assert(self.nested.label() == "async payload", "async receiver retains nested erased fields")
+        assert(self.words[15] == 3_i64, "async receiver preserves large fields")
+        self.number
+    }
+    func advance( _ amount: int32) async -> Self {
+        collectAsyncErased()
+        await std::testing::yieldNow()
+        collectAsyncErased()
+        Self { number: self.number + amount, nested: self.nested, words: self.words }
+    }
+    func next() async -> Self {
+        collectAsyncErased()
+        await std::testing::yieldNow()
+        self.number += 1
+        collectAsyncErased()
+        self
+    }
+}
+@noinline
+func makeAsyncCounter(_ number: int32) -> any AsyncCounter {
+    AsyncCounterValue { number, nested: LabelValue { text: "async " + "payload" }, words: [3_i64; 16] }
+}
+func openAsyncCounter[T: AsyncCounter](_ value: &T) async -> int32 { await value.read() }
+
+struct AsyncCallableValue { counter: any AsyncCounter }
+conform AsyncCallableValue to AsyncFn[(int32,), int32] {
+    func call( args: (int32,)) async -> int32 {
+        collectAsyncErased()
+        value := await self.counter.read()
+        collectAsyncErased()
+        value + args.0
+    }
+}
+@noinline
+func makeAsyncCallable() -> any AsyncFn(int32) -> int32 {
+    AsyncCallableValue { counter: makeAsyncCounter(7) }
+}
+func main() async {
+    var original = makeAsyncCounter(7)
+    copy := original
+    collectAsyncErased()
+    assert((await copy.read()) == 7, "copied erased async receiver dispatches")
+    advanced := await copy.advance(3)
+    collectAsyncErased()
+    assert((await advanced.read()) == 10 && (await original.read()) == 7, "async Self results rebox independent values")
+    next := await original.next()
+    collectAsyncErased()
+    assert((await original.read()) == 7 && (await next.read()) == 8, "mutable async receiver and Self result preserve state")
+    direct := await advanced.read()
+    opened := await openAsyncCounter(&advanced)
+    std::testing::assertEqual(direct, 10, "direct receiver still has its original value")
+    std::testing::assertEqual(opened, 10, "generic opening preserves async erased dispatch")
+    var pair: (any AsyncCounter, (any AsyncCounter)?) = (advanced, .some(next))
+    collectAsyncErased()
+    assert((await pair.0.read()) == 10 && (await pair.1.unwrap().read()) == 8, "nested async erased values survive collection")
+    var callbacks: [any AsyncFn(int32) -> int32] = [makeAsyncCallable()]
+    collectAsyncErased()
+    callable := *callbacks.at(0)
+    copied := callable
+    assert((await callable(1)) == 8 && (await copied(2)) == 9, "erased async callable copies dispatch after collection")
+    concrete := (copied as? AsyncCallableValue).unwrap()
+    collectAsyncErased()
+    assert((await concrete.counter.read()) == 7, "downcast async callable retains nested erased state")
+    print("PASS: async erased values survive collection in suspended frames\n")
+}

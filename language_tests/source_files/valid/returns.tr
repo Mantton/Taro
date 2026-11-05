@@ -1,9 +1,9 @@
 // CHECK_ONLY
 
-import std.optional.Optional
+import std::optional::Optional
 
 func choose(_ flag: bool) -> int32 {
-    let value = if flag {
+    value := if flag {
         return 7
     } else {
         3
@@ -20,14 +20,14 @@ func classify(_ value: int32) -> int32 {
 
 func testWithLocal(current: int32, end: int32) -> Optional[int32] {
     if current < end {
-        let value = current
-        return Optional.some(value)
+        value := current
+        return Optional::some(value)
     }
-    return Optional.none
+    return Optional::none
 }
 
 func main() {
-    let _ = choose(false)
-    let _ = classify(0)
-    let _ = testWithLocal(current: 0, end: 5)
+    var _ = choose(false)
+    var _ = classify(0)
+    var _ = testWithLocal(current: 0, end: 5)
 }

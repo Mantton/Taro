@@ -1,0 +1,58 @@
+// Run: taro run examples/http_server.tr
+import std::collections::List
+import std::encoding::Codable
+import std::http::{Body, Error, Request, Response, Server}
+import std::net::SocketAddress
+import std::result::Result
+import std::convert::Parse
+
+struct Post: Codable {
+    id: int32
+    title: string
+}
+
+func posts() -> List[Post] {
+    var items = List[Post]::new()
+    items.append(Post { id: 1, title: "Hello from Taro" })
+    items.append(Post { id: 2, title: "HTTP and JSON in the standard library" })
+    return items
+}
+
+func app(_ request: &Request) async -> Result[Response, Error] {
+    if request.method != "GET" && request.method != "HEAD" {
+        var response = Response::text(405, "Method Not Allowed")
+        response.headers.add("allow", "GET, HEAD")!
+        return response
+    }
+    path := match request.url.splitOnce("?") {
+        case .some(parts) => parts.0
+        case .none => request.url
+    }
+    match path {
+        case "/health" => return .text(200, "ok")
+        case "/" => {
+            var response = Response::new(200)
+            response.headers.add("content-type", "text/html; charset=utf-8")!
+            response.body = Body::fromString("<!doctype html><html><head><title>Taro Notes</title></head><body><h1>Taro Notes</h1><a href='/posts'>Posts as JSON</a></body></html>")
+            return response
+        }
+        case "/posts" => {
+            items := posts()
+            var response = Response::new(200)
+            response.headers.add("content-type", "application/json")!
+            response.body = Body::fromString(std::json::encode(&items).unwrap())
+            return response
+        }
+        case _ => return .text(404, "Not Found")
+    }
+}
+
+func main() async {
+    args := std::env::args()
+    std::assert(args.len() == 1 || args.len() == 2, "usage: http_server [port]")
+    port := if args.len() == 2 { uint16::parse(args.at(1)).unwrap() } else { 8080 }
+    server := Server::bind(SocketAddress::localhost(port)).unwrap()
+    defer { var _ = server.close() }
+    std::println(std::sprintf("Listening on http://127.0.0.1:%d", server.localAddress().unwrap().port))
+    await server.serve(app).unwrap()
+}

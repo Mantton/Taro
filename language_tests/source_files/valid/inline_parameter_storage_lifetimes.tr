@@ -1,0 +1,12 @@
+// Inlining must preserve a fresh parameter cell on every invocation.
+@inline
+func keep(_ value: int32) -> &int32 { &value }
+func main() {
+    var references: [&int32] = []
+    var index: int32 = 0
+    while index < 3 {
+        references.append(keep(index))
+        index += 1
+    }
+    assert(*references[0] == 0 && *references[1] == 1 && *references[2] == 2, "inlined parameters get fresh storage on every call")
+}

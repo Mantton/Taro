@@ -1,0 +1,9 @@
+func read(_ pointer: *const int32) -> int32 { pointer.read() }
+func write(_ pointer: *mut int32) { pointer.write(7_i32) }
+func copy(_ source: *const uint8, _ target: *mut uint8) {
+    source.copyTo(target, 1)
+}
+func captured(_ pointer: *const int32) {
+    read := pointer.read
+}
+func main() {}

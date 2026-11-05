@@ -1,0 +1,23 @@
+extern "C" {
+    unsafe func __gc__test_request_collection() -> usize
+    unsafe func __gc__test_collection_count() -> usize
+}
+struct Cell { value: &int32 }
+func reference(_ number: int32) -> &int32 {
+    value := number
+    &value
+}
+func first(_ a: &Cell, _ b: &Cell) -> &Cell { a }
+final class Noise { value: int32 }
+extend Noise { init() { self.value = 1 } }
+@noinline
+func allocate() -> int32 { Noise().value }
+func main() {
+    selected := first(&(Cell { value: reference(41) }), &(Cell { value: reference(42) }))
+    direct := &(Cell { value: reference(43) })
+    before := unsafe { __gc__test_request_collection() }
+    assert(allocate() == 1, "execute an allocating safepoint")
+    assert(unsafe { __gc__test_collection_count() } > before, "collection actually runs")
+    assert(*selected.value == 41, "a returned reference retains its temporary")
+    assert(*direct.value == 43, "a direct reference retains its temporary")
+}

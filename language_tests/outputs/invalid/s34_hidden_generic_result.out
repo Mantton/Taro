@@ -1,0 +1,4 @@
+error: type 'any Duplicate[Self]' does not conform to interface 'Duplicate[any Duplicate[Self]]'
+ -> language_tests/source_files/invalid/s34_hidden_generic_result.tr:7:32
+	    var result: any Duplicate = duplicate(&boxed) // Error: hidden Self is not an independent known Value.
+	                                ^^^^^^^^^

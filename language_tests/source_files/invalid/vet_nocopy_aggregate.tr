@@ -1,0 +1,12 @@
+// VET
+@NoCopy
+struct State { value: int32 }
+struct Wrapper[T] { value: T }
+func main() {
+    var wrapped = Wrapper[State] { value: State { value: 1 } }
+    copied := wrapped
+    var _ = &copied
+    var tuple = (State { value: 2 }, 3)
+    tupleCopy := tuple
+    var _ = &tupleCopy
+}

@@ -35,6 +35,8 @@ pub struct Cli {
 pub enum CliCommand {
     Build(BuildArgs),
     Check(CheckArgs),
+    /// Check for accidental copies of @NoCopy values.
+    Vet(CheckArgs),
     Run(RunArgs),
     Test(TestArgs),
     Bench(BenchArgs),

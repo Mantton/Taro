@@ -1,0 +1,2 @@
+struct Counter { first: int32; second: int32 = self.first }
+func main() {}

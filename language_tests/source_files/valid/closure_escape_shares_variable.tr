@@ -1,0 +1,11 @@
+func keep[F: Fn() -> int32](_ callback: F) -> F { callback }
+// Closures capture variables, not snapshots: an escaped callback observes
+// later writes to the captured binding.
+func main() {
+    var count: int32 = 7
+    boxed := keep(() => count)
+    count = 9
+    assert(boxed() == 9, "escaped closure reads the shared variable")
+    count += 1
+    assert(boxed() == 10, "later writes remain visible")
+}

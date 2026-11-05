@@ -1,0 +1,57 @@
+enum Event: PartialEq {
+    case click { readonly x: int32, y: int32 }
+    case message {
+        content: string
+    }
+    case empty {}
+    case closed
+}
+
+enum Packet[T] {
+    case value { readonly item: T }
+}
+
+func main() {
+    var click: Event = Event::click(y: 7, x: 3)
+    match click {
+        case .click { x, y } => {
+            assert(x == 3 && y == 7, "named construction maps labels to declaration order")
+        }
+        case _ => panic("expected click")
+    }
+    assert(click == Event::click(x: 3, y: 7), "named fields participate in synthesized equality")
+
+    var changed: Event = click
+    match changed {
+        case .click { x, y } => {
+            // Both payload bindings are independent writable values.
+            assert(x == 3, "readonly field remains readable")
+            y = 8
+            changed = .click(x: x, y: y)
+        }
+        case _ => panic("expected click")
+    }
+    assert(changed != click, "mutable payload access preserves independent Copy values")
+
+    var text: Event = .message(content: "ok")
+    match text {
+        case .message { content } => assert(content == "ok", "named string field")
+        case _ => panic("expected message")
+    }
+    var empty: Event = .empty()
+    assert(empty != Event::closed, "empty named payload has its own constructor")
+
+    var packet: Packet[List[int32]] = Packet[List[int32]]::value(item: List[int32]::new())
+    match packet {
+        case .value { item: items } => assert(items.len() == 0 as usize, "read a shared collection payload")
+    }
+    var owned: Packet[List[int32]] = Packet[List[int32]]::value(item: List[int32]::new())
+    match owned {
+        case .value { item: items } => {
+            var editable: List[int32] = items
+            editable.append(4)
+            assert(editable.len() == 1 as usize, "copied collection handles share their storage")
+        }
+    }
+    print("named enum payloads\n")
+}

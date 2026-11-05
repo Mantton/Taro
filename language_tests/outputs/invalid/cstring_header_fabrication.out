@@ -1,0 +1,4 @@
+error: field 'storage' of CString is not visible here
+ -> language_tests/source_files/invalid/cstring_header_fabrication.tr:2:24
+	    std::ffi::CString { storage: pointer }
+	                        ^^^^^^^^

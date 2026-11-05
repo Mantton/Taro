@@ -1,0 +1,4 @@
+import internalowner::{Cell, internalValue}
+public func create() -> Cell { Cell { value: internalValue() } }
+public func read(_ cell: &Cell) -> int32 { cell.value }
+public func update(_ cell: &Cell) { cell.value += 1_i32 }

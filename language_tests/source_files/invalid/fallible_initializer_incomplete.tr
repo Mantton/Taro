@@ -1,0 +1,5 @@
+struct Incomplete { value: int32; text: string }
+extend Incomplete {
+    init() -> Result[Self, string] { self.value = 7 }
+}
+func main() { var _ = Incomplete() }

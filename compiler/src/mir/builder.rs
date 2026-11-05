@@ -1,45 +1,42 @@
 use crate::{
     compile::context::Gcx,
-    hir::{self, StdItem},
+    hir::{self},
     mir::{
         self, BasicBlockData, BasicBlockId, BlockAnd, BlockAndExtension, Body, LocalDecl, LocalId,
-        LocalKind, Place, PlaceElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind,
+        LocalKind, Place, Rvalue, Statement, StatementKind, Terminator, TerminatorKind,
     },
-    sema::models::{Constraint, LabeledFunctionSignature, Ty, TyKind},
+    sema::models::{ClosureKind, Constraint, LabeledFunctionSignature, Ty},
     span::{Span, Symbol},
     thir,
 };
 use index_vec::IndexVec;
 use rustc_hash::FxHashMap;
-use std::{mem, rc::Rc};
+use std::mem;
 
 mod block;
+mod cleanup;
 mod expression;
+pub(crate) mod variadic;
 
 index_vec::define_index_type! {
     struct CleanupId = u32;
 }
+index_vec::define_index_type! {
+    struct CleanupScopeId = u32;
+}
 
 #[derive(Clone, Copy, Debug)]
 struct CleanupNode {
+    scope: CleanupScopeId,
     action: CleanupAction,
     parent: Option<CleanupId>,
     span: Span,
 }
 
 #[derive(Clone, Copy, Debug)]
-struct TaskDropState {
-    active_local: LocalId,
-    token_local: LocalId,
-}
-
-#[derive(Clone, Copy, Debug)]
 enum CleanupAction {
     DeferBlock(thir::BlockId),
-    Task {
-        token_local: LocalId,
-        active_local: LocalId,
-    },
+    EndStorage(LocalId),
 }
 
 #[derive(Debug)]
@@ -80,63 +77,75 @@ pub enum EdgeKind {
     Continue,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum CallableTraitKind {
-    Fn,
-    FnMut,
-    FnOnce,
-    AsyncFn,
-    AsyncFnMut,
-    AsyncFnOnce,
-}
-
 pub struct MirBuilder<'ctx, 'thir> {
     gcx: Gcx<'ctx>,
     thir: &'thir thir::ThirFunction<'ctx>,
     body: Body<'ctx>,
     locals: FxHashMap<hir::NodeID, LocalId>,
-    place_bindings: FxHashMap<hir::NodeID, Place<'ctx>>,
     /// Tracks MIR locals by (arm_id, binding_name) for or-patterns.
     /// Ensures all alternatives in an or-pattern share the same local.
     arm_binding_locals: FxHashMap<(thir::ArmId, Symbol), LocalId>,
-    /// Runtime flags for Task locals that still own their spawned task. Moves
-    /// clear the source flag; assignments initialize the destination flag.
-    task_drop_flags: FxHashMap<LocalId, TaskDropState>,
-    task_parameter_locals: Vec<LocalId>,
+    /// Already evaluated values for one call's arguments. Temporary override
+    /// scopes keep source evaluation distinct from ABI parameter arrangement.
+    prepared_call_arguments: FxHashMap<thir::ExprId, Place<'ctx>>,
+    /// Fresh implicit receiver tokens awaiting their actual call handoff.
+    /// Temporary owners extended by one local borrow/view initializer. A
+    /// variadic call's callee expression keys its synthetic array owner.
+    /// Aggregate owners whose currently supported drop recipe was registered.
+    parameter_locals: Vec<LocalId>,
     cleanup_nodes: IndexVec<CleanupId, CleanupNode>,
     current_cleanup: Option<CleanupId>,
+    current_cleanup_scope: CleanupScopeId,
+    cleanup_scope_depths: IndexVec<CleanupScopeId, u32>,
     resume_unwind_block: Option<BasicBlockId>,
+    /// Remaining cleanup chains all unwind to one resume block. Share their
+    /// suffixes across calls and owned drops rather than rebuilding a tree.
+    unwind_cleanup_paths: FxHashMap<Option<CleanupId>, BasicBlockId>,
     if_then_scope: Option<IfThenScope>,
     breakable_scopes: Vec<BreakableScope>,
 }
 
 impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
+    fn fresh_cleanup_scope(&mut self) -> CleanupScopeId {
+        let depth = self.cleanup_scope_depths[self.current_cleanup_scope]
+            .checked_add(1)
+            .expect("too many nested lexical cleanup scopes");
+        self.cleanup_scope_depths.push(depth)
+    }
+
     pub fn build_function(gcx: Gcx<'ctx>, function: &'thir thir::ThirFunction<'ctx>) -> Body<'ctx> {
         let signature = gcx.get_signature(function.id);
         let output_ty = gcx.function_body_output(function.id);
         let entry_span = function.span;
 
         let mut body = Body {
+            escape_locals: Vec::new(),
+
             owner: function.id,
             source_scopes: Body::initial_source_scopes(function.id),
             locals: Default::default(),
             basic_blocks: Default::default(),
             start_block: BasicBlockId::from_raw(0),
             return_local: LocalId::from_raw(0),
-            escape_locals: Vec::new(),
             phase: mir::MirPhase::Built,
             is_async: function.is_async,
         };
 
+        // A fallible constructor keeps partial self separate from its Result.
+        let constructor_return =
+            function.constructor_self.is_some() && gcx.result_parts(output_ty).is_none();
         // Create return place first.
         let ret_local = body.locals.push(LocalDecl {
             ty: output_ty,
-            kind: LocalKind::Return,
+            kind: if constructor_return {
+                LocalKind::ConstructorSelf
+            } else {
+                LocalKind::Return
+            },
             mutable: true,
-            name: Some(gcx.intern_symbol("$ret")),
+            name: Some(gcx.intern_symbol(if constructor_return { "self" } else { "$ret" })),
             span: entry_span,
         });
-        body.escape_locals.push(false);
         body.return_local = ret_local;
 
         let mut builder = MirBuilder {
@@ -144,13 +153,15 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             thir: function,
             body,
             locals: FxHashMap::default(),
-            place_bindings: FxHashMap::default(),
             arm_binding_locals: FxHashMap::default(),
-            task_drop_flags: FxHashMap::default(),
-            task_parameter_locals: Vec::new(),
+            prepared_call_arguments: FxHashMap::default(),
+            parameter_locals: Vec::new(),
             cleanup_nodes: IndexVec::new(),
             current_cleanup: None,
+            current_cleanup_scope: CleanupScopeId::from_raw(0),
+            cleanup_scope_depths: IndexVec::from(vec![0]),
             resume_unwind_block: None,
+            unwind_cleanup_paths: FxHashMap::default(),
             if_then_scope: None,
             breakable_scopes: vec![],
         };
@@ -160,31 +171,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         builder.finish()
     }
 
-    fn finish(self) -> Body<'ctx> {
+    fn finish(mut self) -> Body<'ctx> {
+        mir::analysis::constructor::complete(self.gcx, &mut self.body);
         self.body
-    }
-
-    fn is_type_copyable(&self, ty: Ty<'ctx>) -> bool {
-        // Normalize alias types before checking copyability
-        let icx = Rc::new(crate::sema::tycheck::infer::InferCtx::new(self.gcx));
-        let env = crate::sema::tycheck::utils::param_env::ParamEnv::new(
-            self.gcx
-                .canonical_constraints_of(self.thir.id)
-                .iter()
-                .map(|constraint| constraint.value)
-                .collect(),
-        );
-        let normalized = crate::sema::tycheck::utils::normalize::normalize_ty(icx, ty, &env);
-        let ty = if normalized != ty { normalized } else { ty };
-
-        self.gcx.is_type_copyable_in_def(ty, self.thir.id)
-    }
-
-    pub(super) fn is_task_ty(&self, ty: Ty<'ctx>) -> bool {
-        matches!(
-            ty.kind(),
-            TyKind::Adt(def, _) if Some(def.id) == self.gcx.std_item_def(StdItem::Task)
-        )
     }
 
     fn declare_parameters(&mut self, signature: &LabeledFunctionSignature<'ctx>) {
@@ -196,11 +185,15 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             .map(|(param, lowered)| (param.id, param.name, param.span, lowered.ty))
             .collect();
         for (id, name, span, ty) in params {
-            let local = self.push_local(ty, LocalKind::Param, false, Some(name), span);
+            let local = self.push_local(
+                ty,
+                LocalKind::Param,
+                self.gcx.symbol_eq(name, "self"),
+                Some(name),
+                span,
+            );
             self.locals.insert(id, local);
-            if self.is_task_ty(ty) {
-                self.task_parameter_locals.push(local);
-            }
+            self.parameter_locals.push(local);
         }
     }
 
@@ -215,14 +208,32 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             return;
         };
 
-        let parameter_tasks = self.task_parameter_locals.clone();
+        let parameters = self.parameter_locals.clone();
         let return_block = self
             .in_breakable_scope(None, BreakExit::Return, span, |this| {
-                for task_local in parameter_tasks {
-                    this.register_task_cleanup(task_local, start_block, span, true);
+                for local in parameters {
+                    this.register_storage_cleanup(local, span);
                 }
+                // Constructor bodies evaluate to unit; self already denotes
+                // the result storage and must remain available to defer.
+                let destination = if this.thir.constructor_self.is_some()
+                    && this
+                        .gcx
+                        .result_parts(this.body.locals[this.body.return_local].ty)
+                        .is_none()
+                {
+                    Place::from_local(this.push_local(
+                        this.gcx.types.void,
+                        LocalKind::Temp,
+                        true,
+                        None,
+                        span,
+                    ))
+                } else {
+                    Place::return_place()
+                };
                 let normal_exit = this
-                    .lower_block(Place::return_place(), start_block, thir_block)
+                    .lower_block(destination, start_block, thir_block)
                     .into_block();
                 let _ = this.record_return_edge(normal_exit, span);
                 None
@@ -247,7 +258,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             name,
             span,
         });
-        self.body.escape_locals.push(false);
         local
     }
 
@@ -305,20 +315,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         value: Rvalue<'ctx>,
         span: Span,
     ) {
-        let task_state = place
-            .projection
-            .is_empty()
-            .then(|| self.task_drop_flags.get(&place.local).copied())
-            .flatten();
-        let assigned_place = place.clone();
         self.body.basic_blocks[block].statements.push(Statement {
             kind: StatementKind::Assign(place, value),
             span,
         });
-        if let Some(state) = task_state {
-            self.push_task_token_assignment(block, state.token_local, assigned_place, span);
-            self.push_task_active_assignment(block, state.active_local, true, span);
-        }
     }
 
     fn push_storage_live(&mut self, block: BasicBlockId, local: LocalId, span: Span) {
@@ -328,118 +328,15 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         });
     }
 
-    fn push_task_token_assignment(
-        &mut self,
-        block: BasicBlockId,
-        token_local: LocalId,
-        mut task_place: Place<'ctx>,
-        span: Span,
-    ) {
-        task_place.projection.push(PlaceElem::Field(
-            thir::FieldIndex::from_raw(0),
-            self.gcx.types.uint,
-        ));
-        self.body.basic_blocks[block].statements.push(Statement {
-            kind: StatementKind::Assign(
-                Place::from_local(token_local),
-                Rvalue::Use(mir::Operand::Copy(task_place)),
-            ),
-            span,
-        });
-    }
-
-    fn push_task_active_assignment(
-        &mut self,
-        block: BasicBlockId,
-        active_local: LocalId,
-        active: bool,
-        span: Span,
-    ) {
-        self.body.basic_blocks[block].statements.push(Statement {
-            kind: StatementKind::Assign(
-                Place::from_local(active_local),
-                Rvalue::Use(mir::Operand::Constant(mir::Constant {
-                    ty: self.gcx.types.bool,
-                    value: mir::ConstantKind::Bool(active),
-                })),
-            ),
-            span,
-        });
-    }
-
-    pub(super) fn register_task_cleanup(
-        &mut self,
-        task_local: LocalId,
-        block: BasicBlockId,
-        span: Span,
-        active: bool,
-    ) {
-        if self.task_drop_flags.contains_key(&task_local) {
-            return;
-        }
-        debug_assert!(self.is_task_ty(self.body.locals[task_local].ty));
-        let active_local = self.push_local(
-            self.gcx.types.bool,
-            LocalKind::Temp,
-            true,
-            Some(self.gcx.intern_symbol("$task_live")),
-            span,
-        );
-        let token_local = self.push_local(
-            self.gcx.types.uint,
-            LocalKind::Temp,
-            true,
-            Some(self.gcx.intern_symbol("$task_token")),
-            span,
-        );
-        let state = TaskDropState {
-            active_local,
-            token_local,
-        };
-        self.task_drop_flags.insert(task_local, state);
-        self.body.basic_blocks[block].statements.push(Statement {
-            kind: StatementKind::Assign(
-                Place::from_local(token_local),
-                Rvalue::Use(mir::Operand::Constant(mir::Constant {
-                    ty: self.gcx.types.uint,
-                    value: mir::ConstantKind::Integer(0),
-                })),
-            ),
-            span,
-        });
-        if active {
-            self.push_task_token_assignment(
-                block,
-                token_local,
-                Place::from_local(task_local),
-                span,
-            );
-        }
-        self.push_task_active_assignment(block, active_local, active, span);
-
+    /// Keep semantic storage endings even for values with trivial destruction.
+    fn register_storage_cleanup(&mut self, local: LocalId, span: Span) {
         let node = CleanupNode {
-            action: CleanupAction::Task {
-                token_local,
-                active_local,
-            },
+            scope: self.current_cleanup_scope,
+            action: CleanupAction::EndStorage(local),
             parent: self.current_cleanup,
             span,
         };
         self.current_cleanup = Some(self.cleanup_nodes.push(node));
-    }
-
-    pub(super) fn deactivate_task_cleanup(
-        &mut self,
-        block: BasicBlockId,
-        place: &Place<'ctx>,
-        span: Span,
-    ) {
-        if !place.projection.is_empty() {
-            return;
-        }
-        if let Some(state) = self.task_drop_flags.get(&place.local).copied() {
-            self.push_task_active_assignment(block, state.active_local, false, span);
-        }
     }
 
     #[track_caller]
@@ -462,39 +359,16 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         );
     }
 
-    fn callable_trait_kind_for_interface(
-        &self,
-        interface_id: hir::DefinitionID,
-    ) -> Option<CallableTraitKind> {
-        if Some(interface_id) == self.gcx.std_item_def(StdItem::Fn) {
-            Some(CallableTraitKind::Fn)
-        } else if Some(interface_id) == self.gcx.std_item_def(StdItem::FnMut) {
-            Some(CallableTraitKind::FnMut)
-        } else if Some(interface_id) == self.gcx.std_item_def(StdItem::FnOnce) {
-            Some(CallableTraitKind::FnOnce)
-        } else if Some(interface_id) == self.gcx.std_item_def(StdItem::AsyncFn) {
-            Some(CallableTraitKind::AsyncFn)
-        } else if Some(interface_id) == self.gcx.std_item_def(StdItem::AsyncFnMut) {
-            Some(CallableTraitKind::AsyncFnMut)
-        } else if Some(interface_id) == self.gcx.std_item_def(StdItem::AsyncFnOnce) {
-            Some(CallableTraitKind::AsyncFnOnce)
-        } else {
-            None
-        }
-    }
-
     fn get_callable_trait_info(
         &self,
         ty: Ty<'ctx>,
-    ) -> Option<(
-        CallableTraitKind,
-        crate::sema::models::InterfaceReference<'ctx>,
-    )> {
-        let constraints = self.gcx.canonical_constraints_of(self.thir.id);
-        let mut best: Option<(
-            CallableTraitKind,
-            crate::sema::models::InterfaceReference<'ctx>,
-        )> = None;
+    ) -> Option<(ClosureKind, crate::sema::models::InterfaceReference<'ctx>)> {
+        // Generated closure bodies inherit bounds, but publishing those bounds
+        // invalidates the canonical cache. Compute it on demand: a cache miss
+        // must not turn an Fn/FnMut receiver into a consuming call.
+        let constraints =
+            crate::sema::tycheck::constraints::canonical_constraints_of(self.gcx, self.thir.id);
+        let mut best: Option<(ClosureKind, crate::sema::models::InterfaceReference<'ctx>)> = None;
 
         for constraint in constraints {
             let Constraint::Bound {
@@ -509,13 +383,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 continue;
             }
 
-            let Some(kind) = self.callable_trait_kind_for_interface(interface.id) else {
+            let Some(kind) = crate::sema::models::callable_kind(self.gcx, interface.id) else {
                 continue;
             };
 
             // Interface arguments are [Self, Args, Output].
             match best {
-                Some((best_kind, _)) if best_kind <= kind => {}
+                Some((best_kind, _)) if best_kind as usize <= kind as usize => {}
                 _ => best = Some((kind, interface)),
             }
         }
@@ -531,34 +405,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             .map(|(_, interface)| interface)
     }
 
-    pub fn get_callable_trait_self_param_ty(&self, ty: Ty<'ctx>) -> Option<Ty<'ctx>> {
-        let (kind, _) = self.get_callable_trait_info(ty)?;
-        Some(match kind {
-            CallableTraitKind::Fn => self
-                .gcx
-                .store
-                .interners
-                .intern_ty(TyKind::Reference(ty, hir::Mutability::Immutable)),
-            CallableTraitKind::FnMut => self
-                .gcx
-                .store
-                .interners
-                .intern_ty(TyKind::Reference(ty, hir::Mutability::Mutable)),
-            CallableTraitKind::FnOnce => ty,
-            CallableTraitKind::AsyncFn => self
-                .gcx
-                .store
-                .interners
-                .intern_ty(TyKind::Reference(ty, hir::Mutability::Immutable)),
-            CallableTraitKind::AsyncFnMut => self
-                .gcx
-                .store
-                .interners
-                .intern_ty(TyKind::Reference(ty, hir::Mutability::Mutable)),
-            CallableTraitKind::AsyncFnOnce => ty,
-        })
-    }
-
     /// Get the Args type from a callable bound on a type parameter.
     /// Returns Some(args_ty) if the type has a Fn trait bound, None otherwise.
     pub fn get_fn_trait_args_type(&self, ty: Ty<'ctx>) -> Option<Ty<'ctx>> {
@@ -570,16 +416,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     }
 
     pub fn get_callable_trait_method_id(&self, ty: Ty<'ctx>) -> Option<hir::DefinitionID> {
-        let (kind, interface) = self.get_callable_trait_info(ty)?;
+        let (_, interface) = self.get_callable_trait_info(ty)?;
         let requirements = self.gcx.get_interface_requirements(interface.id)?;
-        let method_name = match kind {
-            CallableTraitKind::Fn => "call",
-            CallableTraitKind::FnMut => "callMut",
-            CallableTraitKind::FnOnce => "callOnce",
-            CallableTraitKind::AsyncFn => "call",
-            CallableTraitKind::AsyncFnMut => "callMut",
-            CallableTraitKind::AsyncFnOnce => "callOnce",
-        };
+        let method_name = "call";
         requirements
             .methods
             .iter()
@@ -686,6 +525,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         target_block: BasicBlockId,
         cache: &mut FxHashMap<Option<CleanupId>, BasicBlockId>,
     ) -> BasicBlockId {
+        let unwinding = target_cleanup.is_none() && self.resume_unwind_block == Some(target_block);
+        if unwinding && let Some(&block) = self.unwind_cleanup_paths.get(&from_cleanup) {
+            return block;
+        }
         if let Some(&block) = cache.get(&from_cleanup) {
             return block;
         }
@@ -701,11 +544,48 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             self.is_ancestor(target_cleanup, Some(idx)),
             "cleanup target must be an ancestor"
         );
+        let ordered = cleanup::reorder_chain(
+            &mut self.cleanup_nodes,
+            &self.cleanup_scope_depths,
+            from_cleanup,
+            target_cleanup,
+        );
+        let block = self.emit_cleanup_path(ordered, target_cleanup, target_block, cache);
+        cache.insert(from_cleanup, block);
+        if unwinding {
+            self.unwind_cleanup_paths.insert(from_cleanup, block);
+        }
+        block
+    }
+
+    /// The chain is already in execution order. Its parents are exactly the
+    /// actions that remain if the current action panics.
+    fn emit_cleanup_path(
+        &mut self,
+        from_cleanup: Option<CleanupId>,
+        target_cleanup: Option<CleanupId>,
+        target_block: BasicBlockId,
+        cache: &mut FxHashMap<Option<CleanupId>, BasicBlockId>,
+    ) -> BasicBlockId {
+        let unwinding = target_cleanup.is_none() && self.resume_unwind_block == Some(target_block);
+        if unwinding && let Some(&block) = self.unwind_cleanup_paths.get(&from_cleanup) {
+            return block;
+        }
+        if let Some(&block) = cache.get(&from_cleanup) {
+            return block;
+        }
+        if from_cleanup == target_cleanup {
+            return target_block;
+        }
+        let idx = from_cleanup.expect("ordered cleanup must reach its target");
         let node = self.cleanup_nodes[idx];
-        let next_block = self.ensure_cleanup_path(node.parent, target_cleanup, target_block, cache);
+        let next_block = self.emit_cleanup_path(node.parent, target_cleanup, target_block, cache);
         let block = self.new_block_with_note("cleanup".into());
         self.lower_cleanup_action(block, &node, next_block);
         cache.insert(from_cleanup, block);
+        if unwinding {
+            self.unwind_cleanup_paths.insert(from_cleanup, block);
+        }
         block
     }
 
@@ -729,126 +609,25 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         next_block: BasicBlockId,
     ) {
         let saved_cleanup = self.current_cleanup;
+        let saved_scope = self.current_cleanup_scope;
         self.current_cleanup = node.parent;
+        self.current_cleanup_scope = node.scope;
         match node.action {
+            CleanupAction::EndStorage(local) => {
+                self.body.basic_blocks[start].statements.push(Statement {
+                    kind: StatementKind::StorageDead(local),
+                    span: node.span,
+                });
+                self.goto(start, next_block, node.span);
+            }
             CleanupAction::DeferBlock(block_id) => {
                 let unit = self.unit_temp_place(node.span);
                 let end = self.lower_block(unit, start, block_id).into_block();
                 self.goto(end, next_block, node.span);
             }
-            CleanupAction::Task {
-                token_local,
-                active_local,
-            } => {
-                let drop_block = self.new_block_with_note("task scope drop".into());
-                self.terminate(
-                    start,
-                    node.span,
-                    TerminatorKind::SwitchInt {
-                        discr: mir::Operand::Copy(Place::from_local(active_local)),
-                        targets: vec![(0, next_block)],
-                        otherwise: drop_block,
-                    },
-                );
-                self.terminate_task_release_call(
-                    drop_block,
-                    Place::from_local(token_local),
-                    next_block,
-                    node.span,
-                    crate::mir::optimize::async_transform::AsyncRuntimeFn::DropTask,
-                );
-            }
         }
         self.current_cleanup = saved_cleanup;
-    }
-
-    fn terminate_task_release_call(
-        &mut self,
-        block: BasicBlockId,
-        token_place: Place<'ctx>,
-        target: BasicBlockId,
-        span: Span,
-        which: crate::mir::optimize::async_transform::AsyncRuntimeFn,
-    ) {
-        use crate::mir::optimize::async_transform::find_or_register_async_runtime_function;
-
-        let release_id = find_or_register_async_runtime_function(self.gcx, which, span);
-        let release_ty = self.gcx.get_type(release_id);
-        let destination = self.new_temp_with_ty(self.gcx.types.void, span);
-        self.terminate(
-            block,
-            span,
-            TerminatorKind::Call {
-                func: mir::Operand::Constant(mir::Constant {
-                    ty: release_ty,
-                    value: mir::ConstantKind::Function(
-                        release_id,
-                        crate::sema::models::GenericArguments::empty(),
-                        release_ty,
-                    ),
-                }),
-                args: vec![mir::Operand::Copy(token_place)],
-                devirt_hint: None,
-                destination: Place::from_local(destination),
-                target,
-                unwind: mir::CallUnwindAction::Terminate,
-            },
-        );
-    }
-
-    pub(super) fn drop_task_place(
-        &mut self,
-        block: BasicBlockId,
-        mut task_place: Place<'ctx>,
-        span: Span,
-    ) -> BlockAnd<()> {
-        task_place.projection.push(PlaceElem::Field(
-            thir::FieldIndex::from_raw(0),
-            self.gcx.types.uint,
-        ));
-        let next = self.new_block_with_note("after task drop".into());
-        self.terminate_task_release_call(
-            block,
-            task_place,
-            next,
-            span,
-            crate::mir::optimize::async_transform::AsyncRuntimeFn::DropTask,
-        );
-        next.unit()
-    }
-
-    pub(super) fn drop_task_before_overwrite(
-        &mut self,
-        block: BasicBlockId,
-        task_place: &Place<'ctx>,
-        span: Span,
-    ) -> BlockAnd<()> {
-        if !task_place.projection.is_empty() {
-            return block.unit();
-        }
-        let Some(state) = self.task_drop_flags.get(&task_place.local).copied() else {
-            return block.unit();
-        };
-
-        let drop_block = self.new_block_with_note("task overwrite drop".into());
-        let next = self.new_block_with_note("after task overwrite drop".into());
-        self.terminate(
-            block,
-            span,
-            TerminatorKind::SwitchInt {
-                discr: mir::Operand::Copy(Place::from_local(state.active_local)),
-                targets: vec![(0, next)],
-                otherwise: drop_block,
-            },
-        );
-        self.terminate_task_release_call(
-            drop_block,
-            Place::from_local(state.token_local),
-            next,
-            span,
-            crate::mir::optimize::async_transform::AsyncRuntimeFn::DropTask,
-        );
-        next.unit()
+        self.current_cleanup_scope = saved_scope;
     }
 
     fn patch_unresolved(&mut self, block: BasicBlockId, target: BasicBlockId) {
@@ -865,6 +644,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
     fn push_defer_action(&mut self, block: thir::BlockId, span: Span) {
         let node = CleanupNode {
+            scope: self.current_cleanup_scope,
             action: CleanupAction::DeferBlock(block),
             parent: self.current_cleanup,
             span,
@@ -910,7 +690,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         block
     }
 
-    pub(crate) fn in_if_then_scope<F>(&mut self, _: Span, f: F) -> (BasicBlockId, BasicBlockId)
+    pub(crate) fn in_if_then_scope<F>(&mut self, span: Span, f: F) -> (BasicBlockId, BasicBlockId)
     where
         F: FnOnce(&mut Self) -> BlockAnd<()>,
     {
@@ -920,7 +700,21 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         };
         let previous_scope = mem::replace(&mut self.if_then_scope, Some(scope));
 
-        let then_block = f(self).into_block();
+        let mut then_block = f(self).into_block();
+        // A condition can establish owned pattern bindings and temporary
+        // scrutinee storage. They belong to this branch, not to a lost cleanup
+        // chain after we restore the enclosing scope.
+        let entry = self.if_then_scope.as_ref().unwrap().cleanup_at_entry;
+        if self.current_cleanup != entry && self.body.basic_blocks[then_block].terminator.is_none()
+        {
+            let completed = self.new_block_with_note("if condition owners finished".into());
+            let mut cache = FxHashMap::default();
+            cache.insert(entry, completed);
+            let cleanup =
+                self.ensure_cleanup_path(self.current_cleanup, entry, completed, &mut cache);
+            self.goto(then_block, cleanup, span);
+            then_block = completed;
+        }
 
         let scope = mem::replace(&mut self.if_then_scope, previous_scope)
             .expect("if-then scope should exist");
@@ -930,7 +724,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         self.current_cleanup = scope.cleanup_at_entry;
         (then_block, else_block)
     }
-
     pub(crate) fn break_for_else(&mut self, block: BasicBlockId, span: Span) {
         let cleanup = self.current_cleanup;
         let Some(scope) = self.if_then_scope.as_mut() else {

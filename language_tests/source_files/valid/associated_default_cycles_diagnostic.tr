@@ -1,0 +1,7 @@
+// CHECK_ONLY
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_CONTAINS: cyclic associated type bindings
+// EXPECT_STDERR_NOT_CONTAINS: panicked
+interface Cycle { type Output = Self::Output; }
+struct Source: Cycle {}
+func main() {}

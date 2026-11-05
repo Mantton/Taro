@@ -1,4 +1,4 @@
 interface CloneChild: Clone {}
 struct Item {}
-impl CloneChild for Item {}
+conform Item to CloneChild {}
 func main() {}

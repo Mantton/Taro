@@ -14,7 +14,10 @@ use rustc_hash::FxHashSet;
 /// 2. Scan each instance's MIR for generic calls
 /// 3. Add discovered instantiations to worklist
 /// 4. Repeat until fixpoint
-pub fn collect_instances<'ctx>(package: &crate::mir::MirPackage<'ctx>, gcx: GlobalContext<'ctx>) {
+pub fn collect_instances<'ctx>(
+    package: &crate::mir::MirPackage<'ctx>,
+    gcx: GlobalContext<'ctx>,
+) -> crate::error::CompileResult<()> {
     let mut collector = Collector {
         gcx,
         items: FxHashSet::default(),
@@ -26,8 +29,42 @@ pub fn collect_instances<'ctx>(package: &crate::mir::MirPackage<'ctx>, gcx: Glob
 
     // 2. Worklist algorithm: visit each instance, discover calls
     while let Some(instance) = collector.worklist.pop() {
+        // Do not instantiate placeholder types after a prior specialization
+        // reported a source error (notably unbound erased associated storage).
+        gcx.dcx().ok()?;
         // Get the MIR body for this function.
         let def_id = instance.def_id();
+
+        if instance.is_item()
+            && matches!(
+                crate::sema::lowering::erased_opening::plan(gcx, def_id, instance.args()),
+                Ok(Some(_))
+            )
+        {
+            // This instance is the erased bridge ABI, never the generic body
+            // instantiated with an owning container as its concrete T.
+            gcx.store
+                .erased_opening_calls
+                .borrow_mut()
+                .entry(gcx.package_index())
+                .or_default()
+                .insert(instance);
+            continue;
+        }
+
+        if gcx.is_instance_generated(def_id) {
+            let body = gcx.get_instance_mir_body(instance)?;
+            validate_instance_types(gcx, instance, body)?;
+            // These calls are already concrete. Even nongeneric cleanup hooks
+            // must be discovered when the thunk's owning package is imported.
+            crate::mir::for_each_function_constant_in_body(body, |callee, args| {
+                let target = resolve_instance(gcx, callee, args);
+                if target.is_item() {
+                    collector.enqueue(target);
+                }
+            });
+            continue;
+        }
 
         // Skip intrinsic functions - they don't have MIR bodies and are
         // handled specially during codegen via try_lower_intrinsic_call.
@@ -41,10 +78,13 @@ pub fn collect_instances<'ctx>(package: &crate::mir::MirPackage<'ctx>, gcx: Glob
         let Some(body) = collector.mir_body(def_id) else {
             continue;
         };
+        validate_instance_types(gcx, instance, body)?;
         collector.visit_body(instance, body);
     }
 
+    gcx.dcx().ok()?;
     gcx.cache_specializations(gcx.package_index(), collector.items);
+    Ok(())
 }
 
 pub struct Collector<'ctx> {
@@ -53,6 +93,32 @@ pub struct Collector<'ctx> {
     items: FxHashSet<Instance<'ctx>>,
     /// Worklist for graph traversal
     worklist: Vec<Instance<'ctx>>,
+}
+
+/// Validate substituted storage before inlining or layout. Reference results
+/// still require a known ABI for their associated type.
+pub(crate) fn validate_instance_types<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    instance: Instance<'ctx>,
+    body: &Body<'ctx>,
+) -> crate::error::CompileResult<()> {
+    crate::mir::analysis::class_self::validate_instance(gcx, instance.def_id(), instance.args())?;
+    use crate::sema::tycheck::utils::{
+        instantiate::instantiate_ty_with_args, try_normalize_post_monomorphization,
+        unresolved::storage_needs_substitution,
+    };
+    let mut seen = FxHashSet::default();
+    for local in &body.locals {
+        let ty = instantiate_ty_with_args(gcx, local.ty, instance.args());
+        if seen.insert(ty) && !storage_needs_substitution(gcx, ty) {
+            let normalized = try_normalize_post_monomorphization(gcx, ty).map_err(|error| {
+                gcx.dcx().emit_error(error.format(gcx), Some(local.span));
+                crate::error::ReportedError
+            })?;
+            crate::sema::tycheck::utils::atomic_handle::validate(gcx, normalized, local.span)?;
+        }
+    }
+    Ok(())
 }
 
 impl<'ctx> Collector<'ctx> {

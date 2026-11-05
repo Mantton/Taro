@@ -1,0 +1,43 @@
+struct Raw { value: int32 }
+struct Meters { value: int32 }
+struct RangeError { value: int32 }
+struct WrappedError { value: int32 }
+conform Meters to From[Raw] {
+    static func from(_ source: Raw) -> Meters { Meters { value: source.value } }
+}
+conform Meters to TryFrom[int32] {
+    type Error = RangeError
+    static func tryFrom(_ value: int32) -> Result[Meters, RangeError] {
+        if value < 0 { .err(RangeError { value }) } else { .ok(Meters { value }) }
+    }
+}
+conform WrappedError to From[RangeError] {
+    static func from(_ source: RangeError) -> WrappedError { WrappedError { value: source.value } }
+}
+func convert[S, T: From[S]](_ value: S) -> T { value.into() }
+func tryConvert[S, T: TryFrom[S]](_ value: S) -> Result[T, T::Error] { value.tryInto() }
+func propagate() -> Result[Meters, WrappedError] {
+    var result: Result[Meters, RangeError] = (-5_i32).tryInto()
+    return .ok(result!)
+}
+func bounded[T: Into[Meters]](_ value: T) -> Meters { value.into() }
+
+func main() {
+    assert(bounded(Raw { value: 7 }).value == 7, "a declared bound and blanket bridge are one method instance")
+
+    var value: Meters = (Raw { value: 12 }).into()
+    assert(value.value == 12, "From supplies Into")
+    var generic: Meters = convert(Raw { value: 15 })
+    assert(generic.value == 15, "generic conversion result context")
+    var result: Result[Meters, RangeError] = tryConvert(17_i32)
+    assert(result.unwrap().value == 17, "TryFrom supplies TryInto with its error type")
+    var failed: Result[Meters, RangeError] = (-3_i32).tryInto()
+    assert(failed.unwrapErr().value == -3, "fallible bridge preserves errors")
+    assert(propagate().unwrapErr().value == -5, "postfix propagation retains From error conversion")
+    var erased: any Into[Meters] = Raw { value: 19 }
+    assert(erased.into().value == 19, "erased conversion dispatch")
+    var erasedTry: any TryInto[Meters, Error = RangeError] = 23_i32
+    assert(erasedTry.tryInto().unwrap().value == 23, "erased associated-error conversion")
+    var callback: any Fn[(), Meters] = (Raw { value: 29 }).into
+    assert(callback().value == 29, "bound conversion method gets destination context")
+}

@@ -13,12 +13,12 @@ use crate::{
             infer::InferCtx,
             utils::{
                 ParamEnv, generics::GenericsBuilder, instantiate::instantiate_ty_with_args,
-                normalize_ty, type_head_from_value_ty, unify::TypeUnifier,
+                normalize_aliases, normalize_ty, type_head_from_value_ty, unify::TypeUnifier,
             },
         },
     },
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::rc::Rc;
 
 use super::{canonical::goal_key, select::select_interface_impl};
@@ -40,7 +40,13 @@ pub(super) fn build_conformance_witness<'ctx>(
                 let Some(record) = gcx.conformance_record(record_id) else {
                     return Err(SelectionError::NoCandidates(goal));
                 };
-                let Some(type_head) = type_head_from_value_ty(goal.self_ty)
+                let owner = record
+                    .interface
+                    .self_ty()
+                    .map(|ty| instantiate_ty_with_args(gcx, ty, selected.subst))
+                    .filter(|ty| gcx.is_class_type(*ty))
+                    .unwrap_or(goal.self_ty);
+                let Some(type_head) = type_head_from_value_ty(normalize_aliases(gcx, owner))
                     .or_else(|| record.target.is_blanket().then_some(record.target))
                 else {
                     return Err(SelectionError::NoCandidates(goal));
@@ -48,14 +54,49 @@ pub(super) fn build_conformance_witness<'ctx>(
                 build_witness_from_record(gcx, type_head, &record, selected.subst)?
             }
             crate::sema::models::CandidateSource::BuiltinTuple => ConformanceWitness::default(),
-            crate::sema::models::CandidateSource::BuiltinClosure => {
-                build_closure_witness(gcx, goal)?
+            crate::sema::models::CandidateSource::BuiltinCallable => {
+                build_callable_witness(gcx, goal)?
             }
             crate::sema::models::CandidateSource::BuiltinClone => {
                 build_builtin_clone_witness(gcx, goal)?
             }
-            crate::sema::models::CandidateSource::BuiltinCopy
-            | crate::sema::models::CandidateSource::BuiltinSendable
+            crate::sema::models::CandidateSource::BuiltinOperator => {
+                let item = crate::mir::primitive_operators::item_for_goal(gcx, goal)
+                    .ok_or(SelectionError::NoCandidates(goal))?;
+                let helper = crate::mir::primitive_operators::declaration(
+                    gcx,
+                    item,
+                    gcx.definition_ident(goal.interface_id).span,
+                );
+                let receiver = normalize_aliases(gcx, goal.self_ty);
+                let operand = match receiver.kind() {
+                    TyKind::Reference(inner) => inner,
+                    _ => receiver,
+                };
+                let args = gcx
+                    .store
+                    .interners
+                    .intern_generic_args(vec![crate::sema::models::GenericArgument::Type(operand)]);
+                let mut witness = ConformanceWitness::default();
+                if let Some(requirements) = gcx.get_interface_requirements(goal.interface_id) {
+                    for output in &requirements.types {
+                        if gcx.symbol_eq(output.name, "Output") {
+                            witness.type_witnesses.insert(output.id, operand);
+                        }
+                    }
+                    for method in &requirements.methods {
+                        witness.method_witnesses.insert(
+                            method.id,
+                            MethodWitness {
+                                implementation: MethodImplementation::Concrete(helper),
+                                args_template: args,
+                            },
+                        );
+                    }
+                }
+                witness
+            }
+            crate::sema::models::CandidateSource::BuiltinAnyObject
             | crate::sema::models::CandidateSource::ParamEnv => {
                 let Some(reqs) = gcx.get_interface_requirements(goal.interface_id) else {
                     return Ok(ConformanceWitness::default());
@@ -86,6 +127,58 @@ pub(super) fn build_conformance_witness<'ctx>(
     Ok(witness)
 }
 
+/// Resolve a strict ancestor using the already-fixed interface arguments.
+/// Recursion always moves up the class chain; a distinct instantiation has no
+/// inherited witness to customize. Blanket implementations are not adoptions.
+pub(crate) fn inherited_class_witness<'ctx>(
+    gcx: Gcx<'ctx>,
+    record: &ConformanceRecord<'ctx>,
+    subst: GenericArguments<'ctx>,
+) -> Option<ConformanceWitness<'ctx>> {
+    if record.target.is_blanket() {
+        return None;
+    }
+    let interface = crate::sema::tycheck::utils::instantiate::instantiate_interface_ref_with_args(
+        gcx,
+        record.interface,
+        subst,
+    );
+    let base = gcx.class_base(interface.self_ty()?)?;
+    let assumptions: Vec<_> =
+        crate::sema::tycheck::constraints::canonical_constraints_of(gcx, record.extension)
+            .into_iter()
+            .map(|constraint| {
+                crate::sema::tycheck::utils::instantiate::instantiate_constraint_with_args(
+                    gcx,
+                    constraint.value,
+                    subst,
+                )
+            })
+            .collect();
+    let goal = InterfaceGoal {
+        interface_id: interface.id,
+        self_ty: base,
+        interface_args: gcx
+            .store
+            .interners
+            .intern_generic_args_slice(&interface.arguments[1..]),
+        bindings: &[],
+        param_env: gcx.store.arenas.global.alloc_slice_copy(&assumptions),
+    };
+    let crate::sema::models::SelectionResult::Selected(selected) =
+        select_interface_impl(gcx, goal, SelectionMode::Typecheck)
+    else {
+        return None;
+    };
+    let crate::sema::models::CandidateSource::Impl(id) = selected.source else {
+        return None;
+    };
+    if gcx.conformance_record(id)?.target.is_blanket() {
+        return None;
+    }
+    build_conformance_witness(gcx, goal, SelectionMode::Typecheck).ok()
+}
+
 fn build_witness_from_record<'ctx>(
     gcx: Gcx<'ctx>,
     type_head: TypeHead,
@@ -100,18 +193,46 @@ fn build_witness_from_record<'ctx>(
     let mut witness = ConformanceWitness::default();
     witness.extension_id = Some(record.extension);
 
+    let inherited = inherited_class_witness(gcx, record, subst);
     for assoc in &requirements.types {
-        let Some(ty) = find_type_witness(gcx, type_head, assoc.id, assoc.name, record) else {
+        let explicit = find_explicit_type_witness(gcx, type_head, assoc.name, record)
+            .map(|ty| instantiate_ty_with_args(gcx, ty, subst));
+        let base = inherited
+            .as_ref()
+            .and_then(|witness| witness.type_witnesses.get(&assoc.id))
+            .copied();
+        if let (Some(actual), Some(expected)) = (explicit, base) {
+            if normalize_aliases(gcx, actual) != normalize_aliases(gcx, expected) {
+                gcx.dcx().emit_error("a subclass conformance override cannot change inherited associated type bindings".into(), Some(record.location));
+                return Err(SelectionError::NoCandidates(interface_goal_from_record(
+                    gcx, record,
+                )));
+            }
+        }
+        let Some(ty) = explicit.or(base).or_else(|| {
+            // Defaults belong to the interface, not the implementing block.
+            // Resolve Self and interface parameters at this declaration once;
+            // descendants inherit the resulting binding unchanged.
+            assoc.default_type.map(|ty| {
+                let ty = instantiate_ty_with_args(gcx, ty, record.interface.arguments);
+                instantiate_ty_with_args(gcx, ty, subst)
+            })
+        }) else {
             return Err(SelectionError::NoCandidates(interface_goal_from_record(
                 gcx, record,
             )));
         };
-        let ty = if subst.is_empty() {
-            ty
-        } else {
-            instantiate_ty_with_args(gcx, ty, subst)
-        };
         witness.type_witnesses.insert(assoc.id, ty);
+    }
+
+    // Resolve dependencies between associated defaults/bindings once, in the
+    // selected conformance's coordinates. This also diagnoses unused cycles.
+    let types = witness.type_witnesses.clone();
+    for (id, ty) in &types {
+        witness.type_witnesses.insert(
+            *id,
+            substitute_projection_witnesses(gcx, *ty, &types, record, subst),
+        );
     }
 
     for property in &requirements.properties {
@@ -168,7 +289,116 @@ fn build_witness_from_record<'ctx>(
         witness.constant_witnesses.insert(constant.id, id);
     }
 
+    // Extra capabilities are allowed on an implementation of a native
+    // requirement. Unrelated index overloads still belong in `extend`.
+    let native_declarations = gcx.with_type_database(record.extension.package(), |db| {
+        db.native_subscripts
+            .iter()
+            .filter_map(|(&id, &entry)| {
+                (gcx.definition_parent(id) == Some(record.extension)).then_some((id, entry))
+            })
+            .collect::<Vec<_>>()
+    });
+    for (id, mut entry) in native_declarations {
+        if let Some(class) = record
+            .interface
+            .self_ty()
+            .filter(|ty| gcx.is_class_type(*ty))
+            && let Some((_, effective)) = gcx
+                .class_subscripts(class)
+                .into_iter()
+                .find(|(declaration, _)| *declaration == id)
+        {
+            entry = effective;
+        }
+        if !witness.method_witnesses.values().any(|method| {
+            method
+                .implementation
+                .impl_id()
+                .is_some_and(|id| [entry.getter, entry.setter, entry.address].contains(&Some(id)))
+        }) {
+            return Err(SelectionError::NoCandidates(interface_goal_from_record(
+                gcx, record,
+            )));
+        }
+    }
     Ok(witness)
+}
+
+/// A class receives an object handle by value. Only directly Self-returning
+/// defaults need a conditional promise: their result must retain the actual
+/// dynamic class when the adopting class can have descendants.
+pub(crate) fn validate_class_default_adoptions(gcx: Gcx<'_>) -> crate::error::CompileResult<()> {
+    for record in gcx.all_conformance_records(gcx.package_index()) {
+        let Some(class) = record.interface.self_ty() else {
+            continue;
+        };
+        if !gcx.class_info(class).is_some_and(|info| !info.is_final) {
+            continue;
+        }
+        let Ok(witness) =
+            build_witness_from_record(gcx, record.target, &record, GenericArguments::empty())
+        else {
+            continue;
+        };
+        for (requirement, method) in witness.method_witnesses {
+            if normalize_aliases(gcx, gcx.get_signature(requirement).output)
+                != gcx.types.self_type_parameter
+            {
+                continue;
+            }
+            let source = match method.implementation {
+                MethodImplementation::Default(source) => Some(source),
+                MethodImplementation::Concrete(source) => {
+                    gcx.class_default_source(source).or_else(|| {
+                        crate::mir::analysis::class_self::conditional_receiver_owner(gcx, source)
+                            .map(|_| source)
+                    })
+                }
+                _ => None,
+            };
+            if let Some(source) = source
+                && !gcx
+                    .class_default_contract(source)
+                    .is_some_and(|proof| proof.preserves_dynamic_self == Some(true))
+            {
+                gcx.dcx().emit_error("a non-final class Self witness requires a checked subclass-preserving implementation".into(), Some(record.location));
+            }
+        }
+    }
+    gcx.dcx().ok()
+}
+
+/// A universal implementation's result may happen to equal its receiver type
+/// without promising dynamic Self (for example an explicit Rhs = T). Only a
+/// body actually selected for a directly Self-returning requirement inherits
+/// the subclass-preservation obligation.
+pub(crate) fn class_receiver_requires_dynamic_self(
+    gcx: Gcx<'_>,
+    implementation: crate::hir::DefinitionID,
+) -> bool {
+    let Some(parent) = gcx.definition_parent(implementation) else {
+        return false;
+    };
+    if gcx.try_definition_kind(parent) == Some(crate::hir::DefinitionKind::Interface) {
+        return normalize_aliases(gcx, gcx.get_signature(implementation).output)
+            == gcx.types.self_type_parameter;
+    }
+    gcx.conformance_records_for_extension(parent.package(), parent)
+        .into_iter()
+        .any(|record| {
+            build_witness_from_record(gcx, record.target, &record, GenericArguments::empty())
+                .is_ok_and(|witness| {
+                    witness
+                        .method_witnesses
+                        .iter()
+                        .any(|(requirement, method)| {
+                            method.implementation.impl_id() == Some(implementation)
+                                && normalize_aliases(gcx, gcx.get_signature(*requirement).output)
+                                    == gcx.types.self_type_parameter
+                        })
+                })
+        })
 }
 
 fn find_property_witnesses<'ctx>(
@@ -189,18 +419,27 @@ fn find_property_witnesses<'ctx>(
         ))
         .find(|entry| gcx.definition_parent(entry.property_id) == Some(record.extension));
 
+    if explicit.is_none() {
+        if let Some(witness) = inherited_class_witness(gcx, record, subst) {
+            let entries = vec![(
+                requirement.getter_id,
+                *witness.method_witnesses.get(&requirement.getter_id)?,
+            )];
+            return Some(entries);
+        }
+    }
+
     let inherent = gcx
         .lookup_computed_property(type_head, requirement.name)
         .filter(|source| gcx.is_visibility_allowed(source.visibility, record.extension));
 
-    let mut out = Vec::with_capacity(2);
+    let mut out = Vec::with_capacity(1);
     out.push((
         requirement.getter_id,
         find_property_accessor_witness(
             gcx,
             type_head,
             requirement,
-            PropertyAccessorKind::Getter,
             explicit,
             inherent,
             record,
@@ -208,22 +447,6 @@ fn find_property_witnesses<'ctx>(
             type_witnesses,
         )?,
     ));
-    if let Some(setter_id) = requirement.setter_id {
-        out.push((
-            setter_id,
-            find_property_accessor_witness(
-                gcx,
-                type_head,
-                requirement,
-                PropertyAccessorKind::Setter,
-                explicit,
-                inherent,
-                record,
-                subst,
-                type_witnesses,
-            )?,
-        ));
-    }
     Some(out)
 }
 
@@ -244,36 +467,20 @@ pub(crate) fn property_requirement_satisfied<'ctx>(
     .is_some()
 }
 
-#[derive(Clone, Copy)]
-enum PropertyAccessorKind {
-    Getter,
-    Setter,
-}
-
 fn find_property_accessor_witness<'ctx>(
     gcx: Gcx<'ctx>,
     type_head: TypeHead,
     requirement: &InterfacePropertyRequirement<'ctx>,
-    kind: PropertyAccessorKind,
     explicit: Option<crate::compile::context::ComputedPropertyEntry<'ctx>>,
     inherent: Option<crate::compile::context::ComputedPropertyEntry<'ctx>>,
     record: &ConformanceRecord<'ctx>,
     subst: GenericArguments<'ctx>,
     type_witnesses: &FxHashMap<crate::hir::DefinitionID, Ty<'ctx>>,
 ) -> Option<MethodWitness<'ctx>> {
-    let requirement_id = match kind {
-        PropertyAccessorKind::Getter => requirement.getter_id,
-        PropertyAccessorKind::Setter => requirement.setter_id?,
-    };
+    let requirement_id = requirement.getter_id;
 
     for source in [explicit, inherent].into_iter().flatten() {
-        let implementation_id = match kind {
-            PropertyAccessorKind::Getter => Some(source.getter_id),
-            PropertyAccessorKind::Setter => source.setter_id,
-        };
-        let Some(implementation_id) = implementation_id else {
-            continue;
-        };
+        let implementation_id = source.getter_id;
         if let Some(witness) = direct_accessor_witness(
             gcx,
             requirement_id,
@@ -290,18 +497,11 @@ fn find_property_accessor_witness<'ctx>(
         gcx,
         type_head,
         requirement,
-        kind,
         record,
         subst,
         type_witnesses,
     )
-    .or_else(|| {
-        let is_required = match kind {
-            PropertyAccessorKind::Getter => requirement.getter_is_required,
-            PropertyAccessorKind::Setter => requirement.setter_is_required?,
-        };
-        default_accessor_witness(gcx, requirement_id, is_required)
-    })
+    .or_else(|| default_accessor_witness(gcx, requirement_id, requirement.getter_is_required))
 }
 
 fn default_accessor_witness<'ctx>(
@@ -348,7 +548,6 @@ fn stored_field_property_accessor_witness<'ctx>(
     gcx: Gcx<'ctx>,
     type_head: TypeHead,
     requirement: &InterfacePropertyRequirement<'ctx>,
-    kind: PropertyAccessorKind,
     record: &ConformanceRecord<'ctx>,
     subst: GenericArguments<'ctx>,
     type_witnesses: &FxHashMap<crate::hir::DefinitionID, Ty<'ctx>>,
@@ -380,46 +579,22 @@ fn stored_field_property_accessor_witness<'ctx>(
     if !subst.is_empty() {
         expected_ty = instantiate_ty_with_args(gcx, expected_ty, subst);
     }
-    expected_ty = substitute_projection_witnesses(gcx, expected_ty, type_witnesses);
+    expected_ty = substitute_projection_witnesses(gcx, expected_ty, type_witnesses, record, subst);
     if field_ty != expected_ty {
         return None;
     }
 
-    let (accessor_id, synthetic_kind) = match kind {
-        PropertyAccessorKind::Getter => {
-            if gcx.definition_is_async(requirement.getter_id) {
-                return None;
-            }
-            let mut receiver = gcx.get_signature(requirement.getter_id).inputs.first()?.ty;
-            receiver = instantiate_ty_with_args(gcx, receiver, record.interface.arguments);
-            if !subst.is_empty() {
-                receiver = instantiate_ty_with_args(gcx, receiver, subst);
-            }
-            receiver = substitute_projection_witnesses(gcx, receiver, type_witnesses);
-            match receiver.kind() {
-                TyKind::Reference(inner, _) if inner == self_ty => {
-                    if !gcx.is_type_copyable(field_ty) {
-                        return None;
-                    }
-                }
-                _ if receiver == self_ty => {}
-                _ => return None,
-            }
-            (
-                requirement.getter_id,
-                SyntheticMethodKind::PropertyFieldGetter(field_index),
-            )
-        }
-        PropertyAccessorKind::Setter => {
-            if field.mutability != crate::hir::Mutability::Mutable {
-                return None;
-            }
-            (
-                requirement.setter_id?,
-                SyntheticMethodKind::PropertyFieldSetter(field_index),
-            )
-        }
-    };
+    let mut receiver = gcx.get_signature(requirement.getter_id).inputs.first()?.ty;
+    receiver = instantiate_ty_with_args(gcx, receiver, record.interface.arguments);
+    if !subst.is_empty() {
+        receiver = instantiate_ty_with_args(gcx, receiver, subst);
+    }
+    receiver = substitute_projection_witnesses(gcx, receiver, type_witnesses, record, subst);
+    if normalize_aliases(gcx, receiver) != normalize_aliases(gcx, self_ty) {
+        return None;
+    }
+    let accessor_id = requirement.getter_id;
+    let synthetic_kind = SyntheticMethodKind::PropertyFieldGetter(field_index);
 
     Some(
         crate::sema::tycheck::derive::synthesize_property_field_accessor(
@@ -489,40 +664,93 @@ fn build_builtin_clone_witness<'ctx>(
     gcx: Gcx<'ctx>,
     goal: InterfaceGoal<'ctx>,
 ) -> Result<ConformanceWitness<'ctx>, SelectionError<'ctx>> {
-    let Some(type_head) = type_head_from_value_ty(goal.self_ty) else {
-        return Err(SelectionError::NoCandidates(goal));
-    };
+    let self_ty = normalize_aliases(gcx, goal.self_ty);
     let Some(requirements) = gcx.get_interface_requirements(goal.interface_id) else {
         return Ok(ConformanceWitness::default());
     };
-
+    let kind = if crate::sema::impl_engine::builtin_copy_clone(gcx, self_ty) {
+        crate::sema::models::SyntheticDefinitionKind::BuiltinCopyClone
+    } else if matches!(self_ty.kind(), TyKind::Array { .. }) {
+        crate::sema::models::SyntheticDefinitionKind::ArrayClone
+    } else if matches!(self_ty.kind(), TyKind::Closure { .. }) {
+        crate::sema::models::SyntheticDefinitionKind::ClosureClone
+    } else {
+        crate::sema::models::SyntheticDefinitionKind::TupleClone
+    };
+    let helper = crate::mir::copy_clone::declaration_with_kind(
+        gcx,
+        gcx.definition_ident(goal.interface_id).span,
+        kind,
+    );
+    let args = gcx
+        .store
+        .interners
+        .intern_generic_args(vec![crate::sema::models::GenericArgument::Type(self_ty)]);
     let mut witness = ConformanceWitness::default();
     for method in &requirements.methods {
-        let args_template = GenericsBuilder::identity_for_item(gcx, method.id);
-        let Some(synthesized) = crate::sema::tycheck::derive::try_synthesize_method(
-            gcx,
-            type_head,
-            goal.self_ty,
-            goal.interface_id,
-            goal.interface_args,
-            method.name,
+        if let Some(type_head) = type_head_from_value_ty(self_ty) {
+            // Preserve ordinary method discovery; this entry is not a concrete
+            // implementation and THIR synthesis must not overwrite the helper.
+            gcx.register_synthetic_method(
+                type_head,
+                method.id,
+                method.name,
+                crate::sema::tycheck::derive::SyntheticMethodInfo {
+                    kind: SyntheticMethodKind::CopyClone,
+                    self_ty,
+                    interface_id: goal.interface_id,
+                    interface_args: goal.interface_args,
+                    interface_bindings: &[],
+                    method_id: method.id,
+                    method_name: method.name,
+                    syn_id: Some(helper),
+                },
+            );
+        }
+        witness.method_witnesses.insert(
             method.id,
-            args_template,
-        ) else {
-            return Err(SelectionError::NoCandidates(goal));
-        };
-        witness
-            .method_witnesses
-            .insert(method.id, synthesized.witness);
+            MethodWitness {
+                implementation: MethodImplementation::Concrete(helper),
+                args_template: args,
+            },
+        );
     }
-    witness.extension_id = None;
     Ok(witness)
 }
 
-fn build_closure_witness<'ctx>(
+fn build_callable_witness<'ctx>(
     gcx: Gcx<'ctx>,
     goal: InterfaceGoal<'ctx>,
 ) -> Result<ConformanceWitness<'ctx>, SelectionError<'ctx>> {
+    if matches!(goal.self_ty.kind(), TyKind::FnPointer { .. }) {
+        let (kind, inputs, output) = crate::sema::models::callable_signature(goal.self_ty)
+            .ok_or(SelectionError::NoCandidates(goal))?;
+        let helper = crate::mir::function_pointer_call::declaration(
+            gcx,
+            kind,
+            gcx.definition_ident(goal.interface_id).span,
+        );
+        let args = gcx.store.interners.intern_generic_args(vec![
+            crate::sema::models::GenericArgument::Type(goal.self_ty),
+            crate::sema::models::GenericArgument::Type(crate::sema::models::callable_args_ty(
+                gcx, inputs,
+            )),
+            crate::sema::models::GenericArgument::Type(output),
+        ]);
+        let mut witness = ConformanceWitness::default();
+        if let Some(requirements) = gcx.get_interface_requirements(goal.interface_id) {
+            for method in &requirements.methods {
+                witness.method_witnesses.insert(
+                    method.id,
+                    MethodWitness {
+                        implementation: MethodImplementation::Concrete(helper),
+                        args_template: args,
+                    },
+                );
+            }
+        }
+        return Ok(witness);
+    }
     let TypeHead::Closure(closure_def_id) =
         type_head_from_value_ty(goal.self_ty).ok_or(SelectionError::NoCandidates(goal))?
     else {
@@ -532,21 +760,10 @@ fn build_closure_witness<'ctx>(
         .get_closure_captures(closure_def_id)
         .ok_or(SelectionError::NoCandidates(goal))?;
 
-    let kind = if gcx.std_item_def(crate::hir::StdItem::Fn) == Some(goal.interface_id)
-        || gcx.std_item_def(crate::hir::StdItem::AsyncFn) == Some(goal.interface_id)
-    {
-        SyntheticMethodKind::ClosureCall
-    } else if gcx.std_item_def(crate::hir::StdItem::FnMut) == Some(goal.interface_id)
-        || gcx.std_item_def(crate::hir::StdItem::AsyncFnMut) == Some(goal.interface_id)
-    {
-        SyntheticMethodKind::ClosureCallMut
-    } else if gcx.std_item_def(crate::hir::StdItem::FnOnce) == Some(goal.interface_id)
-        || gcx.std_item_def(crate::hir::StdItem::AsyncFnOnce) == Some(goal.interface_id)
-    {
-        SyntheticMethodKind::ClosureCallOnce
-    } else {
+    if crate::sema::models::callable_kind(gcx, goal.interface_id).is_none() {
         return Err(SelectionError::NoCandidates(goal));
-    };
+    }
+    let kind = SyntheticMethodKind::ClosureCall;
 
     let Some(requirements) = gcx.get_interface_requirements(goal.interface_id) else {
         return Ok(ConformanceWitness::default());
@@ -588,10 +805,9 @@ fn build_closure_witness<'ctx>(
     Ok(witness)
 }
 
-fn find_type_witness<'ctx>(
+fn find_explicit_type_witness<'ctx>(
     gcx: Gcx<'ctx>,
     type_head: TypeHead,
-    assoc_id: crate::hir::DefinitionID,
     assoc_name: crate::span::Symbol,
     record: &ConformanceRecord<'ctx>,
 ) -> Option<Ty<'ctx>> {
@@ -611,13 +827,7 @@ fn find_type_witness<'ctx>(
         })
     });
 
-    if let Some(alias_id) = alias_id {
-        return Some(gcx.get_alias_type(alias_id));
-    }
-
-    let reqs = gcx.get_interface_requirements(record.interface.id)?;
-    let assoc = reqs.types.iter().find(|ty| ty.id == assoc_id)?;
-    assoc.default_type
+    alias_id.map(|alias_id| gcx.get_alias_type(alias_id))
 }
 
 pub(crate) fn find_method_witness<'ctx>(
@@ -657,12 +867,45 @@ pub(crate) fn find_method_witness<'ctx>(
                 .filter(|candidate| {
                     gcx.definition_parent(*candidate) == Some(impl_id)
                         && gcx.definition_ident(*candidate).symbol == requirement.name
+                        // An adopted default is not an explicit declaration
+                        // resolving another interface's competing default.
+                        && !gcx.store.synthetic_definitions.borrow().get(candidate).is_some_and(|definition|
+                            matches!(definition.kind, crate::sema::models::SyntheticDefinitionKind::AdoptedClassDefault { .. }))
                 })
                 .collect()
         });
     }
 
     for candidate in candidates {
+        if let Some((_, required)) = gcx.native_subscript_for_accessor(requirement.id) {
+            let role = if required.getter == Some(requirement.id) {
+                crate::compile::context::NativeSubscriptAccess::Get
+            } else if required.setter == Some(requirement.id) {
+                crate::compile::context::NativeSubscriptAccess::Set
+            } else {
+                crate::compile::context::NativeSubscriptAccess::Address
+            };
+            if gcx
+                .native_subscript_for_accessor(candidate)
+                .is_none_or(|(_, entry)| role.method(entry) != Some(candidate))
+            {
+                continue;
+            }
+            if let Some(class) = record
+                .interface
+                .self_ty()
+                .filter(|ty| gcx.is_class_type(*ty))
+                && let TyKind::Adt(definition, _) = class.kind()
+                && gcx.with_type_database(definition.id.package(), |db| {
+                    db.class_subscripts.contains_key(&definition.id)
+                })
+                && gcx
+                    .native_subscript_for_receiver(candidate, class)
+                    .is_none()
+            {
+                continue;
+            }
+        }
         if method_signature_matches(
             gcx,
             requirement.id,
@@ -698,8 +941,41 @@ pub(crate) fn find_method_witness<'ctx>(
         }
     }
 
+    if let Some(witness) = inherited_class_witness(gcx, record, subst)
+        .and_then(|witness| witness.method_witnesses.get(&requirement.id).copied())
+    {
+        return Some(witness);
+    }
+
     if !requirement.is_required {
-        let args_template = GenericsBuilder::identity_for_item(gcx, requirement.id);
+        let adapter = gcx.with_type_database(record.extension.package(), |database| {
+            database.class_adoptions.iter().find_map(|adoption| {
+                let adopted = database.conformance_records.get(&adoption.conformance)?;
+                (adopted.extension == record.extension && adopted.interface == record.interface)
+                    .then(|| {
+                        adoption
+                            .methods
+                            .iter()
+                            .find(|method| method.requirement == requirement.id)
+                            .map(|method| method.slot.implementation)
+                    })
+                    .flatten()
+            })
+        });
+        if let Some(adapter) = adapter {
+            return Some(MethodWitness {
+                implementation: MethodImplementation::Concrete(adapter),
+                args_template: build_method_args_template(
+                    gcx,
+                    requirement.id,
+                    adapter,
+                    record,
+                    subst,
+                    type_witnesses,
+                ),
+            });
+        }
+        let args_template = default_method_arguments(gcx, requirement.id, record, subst);
         return Some(MethodWitness {
             implementation: MethodImplementation::Default(requirement.id),
             args_template,
@@ -730,10 +1006,28 @@ pub(crate) fn find_method_witness<'ctx>(
     None
 }
 
+fn default_method_arguments<'ctx>(
+    gcx: Gcx<'ctx>,
+    method: crate::hir::DefinitionID,
+    record: &ConformanceRecord<'ctx>,
+    subst: GenericArguments<'ctx>,
+) -> GenericArguments<'ctx> {
+    let interface = crate::sema::tycheck::utils::instantiate::instantiate_interface_ref_with_args(
+        gcx,
+        record.interface,
+        subst,
+    );
+    let identity = GenericsBuilder::identity_for_item(gcx, method);
+    let parent_count = gcx.generics_of(method).parent_count;
+    let mut arguments = interface.arguments.to_vec();
+    arguments.extend_from_slice(&identity[parent_count..]);
+    gcx.store.interners.intern_generic_args(arguments)
+}
+
 fn find_constant_witness<'ctx>(
     gcx: Gcx<'ctx>,
     _type_head: TypeHead,
-    _requirement_id: crate::hir::DefinitionID,
+    requirement_id: crate::hir::DefinitionID,
     requirement_name: crate::span::Symbol,
     requirement_ty: Ty<'ctx>,
     has_default: bool,
@@ -747,7 +1041,8 @@ fn find_constant_witness<'ctx>(
     if !subst.is_empty() {
         expected_ty = instantiate_ty_with_args(gcx, expected_ty, subst);
     }
-    let expected_ty = substitute_projection_witnesses(gcx, expected_ty, type_witnesses);
+    let expected_ty =
+        substitute_projection_witnesses(gcx, expected_ty, type_witnesses, record, subst);
 
     let candidates: Vec<crate::hir::DefinitionID> = gcx.with_type_database(extension_pkg, |db| {
         db.def_to_ty
@@ -766,6 +1061,12 @@ fn find_constant_witness<'ctx>(
         if gcx.get_type(*candidate) == expected_ty {
             return Some(*candidate);
         }
+    }
+
+    if let Some(id) = inherited_class_witness(gcx, record, subst)
+        .and_then(|witness| witness.constant_witnesses.get(&requirement_id).copied())
+    {
+        return Some(id);
     }
 
     if has_default {
@@ -793,6 +1094,12 @@ fn method_signature_matches<'ctx>(
     if gcx.definition_is_async(interface_fn_id) != gcx.definition_is_async(impl_fn_id) {
         return false;
     }
+    // Safety is part of a witness's contract even though bare function types
+    // do not encode it. Erasure/generic dispatch must not turn an unsafe
+    // implementation into a call permitted by a safe requirement.
+    if gcx.definition_is_unsafe(interface_fn_id) != gcx.definition_is_unsafe(impl_fn_id) {
+        return false;
+    }
     if !interface_sig.same_shape(impl_sig) {
         return false;
     }
@@ -804,17 +1111,22 @@ fn method_signature_matches<'ctx>(
     }
 
     let mut expected = Ty::from_labeled_signature(gcx, interface_sig);
-    expected = instantiate_ty_with_args(gcx, expected, record.interface.arguments);
-    if !subst.is_empty() {
-        expected = instantiate_ty_with_args(gcx, expected, subst);
-    }
-    expected = substitute_projection_witnesses(gcx, expected, type_witnesses);
+    expected = instantiate_ty_with_args(
+        gcx,
+        expected,
+        default_method_arguments(gcx, interface_fn_id, record, subst),
+    );
+    expected = normalize_aliases(gcx, expected);
+    expected = substitute_projection_witnesses(gcx, expected, type_witnesses, record, subst);
+    expected = normalize_aliases(gcx, expected);
 
     let mut actual = Ty::from_labeled_signature(gcx, impl_sig);
     if !subst.is_empty() {
         actual = instantiate_ty_with_args(gcx, actual, subst);
     }
-    actual = substitute_projection_witnesses(gcx, actual, type_witnesses);
+    actual = normalize_aliases(gcx, actual);
+    actual = substitute_projection_witnesses(gcx, actual, type_witnesses, record, subst);
+    actual = normalize_aliases(gcx, actual);
 
     let mut expected_freshener = SignatureFreshener::new(gcx);
     let expected = expected_freshener.freshen(expected);
@@ -822,7 +1134,78 @@ fn method_signature_matches<'ctx>(
     let mut actual_freshener = SignatureFreshener::new(gcx);
     let actual = actual_freshener.freshen(actual);
 
-    expected == actual
+    if expected != actual {
+        return false;
+    }
+    // A witness must accept every argument allowed by the requirement. Compare
+    // declared bounds in the same renamed method-parameter coordinates used
+    // for the signature; a conformance may supply its own ambient bounds.
+    let source_arguments = default_method_arguments(gcx, interface_fn_id, record, subst);
+    let impl_arguments = build_method_args_template(
+        gcx,
+        interface_fn_id,
+        impl_fn_id,
+        record,
+        subst,
+        type_witnesses,
+    );
+    let mut permitted: FxHashSet<_> =
+        crate::sema::tycheck::constraints::canonical_constraints_of(gcx, interface_fn_id)
+            .into_iter()
+            .map(|constraint| {
+                substitute_projection_witnesses(
+                    gcx,
+                    normalize_aliases(
+                        gcx,
+                        crate::sema::tycheck::utils::instantiate::instantiate_constraint_with_args(
+                            gcx,
+                            constraint.value,
+                            source_arguments,
+                        ),
+                    ),
+                    type_witnesses,
+                    record,
+                    subst,
+                )
+                .fold_with(&mut expected_freshener)
+            })
+            .collect();
+    permitted.extend(
+        crate::sema::tycheck::constraints::canonical_constraints_of(gcx, record.extension)
+            .into_iter()
+            .map(|constraint| {
+                normalize_aliases(
+                    gcx,
+                    crate::sema::tycheck::utils::instantiate::instantiate_constraint_with_args(
+                        gcx,
+                        constraint.value,
+                        subst,
+                    ),
+                )
+                .fold_with(&mut actual_freshener)
+            }),
+    );
+    crate::sema::tycheck::constraints::canonical_constraints_of(gcx, impl_fn_id)
+        .into_iter()
+        .all(|constraint| {
+            permitted.contains(
+                &substitute_projection_witnesses(
+                    gcx,
+                    normalize_aliases(
+                        gcx,
+                        crate::sema::tycheck::utils::instantiate::instantiate_constraint_with_args(
+                            gcx,
+                            constraint.value,
+                            impl_arguments,
+                        ),
+                    ),
+                    type_witnesses,
+                    record,
+                    subst,
+                )
+                .fold_with(&mut actual_freshener),
+            )
+        })
 }
 
 fn build_method_args_template<'ctx>(
@@ -860,17 +1243,24 @@ fn build_method_args_template<'ctx>(
     gcx.store.interners.intern_generic_args(args)
 }
 
-fn substitute_projection_witnesses<'ctx>(
+fn substitute_projection_witnesses<'ctx, T: TypeFoldable<'ctx>>(
     gcx: Gcx<'ctx>,
-    ty: Ty<'ctx>,
+    ty: T,
     type_witnesses: &FxHashMap<crate::hir::DefinitionID, Ty<'ctx>>,
-) -> Ty<'ctx> {
-    if type_witnesses.is_empty() {
+    record: &ConformanceRecord<'ctx>,
+    subst: GenericArguments<'ctx>,
+) -> T {
+    let Some(self_ty) = record.interface.self_ty() else {
         return ty;
-    }
+    };
+    let self_ty = normalize_aliases(gcx, instantiate_ty_with_args(gcx, self_ty, subst));
     let mut substitutor = ProjectionSubstitutor {
         gcx,
         type_witnesses,
+        self_ty,
+        record,
+        subst,
+        active: FxHashSet::default(),
     };
     ty.fold_with(&mut substitutor)
 }
@@ -878,6 +1268,10 @@ fn substitute_projection_witnesses<'ctx>(
 struct ProjectionSubstitutor<'ctx, 'w> {
     gcx: Gcx<'ctx>,
     type_witnesses: &'w FxHashMap<crate::hir::DefinitionID, Ty<'ctx>>,
+    self_ty: Ty<'ctx>,
+    record: &'w ConformanceRecord<'ctx>,
+    subst: GenericArguments<'ctx>,
+    active: FxHashSet<Ty<'ctx>>,
 }
 
 impl<'ctx> TypeFolder<'ctx> for ProjectionSubstitutor<'ctx, '_> {
@@ -890,10 +1284,46 @@ impl<'ctx> TypeFolder<'ctx> for ProjectionSubstitutor<'ctx, '_> {
             TyKind::Alias {
                 kind: AliasKind::Projection,
                 def_id,
-                ..
+                args,
             } => {
-                if let Some(witness_ty) = self.type_witnesses.get(&def_id) {
-                    return witness_ty.fold_with(self);
+                // Witnesses apply to this conformance's Self, not another
+                // generic value conforming to the same interface. In particular
+                // Value = Source::Value must not substitute itself forever.
+                let is_self_projection = matches!(args.first(), Some(crate::sema::models::GenericArgument::Type(source)) if normalize_aliases(self.gcx, *source) == self.self_ty);
+                if is_self_projection {
+                    if !self.active.insert(ty) {
+                        self.gcx.dcx().emit_error(
+                            "cyclic associated type bindings have no concrete witness".into(),
+                            Some(self.record.location),
+                        );
+                        return Ty::error(self.gcx);
+                    }
+                    let witness_ty = self.type_witnesses.get(&def_id).copied().or_else(|| {
+                        // A requirement on a subinterface can mention a type
+                        // declared by its superinterface.
+                        // Its witness belongs to that exact super-conformance,
+                        // not this record's local associated-type declarations.
+                        // Normalize the full projection arguments instead of
+                        // merging maps keyed only by the associated type's ID:
+                        // Read[int] and Read[bool] may resolve different Outputs.
+                        if self.gcx.definition_parent(def_id) == Some(self.record.interface.id)
+                            || crate::sema::tycheck::utils::unresolved::ty_contains_unresolved_inference(ty)
+                        {
+                            return None;
+                        }
+                        let constraints = crate::sema::tycheck::constraints::canonical_constraints_of(self.gcx, self.record.extension)
+                            .into_iter()
+                            .map(|constraint| crate::sema::tycheck::utils::instantiate::instantiate_constraint_with_args(self.gcx, constraint.value, self.subst))
+                            .collect();
+                        let env = ParamEnv::new(constraints);
+                        let resolved = normalize_ty(Rc::new(InferCtx::new(self.gcx)), ty, &env);
+                        (resolved != ty).then_some(resolved)
+                    });
+                    let result = witness_ty.map(|witness_ty| witness_ty.fold_with(self));
+                    self.active.remove(&ty);
+                    if let Some(result) = result {
+                        return result;
+                    }
                 }
                 ty.super_fold_with(self)
             }
@@ -902,17 +1332,19 @@ impl<'ctx> TypeFolder<'ctx> for ProjectionSubstitutor<'ctx, '_> {
     }
 }
 
-struct SignatureFreshener<'ctx> {
+pub(crate) struct SignatureFreshener<'ctx> {
     next_var_id: u32,
     substitutions: FxHashMap<GenericParameter, u32>,
+    const_substitutions: FxHashMap<GenericParameter, u32>,
     gcx: Gcx<'ctx>,
 }
 
 impl<'ctx> SignatureFreshener<'ctx> {
-    fn new(gcx: Gcx<'ctx>) -> Self {
+    pub(crate) fn new(gcx: Gcx<'ctx>) -> Self {
         Self {
             next_var_id: 0,
             substitutions: FxHashMap::default(),
+            const_substitutions: FxHashMap::default(),
             gcx,
         }
     }
@@ -923,7 +1355,7 @@ impl<'ctx> SignatureFreshener<'ctx> {
         var
     }
 
-    fn freshen(&mut self, ty: Ty<'ctx>) -> Ty<'ctx> {
+    pub(crate) fn freshen(&mut self, ty: Ty<'ctx>) -> Ty<'ctx> {
         ty.fold_with(self)
     }
 }
@@ -931,6 +1363,35 @@ impl<'ctx> SignatureFreshener<'ctx> {
 impl<'ctx> TypeFolder<'ctx> for SignatureFreshener<'ctx> {
     fn gcx(&self) -> Gcx<'ctx> {
         self.gcx
+    }
+
+    fn fold_const(
+        &mut self,
+        value: crate::sema::models::Const<'ctx>,
+    ) -> crate::sema::models::Const<'ctx> {
+        use crate::sema::models::{Const, ConstKind};
+        let ConstKind::Param(parameter) = value.kind else {
+            return Const {
+                ty: value.ty.fold_with(self),
+                kind: value.kind,
+            };
+        };
+        let fresh = if let Some(&fresh) = self.const_substitutions.get(&parameter) {
+            fresh
+        } else {
+            let fresh = self.fresh_var();
+            self.const_substitutions.insert(parameter, fresh);
+            fresh
+        };
+        Const {
+            ty: value.ty.fold_with(self),
+            // A reserved marker cannot alias a real inference variable or
+            // literal value while comparing two declaration signatures.
+            kind: ConstKind::Param(GenericParameter {
+                index: fresh as usize,
+                name: self.gcx.intern_symbol("$canonical_const"),
+            }),
+        }
     }
 
     fn fold_ty(&mut self, ty: Ty<'ctx>) -> Ty<'ctx> {
@@ -953,15 +1414,110 @@ impl<'ctx> TypeFolder<'ctx> for SignatureFreshener<'ctx> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn signature_freshening_renames_const_parameters_without_losing_relationships() {
+        crate::test_support::analyze_script(
+            "struct Shape[const N: usize, const M: usize] { first: [int32; N]; second: [int32; M] }\nfunc main() {}",
+            |package, gcx| {
+                let fields = gcx
+                    .get_struct_definition(package.root.declarations[0].id)
+                    .fields;
+                let function = |input, output| {
+                    crate::sema::models::Ty::new(
+                        crate::sema::models::TyKind::FnPointer {
+                            inputs: gcx.store.interners.intern_ty_list(vec![input]),
+                            output,
+                            effects: Default::default(),
+                        },
+                        gcx,
+                    )
+                };
+                let canonical = |ty| super::SignatureFreshener::new(gcx).freshen(ty);
+                let left = canonical(function(fields[0].ty, fields[0].ty));
+                assert_eq!(left, canonical(function(fields[1].ty, fields[1].ty)));
+                assert_ne!(left, canonical(function(fields[0].ty, fields[1].ty)));
+            },
+        );
+    }
+
+    #[test]
+    fn inherited_associated_outputs_match_the_selected_superinterface_instantiation() {
+        let diagnostics = crate::test_support::analyze_script_mir_diagnostics(
+            "interface Read[I] { type Output; func read(_ index: I) -> &Self::Output; }\ninterface Write[I]: Read[I] { func write(_ index: I) -> &Self::Output; }\nstruct Counter { value: int32 }\nconform Counter to Read[int32] { type Output = int32; func read(_ index: int32) -> &int32 { &self.value }\n}\nconform Counter to Write[int32] { func write(_ index: int32) -> &int32 { &self.value }\n}\nfunc main() { var counter = Counter { value: 7 }; *counter.write(0_i32) = 9_i32 }",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn inherited_outputs_keep_generic_superinterface_arguments_distinct() {
+        let prefix = "interface Read[I] { type Output; func read(_ index: I) -> &Self::Output; }\ninterface Write[I]: Read[I] { func write(_ index: I) -> &Self::Output; }\nstruct Counter { number: int32; flag: bool }\nconform Counter to Read[int32] { type Output = int32; func read(_ index: int32) -> &int32 { &self.number }\n}\nconform Counter to Read[bool] { type Output = bool; func read(_ index: bool) -> &bool { &self.flag }\n}\nconform Counter to Write[int32] { func write(_ index: int32) -> &int32 { &self.number }\n}\n";
+        let valid = format!(
+            "{prefix}conform Counter to Write[bool] {{ func write(_ index: bool) -> &bool {{ &self.flag }}\n}}\nfunc main() {{ var counter = Counter {{ number: 1, flag: false }}; *counter.write(true) = true; *counter.write(0_i32) = 7_i32 }}"
+        );
+        let diagnostics = crate::test_support::analyze_script_mir_diagnostics(&valid);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        let invalid = format!(
+            "{prefix}conform Counter to Write[bool] {{ func write(_ index: bool) -> &int32 {{ &self.number }}\n}}\nfunc main() {{}}"
+        );
+        let diagnostics = crate::test_support::analyze_script_diagnostics(&invalid);
+        assert!(
+            diagnostics.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("missing required method 'write'")),
+            "{diagnostics:#?}"
+        );
+    }
+
+    #[test]
+    fn inherited_output_resolution_preserves_conditional_impl_bounds() {
+        let diagnostics = crate::test_support::analyze_script_mir_diagnostics(
+            "interface Tagged {}\ninterface Read[I] { type Output; func read(_ index: I) -> &Self::Output; }\ninterface Write[I]: Read[I] { func write(_ index: I) -> &Self::Output; }\nstruct Container[T] { value: T }\nconform[T: Tagged] Container[T] to Read[int32] { type Output = T; func read(_ index: int32) -> &T { &self.value }\n}\nconform[T: Tagged] Container[T] to Write[int32] { func write(_ index: int32) -> &T { &self.value }\n}\nfunc edit[T: Tagged](_ value: &Container[T]) -> &T { value.write(0_i32) }\nfunc main() {}",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn shared_implementation_can_satisfy_an_exclusive_receiver_requirement() {
+        let diagnostics = crate::test_support::analyze_script_mir_diagnostics(
+            "interface Inspect { func inspect() -> int32; }\nstruct Counter { value: int32 }\nconform Counter to Inspect { func inspect() -> int32 { self.value }\n}\nfunc inspect[T: Inspect](_ value: &T) -> int32 { value.inspect() }\nfunc main() { direct := Counter { value: 5 }; shared := direct.inspect(); var value = Counter { value: 7 }; observed := inspect(&value); var erased: any Inspect = value; other := erased.inspect() }",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn witnesses_require_matching_explicit_parameters() {
+        for (requirement, implementation) in [
+            (
+                "func inspect(other: &int32)",
+                "func inspect(other: int32) {}",
+            ),
+            (
+                "static func inspect(_ value: &Self)",
+                "static func inspect(_ value: Self) {}",
+            ),
+        ] {
+            let source = format!(
+                "interface Inspect {{ {requirement}; }}\nstruct Counter {{ value: int32 }}\nconform Counter to Inspect {{ {implementation}\n}}\nfunc main() {{}}"
+            );
+            let diagnostics = crate::test_support::analyze_script_diagnostics(&source);
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains("missing required method")),
+                "{source}\n{diagnostics:#?}"
+            );
+        }
+    }
+
+    #[test]
     fn conformance_substitutes_interface_const_parameters() {
         let diagnostics = crate::test_support::analyze_script_diagnostics(
             r#"
 interface Fixed[const N: usize] {
-    func consume(&self, _ values: [int32; N])
+    func consume(_ values: [int32; N])
 }
 struct Consumer {}
-impl Fixed[2] for Consumer {
-    func consume(&self, _ values: [int32; 2]) {}
+conform Consumer to Fixed[2] {
+    func consume(_ values: [int32; 2]) {}
 }
 func main() {}
 "#,
@@ -973,11 +1529,11 @@ func main() {}
         let diagnostics = crate::test_support::analyze_script_diagnostics(
             r#"
 interface Value {
-    func consume(&self, _ value: int32)
+    func consume(_ value: int32)
 }
 struct Consumer {}
-impl Value for Consumer {
-    func consume(&self, _ value: bool) {}
+conform Consumer to Value {
+    func consume(_ value: bool) {}
 }
 func main() {}
 "#,

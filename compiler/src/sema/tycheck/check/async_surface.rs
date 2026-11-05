@@ -5,17 +5,10 @@ impl<'ctx> Checker<'ctx> {
         &self,
         inner: &hir::Expression,
         span: Span,
+        expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         let gcx = self.gcx();
-
-        if matches!(inner.kind, hir::ExpressionKind::Propagate(_)) {
-            gcx.dcx().emit_error(
-                "use `(await expr)!` to propagate an awaited Optional or Result".into(),
-                Some(span),
-            );
-            return Ty::error(gcx);
-        }
 
         if self.defer_depth.get() > 0 {
             gcx.dcx().emit_error(
@@ -34,25 +27,30 @@ impl<'ctx> Checker<'ctx> {
             return Ty::error(gcx);
         }
 
-        let future_ty = self.with_direct_await_operand(inner.id, || self.synth(inner, cs));
+        let future_ty = self.with_await_scope(inner.id, span, || {
+            self.synth_with_expectation(inner, expectation, cs)
+        });
         if future_ty.is_error() {
+            self.await_scopes.borrow_mut().remove(&inner.id);
             return Ty::error(gcx);
         }
         cs.solve_intermediate();
         let future_ty = cs.infer_cx.resolve_vars_if_possible(future_ty);
 
-        if self.results.borrow().is_async_call(inner.id) {
-            return future_ty;
-        }
-
-        if matches!(
-            self.resolved_async_call_status(inner.id, Some(cs)),
-            Some(true)
-        ) {
-            return future_ty;
-        }
-
-        if self.task_inner_type(future_ty).is_some() {
+        // An async function may return a Task as an ordinary ready value.
+        // Reject implicit waiting on a stored task, not such calls.
+        let has_async = self
+            .await_scopes
+            .borrow()
+            .get(&inner.id)
+            .is_some_and(|scope| {
+                scope
+                    .calls
+                    .iter()
+                    .any(|call| self.resolved_async_call_status(*call, Some(cs)) == Some(true))
+            });
+        if self.task_inner_type(future_ty).is_some() && !has_async {
+            self.await_scopes.borrow_mut().remove(&inner.id);
             gcx.dcx().emit_error(
                 "use `await task.result()` to await a `Task[T]`".into(),
                 Some(span),
@@ -60,9 +58,7 @@ impl<'ctx> Checker<'ctx> {
             return Ty::error(gcx);
         }
 
-        gcx.dcx()
-            .emit_error("`await` expects an async call".into(), Some(span));
-        Ty::error(gcx)
+        future_ty
     }
 
     pub(super) fn synth_propagate_expression(
@@ -254,12 +250,15 @@ impl<'ctx> Checker<'ctx> {
         span: Span,
         result_ty: Ty<'ctx>,
     ) -> Ty<'ctx> {
-        if self.results.borrow().is_async_call(node_id)
-            && self.direct_await_operand.get() != Some(node_id)
-        {
-            self.gcx()
-                .dcx()
-                .emit_error("async calls must be immediately awaited".into(), Some(span));
+        let is_async = self.results.borrow().is_async_call(node_id);
+        self.resolved_call_effects
+            .borrow_mut()
+            .insert(node_id, is_async);
+        if is_async && !self.call_is_awaited() {
+            self.gcx().dcx().emit_error(
+                "async calls require an enclosing `await` expression".into(),
+                Some(span),
+            );
             return Ty::error(self.gcx());
         }
 
@@ -273,6 +272,9 @@ impl<'ctx> Checker<'ctx> {
     ) -> Option<bool> {
         if self.results.borrow().is_async_call(node_id) {
             return Some(true);
+        }
+        if let Some(status) = self.resolved_call_effects.borrow().get(&node_id) {
+            return Some(*status);
         }
 
         {
@@ -298,25 +300,18 @@ impl<'ctx> Checker<'ctx> {
             return Some(self.gcx().definition_is_async(call_info.method_id));
         }
 
-        None
+        let callee = self
+            .pending_async_surface_checks
+            .borrow()
+            .iter()
+            .find(|pending| pending.node_id == node_id)
+            .and_then(|pending| pending.callee_node_id);
+        callee.and_then(|callee| self.resolved_callable_async_status(callee, cs))
     }
 
-    pub(super) fn resolved_async_property_status(
-        &self,
-        node_id: NodeID,
-        cs: Option<&Cs<'ctx>>,
-    ) -> Option<bool> {
-        if let Some(property) = self.results.borrow().property_read(node_id) {
-            return Some(property.getter_is_async);
-        }
-
-        let Some(cs) = cs else {
-            return None;
-        };
-
-        cs.resolved_property_reads()
-            .get(&node_id)
-            .map(|property| property.getter_is_async)
+    fn resolved_callable_async_status(&self, callee: NodeID, cs: &Cs<'ctx>) -> Option<bool> {
+        let ty = cs.structurally_resolve(cs.expr_ty(callee)?);
+        (!ty.contains_inference()).then(|| self.type_is_async_callable(ty))
     }
 
     pub(super) fn finalize_deferred_async_call_surface_checks(&self, cs: &Cs<'ctx>) {
@@ -328,17 +323,28 @@ impl<'ctx> Checker<'ctx> {
         let mut unresolved = Vec::new();
 
         for pending in pending {
-            match self.resolved_async_call_status(pending.node_id, Some(cs)) {
+            let status = self
+                .resolved_async_call_status(pending.node_id, Some(cs))
+                .or_else(|| {
+                    pending
+                        .callee_node_id
+                        .and_then(|callee| self.resolved_callable_async_status(callee, cs))
+                });
+            match status {
                 Some(true) => {
                     self.results.borrow_mut().record_async_call(pending.node_id);
-                    if !pending.directly_awaited {
+                    if !pending.covered_by_await {
                         self.gcx().dcx().emit_error(
-                            "async calls must be immediately awaited".into(),
+                            "async calls require an enclosing `await` expression".into(),
                             Some(pending.span),
                         );
                     }
                 }
-                Some(false) => {}
+                Some(false) => {
+                    self.resolved_call_effects
+                        .borrow_mut()
+                        .insert(pending.node_id, false);
+                }
                 None => unresolved.push(pending),
             }
         }
@@ -348,28 +354,46 @@ impl<'ctx> Checker<'ctx> {
                 .borrow_mut()
                 .extend(unresolved);
         }
+
+        let completed: Vec<_> = self
+            .await_scopes
+            .borrow()
+            .iter()
+            .filter(|(_, scope)| scope.complete)
+            .filter_map(|(id, scope)| {
+                let statuses: Vec<_> = scope
+                    .calls
+                    .iter()
+                    .map(|call| self.resolved_async_call_status(*call, Some(cs)))
+                    .collect();
+                if statuses.contains(&Some(true)) {
+                    Some((*id, scope.span, true))
+                } else if statuses.iter().all(|status| *status == Some(false)) {
+                    Some((*id, scope.span, false))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (id, span, has_async) in completed {
+            self.await_scopes.borrow_mut().remove(&id);
+            if !has_async {
+                self.gcx().dcx().emit_warning(
+                    "no async operations occur within this `await` expression".into(),
+                    Some(span),
+                );
+            }
+        }
     }
 
-    pub(super) fn finalize_deferred_async_property_surface_checks(&self, cs: &Cs<'ctx>) {
-        let pending: Vec<_> = self
-            .pending_async_property_surface_checks
-            .borrow_mut()
-            .drain(..)
-            .collect();
-
-        for pending in pending {
-            match self.resolved_async_property_status(pending.node_id, Some(cs)) {
-                Some(true) => {
-                    self.results.borrow_mut().record_async_call(pending.node_id);
-                    if !pending.directly_awaited {
-                        self.gcx().dcx().emit_error(
-                            "async calls must be immediately awaited".into(),
-                            Some(pending.span),
-                        );
-                    }
-                }
-                Some(false) => {}
-                None => {}
+    /// Calling through a borrow uses the underlying callable's receiver mode;
+    /// it does not confer any interface on the reference type itself.
+    pub(super) fn callable_value_type(&self, mut ty: Ty<'ctx>) -> Ty<'ctx> {
+        loop {
+            ty = crate::sema::tycheck::utils::normalize_aliases(self.gcx(), ty);
+            match ty.kind() {
+                TyKind::Reference(inner) => ty = inner,
+                _ => return ty,
             }
         }
     }
@@ -379,6 +403,7 @@ impl<'ctx> Checker<'ctx> {
     }
 
     pub(super) fn ty_is_known_async_callable(&self, ty: Ty<'ctx>) -> bool {
+        let ty = self.callable_value_type(ty);
         if let Some(callable) =
             crate::sema::tycheck::utils::callable::existential_callable(self.gcx(), ty)
         {
@@ -387,15 +412,20 @@ impl<'ctx> Checker<'ctx> {
         matches!(
             ty.kind(),
             TyKind::Closure {
-                kind: crate::sema::models::ClosureKind::AsyncFn
-                    | crate::sema::models::ClosureKind::AsyncFnMut
-                    | crate::sema::models::ClosureKind::AsyncFnOnce,
+                kind: crate::sema::models::ClosureKind::AsyncFn,
+                ..
+            } | TyKind::FnPointer {
+                effects: crate::sema::models::FunctionPointerEffects {
+                    kind: crate::sema::models::ClosureKind::AsyncFn,
+                    ..
+                },
                 ..
             }
         )
     }
 
     pub(super) fn async_callable_input_count(&self, ty: Ty<'ctx>) -> Option<usize> {
+        let ty = self.callable_value_type(ty);
         if let Some(callable) =
             crate::sema::tycheck::utils::callable::existential_callable(self.gcx(), ty)
         {
@@ -409,20 +439,17 @@ impl<'ctx> Checker<'ctx> {
                 .flatten();
         }
         match ty.kind() {
-            TyKind::Closure { kind, inputs, .. } => matches!(
-                kind,
-                crate::sema::models::ClosureKind::AsyncFn
-                    | crate::sema::models::ClosureKind::AsyncFnMut
-                    | crate::sema::models::ClosureKind::AsyncFnOnce
-            )
-            .then_some(inputs.len()),
+            TyKind::Closure { kind, inputs, .. }
+            | TyKind::FnPointer {
+                inputs,
+                effects: crate::sema::models::FunctionPointerEffects { kind, .. },
+                ..
+            } => matches!(kind, crate::sema::models::ClosureKind::AsyncFn).then_some(inputs.len()),
             TyKind::Parameter(param) => {
                 let gcx = self.gcx();
                 let Some(async_fn_def) = gcx.std_item_def(hir::StdItem::AsyncFn) else {
                     return None;
                 };
-                let async_fn_mut_def = gcx.std_item_def(hir::StdItem::AsyncFnMut);
-                let async_fn_once_def = gcx.std_item_def(hir::StdItem::AsyncFnOnce);
                 crate::sema::tycheck::constraints::canonical_constraints_of(gcx, self.current_def)
                     .into_iter()
                     .find_map(|constraint| {
@@ -438,9 +465,7 @@ impl<'ctx> Checker<'ctx> {
                         };
                         if bound_param.index != param.index
                             || bound_param.name != param.name
-                            || (interface.id != async_fn_def
-                                && Some(interface.id) != async_fn_mut_def
-                                && Some(interface.id) != async_fn_once_def)
+                            || interface.id != async_fn_def
                         {
                             return None;
                         }

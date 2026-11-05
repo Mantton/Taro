@@ -1,0 +1,4 @@
+error: subscript has no set accessor
+ -> language_tests/source_files/invalid/native_subscript_no_set.tr:7:4
+	    buffer[0 as usize] = replacement
+	    ^^^^^^^^^^^^^^^^^^

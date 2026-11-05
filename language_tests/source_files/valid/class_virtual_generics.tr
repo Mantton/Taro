@@ -1,0 +1,66 @@
+// ENV: TARO_WORKERS=4
+class Counter { value: int32 }
+extend Counter {
+    init(_ value: int32) { self.value = value }
+    func read() -> int32 { self.value }
+    func echo[T](_ value: T) -> T { value }
+    func reference() -> &int32 { &self.value }
+    final func fixed() -> int32 { 99 }
+}
+class Derived: Counter {}
+extend Derived {
+    override func read() -> int32 { return super.read() + 1; }
+    override func echo[U](_ value: U) -> U { return super.echo(value); }
+}
+class Other {}
+extend Other { init() {} }
+func main() {
+    var counter: Counter = Counter(7)
+    var alias: Counter = counter
+    var other: Counter = Counter(7)
+    assert(counter === alias, "handle copies preserve identity")
+    assert(counter !== other, "different objects have different identity")
+    var same: Counter = (counter as? Counter).unwrap()
+    assert(same === counter, "checked cast keeps the same object")
+    assert((counter as? Derived).isNone(), "a base instance is not a derived instance")
+    assert((counter as? Other).isNone(), "unrelated class cast fails")
+    var numbers: List[int32] = [1, 2, 3]
+    var returned: List[int32] = counter.echo(numbers)
+    assert(returned.len() == 3, "generic virtual calls preserve shared handles")
+    assert(counter.echo(41_i32) == 41, "integer specialization")
+    assert(counter.echo(42_i64) == 42, "different integer specialization")
+    var saved: &int32 = counter.reference()
+    assert(*saved == 7, "virtual reference results keep GC storage alive")
+    assert(counter.read() == 7, "root dynamic dispatch")
+    assert(counter.fixed() == 99, "final methods use direct calls")
+    var numbersObject: Numbers = Numbers()
+    var narrow: int32 = numbersObject.number(0_i32)
+    var wide: int64 = numbersObject.number(0_i64)
+    assert(narrow == 1 && wide == 2, "overloads retain independent virtual families")
+    var owned: List[int32] = [8, 9]
+    var box: Box[List[int32]] = Box(owned)
+    assert(box.read().len() == 2, "generic class reference results preserve the value")
+    var scalar: Box[int32] = Box(21)
+    assert(scalar.duplicate() == 21, "generic class value method is dispatched")
+}
+
+// Generic class methods return ordinary values for each specialization.
+class Box[T] { value: T }
+extend[T] Box[T] {
+    init(_ value: T) { self.value = value }
+    func read() -> &T { &self.value }
+}
+extend[T] Box[T] {
+    func duplicate() -> T { self.value }
+}
+
+class Numbers {}
+extend Numbers {
+    init() {}
+    func number(_ value: int32) -> int32 { 1 }
+    func number(_ value: int64) -> int64 { 2 }
+}
+class MoreNumbers: Numbers {}
+extend MoreNumbers {
+    override func number(_ value: int64) -> int64 { return super.number(value) + 1_i64; }
+}

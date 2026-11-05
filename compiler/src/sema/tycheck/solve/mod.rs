@@ -2,7 +2,7 @@ use crate::{
     compile::context::Gcx,
     hir::{NodeID, Resolution},
     sema::{
-        error::{SpannedErrorList, TypeError},
+        error::SpannedErrorList,
         models::{
             AliasKind, ConstKind, Constraint, GenericArgument, GenericArguments,
             GenericParameterDefinition, GenericParameterDefinitionKind, InterfaceReference, Ty,
@@ -11,7 +11,6 @@ use crate::{
         resolve::models::DefinitionID,
         tycheck::{
             constraints::canonical_constraints_of,
-            fold::{TypeFoldable, TypeFolder, TypeSuperFoldable},
             infer::InferCtx,
             lower::{DefTyLoweringCtx, TypeLowerer},
             utils::generics::GenericsBuilder,
@@ -28,14 +27,20 @@ pub use models::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::{cell::RefCell, cmp::Reverse, collections::VecDeque, rc::Rc};
 
+#[cfg(test)]
+mod g30_tests;
+
 mod adt;
 mod apply;
 mod cast;
 mod coerce;
+mod conformance_inference;
 mod deref;
+mod index;
 mod interface;
 mod member;
 mod method;
+mod method_value;
 mod models;
 mod op;
 mod overload;
@@ -51,12 +56,11 @@ pub struct ConstraintSystem<'ctx> {
     interface_calls: FxHashMap<NodeID, InterfaceCallInfo>,
     pub locals: RefCell<FxHashMap<NodeID, Ty<'ctx>>>,
     pub field_indices: FxHashMap<NodeID, usize>,
-    pub property_reads: FxHashMap<NodeID, ResolvedPropertyRead<'ctx>>,
-    pub property_writes: FxHashMap<NodeID, ResolvedPropertyWrite<'ctx>>,
+    pub property_reads: FxHashMap<NodeID, ResolvedPropertyRead>,
     overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
     value_resolutions: FxHashMap<NodeID, Resolution>,
     instantiation_args: FxHashMap<NodeID, GenericArguments<'ctx>>,
-    compiler_call_contexts: FxHashMap<NodeID, CompilerCallContext>,
+    opening_calls: FxHashSet<NodeID>,
     current_def: crate::sema::resolve::models::DefinitionID,
     /// Canonical interface-selection view of bounds declared by the definition
     /// being checked. Unlike `env`, this is not extended with callee requirements.
@@ -65,6 +69,7 @@ pub struct ConstraintSystem<'ctx> {
     /// Traits (interfaces) visible in the current scope (for trait method lookup)
     visible_traits: Rc<FxHashSet<DefinitionID>>,
     error_count_at_start: usize,
+    isolated_goals: bool,
 }
 
 struct SolverOutputs<'ctx> {
@@ -72,8 +77,7 @@ struct SolverOutputs<'ctx> {
     adjustments: FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
     interface_calls: FxHashMap<NodeID, InterfaceCallInfo>,
     field_indices: FxHashMap<NodeID, usize>,
-    property_reads: FxHashMap<NodeID, ResolvedPropertyRead<'ctx>>,
-    property_writes: FxHashMap<NodeID, ResolvedPropertyWrite<'ctx>>,
+    property_reads: FxHashMap<NodeID, ResolvedPropertyRead>,
     overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
     value_resolutions: FxHashMap<NodeID, Resolution>,
     instantiation_args: FxHashMap<NodeID, GenericArguments<'ctx>>,
@@ -116,16 +120,16 @@ impl<'ctx> ConstraintSystem<'ctx> {
             interface_calls: Default::default(),
             field_indices: Default::default(),
             property_reads: Default::default(),
-            property_writes: Default::default(),
             overload_sources: Default::default(),
             value_resolutions: Default::default(),
             instantiation_args: Default::default(),
-            compiler_call_contexts: Default::default(),
+            opening_calls: Default::default(),
             current_def,
             assumption_constraints,
             env: assumptions,
             visible_traits,
             error_count_at_start,
+            isolated_goals: false,
         }
     }
 
@@ -191,7 +195,23 @@ impl<'ctx> ConstraintSystem<'ctx> {
         args: Option<GenericArguments<'ctx>>,
         location: Span,
     ) {
-        self.add_constraints_for_def_with_call(def_id, args, location, None);
+        self.add_constraints_for_def_with_call(def_id, args, location, None, false);
+    }
+
+    /// The existential's hidden Self is checked when a concrete value is
+    /// boxed, not as an unrelated generic parameter of its enclosing function.
+    pub fn add_constraints_for_existential(
+        &mut self,
+        interface: InterfaceReference<'ctx>,
+        location: Span,
+    ) {
+        self.add_constraints_for_def_with_call(
+            interface.id,
+            Some(interface.arguments),
+            location,
+            None,
+            true,
+        );
     }
 
     pub fn add_constraints_for_def_at_call(
@@ -201,7 +221,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
         location: Span,
         call_node_id: NodeID,
     ) {
-        self.add_constraints_for_def_with_call(def_id, args, location, Some(call_node_id));
+        self.add_constraints_for_def_with_call(def_id, args, location, Some(call_node_id), false);
     }
 
     fn add_constraints_for_def_with_call(
@@ -210,17 +230,15 @@ impl<'ctx> ConstraintSystem<'ctx> {
         args: Option<GenericArguments<'ctx>>,
         location: Span,
         call_node_id: Option<NodeID>,
+        abstract_self: bool,
     ) {
         let gcx = self.infer_cx.gcx;
         let constraints = canonical_constraints_of(gcx, def_id);
         for constraint in constraints {
-            let targeted_diagnostic = targeted_conformance_diagnostic(
-                gcx,
-                &self.compiler_call_contexts,
-                def_id,
-                call_node_id,
-                constraint.value,
-            );
+            let opening_template = match constraint.value {
+                Constraint::Bound { interface, .. } => Some(interface),
+                _ => None,
+            };
             let constraint = match args {
                 Some(args) => instantiate_constraint_with_args(gcx, constraint.value, args),
                 None => constraint.value,
@@ -229,16 +247,30 @@ impl<'ctx> ConstraintSystem<'ctx> {
             if let Constraint::Bound { .. } = constraint {
                 self.env.add_constraint(constraint);
             }
+            if abstract_self {
+                // Defaults may still be inference variables. Keep the witness
+                // context until they resolve instead of emitting an ordinary
+                // conformance goal that forgets its existential binder.
+                self.add_goal(Goal::ExistentialConstraint(constraint), location);
+                continue;
+            }
             let goal = match constraint {
                 Constraint::TypeEquality(lhs, rhs) => Goal::ConstraintEqual(lhs, rhs),
-                Constraint::Bound { ty, interface } => match targeted_diagnostic {
-                    Some(diagnostic) => Goal::ConformsWithDiagnostic {
-                        ty,
-                        interface,
-                        diagnostic,
-                    },
-                    None => Goal::Conforms { ty, interface },
-                },
+                Constraint::Bound { ty, interface } => {
+                    if let Some(arguments) = args
+                        && call_node_id.is_some_and(|node| self.opening_calls.contains(&node))
+                    {
+                        Goal::OpenedConforms {
+                            source: def_id,
+                            arguments,
+                            template: opening_template.unwrap(),
+                            ty,
+                            interface,
+                        }
+                    } else {
+                        Goal::Conforms { ty, interface }
+                    }
+                }
             };
             self.add_goal(goal, location);
         }
@@ -246,6 +278,10 @@ impl<'ctx> ConstraintSystem<'ctx> {
 
     pub fn record_expr_ty(&mut self, id: NodeID, ty: Ty<'ctx>) {
         self.expr_tys.insert(id, ty);
+    }
+
+    pub fn allow_inferred_opening(&mut self, callee: NodeID) {
+        self.opening_calls.insert(callee);
     }
 
     pub fn record_integer_literal(&mut self, id: NodeID, value: i128) {
@@ -265,8 +301,33 @@ impl<'ctx> ConstraintSystem<'ctx> {
         }
     }
 
-    pub fn record_property_write(&mut self, node_id: NodeID, info: ResolvedPropertyWrite<'ctx>) {
-        self.property_writes.insert(node_id, info);
+    pub(crate) fn receiver_adjustments(&self, node: NodeID) -> Option<Vec<Adjustment<'ctx>>> {
+        self.adjustments.get(&node).cloned()
+    }
+
+    /// A method-value selection probe must not publish its receiver autoref
+    /// into the subsequent direct call's separate receiver adjustment pass.
+    pub(crate) fn restore_receiver_adjustments(
+        &mut self,
+        node: NodeID,
+        previous: Option<Vec<Adjustment<'ctx>>>,
+    ) {
+        match previous {
+            Some(previous) => {
+                self.adjustments.insert(node, previous);
+            }
+            None => {
+                self.adjustments.remove(&node);
+            }
+        }
+    }
+
+    /// Append a receiver borrow after the member solver's autodereferences.
+    pub fn append_adjustments(&mut self, node_id: NodeID, adjustments: Vec<Adjustment<'ctx>>) {
+        self.adjustments
+            .entry(node_id)
+            .or_default()
+            .extend(adjustments);
     }
 
     pub fn expr_ty(&self, id: NodeID) -> Option<Ty<'ctx>> {
@@ -306,6 +367,13 @@ impl<'ctx> ConstraintSystem<'ctx> {
             .collect()
     }
 
+    pub fn node_adjustments(&self, node: NodeID) -> &[Adjustment<'ctx>] {
+        self.adjustments
+            .get(&node)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
     pub fn resolved_adjustments(&self) -> FxHashMap<NodeID, Vec<Adjustment<'ctx>>> {
         self.adjustments.clone()
     }
@@ -318,12 +386,8 @@ impl<'ctx> ConstraintSystem<'ctx> {
         self.field_indices.clone()
     }
 
-    pub fn resolved_property_reads(&self) -> FxHashMap<NodeID, ResolvedPropertyRead<'ctx>> {
+    pub fn resolved_property_reads(&self) -> FxHashMap<NodeID, ResolvedPropertyRead> {
         self.property_reads.clone()
-    }
-
-    pub fn resolved_property_writes(&self) -> FxHashMap<NodeID, ResolvedPropertyWrite<'ctx>> {
-        self.property_writes.clone()
     }
 
     pub fn resolved_overload_sources(
@@ -340,12 +404,12 @@ impl<'ctx> ConstraintSystem<'ctx> {
         self.instantiation_args.insert(node_id, args);
     }
 
-    pub fn record_compiler_call_context(&mut self, node_id: NodeID, context: CompilerCallContext) {
-        self.compiler_call_contexts.insert(node_id, context);
-    }
-
     pub fn instantiation(&self, node_id: NodeID) -> Option<GenericArguments<'ctx>> {
         self.instantiation_args.get(&node_id).copied()
+    }
+
+    pub(crate) fn assumptions(&self) -> &'ctx [Constraint<'ctx>] {
+        self.assumption_constraints
     }
 
     pub fn resolved_instantiations(&self) -> FxHashMap<NodeID, GenericArguments<'ctx>> {
@@ -387,12 +451,10 @@ impl<'ctx> ConstraintSystem<'ctx> {
         self.locals.borrow_mut().extend(other.locals.into_inner());
         self.field_indices.extend(other.field_indices);
         self.property_reads.extend(other.property_reads);
-        self.property_writes.extend(other.property_writes);
         self.overload_sources.extend(other.overload_sources);
         self.value_resolutions.extend(other.value_resolutions);
         self.instantiation_args.extend(other.instantiation_args);
-        self.compiler_call_contexts
-            .extend(other.compiler_call_contexts);
+        self.opening_calls.extend(other.opening_calls);
         self.env.extend_from(&other.env);
     }
 }
@@ -400,6 +462,53 @@ impl<'ctx> ConstraintSystem<'ctx> {
 impl<'ctx> ConstraintSystem<'ctx> {
     pub fn solve_all(&mut self) {
         self.solve_internal(true);
+    }
+
+    /// Keep an unfinished call's overload binding out of argument elaboration,
+    /// while preserving constraints from earlier declarations and complete calls.
+    pub fn with_deferred_callee<R>(
+        &mut self,
+        callee: NodeID,
+        action: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        fn binds(goal: &Goal<'_>, node: NodeID) -> bool {
+            match goal {
+                Goal::BindOverload(data) => data.node_id == node,
+                Goal::BindInterfaceMethod(data) => data.node_id == node,
+                Goal::BindMethodOverload(data) => binds(&data.binding, node),
+                Goal::Member(data) => data.node_id == node,
+                Goal::BindMethodValue(data) => data.node_id == node,
+                Goal::MethodValueSignature(data) => data.node_id == node,
+                Goal::InferredStaticMember(data) => data.node_id == node,
+                Goal::Disjunction(branches) => {
+                    branches.iter().any(|branch| binds(&branch.goal, node))
+                }
+                _ => false,
+            }
+        }
+        let mut deferred = VecDeque::new();
+        let pending = std::mem::take(&mut self.obligations);
+        for obligation in pending {
+            if binds(&obligation.goal, callee) {
+                deferred.push_back(obligation);
+            } else {
+                self.obligations.push_back(obligation);
+            }
+        }
+        let result = action(self);
+        deferred.append(&mut self.obligations);
+        self.obligations = deferred;
+        result
+    }
+
+    /// Member elaboration may resolve earlier local declarations, but must not
+    /// choose global numeric/generic defaults before the whole context is known.
+    pub fn without_fallbacks<R>(&mut self, action: impl FnOnce(&mut Self) -> R) -> R {
+        let was_isolated = self.isolated_goals;
+        self.isolated_goals = true;
+        let result = action(self);
+        self.isolated_goals = was_isolated;
+        result
     }
 
     pub fn solve_intermediate(&mut self) {
@@ -411,17 +520,17 @@ impl<'ctx> ConstraintSystem<'ctx> {
 
         let solver = ConstraintSolver {
             icx: self.infer_cx.clone(),
+            coercions: 0,
             obligations: std::mem::take(&mut self.obligations),
             adjustments: std::mem::take(&mut self.adjustments),
             interface_calls: std::mem::take(&mut self.interface_calls),
             integer_literals: self.integer_literals.clone(),
             field_indices: std::mem::take(&mut self.field_indices),
             property_reads: std::mem::take(&mut self.property_reads),
-            property_writes: std::mem::take(&mut self.property_writes),
             overload_sources: std::mem::take(&mut self.overload_sources),
             value_resolutions: std::mem::take(&mut self.value_resolutions),
             instantiation_args: std::mem::take(&mut self.instantiation_args),
-            compiler_call_contexts: self.compiler_call_contexts.clone(),
+            opening_calls: self.opening_calls.clone(),
             current_def: self.current_def,
             assumption_constraints: self.assumption_constraints,
             param_env: self.env.clone(),
@@ -430,6 +539,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
 
         let mut driver = SolverDriver::new(solver);
         driver.default_collection_literals = check_unresolved;
+        driver.allow_fallbacks = !self.isolated_goals;
         let result = driver.solve_to_fixpoint();
 
         // Pull collected outputs back out of the solver/driver.
@@ -445,7 +555,6 @@ impl<'ctx> ConstraintSystem<'ctx> {
         self.interface_calls = outputs.interface_calls;
         self.field_indices = outputs.field_indices;
         self.property_reads = outputs.property_reads;
-        self.property_writes = outputs.property_writes;
         self.overload_sources = outputs.overload_sources;
         self.value_resolutions = outputs.value_resolutions;
         self.instantiation_args = outputs.instantiation_args;
@@ -565,17 +674,18 @@ impl<'ctx> ConstraintSystem<'ctx> {
 
 struct ConstraintSolver<'ctx> {
     pub icx: Rc<InferCtx<'ctx>>,
+    /// Tie-break equally ranked overloads by the number of argument conversions.
+    coercions: u32,
     obligations: VecDeque<Obligation<'ctx>>,
     adjustments: FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
     interface_calls: FxHashMap<NodeID, InterfaceCallInfo>,
     integer_literals: FxHashMap<NodeID, i128>,
     pub field_indices: FxHashMap<NodeID, usize>,
-    pub property_reads: FxHashMap<NodeID, ResolvedPropertyRead<'ctx>>,
-    pub property_writes: FxHashMap<NodeID, ResolvedPropertyWrite<'ctx>>,
+    pub property_reads: FxHashMap<NodeID, ResolvedPropertyRead>,
     overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
     value_resolutions: FxHashMap<NodeID, Resolution>,
     instantiation_args: FxHashMap<NodeID, GenericArguments<'ctx>>,
-    compiler_call_contexts: FxHashMap<NodeID, CompilerCallContext>,
+    opening_calls: FxHashSet<NodeID>,
     current_def: crate::sema::resolve::models::DefinitionID,
     assumption_constraints: &'ctx [Constraint<'ctx>],
     param_env: ParamEnv<'ctx>,
@@ -591,7 +701,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         self.field_indices.insert(id, index);
     }
 
-    pub fn record_property_read(&mut self, id: NodeID, info: ResolvedPropertyRead<'ctx>) {
+    pub fn record_property_read(&mut self, id: NodeID, info: ResolvedPropertyRead) {
         self.property_reads.insert(id, info);
     }
 
@@ -642,13 +752,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
         constraints
             .into_iter()
             .map(|constraint| {
-                let targeted_diagnostic = targeted_conformance_diagnostic(
-                    gcx,
-                    &self.compiler_call_contexts,
-                    def_id,
-                    call_node_id,
-                    constraint.value,
-                );
+                let opening_template = match constraint.value {
+                    Constraint::Bound { interface, .. } => Some(interface),
+                    _ => None,
+                };
                 let constraint = match args {
                     Some(args) => instantiate_constraint_with_args(gcx, constraint.value, args),
                     None => constraint.value,
@@ -663,14 +770,21 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 }
                 let goal = match constraint {
                     Constraint::TypeEquality(lhs, rhs) => Goal::ConstraintEqual(lhs, rhs),
-                    Constraint::Bound { ty, interface } => match targeted_diagnostic {
-                        Some(diagnostic) => Goal::ConformsWithDiagnostic {
-                            ty,
-                            interface,
-                            diagnostic,
-                        },
-                        None => Goal::Conforms { ty, interface },
-                    },
+                    Constraint::Bound { ty, interface } => {
+                        if let Some(arguments) = args
+                            && call_node_id.is_some_and(|node| self.opening_calls.contains(&node))
+                        {
+                            Goal::OpenedConforms {
+                                source: def_id,
+                                arguments,
+                                template: opening_template.unwrap(),
+                                ty,
+                                interface,
+                            }
+                        } else {
+                            Goal::Conforms { ty, interface }
+                        }
+                    }
                 };
                 Obligation { location, goal }
             })
@@ -724,6 +838,14 @@ impl<'ctx> ConstraintSolver<'ctx> {
             let args = self.icx.fresh_args_for_def(extension_id, span);
             let instantiated = instantiate_ty_with_args(self.gcx(), target_ty, args);
             self.unify(receiver, instantiated).is_ok()
+                || self
+                    .gcx()
+                    .class_ancestry(receiver)
+                    .into_iter()
+                    .any(|ancestor| {
+                        self.icx
+                            .probe(|_| self.unify(ancestor, instantiated).is_ok())
+                    })
         })
     }
 
@@ -735,9 +857,18 @@ impl<'ctx> ConstraintSolver<'ctx> {
     ) -> GenericArguments<'ctx> {
         let gcx = self.gcx();
         let provided = provided.unwrap_or(GenericArguments::empty());
+        let erased_context = gcx
+            .erased_access_context(def_id)
+            .map(|context| GenericsBuilder::identity_for_item(gcx, context));
         GenericsBuilder::for_item(gcx, def_id, |param, current_args| {
             if let Some(arg) = provided.get(param.index) {
                 return *arg;
+            }
+            if param.index < gcx.generics_of(def_id).parent_count
+                && let Some(argument) =
+                    erased_context.and_then(|arguments| arguments.get(param.index).copied())
+            {
+                return argument;
             }
             self.instantiate_missing_generic_arg(def_id, param, current_args, span)
         })
@@ -758,17 +889,17 @@ impl<'ctx> ConstraintSolver<'ctx> {
         match &param.kind {
             GenericParameterDefinitionKind::Type {
                 default: Some(default),
+                ..
             } => {
                 let infer_var = self.icx.var_for_generic_param(param, span);
                 let mut default_ty = gcx
                     .try_generic_type_default(param.id)
                     .unwrap_or_else(|| lower_ctx.lowerer().lower_type(default));
-                default_ty = self.substitute_interface_self_default(default_ty, current_args);
                 default_ty = instantiate_ty_with_args(gcx, default_ty, current_args);
                 self.push_default_fallback_goal(infer_var, GenericArgument::Type(default_ty), span);
                 infer_var
             }
-            GenericParameterDefinitionKind::Type { default: None } => {
+            GenericParameterDefinitionKind::Type { default: None, .. } => {
                 self.icx.var_for_generic_param(param, span)
             }
             GenericParameterDefinitionKind::Const {
@@ -815,63 +946,66 @@ impl<'ctx> ConstraintSolver<'ctx> {
         });
     }
 
-    fn substitute_interface_self_default(
-        &self,
-        ty: Ty<'ctx>,
-        args: GenericArguments<'ctx>,
-    ) -> Ty<'ctx> {
-        let Some(GenericArgument::Type(concrete_self_ty)) = args.first() else {
-            return ty;
-        };
-
-        struct InterfaceSelfSubstitutor<'ctx> {
-            gcx: Gcx<'ctx>,
-            concrete_self_ty: Ty<'ctx>,
-        }
-
-        impl<'ctx> TypeFolder<'ctx> for InterfaceSelfSubstitutor<'ctx> {
-            fn gcx(&self) -> Gcx<'ctx> {
-                self.gcx
-            }
-
-            fn fold_ty(&mut self, ty: Ty<'ctx>) -> Ty<'ctx> {
-                if ty == self.gcx.types.self_type_parameter {
-                    return self.concrete_self_ty;
-                }
-                ty.super_fold_with(self)
-            }
-        }
-
-        let mut substitutor = InterfaceSelfSubstitutor {
-            gcx: self.gcx(),
-            concrete_self_ty: *concrete_self_ty,
-        };
-        ty.fold_with(&mut substitutor)
-    }
-
     fn solve(&mut self, obligation: &Obligation<'ctx>) -> SolverResult<'ctx> {
         let location = obligation.location;
         match &obligation.goal {
             Goal::Equal(lhs, rhs) => self.solve_equality(location, *lhs, *rhs),
+            Goal::ConstructorResult(output, target) => {
+                let output = self.structurally_resolve(*output);
+                if output.is_infer() {
+                    SolverResult::Deferred
+                } else {
+                    self.solve_equality(location, self.gcx().constructor_value(output), *target)
+                }
+            }
+            Goal::InitializerStatement(output, expression) => {
+                let output = self.structurally_resolve(*output);
+                if output.is_infer() {
+                    SolverResult::Deferred
+                } else {
+                    self.solve_equality(
+                        location,
+                        self.gcx().constructor_result(output, self.gcx().types.void),
+                        *expression,
+                    )
+                }
+            }
             Goal::ConstraintEqual(lhs, rhs) => self.solve_constraint_equality(location, *lhs, *rhs),
+            Goal::ExistentialConstraint(constraint) => {
+                let constraint = self.icx.resolve_vars_if_possible(*constraint);
+                match constraint {
+                    Constraint::Bound { ty, interface } => {
+                        if ty.contains_inference() {
+                            SolverResult::Deferred
+                        } else if crate::sema::tycheck::utils::erased_self::has_free_self(ty) {
+                            SolverResult::Solved(vec![])
+                        } else {
+                            self.solve_conforms(location, ty, interface)
+                        }
+                    }
+                    Constraint::TypeEquality(lhs, rhs) => {
+                        if crate::sema::tycheck::utils::erased_self::has_free_self(lhs)
+                            || crate::sema::tycheck::utils::erased_self::has_free_self(rhs)
+                        {
+                            SolverResult::Solved(vec![])
+                        } else {
+                            self.solve_constraint_equality(location, lhs, rhs)
+                        }
+                    }
+                }
+            }
             Goal::Conforms { ty, interface } => self.solve_conforms(location, *ty, *interface),
-            Goal::ConformsWithDiagnostic {
+            Goal::OpenedConforms {
+                source,
+                arguments,
+                template,
                 ty,
                 interface,
-                diagnostic,
-            } => match self.solve_conforms(diagnostic.span, *ty, *interface) {
-                SolverResult::Error(errors)
-                    if errors
-                        .iter()
-                        .all(|error| matches!(error.value, TypeError::NonConformance { .. })) =>
-                {
-                    SolverResult::Error(vec![Spanned::new(
-                        TypeError::TargetedConformance(diagnostic.message),
-                        diagnostic.span,
-                    )])
-                }
-                result => result,
-            },
+            } => self
+                .solve_opened_conforms(location, *source, *arguments, *template, *ty, *interface),
+            Goal::ValidateOpening { source, arguments } => {
+                self.solve_validate_opening(location, *source, *arguments)
+            }
             Goal::Apply(data) => self.solve_apply(data.clone()),
             Goal::BindOverload(data) => self.solve_bind_overload(location, data.clone()),
             Goal::BindInterfaceMethod(data) => {
@@ -892,8 +1026,13 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 is_unsafe,
             } => self.solve_cast(location, *node_id, *from, *to, *is_unsafe),
             Goal::Member(data) => self.solve_member(data.clone()),
+            Goal::BindMethodValue(data) => self.solve_bind_method_value(location, data.clone()),
+            Goal::MethodValueSignature(data) => {
+                self.solve_method_value_signature(location, data.clone())
+            }
             Goal::InferredStaticMember(data) => self.solve_inferred_static_member(data.clone()),
             Goal::MethodCall(data) => self.solve_method_call(data.clone()),
+            Goal::IndexAccess(data) => self.solve_index_access(data.clone()),
             Goal::StructLiteral(data) => self.solve_struct_literal(data.clone()),
             Goal::CollectionLiteral { ty, element, len } => {
                 self.solve_collection_literal(location, *ty, *element, *len)
@@ -930,32 +1069,105 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let lhs = self.structurally_resolve(lhs);
         let rhs = self.structurally_resolve(rhs);
 
-        // If either side has an unresolvable projection (projection on an inference var),
-        // defer until the inference var is bound.
+        if lhs == rhs {
+            return SolverResult::Solved(vec![]);
+        }
+        // Resolve independent parts before waiting on a projection. For
+        // Result[T, T::Error], the first argument supplies the T required by
+        // the second; deferring the entire type would discard that context.
         if has_unresolvable_projection(&self.icx, lhs)
             || has_unresolvable_projection(&self.icx, rhs)
         {
-            return SolverResult::Deferred;
+            let mut pairs = Vec::new();
+            match (lhs.kind(), rhs.kind()) {
+                (TyKind::Adt(a, left), TyKind::Adt(b, right))
+                    if a.id == b.id && left.len() == right.len() =>
+                {
+                    for (left, right) in left.iter().zip(right.iter()) {
+                        match (*left, *right) {
+                            (GenericArgument::Type(a), GenericArgument::Type(b)) => {
+                                pairs.push((a, b))
+                            }
+                            (GenericArgument::Const(a), GenericArgument::Const(b))
+                                if self.unify_const(a, b).is_ok() =>
+                            {
+                                pairs.push((a.ty, b.ty))
+                            }
+                            _ => return self.solve_equality(location, lhs, rhs),
+                        }
+                    }
+                }
+                (TyKind::Tuple(left), TyKind::Tuple(right)) if left.len() == right.len() => {
+                    pairs.extend(left.iter().copied().zip(right.iter().copied()))
+                }
+                (TyKind::Reference(a), TyKind::Reference(b)) => pairs.push((a, b)),
+                (TyKind::Pointer(a, am), TyKind::Pointer(b, bm)) if am == bm => pairs.push((a, b)),
+                (
+                    TyKind::Array {
+                        element: a,
+                        len: al,
+                    },
+                    TyKind::Array {
+                        element: b,
+                        len: bl,
+                    },
+                ) if self.unify_const(al, bl).is_ok() => pairs.push((a, b)),
+                (
+                    TyKind::FnPointer {
+                        effects: ae,
+                        inputs: ai,
+                        output: ao,
+                    },
+                    TyKind::FnPointer {
+                        effects: be,
+                        inputs: bi,
+                        output: bo,
+                    },
+                ) if ae == be && ai.len() == bi.len() => {
+                    pairs.extend(ai.iter().copied().zip(bi.iter().copied()));
+                    pairs.push((ao, bo));
+                }
+                _ => return SolverResult::Deferred,
+            }
+            return SolverResult::Solved(
+                pairs
+                    .into_iter()
+                    .map(|(a, b)| Obligation {
+                        location,
+                        goal: Goal::ConstraintEqual(a, b),
+                    })
+                    .collect(),
+            );
         }
 
         self.solve_equality(location, lhs, rhs)
     }
 
-    fn fork_for_probe(&self) -> ConstraintSolver<'ctx> {
+    fn fork_for_probe(&self, binding_node: Option<NodeID>) -> ConstraintSolver<'ctx> {
+        let mut obligations = self.obligations.clone();
+        for obligation in &mut obligations {
+            if let Goal::Apply(data) = &mut obligation.goal
+                && data.input_only_selection
+                && Some(data.call_node_id) == binding_node
+            {
+                data.result_ty = self.icx.next_ty_var(data.call_span);
+                data.input_only_selection = false;
+            }
+        }
         ConstraintSolver {
             icx: self.icx.clone(),
-            obligations: self.obligations.clone(),
-            // Probe branches only need satisfiability, not collected outputs.
+            coercions: self.coercions,
+            obligations,
+            // Probes need satisfiability and weakening costs, not collected outputs.
             adjustments: FxHashMap::default(),
             interface_calls: FxHashMap::default(),
             integer_literals: self.integer_literals.clone(),
             field_indices: FxHashMap::default(),
             property_reads: FxHashMap::default(),
-            property_writes: FxHashMap::default(),
             overload_sources: FxHashMap::default(),
             value_resolutions: FxHashMap::default(),
             instantiation_args: FxHashMap::default(),
-            compiler_call_contexts: self.compiler_call_contexts.clone(),
+            opening_calls: self.opening_calls.clone(),
             current_def: self.current_def,
             assumption_constraints: self.assumption_constraints,
             param_env: self.param_env.clone(),
@@ -964,80 +1176,45 @@ impl<'ctx> ConstraintSolver<'ctx> {
     }
 }
 
-fn targeted_conformance_diagnostic<'ctx>(
-    gcx: Gcx<'ctx>,
-    contexts: &FxHashMap<NodeID, CompilerCallContext>,
-    def_id: DefinitionID,
-    call_node_id: Option<NodeID>,
-    constraint: Constraint<'ctx>,
-) -> Option<ConformanceDiagnostic> {
-    let Constraint::Bound { ty, interface } = constraint else {
-        return None;
-    };
-    if gcx.std_item_def(crate::hir::StdItem::Sendable) != Some(interface.id) {
-        return None;
-    }
-    let TyKind::Parameter(parameter) = ty.kind() else {
-        return None;
-    };
-    let context = contexts.get(&call_node_id?).copied()?;
-    context.diagnostic_for(def_id, parameter.index)
-}
-
 #[derive(Clone)]
 struct RankedBranch<'ctx> {
     branch: DisjunctionBranch<'ctx>,
-    score: u32,
+    score: (bool, bool, Reverse<u8>, Reverse<usize>),
+}
+
+/// An applicable inherent declaration wins before interface overloads.
+fn inherent_method(gcx: Gcx<'_>, source: DefinitionID) -> bool {
+    if gcx.is_builtin_clone(source) || gcx.is_primitive_operator(source) {
+        return false;
+    }
+    let Some(parent) = gcx.definition_parent(source) else {
+        return true;
+    };
+    gcx.definition_kind(parent) != crate::hir::DefinitionKind::Interface
+        && gcx
+            .conformance_records_for_extension(parent.package(), parent)
+            .is_empty()
 }
 
 fn rank_branches<'ctx>(
     gcx: Gcx<'ctx>,
     branches: Vec<DisjunctionBranch<'ctx>>,
 ) -> Vec<RankedBranch<'ctx>> {
-    let mut ranked: Vec<RankedBranch<'ctx>> = branches
+    let mut ranked: Vec<_> = branches
         .into_iter()
-        .map(|branch| {
-            // Higher score = better
-            // Start with a base score of 100 for all candidates
-            let mut score: i32 = 100;
-
-            // Bonus for non-generic methods (prefer concrete over generic)
-            if let Some(def_id) = branch.source {
-                if gcx.generics_of(def_id).is_empty() {
-                    score += 50;
-                }
-            }
-
-            // Huge bonus for matching expectation (especially mutability)
-            if branch.matches_expectation {
-                score += 1000;
-            }
-
-            // Prefer sync vs async overload based on immediate call context.
-            if branch.matches_async_preference {
-                score += 400;
-            }
-
-            // Subtract autoref_cost: prefer None (0) over Immutable (1) over Mutable (2)
-            // This ensures that when we have at(&self) and at(&mut self), and the receiver
-            // is immutable, we prefer at(&self) which has lower autoref_cost.
-            // Multiply by 10 to make it significant.
-            let autoref_penalty = branch.autoref_cost as i32 * 10;
-            score -= autoref_penalty;
-
-            // Subtract deref_steps penalty: prefer fewer dereferences (closer to original type)
-            // e.g. prefer impl on &T (0 derefs) over impl on T (1 deref) when calling on &T
-            let deref_penalty = branch.deref_steps as i32 * 5;
-            score -= deref_penalty;
-
-            RankedBranch {
-                branch,
-                score: score.max(0) as u32,
-            }
+        .map(|branch| RankedBranch {
+            score: (
+                branch
+                    .source
+                    .is_none_or(|source| inherent_method(gcx, source)),
+                branch.matches_async_preference,
+                Reverse(branch.autoref_cost),
+                Reverse(branch.deref_steps),
+            ),
+            branch,
         })
         .collect();
-
-    ranked.sort_by_key(|b| Reverse(b.score));
+    ranked.sort_by_key(|branch| Reverse(branch.score));
     ranked
 }
 
@@ -1047,6 +1224,9 @@ struct SolverDriver<'ctx> {
     errors: SpannedErrorList<'ctx>,
     defaulted: bool,
     default_collection_literals: bool,
+    /// Isolated subexpressions share inference variables with outer goals;
+    /// defaulting those variables before their constraints run loses context.
+    allow_fallbacks: bool,
 }
 
 impl<'ctx> SolverDriver<'ctx> {
@@ -1057,6 +1237,7 @@ impl<'ctx> SolverDriver<'ctx> {
             errors: vec![],
             defaulted: false,
             default_collection_literals: false,
+            allow_fallbacks: true,
         }
     }
 
@@ -1069,7 +1250,6 @@ impl<'ctx> SolverDriver<'ctx> {
             interface_calls: self.solver.interface_calls,
             field_indices: self.solver.field_indices,
             property_reads: self.solver.property_reads,
-            property_writes: self.solver.property_writes,
             overload_sources: self.solver.overload_sources,
             value_resolutions: self.solver.value_resolutions,
             instantiation_args: self.solver.instantiation_args,
@@ -1079,7 +1259,11 @@ impl<'ctx> SolverDriver<'ctx> {
     fn solve_to_fixpoint(&mut self) -> Result<(), SpannedErrorList<'ctx>> {
         loop {
             // Drain pending fallbacks from lowering
-            let pending = self.solver.icx.take_pending_fallbacks();
+            let pending = if self.allow_fallbacks {
+                self.solver.icx.take_pending_fallbacks()
+            } else {
+                vec![]
+            };
             for data in pending {
                 self.solver.obligations.push_back(Obligation {
                     location: data.span,
@@ -1113,10 +1297,12 @@ impl<'ctx> SolverDriver<'ctx> {
                             if self.solver.icx.resolve_vars_if_possible(ty).is_infer()
                                 || has_unresolvable_projection(&self.solver.icx, ty))
                     });
-                if !awaiting_collection_context {
-                    self.solver.icx.default_numeric_vars();
+                if self.allow_fallbacks {
+                    if !awaiting_collection_context {
+                        self.solver.icx.default_numeric_vars();
+                    }
+                    self.apply_default_fallbacks();
                 }
-                self.apply_default_fallbacks();
                 if !self.deferred.is_empty() {
                     self.solver.obligations.append(&mut self.deferred);
                 }
@@ -1165,10 +1351,15 @@ impl<'ctx> SolverDriver<'ctx> {
                 && self.solver.icx.resolve_vars_if_possible(*ty).is_infer()
             {
                 let array = Ty::new(
-                    TyKind::Array { element: *element, len: *len },
+                    TyKind::Array {
+                        element: *element,
+                        len: *len,
+                    },
                     self.solver.gcx(),
                 );
-                if let SolverResult::Error(errors) = self.solver.solve_equality(location, *ty, array) {
+                if let SolverResult::Error(errors) =
+                    self.solver.solve_equality(location, *ty, array)
+                {
                     self.errors.extend(errors);
                 }
                 remaining.push_back(Obligation { goal, location });
@@ -1209,29 +1400,24 @@ fn has_unresolvable_projection<'ctx>(icx: &InferCtx<'ctx>, ty: Ty<'ctx>) -> bool
             args,
             ..
         } => {
-            // Check if the Self type (first arg) is still an inference variable
-            if let Some(GenericArgument::Type(self_ty)) = args.get(0) {
-                let resolved = icx.resolve_vars_if_possible(*self_ty);
-                if resolved.is_infer() {
-                    return true;
-                }
-            }
-            // Also check nested types in args
-            args.iter().any(|arg| match arg {
-                GenericArgument::Type(t) => has_unresolvable_projection(icx, *t),
-                GenericArgument::Const(c) => has_unresolvable_projection(icx, c.ty),
+            // Every interface argument can determine an associated type,
+            // including Into's destination even when Self is already known.
+            args.iter().any(|argument| {
+                crate::sema::tycheck::utils::unresolved::generic_arg_contains_unresolved_inference(
+                    &icx.resolve_vars_if_possible(*argument),
+                )
             })
         }
         TyKind::Alias { args, .. } | TyKind::Adt(_, args) => args.iter().any(|arg| match arg {
             GenericArgument::Type(t) => has_unresolvable_projection(icx, *t),
             GenericArgument::Const(c) => has_unresolvable_projection(icx, c.ty),
         }),
-        TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => {
+        TyKind::Pointer(inner, _) | TyKind::Reference(inner) => {
             has_unresolvable_projection(icx, inner)
         }
         TyKind::Array { element, .. } => has_unresolvable_projection(icx, element),
         TyKind::Tuple(items) => items.iter().any(|t| has_unresolvable_projection(icx, *t)),
-        TyKind::FnPointer { inputs, output } => {
+        TyKind::FnPointer { inputs, output, .. } => {
             inputs.iter().any(|t| has_unresolvable_projection(icx, *t))
                 || has_unresolvable_projection(icx, output)
         }

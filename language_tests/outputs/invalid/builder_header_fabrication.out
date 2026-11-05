@@ -1,0 +1,4 @@
+error: field 'state' of Builder is not visible here
+ -> language_tests/source_files/invalid/builder_header_fabrication.tr:2:27
+	    std::string::Builder { state: pointer }.toString()
+	                           ^^^^^^

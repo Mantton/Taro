@@ -1,0 +1,7 @@
+interface Same {
+    func same(_ other: &Self) -> bool
+}
+func compare(_ left: &any Same, _ right: &any Same) -> bool {
+    left.same(right)
+}
+func main() {}

@@ -1,0 +1,17 @@
+func tick() async -> int32 {
+    await std::testing::yieldNow()
+    42
+}
+
+func main() async {
+    run := () => { await tick() }
+    assert((await run()) == 42, "await in a local closure infers async capability")
+    assert((await run()) == 42, "inferred async Fn can be called again")
+
+    outer := () => {
+        inner := () => { await tick() }
+        7
+    }
+    assert(outer() == 7, "nested async closure does not make its parent async")
+    print("closure async inference ok\n")
+}

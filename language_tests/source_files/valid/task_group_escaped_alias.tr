@@ -1,0 +1,29 @@
+// G23: a group reference that escapes its scope is rejected, even after a
+// later group reuses the slot, instead of spawning into the wrong group.
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: panic: task group used after its scope ended
+final class Stash {
+    group: Optional[&std::task::TaskGroup[int32]]
+}
+extend Stash { init() { self.group = .none } }
+
+func spawnThrough(_ stash: Stash) {
+    match stash.group {
+        case .some(group) => group.spawn(() async => { 2_i32 })
+        case .none => {}
+    }
+}
+
+func main() async {
+    stash := Stash()
+    await std::task::withTaskGroup[int32, (), _]((group: &std::task::TaskGroup[int32]) async => {
+        stash.group = .some(group)
+        group.spawn(() async => { 1_i32 })
+    })
+    print("first scope ended\n")
+    await std::task::withTaskGroup[int32, (), _]((group: &std::task::TaskGroup[int32]) async => {
+        print("second scope running\n")
+        spawnThrough(stash)
+    })
+    print("unreachable\n")
+}

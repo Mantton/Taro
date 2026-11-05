@@ -13,6 +13,7 @@ use crate::{
 pub struct InstantiateFolder<'ctx> {
     gcx: GlobalContext<'ctx>,
     args: GenericArguments<'ctx>,
+    erased_depth: u32,
 }
 
 impl<'ctx> TypeFolder<'ctx> for InstantiateFolder<'ctx> {
@@ -24,10 +25,20 @@ impl<'ctx> TypeFolder<'ctx> for InstantiateFolder<'ctx> {
         match ty.kind() {
             TyKind::Parameter(p) => {
                 if let Some(ty) = self.args.get(p.index) {
-                    (*ty).ty().expect("Argument is not a Type")
+                    super::erased_self::shift(
+                        self.gcx,
+                        (*ty).ty().expect("Argument is not a Type"),
+                        self.erased_depth,
+                    )
                 } else {
                     ty
                 }
+            }
+            TyKind::BoxedExistential { .. } => {
+                self.erased_depth += 1;
+                let instantiated = ty.super_fold_with(self);
+                self.erased_depth -= 1;
+                instantiated
             }
             // Delegate to `TypeFoldable` on the *kind* itself, then rebuild
             // a fresh `Ty` only if something actually changed.
@@ -57,7 +68,11 @@ pub fn instantiate_ty_with_args<'ctx>(
         return ty;
     }
 
-    let mut folder = InstantiateFolder { gcx, args };
+    let mut folder = InstantiateFolder {
+        gcx,
+        args,
+        erased_depth: 0,
+    };
     ty.fold_with(&mut folder)
 }
 
@@ -66,7 +81,11 @@ pub fn instantiate_const_with_args<'ctx>(
     c: Const<'ctx>,
     args: GenericArguments<'ctx>,
 ) -> Const<'ctx> {
-    c.fold_with(&mut InstantiateFolder { gcx, args })
+    c.fold_with(&mut InstantiateFolder {
+        gcx,
+        args,
+        erased_depth: 0,
+    })
 }
 
 pub fn instantiate_constraint_with_args<'ctx>(
@@ -74,7 +93,11 @@ pub fn instantiate_constraint_with_args<'ctx>(
     constraint: Constraint<'ctx>,
     args: GenericArguments<'ctx>,
 ) -> Constraint<'ctx> {
-    let mut folder = InstantiateFolder { gcx, args };
+    let mut folder = InstantiateFolder {
+        gcx,
+        args,
+        erased_depth: 0,
+    };
     constraint.fold_with(&mut folder)
 }
 
@@ -87,7 +110,11 @@ pub fn instantiate_generic_args<'ctx>(
     if args.is_empty() {
         return template;
     }
-    template.fold_with(&mut InstantiateFolder { gcx, args })
+    template.fold_with(&mut InstantiateFolder {
+        gcx,
+        args,
+        erased_depth: 0,
+    })
 }
 
 pub fn instantiate_interface_ref_with_args<'ctx>(
@@ -99,7 +126,11 @@ pub fn instantiate_interface_ref_with_args<'ctx>(
         return interface;
     }
 
-    interface.fold_with(&mut InstantiateFolder { gcx, args })
+    interface.fold_with(&mut InstantiateFolder {
+        gcx,
+        args,
+        erased_depth: 0,
+    })
 }
 
 pub fn instantiate_signature_with_args<'ctx>(
@@ -110,7 +141,11 @@ pub fn instantiate_signature_with_args<'ctx>(
     if args.is_empty() {
         return signature.clone();
     }
-    let mut folder = InstantiateFolder { gcx, args };
+    let mut folder = InstantiateFolder {
+        gcx,
+        args,
+        erased_depth: 0,
+    };
 
     let inputs = signature
         .inputs
@@ -138,7 +173,11 @@ pub fn instantiate_struct_definition_with_args<'ctx>(
     def: &StructDefinition<'ctx>,
     args: GenericArguments<'ctx>,
 ) -> StructDefinition<'ctx> {
-    let mut folder = InstantiateFolder { gcx, args };
+    let mut folder = InstantiateFolder {
+        gcx,
+        args,
+        erased_depth: 0,
+    };
     def.clone().fold_with(&mut folder)
 }
 
@@ -147,6 +186,65 @@ pub fn instantiate_enum_definition_with_args<'ctx>(
     def: &EnumDefinition<'ctx>,
     args: GenericArguments<'ctx>,
 ) -> EnumDefinition<'ctx> {
-    let mut folder = InstantiateFolder { gcx, args };
+    let mut folder = InstantiateFolder {
+        gcx,
+        args,
+        erased_depth: 0,
+    };
     def.clone().fold_with(&mut folder)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        hir::DefinitionID, mir::test_support::with_test_gcx, sema::models::GenericParameter,
+    };
+
+    #[test]
+    fn existential_self_is_bound_while_outer_arguments_are_instantiated() {
+        with_test_gcx(|gcx| {
+            let outer = Ty::new(
+                TyKind::Parameter(GenericParameter {
+                    index: 0,
+                    name: gcx.intern_symbol("T"),
+                }),
+                gcx,
+            );
+            let interface = InterfaceReference {
+                id: DefinitionID::new(
+                    crate::span::PackageIndex::new(1),
+                    crate::sema::resolve::models::DefinitionIndex::from_raw(0),
+                ),
+                arguments: gcx.store.interners.intern_generic_args(vec![
+                    GenericArgument::Type(gcx.types.existential_self),
+                    GenericArgument::Type(outer),
+                ]),
+                bindings: &[],
+            };
+            let erased = Ty::new(
+                TyKind::BoxedExistential {
+                    interfaces: gcx.store.arenas.global.alloc_slice_clone(&[interface]),
+                },
+                gcx,
+            );
+            let arguments = gcx
+                .store
+                .interners
+                .intern_generic_args(vec![GenericArgument::Type(gcx.types.bool)]);
+            let TyKind::BoxedExistential { interfaces } =
+                instantiate_ty_with_args(gcx, erased, arguments).kind()
+            else {
+                panic!("expected existential");
+            };
+            assert_eq!(
+                interfaces[0].arguments[0],
+                GenericArgument::Type(gcx.types.existential_self)
+            );
+            assert_eq!(
+                interfaces[0].arguments[1],
+                GenericArgument::Type(gcx.types.bool)
+            );
+        });
+    }
 }

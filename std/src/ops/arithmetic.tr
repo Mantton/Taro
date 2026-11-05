@@ -1,50 +1,56 @@
-
+// Operators use ordinary receivers and value arguments. Reference targets
+// mutate existing storage; value targets can mutate shared state.
 @lang("Add")
-public interface Add[Rhs=Self, Output=Self] {
-    func add(self, rhs: Rhs) -> Output
+public interface Add[Rhs=Self] {
+    type Output = Self
+    func add(_ rhs: Rhs) -> Self::Output
 }
 
 @lang("AddAssign")
 public interface AddAssign[Rhs=Self] {
-    func addAssign(&mut self, rhs: Rhs)
+    func addAssign(_ rhs: Rhs)
 }
 
 @lang("Sub")
-public interface Sub[Rhs=Self, Output=Self] {
-    func sub(self, rhs: Rhs) -> Output
+public interface Sub[Rhs=Self] {
+    type Output = Self
+    func sub(_ rhs: Rhs) -> Self::Output
 }
 
 @lang("SubAssign")
 public interface SubAssign[Rhs=Self] {
-    func subAssign(&mut self, rhs: Rhs)
+    func subAssign(_ rhs: Rhs)
 }
 
 @lang("Mul")
-public interface Mul[Rhs=Self, Output=Self] {
-    func mul(self, rhs: Rhs) -> Output
+public interface Mul[Rhs=Self] {
+    type Output = Self
+    func mul(_ rhs: Rhs) -> Self::Output
 }
 
 @lang("MulAssign")
 public interface MulAssign[Rhs=Self] {
-    func mulAssign(&mut self, rhs: Rhs)
+    func mulAssign(_ rhs: Rhs)
 }
 
 @lang("Div")
-public interface Div[Rhs=Self, Output=Self] {
-    func div(self, rhs: Rhs) -> Output
+public interface Div[Rhs=Self] {
+    type Output = Self
+    func div(_ rhs: Rhs) -> Self::Output
 }
 
 @lang("DivAssign")
 public interface DivAssign[Rhs=Self] {
-    func divAssign(&mut self, rhs: Rhs)
+    func divAssign(_ rhs: Rhs)
 }
 
 @lang("Rem")
-public interface Rem[Rhs=Self, Output=Self] {
-    func rem(self, rhs: Rhs) -> Output
+public interface Rem[Rhs=Self] {
+    type Output = Self
+    func rem(_ rhs: Rhs) -> Self::Output
 }
 
 @lang("RemAssign")
 public interface RemAssign[Rhs=Self] {
-    func remAssign(&mut self, rhs: Rhs)
+    func remAssign(_ rhs: Rhs)
 }

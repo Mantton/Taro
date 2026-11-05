@@ -1,0 +1,104 @@
+// TEST
+import std::encoding::Codable
+
+enum CodingEvent: Codable {
+    case idle = 7
+    case count(int32)
+    case maybe(int32?)
+    case point(x: int32, y: int32)
+    case person { name: string; age: uint8; nickname: string? }
+    case emptyTuple()
+    case emptyObject {}
+    case reserved { kind: string; content: string }
+}
+
+struct CodingMessage: Codable {
+    `type`: CodingEvent
+}
+
+@test
+func derivedEnumWireShapes() {
+    var event: CodingEvent = .idle
+    assert(std::json::encode(&event).unwrap() == "{\"kind\":\"idle\"}", "unit omits content")
+    event = .count(3)
+    assert(std::json::encode(&event).unwrap() == "{\"kind\":\"count\",\"content\":[3]}", "single-element tuple stays an array")
+    event = .point(y: 2, x: 1)
+    assert(std::json::encode(&event).unwrap() == "{\"kind\":\"point\",\"content\":[1,2]}", "labels do not change positional wire order")
+    event = .person(name: "Ada", age: 37, nickname: .none)
+    message := CodingMessage { `type`: event }
+    assert(std::json::encode(&message).unwrap() == "{\"type\":{\"kind\":\"person\",\"content\":{\"name\":\"Ada\",\"age\":37,\"nickname\":null}}}", "named payload inside a complete record")
+    event = .maybe(.none)
+    assert(std::json::encode(&event).unwrap() == "{\"kind\":\"maybe\",\"content\":[null]}", "optional tuple elements occupy a position")
+    event = .emptyTuple()
+    assert(std::json::encode(&event).unwrap() == "{\"kind\":\"emptyTuple\",\"content\":[]}", "empty tuple differs from unit")
+    event = .emptyObject()
+    assert(std::json::encode(&event).unwrap() == "{\"kind\":\"emptyObject\",\"content\":{}}", "empty struct payload differs from unit")
+    event = .reserved(kind: "data", content: "text")
+    assert(std::json::encode(&event).unwrap() == "{\"kind\":\"reserved\",\"content\":{\"kind\":\"data\",\"content\":\"text\"}}", "payload names cannot collide with envelope names")
+}
+
+@test
+func derivedEnumDecodesEitherEnvelopeOrderAndSkipsUnknowns() {
+    value := std::json::decode[CodingMessage]("{\"type\":{\"content\":{\"age\":37,\"ignored\":[true],\"name\":\"Ada\"},\"future\":{\"x\":1},\"kind\":\"person\"}}").unwrap()
+    std::runtime::collect()
+    match value.`type` {
+        case .person { name, age, nickname } => assert(name == "Ada" && age == 37 && nickname.isNone(), "named payload fields and optional omission")
+        case _ => panic("person expected")
+    }
+    tuple := std::json::decode[CodingEvent]("{\"content\":[1,2],\"kind\":\"point\"}").unwrap()
+    match tuple {
+        case .point(x, y) => assert(x == 1 && y == 2, "positional tuple decoding")
+        case _ => panic("point expected")
+    }
+    for text in ["{\"kind\":\"idle\"}", "{\"kind\":\"emptyTuple\",\"content\":[]}", "{\"kind\":\"emptyObject\",\"content\":{}}"] {
+        value := std::json::decode[CodingEvent](text).unwrap()
+        assert(std::json::encode(&value).unwrap() == text, "empty payload round trip")
+    }
+}
+
+func assertEnumError(_ text: string, _ kind: std::encoding::CodingErrorKind, _ path: string) {
+    match std::json::decode[CodingEvent](text) {
+        case .err(.codec(error)) => {
+            assert(error.kind() == kind, "typed enum error kind")
+            assert(error.path() == path, "enum error retains coding path")
+        }
+        case _ => panic("enum decode must fail")
+    }
+}
+
+@test
+func derivedEnumRejectsMalformedEnvelopesAndPayloads() {
+    assertEnumError("{}", .missingField, "$[\"kind\"]")
+    assertEnumError("{\"kind\":3}", .typeMismatch, "$[\"kind\"]")
+    assertEnumError("{\"kind\":\"unknown\"}", .invalidValue, "$[\"kind\"]")
+    assertEnumError("{\"kind\":\"count\"}", .missingField, "$[\"content\"]")
+    assertEnumError("{\"kind\":\"idle\",\"content\":null}", .invalidValue, "$[\"content\"]")
+    assertEnumError("{\"kind\":\"count\",\"content\":{}}", .typeMismatch, "$[\"content\"]")
+    assertEnumError("{\"kind\":\"person\",\"content\":[]}", .typeMismatch, "$[\"content\"]")
+    assertEnumError("{\"kind\":\"person\",\"content\":{\"age\":37}}", .missingField, "$[\"content\"][\"name\"]")
+    assertEnumError("{\"kind\":\"maybe\",\"content\":[]}", .invalidValue, "$[\"content\"]")
+    assertEnumError("{\"kind\":\"count\",\"content\":[]}", .invalidValue, "$[\"content\"]")
+    assertEnumError("{\"kind\":\"count\",\"content\":[1,2]}", .invalidValue, "$[\"content\"][1]")
+    assertEnumError("{\"kind\":\"count\",\"content\":[\"bad\"]}", .typeMismatch, "$[\"content\"][0]")
+    assertEnumError("{\"kind\":\"person\",\"content\":{\"name\":\"Ada\",\"age\":300}}", .invalidValue, "$[\"content\"][\"age\"]")
+    assert(std::json::decode[CodingEvent]("{\"kind\":\"idle\",\"kind\":\"count\"}").isErr(), "parser duplicate policy applies to enum envelopes")
+    options := std::json::Options::new().withDuplicateKeys(.useLast)
+    value := std::json::decodeWithOptions[CodingEvent]("{\"content\":[3],\"kind\":\"idle\",\"kind\":\"count\"}", options).unwrap()
+    match value {
+        case .count(n) => assert(n == 3, "useLast tag is honored")
+        case _ => panic("last tag expected")
+    }
+}
+
+enum CodingTree[T]: Codable {
+    case leaf(T)
+    case branch { children: List[CodingTree[T]] }
+}
+
+@test
+func derivedRecursiveGenericEnumSurvivesGc() {
+    text := "{\"kind\":\"branch\",\"content\":{\"children\":[{\"kind\":\"leaf\",\"content\":[\"alive\"]}]}}"
+    value := std::json::decode[CodingTree[string]](text).unwrap()
+    std::runtime::collect()
+    assert(std::json::encode(&value).unwrap() == text, "recursive generic enum payloads stay rooted")
+}

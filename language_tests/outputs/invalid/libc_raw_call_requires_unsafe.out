@@ -1,0 +1,4 @@
+error: call to unsafe function 'read' must be inside an unsafe { ... } block
+ -> language_tests/source_files/invalid/libc_raw_call_requires_unsafe.tr:3:12
+	    var _ = std::libc::read(-1_i32, data, 1)
+	            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

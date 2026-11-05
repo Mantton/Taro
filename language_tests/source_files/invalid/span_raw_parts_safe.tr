@@ -1,0 +1,5 @@
+func wrap(_ pointer: *const int32, _ length: usize) -> std::mem::Span[int32] {
+    std::mem::Span[int32]::from(pointer, length)
+}
+
+func main() {}

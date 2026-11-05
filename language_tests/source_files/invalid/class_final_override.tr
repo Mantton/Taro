@@ -1,0 +1,7 @@
+class Base {}
+class Derived: Base {}
+extend Base { final func read() -> int32 { 1 }
+}
+extend Derived { override func read() -> int32 { 2 }
+}
+func main() {}

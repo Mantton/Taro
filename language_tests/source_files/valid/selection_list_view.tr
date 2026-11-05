@@ -1,0 +1,23 @@
+struct Document { title: string }
+enum Item { case empty; case document(Document) }
+struct Selection { item: &Item }
+func first(_ items: &List[Item]) -> Selection { Selection { item: &items[0] } }
+func titleLength(_ selection: &Selection) -> usize {
+    match *selection.item {
+        case .document(document) => std::string::stringLen(document.title)
+        case .empty => 0 as usize
+    }
+}
+func main() {
+    var items: List[Item] = [Item::document(Document { title: "selected " + "document" })]
+    var optional: Selection? = .some(first(&items))
+    var selection: Selection = optional.unwrap()
+    assert(titleLength(&selection) == 17, "the optional view preserves its list dependency")
+    items.append(.empty)
+    var removed: Item = items.pop().unwrap()
+    match removed {
+        case .empty => {}
+        case .document(_) => panic("expected empty")
+    }
+    assert(items.len() == 1, "list mutation is allowed after the view's last dependent use")
+}

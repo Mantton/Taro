@@ -1,7 +1,6 @@
-interface WritableValue {
+interface ReadableValue {
     var value: int32 {
-        get(&self)
-        set(&mut self, value: int32)
+        get
     };
 }
 
@@ -9,16 +8,16 @@ struct ReadonlyValue {
     readonly value: int32
 }
 
-impl WritableValue for ReadonlyValue {}
+conform ReadonlyValue to ReadableValue {}
 
 struct WrongValue {
     value: string
 }
 
-impl WritableValue for WrongValue {}
+conform WrongValue to ReadableValue {}
 
 struct MissingValue {}
 
-impl WritableValue for MissingValue {}
+conform MissingValue to ReadableValue {}
 
 func main() {}

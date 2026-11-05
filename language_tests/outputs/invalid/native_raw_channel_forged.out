@@ -1,0 +1,4 @@
+error: field 'owner' of RawChannel is not visible here
+ -> language_tests/source_files/invalid/native_raw_channel_forged.tr:2:33
+	    std::sys::sync::RawChannel { owner: pointer }
+	                                 ^^^^^^

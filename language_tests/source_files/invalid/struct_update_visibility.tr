@@ -1,0 +1,3 @@
+struct Point { public x: int32; private y: int32 }
+extend Point { static func make() -> Point { Point { x: 1, y: 2 } }; }
+func main() { var point = Point { x: 3, ..Point::make() } }

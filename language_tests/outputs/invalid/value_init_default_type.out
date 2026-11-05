@@ -1,0 +1,4 @@
+error: expected int32, found bool
+ -> language_tests/source_files/invalid/value_init_default_type.tr:1:32
+	struct Counter { value: int32 = false }
+	                                ^^^^^

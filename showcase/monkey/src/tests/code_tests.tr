@@ -1,11 +1,11 @@
-import monkey.code.{Instruction, Instructions, Opcode, decode, encoded, describeInstruction}
+import monkey::code::{Instruction, Instructions, Opcode, decode, encoded, describeInstruction}
 
 /// Every instruction, one of each, with distinguishable operands.
 ///
 /// Written out rather than generated so that adding an opcode without adding it
 /// here is visible: the count check below fails.
 func everyInstruction() -> List[Instruction] {
-    var all = List[Instruction]()
+    var all = List[Instruction]::new()
     all.append(.constant(65534))
     all.append(.add)
     all.append(.subtract)
@@ -50,18 +50,18 @@ func everyOpcodeIsCovered() {
 func encodingRoundTrips() {
     // The property the reference implementation cannot state: whatever is
     // encoded decodes back to exactly the same instruction, operands included.
-    for instruction in &everyInstruction() {
-        let bytes = encoded(*instruction)
+    for instruction in everyInstruction() {
+        bytes := encoded(instruction)
         assertEqual(
             bytes.len(),
             instruction.width(),
             sprintf("%s encodes to the width it declares", describeInstruction(instruction)),
         )
 
-        match decode(&bytes, at: 0) {
+        match decode(bytes, at: 0) {
             case .ok(back) => {
                 assertEqual(
-                    describeInstruction(&back.instruction),
+                    describeInstruction(back.instruction),
                     describeInstruction(instruction),
                     "an instruction survives the round trip",
                 )
@@ -78,18 +78,18 @@ func encodingRoundTrips() {
 func opcodeBytesAreStable() {
     // The byte values are the reference implementation's, so bytecode produced
     // here is the same bytecode the book produces.
-    assertEqual(Opcode.constant.toByte(), 0, "OpConstant is 0")
-    assertEqual(Opcode.add.toByte(), 1, "OpAdd is 1")
-    assertEqual(Opcode.pop.toByte(), 2, "OpPop is 2")
-    assertEqual(Opcode.closure.toByte(), 27, "OpClosure is 27")
-    assertEqual(Opcode.currentClosure.toByte(), 29, "OpCurrentClosure is 29")
+    assertEqual(Opcode::constant.toByte(), 0, "OpConstant is 0")
+    assertEqual(Opcode::add.toByte(), 1, "OpAdd is 1")
+    assertEqual(Opcode::pop.toByte(), 2, "OpPop is 2")
+    assertEqual(Opcode::closure.toByte(), 27, "OpClosure is 27")
+    assertEqual(Opcode::currentClosure.toByte(), 29, "OpCurrentClosure is 29")
 }
 
 @test
 func everyOpcodeByteMapsBack() {
-    for instruction in &everyInstruction() {
-        let opcode = instruction.opcode()
-        match Opcode.fromByte(opcode.toByte()) {
+    for instruction in everyInstruction() {
+        opcode := instruction.opcode()
+        match Opcode::fromByte(opcode.toByte()) {
             case .some(back) => {
                 assertTrue(back == opcode, sprintf("%s maps back from its byte", opcode.name()))
             }
@@ -101,11 +101,11 @@ func everyOpcodeByteMapsBack() {
 @test
 func unassignedBytesAreRejected() {
     // Thirty opcodes are defined, so 30 and up name nothing.
-    match Opcode.fromByte(30) {
+    match Opcode::fromByte(30) {
         case .some(_) => fail("byte 30 should name no opcode")
         case .none => {}
     }
-    match Opcode.fromByte(255) {
+    match Opcode::fromByte(255) {
         case .some(_) => fail("byte 255 should name no opcode")
         case .none => {}
     }
@@ -114,13 +114,13 @@ func unassignedBytesAreRejected() {
 @test
 func operandsAreBigEndian() {
     // The layout matches the reference implementation byte for byte.
-    let bytes = encoded(.constant(65534))
+    bytes := encoded(.constant(65534))
     assertEqual(bytes.len(), 3, "an opcode and two operand bytes")
     assertEqual(*bytes.at(0), 0, "OpConstant")
     assertEqual(*bytes.at(1), 255, "high byte first")
     assertEqual(*bytes.at(2), 254, "then the low byte")
 
-    let wide = encoded(.closure(constant: 65534, free: 255))
+    wide := encoded(.closure(constant: 65534, free: 255))
     assertEqual(wide.len(), 4, "two operands of different widths")
     assertEqual(*wide.at(1), 255, "the wide operand leads")
     assertEqual(*wide.at(3), 255, "the narrow one follows")
@@ -129,10 +129,10 @@ func operandsAreBigEndian() {
 @test
 func truncatedStreamsAreReported() {
     // An operand that runs off the end is refused rather than read past.
-    var partial = List[uint8]()
-    partial.append(Opcode.constant.toByte())
+    var partial = List[uint8]::new()
+    partial.append(Opcode::constant.toByte())
     partial.append(1)
-    match decode(&partial, at: 0) {
+    match decode(partial, at: 0) {
         case .ok(_) => fail("a half-written operand should not decode")
         case .err(error) => {
             assertEqual(
@@ -143,9 +143,9 @@ func truncatedStreamsAreReported() {
         }
     }
 
-    var unknown = List[uint8]()
+    var unknown = List[uint8]::new()
     unknown.append(200)
-    match decode(&unknown, at: 0) {
+    match decode(unknown, at: 0) {
         case .ok(_) => fail("an unassigned byte should not decode")
         case .err(error) => {
             assertEqual(
@@ -159,7 +159,7 @@ func truncatedStreamsAreReported() {
 
 @test
 func disassemblyReadsBack() {
-    var stream = Instructions.new()
+    var stream = Instructions::new()
     stream.emit(.add)
     stream.emit(.getLocal(1))
     stream.emit(.constant(2))
@@ -167,7 +167,7 @@ func disassemblyReadsBack() {
     stream.emit(.closure(constant: 65535, free: 255))
 
     // Offsets are byte offsets, so they advance by each instruction's width.
-    let expected = "0000 OpAdd\n"
+    expected := "0000 OpAdd\n"
         + "0001 OpGetLocal 1\n"
         + "0003 OpConstant 2\n"
         + "0006 OpConstant 65535\n"
@@ -177,7 +177,7 @@ func disassemblyReadsBack() {
 
 @test
 func emitAnswersTheOffset() {
-    var stream = Instructions.new()
+    var stream = Instructions::new()
     assertEqual(stream.emit(.add), 0, "the first instruction starts at zero")
     assertEqual(stream.emit(.constant(0)), 1, "the next follows OpAdd's single byte")
     assertEqual(stream.emit(.pop), 4, "and follows OpConstant's three")
@@ -186,17 +186,17 @@ func emitAnswersTheOffset() {
 
 @test
 func jumpsArePatchedInPlace() {
-    var stream = Instructions.new()
+    var stream = Instructions::new()
     stream.emit(.pushTrue)
     // A jump is emitted before its destination is known.
-    let placeholder = stream.emit(.jumpNotTruthy(9999))
+    placeholder := stream.emit(.jumpNotTruthy(9999))
     stream.emit(.pop)
 
     assertTrue(stream.patchJump(at: placeholder, to: 42), "the offset names a jump")
     match stream.decodeAt(placeholder) {
         case .ok(decoded) => {
             assertEqual(
-                describeInstruction(&decoded.instruction),
+                describeInstruction(decoded.instruction),
                 "OpJumpNotTruthy 42",
                 "the destination was rewritten",
             )
@@ -210,13 +210,13 @@ func jumpsArePatchedInPlace() {
 func onlyJumpsArePatched() {
     // The reference implementation's `changeOperand` would happily overwrite
     // this; restricting patching to jumps refuses it instead.
-    var stream = Instructions.new()
-    let offset = stream.emit(.constant(1))
+    var stream = Instructions::new()
+    offset := stream.emit(.constant(1))
     assertTrue(!stream.patchJump(at: offset, to: 2), "a constant is not a jump")
     match stream.decodeAt(offset) {
         case .ok(decoded) => {
             assertEqual(
-                describeInstruction(&decoded.instruction),
+                describeInstruction(decoded.instruction),
                 "OpConstant 1",
                 "the refused patch left the instruction alone",
             )
@@ -227,9 +227,9 @@ func onlyJumpsArePatched() {
 
 @test
 func truncateTakesBackAnInstruction() {
-    var stream = Instructions.new()
+    var stream = Instructions::new()
     stream.emit(.constant(1))
-    let beforePop = stream.len()
+    beforePop := stream.len()
     stream.emit(.pop)
     assertEqual(stream.len(), beforePop + 1, "OpPop is one byte")
 

@@ -1,0 +1,59 @@
+// A reference loaded through &local retains its target, not necessarily local.
+type Link = &int32
+
+@noinline
+func load(_ input: &Link) -> Link { *input }
+
+@noinline
+func retain(_ output: &Link, _ input: &Link) { *output = *input }
+
+@noinline
+func forward(_ output: &Link, _ input: Link) {
+    local := input
+    retain(output, &local)
+}
+
+@noinline
+func returned() -> Link {
+    var value: int32 = 42
+    local := &value
+    load(&local)
+}
+
+@noinline
+func produced(_ output: &Link) {
+    var value: int32 = 41
+    forward(output, &value)
+}
+
+@noinline
+func header() -> &Link {
+    var value: int32 = 43
+    local := &value
+    &local
+}
+
+@noinline
+func churn(_ value: int32) -> int32 {
+    // Replace dead frames before checking references that escaped them.
+    var slots: [int32; 128] = [value; 128]
+    slots[127] + slots[0]
+}
+
+func main() {
+    var seed: int32 = 0
+    var saved: Link = &seed
+    produced(&saved)
+    result := returned()
+    nested := header()
+    assert(churn(7) == 14, "stack churn completes")
+    std::runtime::collect()
+    assert(*saved == 41, "indirect heap capture keeps the underlying value alive")
+    assert(*result == 42, "indirect return keeps the underlying value alive")
+    assert(**nested == 43, "an escaping header also keeps its contents alive")
+    *saved = 51
+    *result = 52
+    **nested = 53
+    std::runtime::collect()
+    assert(*saved + *result + **nested == 156, "escaped references remain writable")
+}

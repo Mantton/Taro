@@ -1,4 +1,4 @@
-import std.collections.List
+import std::collections::List
 
 const PARK_MILLER_MODULUS: uint64 = 2147483647_u64
 const PARK_MILLER_MULTIPLIER: uint64 = 16807_u64
@@ -9,22 +9,19 @@ public struct Random {
     state: uint64
 }
 
-impl Random {
-    public func seeded(_ seed: uint64) -> Self {
-        let reduced = seed % PARK_MILLER_MODULUS
-        return Random { state: if reduced == 0 { 1_u64 } else { reduced } }
-    }
+extend &Random {
 
-    public func nextUint(&mut self) -> uint64 {
+
+    public func nextUint() -> uint64 {
         self.state = (self.state * PARK_MILLER_MULTIPLIER) % PARK_MILLER_MODULUS
         return self.state
     }
 
-    public func unit(&mut self) -> double {
+    public func unit() -> double {
         // Taro intentionally has no implicit integer-to-floating conversion.
         // Quantized initialization is sufficient here and keeps the generator
         // deterministic without parsing decimal text in hot setup loops.
-        let bucket = self.nextUint() % 32_u64
+        bucket := self.nextUint() % 32_u64
         if bucket == 0_u64 { return 0.015625 }
         if bucket == 1_u64 { return 0.046875 }
         if bucket == 2_u64 { return 0.078125 }
@@ -59,20 +56,27 @@ impl Random {
         return 0.984375
     }
 
-    public func symmetric(&mut self, _ radius: double) -> double {
+    public func symmetric( _ radius: double) -> double {
         return (self.unit() * 2.0 - 1.0) * radius
     }
 
-    public func shuffle(&mut self, _ values: &mut List[usize]) {
+    public func shuffle( _ values: &List[usize]) {
         if values.len() < 2 { return }
         var remaining = values.len()
         while remaining > 1 {
-            let index = (self.nextUint() % remaining as uint64) as usize
-            let last = remaining - 1
-            let temporary = *values.at(last)
-            *values.at(last) = *values.at(index)
-            *values.at(index) = temporary
+            index := (self.nextUint() % remaining as uint64) as usize
+            last := remaining - 1
+            temporary := values[last]
+            values[last] = values[index]
+            values[index] = temporary
             remaining -= 1
         }
+    }
+}
+
+extend Random {
+    public static func seeded(_ seed: uint64) -> Self {
+        reduced := seed % PARK_MILLER_MODULUS
+        return Random { state: if reduced == 0 { 1_u64 } else { reduced } }
     }
 }

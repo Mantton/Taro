@@ -1,0 +1,25 @@
+import std::encoding::{Encodable, Encoder}
+import std::result::Result
+
+struct Link[T] {}
+conform[T: Encodable] Link[T] to Encodable {
+    func encode[E: Encoder](into encoder: E) -> Result[(), E::Error] {
+        encoder.encodeNull()
+    }
+}
+
+struct Chain[T]: Encodable {
+    next: Link[Chain[T]]
+    value: T
+}
+struct Plain {}
+func requiresEncoding[T: Encodable](_ value: T) {}
+
+// The first query visits Link[Chain[Plain]] under the recursive assumption
+// before discovering the unsupported Plain leaf. The second query must not
+// reuse that assumption-dependent success as an ordinary proof.
+func check(_ chain: Chain[Plain], _ link: Link[Chain[Plain]]) {
+    requiresEncoding(chain)
+    requiresEncoding(link)
+}
+func main() {}

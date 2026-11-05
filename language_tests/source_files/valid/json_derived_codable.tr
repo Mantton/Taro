@@ -1,0 +1,135 @@
+// TEST
+import std::encoding::{Codable, Encodable, Decodable}
+
+type DerivedNickname = string?
+
+struct DerivedPerson: Codable {
+    name: string
+    age: uint8
+    nickname: DerivedNickname
+}
+
+struct DerivedBox[T]: Codable {
+    value: T
+    extra: T?
+}
+
+struct DerivedEmpty: Codable {}
+
+func derivedDefault() -> int32 {
+    panic("decoding must not run stored defaults")
+}
+
+struct DerivedDefaulted: Codable {
+    value: int32 = derivedDefault()
+}
+
+struct DerivedInitialized: Codable {
+    value: int32
+}
+
+extend DerivedInitialized {
+    init(_ value: int32) {
+        self.value = value + 1
+    }
+}
+
+@test
+func derivedRecordRoundTripAndUnknownFields() {
+    source := DerivedPerson { name: "Ada", age: 37, nickname: .none }
+    text := std::json::encode(&source).unwrap()
+    assert(text == "{\"name\":\"Ada\",\"age\":37,\"nickname\":null}", "declaration order and optional encoding")
+    decoded := std::json::decode[DerivedPerson](
+        "{\"skip\":{\"deep\":[1,2]},\"age\":37,\"name\":\"A\\u0064a\"}",
+    ).unwrap()
+    assert(decoded.name == "Ada" && decoded.age == 37, "decode fields in any order")
+    assert(decoded.nickname.isNone(), "absent declared optional becomes none")
+    std::runtime::collect()
+    assert(decoded.name == source.name, "decoded strings survive collection")
+}
+
+@test
+func derivedNestedAndGenericRecords() {
+    value := std::json::decode[DerivedBox[List[DerivedPerson]]](
+        "{\"value\":[{\"name\":\"Grace\",\"age\":41}]}",
+    ).unwrap()
+    assert(value.extra.isNone(), "generic optional may be absent")
+    assert(value.value[0].name == "Grace", "generic nested record")
+    encoded := std::json::encode(&value).unwrap()
+    again := std::json::decode[DerivedBox[List[DerivedPerson]]](encoded).unwrap()
+    std::runtime::collect()
+    assert(again.value[0].age == 41, "generic round trip")
+}
+
+@test
+func derivedDecoderKeepsErrorsAndDuplicatePolicy() {
+    match std::json::decode[DerivedPerson]("{\"age\":37}") {
+        case .err(.codec(error)) => {
+            assert(error.kind() == std::encoding::CodingErrorKind::missingField, "missing required field")
+            assert(error.path() == "$[\"name\"]", "missing field path")
+        }
+        case _ => panic("missing name must fail")
+    }
+    match std::json::decode[List[DerivedPerson]]("[{\"name\":\"Ada\",\"age\":300}]") {
+        case .err(.codec(error)) => {
+            assert(error.kind() == std::encoding::CodingErrorKind::invalidValue, "range error")
+            assert(error.path() == "$[0][\"age\"]", "nested scalar path")
+        }
+        case _ => panic("range error must propagate")
+    }
+    options := std::json::Options::new().withDuplicateKeys(.useLast)
+    value := std::json::decodeWithOptions[DerivedPerson](
+        "{\"name\":\"Ada\",\"age\":\"discarded\",\"age\":37}", options,
+    ).unwrap()
+    assert(value.age == 37, "discarded duplicate is not converted")
+}
+
+@test
+func derivedConstructionOptsInPastInitAndDefaults() {
+    constructed := DerivedInitialized(7)
+    assert(constructed.value == 8, "ordinary initializer still runs")
+    decoded := std::json::decode[DerivedInitialized]("{\"value\":7}").unwrap()
+    assert(decoded.value == 7, "derived decoder initializes decoded fields directly")
+    defaulted := std::json::decode[DerivedDefaulted]("{\"value\":9}").unwrap()
+    assert(defaulted.value == 9, "stored default expressions do not run during decoding")
+    match std::json::decode[DerivedDefaulted]("{}") {
+        case .err(.codec(error)) => assert(error.kind() == std::encoding::CodingErrorKind::missingField, "defaults do not fill missing fields")
+        case _ => panic("missing required defaulted field must fail")
+    }
+}
+
+@test
+func derivedEmptyRecordStillValidatesAndSkips() {
+    value := std::json::decode[DerivedEmpty]("{\"ignored\":[1,{\"a\":true}]}").unwrap()
+    assert(std::json::encode(&value).unwrap() == "{}", "empty record")
+}
+
+struct CustomCodec: Decodable {
+    value: int32
+}
+
+conform CustomCodec to Encodable {
+    func encode[E: std::encoding::Encoder](into encoder: E) -> std::result::Result[(), E::Error] {
+        self.value.encode(into: encoder)
+    }
+}
+
+@test
+func deriveOneDirectionAndCustomizeTheOther() {
+    value := std::json::decode[CustomCodec]("{\"value\":42}").unwrap()
+    assert(std::json::encode(&value).unwrap() == "42", "manual encoder keeps control")
+}
+
+struct DerivedNode[T]: Codable {
+    value: T
+    children: List[DerivedNode[T]]
+}
+
+@test
+func derivedGenericRecursiveRecords() {
+    source := "{\"value\":1,\"children\":[{\"value\":2,\"children\":[]}]}"
+    value := std::json::decode[DerivedNode[int32]](source).unwrap()
+    std::runtime::collect()
+    assert(value.children[0].value == 2, "recursive generic decoding")
+    assert(std::json::encode(&value).unwrap() == source, "recursive generic encoding")
+}

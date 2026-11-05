@@ -8,46 +8,46 @@ public struct Instructions {
     bytes: List[uint8]
 }
 
-impl Instructions {
-    public func new() -> Self {
-        return Instructions { bytes: List[uint8]() }
+extend Instructions {
+    public static func new() -> Self {
+        return Instructions { bytes: List[uint8]::new() }
     }
 
     /// How many bytes the stream occupies. Offsets are byte offsets, not
     /// instruction counts, because a jump names a byte.
-    public func len(&self) -> usize {
+    public func len() -> usize {
         return self.bytes.len()
     }
 
-    public func isEmpty(&self) -> bool {
+    public func isEmpty() -> bool {
         return self.bytes.isEmpty()
     }
 
     @inline
-    public func raw(&self) -> &List[uint8] {
-        return &self.bytes
+    public func raw() -> List[uint8] {
+        return self.bytes
     }
 
     /// Appends `instruction`, answering the offset it was written at.
     ///
     /// The offset is what a later jump is patched to point at, and what the
     /// compiler records so it can revisit an instruction it has already emitted.
-    public func emit(&mut self, _ instruction: Instruction) -> usize {
-        let offset = self.bytes.len()
-        encode(instruction, into: &mut self.bytes)
+    public func emit(_ instruction: Instruction) -> usize {
+        offset := self.bytes.len()
+        encode(instruction, into: self.bytes)
         return offset
     }
 
     /// Appends every instruction in `other`, keeping their order.
-    public func extend(&mut self, _ other: &Instructions) {
+    public func appendInstructions(_ other: Instructions) {
         for byte in other.raw() {
-            self.bytes.append(*byte)
+            self.bytes.append(byte)
         }
     }
 
     /// Reads the instruction at `offset`.
-    public func decodeAt(&self, _ offset: usize) -> Result[Decoded, DecodeError] {
-        return decode(&self.bytes, at: offset)
+    public func decodeAt(_ offset: usize) -> Result[Decoded, DecodeError] {
+        return decode(self.bytes, at: offset)
     }
 
     /// Drops everything from `length` onwards.
@@ -55,7 +55,7 @@ impl Instructions {
     /// Used to take back an instruction the compiler has just emitted, which is
     /// safe only at an instruction boundary — the caller has the offset `emit`
     /// returned, so it always is one.
-    public func truncate(&mut self, to length: usize) {
+    public func truncate( to length: usize) {
         while self.bytes.len() > length {
             self.bytes.pop()
         }
@@ -73,7 +73,7 @@ impl Instructions {
     /// widths cannot differ.
     ///
     /// Answers whether `offset` did name a jump.
-    public func patchJump(&mut self, at offset: usize, to target: uint16) -> bool {
+    public func patchJump( at offset: usize, to target: uint16) -> bool {
         match self.decodeAt(offset) {
             case .ok(decoded) => {
                 match decoded.instruction {
@@ -86,7 +86,7 @@ impl Instructions {
         }
 
         // The opcode stays; only its operand changes.
-        let operands = offset + 1
+        operands := offset + 1
         *self.bytes.at(operands) = (target >> 8) as uint8
         *self.bytes.at(operands + 1) = (target & 255) as uint8
         return true
@@ -98,7 +98,7 @@ impl Instructions {
     /// disassembly cannot describe the bytes differently from how they will run.
     /// The reference implementation gives its disassembler its own operand
     /// reader, which is a second place for the encoding to be misunderstood.
-    public func disassemble(&self) -> string {
+    public func disassemble() -> string {
         var out = ""
         var offset: usize = 0
         while offset < self.bytes.len() {
@@ -107,7 +107,7 @@ impl Instructions {
                     out = out + sprintf(
                         "%04v %s\n",
                         offset,
-                        describeInstruction(&decoded.instruction),
+                        describeInstruction(decoded.instruction),
                     )
                     offset += decoded.width
                 }
@@ -122,23 +122,23 @@ impl Instructions {
 }
 
 /// An instruction's name and operands, as a disassembly line shows them.
-public func describeInstruction(_ instruction: &Instruction) -> string {
-    let name = instruction.opcode().name()
+public func describeInstruction(_ instruction: Instruction) -> string {
+    name := instruction.opcode().name()
     match instruction {
-        case .constant(index) => return sprintf("%s %v", name, *index)
-        case .jump(target) => return sprintf("%s %v", name, *target)
-        case .jumpNotTruthy(target) => return sprintf("%s %v", name, *target)
-        case .getGlobal(slot) => return sprintf("%s %v", name, *slot)
-        case .setGlobal(slot) => return sprintf("%s %v", name, *slot)
-        case .array(count) => return sprintf("%s %v", name, *count)
-        case .hash(count) => return sprintf("%s %v", name, *count)
-        case .getLocal(slot) => return sprintf("%s %v", name, *slot)
-        case .setLocal(slot) => return sprintf("%s %v", name, *slot)
-        case .getFree(slot) => return sprintf("%s %v", name, *slot)
-        case .getBuiltin(slot) => return sprintf("%s %v", name, *slot)
-        case .call(arguments) => return sprintf("%s %v", name, *arguments)
+        case .constant(index) => return sprintf("%s %v", name, index)
+        case .jump(target) => return sprintf("%s %v", name, target)
+        case .jumpNotTruthy(target) => return sprintf("%s %v", name, target)
+        case .getGlobal(slot) => return sprintf("%s %v", name, slot)
+        case .setGlobal(slot) => return sprintf("%s %v", name, slot)
+        case .array(count) => return sprintf("%s %v", name, count)
+        case .hash(count) => return sprintf("%s %v", name, count)
+        case .getLocal(slot) => return sprintf("%s %v", name, slot)
+        case .setLocal(slot) => return sprintf("%s %v", name, slot)
+        case .getFree(slot) => return sprintf("%s %v", name, slot)
+        case .getBuiltin(slot) => return sprintf("%s %v", name, slot)
+        case .call(arguments) => return sprintf("%s %v", name, arguments)
         case .closure(constant, free) => {
-            return sprintf("%s %v %v", name, *constant, *free)
+            return sprintf("%s %v %v", name, constant, free)
         }
         case .add | .subtract | .multiply | .divide | .pop
             | .pushTrue | .pushFalse | .pushNull

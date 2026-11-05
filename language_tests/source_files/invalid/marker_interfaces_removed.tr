@@ -1,0 +1,8 @@
+// Copy, NoCopy, Sendable and Escapable were removed with value semantics.
+struct Point: Copy { x: int32 }
+
+func share[T: Sendable](_ value: T) -> T { value }
+
+func keep[T](_ value: T) -> T where T: std::marker::Escapable { value }
+
+func main() {}

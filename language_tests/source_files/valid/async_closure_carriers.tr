@@ -1,0 +1,30 @@
+struct Record { value: int32 }
+func inspect(_ record: &Record) -> int32 { record.value }
+func tick() async { await std::testing::yieldNow() }
+func invoke[F: AsyncFn() -> int32](_ callback: &F) async -> int32 {
+    await callback()
+}
+func invokeOnce[F: AsyncFn() -> Record](_ callback: F) async -> Record {
+    await callback()
+}
+func main() async {
+    var count: int32 = 7
+    read := () => { await tick(); count } // AsyncFn, captures &count.
+    assert((await invoke(&read)) == 7, "generic borrowed async capture")
+    count = 11 // The final dependent use of read has finished.
+
+    var change = () => { await tick(); count += 1; count } // AsyncFnMut.
+    assert((await change()) == 12, "first mutable async invocation")
+    assert((await change()) == 13, "same environment on second invocation")
+    assert(count == 13, "exclusive capture ends after its last invocation")
+
+    var record: Record = Record { value: 17 }
+    owned := () => { await tick(); inspect(&record) } // AsyncFn; NoCopy environment.
+    assert((await owned()) == 17, "owned environment is borrowed for invocation")
+    assert((await owned()) == 17, "NoCopy environment remains reusable")
+
+    var payload: Record = Record { value: 19 }
+    consume := () => { await tick(); payload } // AsyncFnOnce.
+    var returned: Record = await invokeOnce(consume)
+    assert(returned.value == 19, "owned captures transfer to the async frame")
+}

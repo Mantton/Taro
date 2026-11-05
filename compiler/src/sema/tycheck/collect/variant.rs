@@ -67,15 +67,23 @@ impl<'ctx> Actor<'ctx> {
 
             let kind = match &variant.kind {
                 hir::VariantKind::Unit => EnumVariantKind::Unit,
-                hir::VariantKind::Tuple(fields) => {
+                hir::VariantKind::Tuple(fields) | hir::VariantKind::Struct(fields) => {
                     let mut out: Vec<EnumVariantField<'ctx>> = Vec::with_capacity(fields.len());
                     for field in fields {
                         let ty = ctx.lowerer().lower_type(&field.ty);
                         let label = field.label.map(|l| l.identifier.symbol);
-                        out.push(EnumVariantField { label, ty });
+                        out.push(EnumVariantField {
+                            label,
+                            ty,
+                            mutability: field.mutability,
+                        });
                     }
                     let fields = self.context.store.arenas.global.alloc_slice_clone(&out);
-                    EnumVariantKind::Tuple(fields)
+                    if matches!(&variant.kind, hir::VariantKind::Struct(..)) {
+                        EnumVariantKind::Struct(fields)
+                    } else {
+                        EnumVariantKind::Tuple(fields)
+                    }
                 }
             };
 
@@ -107,7 +115,7 @@ impl<'ctx> Actor<'ctx> {
                 EnumVariantKind::Unit => {
                     self.context.cache_type(variant.ctor_def_id, enum_ty);
                 }
-                EnumVariantKind::Tuple(fields) => {
+                EnumVariantKind::Tuple(fields) | EnumVariantKind::Struct(fields) => {
                     let mut inputs: Vec<LabeledFunctionParameter<'ctx>> =
                         Vec::with_capacity(fields.len());
                     let mut input_tys: Vec<Ty<'ctx>> = Vec::with_capacity(fields.len());
@@ -137,6 +145,7 @@ impl<'ctx> Actor<'ctx> {
                     let inputs = self.context.store.interners.intern_ty_list(input_tys);
                     let fn_ty = Ty::new(
                         TyKind::FnPointer {
+                            effects: Default::default(),
                             inputs,
                             output: enum_ty,
                         },

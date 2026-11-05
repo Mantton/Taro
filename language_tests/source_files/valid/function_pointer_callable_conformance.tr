@@ -1,0 +1,51 @@
+// TAG: gc
+func increment(_ value: &int32) -> int32 { *value + 1 }
+func identity[T](_ value: T) -> T { value }
+func answer() -> int32 { 42 }
+func sum(_ a: int32, _ b: int32) -> int32 { a + b }
+func apply[R, F: Fn(&int32) -> R](_ f: F) -> R { var x: int32 = 41; f(&x) }
+func erased(_ f: any Fn(&int32) -> int32) -> int32 { var x: int32 = 41; f(&x) }
+func zero[F: Fn() -> int32](_ f: F) -> int32 { f() }
+func pair[F: Fn(int32, int32) -> int32](_ f: F) -> int32 { f(19, 23) }
+func retain(_ value: &int32) -> &int32 { value }
+@noinline
+func applyReference[F: Fn(&int32) -> &int32](_ f: F) -> &int32 {
+    var local: int32 = 42
+    f(&local)
+}
+struct LargeCallbackValue { values: [int64; 16] }
+func largeIdentity(_ value: LargeCallbackValue) -> LargeCallbackValue { value }
+func applyLarge[F: Fn(LargeCallbackValue) -> LargeCallbackValue](_ f: F) -> int64 {
+    input := LargeCallbackValue { values: [42_i64; 16] }
+    result := f(input)
+    result.values[15]
+}
+func later(_ value: int32) async -> int32 {
+    await std::testing::yieldNow()
+    value + 1
+}
+func applyAsync[F: AsyncFn(int32) -> int32](_ f: F) async -> int32 { await f(41) }
+func erasedAsync(_ f: any AsyncFn(int32) -> int32) async -> int32 { await f(41) }
+func main() async {
+    assert(apply(increment) == 42, "generic named reference callback")
+    assert(erased(increment) == 42, "erased named reference callback")
+    assert(zero(answer) == 42, "empty argument pack")
+    assert(pair(sum) == 42, "multi argument pack")
+    pointer := increment
+    assert(apply(pointer) == 42, "inferred function pointer")
+    var typed: (&int32) -> int32 = increment
+    assert(erased(typed) == 42, "annotated function pointer")
+    assert(typed.call(args: (&41_i32,)) == 42, "explicit callable method")
+    var boxed: any Fn(int32) -> int32 = identity[int32]
+    assert(boxed(42) == 42, "instantiated generic function")
+    escaped := applyReference(retain)
+    assert(applyLarge(largeIdentity) == 42_i64, "large argument and return ABI")
+    std::runtime::collect()
+    assert(*escaped == 42, "reference return retains escaped local")
+    assert(boxed(42) == 42, "erased function survives collection")
+    assert((await applyAsync(later)) == 42, "generic async named function")
+    assert((await erasedAsync(later)) == 42, "erased async named function")
+    asyncPointer := later
+    assert((await asyncPointer(41)) == 42, "inferred indirect async call")
+    assert((await applyAsync(asyncPointer)) == 42, "indirect async callback")
+}

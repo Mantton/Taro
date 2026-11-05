@@ -1,0 +1,6 @@
+struct Counter { value: int32 }
+extend &Counter {
+    func increment() { self.value += 1 }
+}
+func make() -> Counter { Counter { value: 0 } }
+func main() { make().increment() }

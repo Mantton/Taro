@@ -2,4 +2,4 @@
 ///
 /// This is intentionally namespaced under `std.error` to avoid colliding with
 /// concrete error types like `std.io.Error`.
-public interface Error: std.fmt.Display {}
+public interface Error: std::fmt::Display {}

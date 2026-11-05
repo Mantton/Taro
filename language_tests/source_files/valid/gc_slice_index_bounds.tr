@@ -1,0 +1,7 @@
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: panic: span index out of range
+func main() {
+    var values: [int32; 1] = [7]
+    var slice: [int32; ..] = values.asSpan()
+    var _ = slice[1]
+}

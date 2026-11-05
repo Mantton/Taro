@@ -1,0 +1,34 @@
+// Native ownership regression.
+import std::marker::Clone
+func duplicate[T: Clone](_ value: &T) -> T { value.clone() }
+func increment(_ value: int32) -> int32 { value + 1 }
+func main() {
+    var first: (int32, int32) = (7, 9)
+    var second: (int64, string) = (11, "hello")
+    var a: (int32, int32) = duplicate(&first)
+    var b: (int64, string) = duplicate(&second)
+    assert(a.0 + a.1 == 16, "narrow tuple Clone")
+    assert(b.0 == 11, "wide tuple first field")
+    assert(b.1 == "hello", "wide tuple second field")
+    var numbers: [int32; 2] = [1, 2]
+    var words: [string; 3] = ["one", "two", "three"]
+    numberCopy := duplicate(&numbers)
+    wordCopy := duplicate(&words)
+    assert(*numberCopy.at(1) == 2, "array length and element layout")
+    assert(*wordCopy.at(2) == "three", "different array layout")
+    var number: int32 = 23
+    var text: string = "reference"
+    var numberRef: &int32 = &number
+    var textRef: &string = &text
+    var clonedNumber: &int32 = duplicate(&numberRef)
+    var clonedText: &string = duplicate(&textRef)
+    assert(*clonedNumber == 23, "shared scalar reference")
+    assert(*clonedText == "reference", "shared aggregate reference")
+    var boxed: any Fn() -> int32 = () => 37
+    var boxedRef: &any Fn() -> int32 = &boxed
+    var boxedRefClone: &any Fn() -> int32 = duplicate(&boxedRef)
+    assert((*boxedRefClone)() == 37, "reference to an erased value keeps its binder")
+    var function: (int32) -> int32 = increment
+    var functionClone: (int32) -> int32 = duplicate(&function)
+    assert(functionClone(3) == 4, "function pointer Clone")
+}

@@ -1,0 +1,20 @@
+struct Token { id: int32 }
+enum State {
+    case token(Token)
+}
+
+func negative(_ token: &Token) -> bool { token.id < 0 }
+
+func read(_ state: State) -> int32 {
+    match state {
+        case .token(token) if negative(&token) => -1
+        case .token(token) if token.id == 0 => 0
+        case .token(token) => token.id
+    }
+}
+
+func main() {
+    assert(read(.token(Token { id: 7 })) == 7, "failed guards preserve payload ownership")
+    assert(read(.token(Token { id: -3 })) == -1, "selected arm consumes payload")
+    assert(read(.token(Token { id: 0 })) == 0, "later guard can select payload")
+}

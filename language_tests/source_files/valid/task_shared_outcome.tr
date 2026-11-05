@@ -1,0 +1,72 @@
+// G21: a Task is a shared handle with a cached, traced outcome. Results that
+// only the handle reaches survive collection, every observer gets a copy of
+// the same outcome, and abandoning one observer leaves the task and the other
+// observers alone.
+// ENV: TARO_WORKERS=1
+extern "C" {
+    unsafe func __gc__test_request_collection() -> usize
+    unsafe func __gc__test_collection_count() -> usize
+}
+
+final class Box { value: int64 }
+extend Box { init(_ value: int64) { self.value = value } }
+
+struct Reply {
+    box: Box
+    items: List[int64]
+}
+
+final class Noise { value: int32 }
+extend Noise { init() { self.value = 1 } }
+@noinline
+func allocate() -> int32 { Noise().value }
+
+func collect() {
+    before := unsafe { __gc__test_request_collection() }
+    assert(allocate() == 1, "execute an allocating safepoint")
+    assert(unsafe { __gc__test_collection_count() } > before, "collection actually runs")
+}
+
+@noinline
+func makeReply() -> Reply {
+    var items = List[int64]::new()
+    items.append(3)
+    items.append(4)
+    return Reply { box: Box(40), items }
+}
+
+func main() async {
+    var (signal, finished) = std::sync::bounded[int32](1).unwrap()
+    task := std::task::spawn(() async => {
+        reply := makeReply()
+        signal.trySend(1).unwrap()
+        reply
+    })
+    // On one worker the task finishes its poll before main resumes. Collect
+    // while only the handle reaches the cached result.
+    assert((await finished.recv()).unwrap() == 1, "task finished")
+    collect()
+    first := (await task.result()).unwrap()
+    collect()
+    second := (await task.result()).unwrap()
+    // Observers copy the outcome; references inside keep their identity.
+    first.box.value += 2
+    std::printf("cached %d %d %d\n", second.box.value, *second.items.at(0), *second.items.at(1))
+
+    // Concurrent observers, one of which is cancelled while waiting.
+    var (release, wait) = std::sync::bounded[int64](1).unwrap()
+    slow := std::task::spawn(() async => { (await wait.recv()).unwrap() })
+    observers := [
+        std::task::spawn(() async => { (await slow.result()).unwrap() }),
+        std::task::spawn(() async => { (await slow.result()).unwrap() }),
+        std::task::spawn(() async => { (await slow.result()).unwrap() }),
+    ]
+    await std::testing::yieldNow()
+    observers[1].cancel()
+    match await observers[1].result() {
+        case .err(.cancelled) => print("cancelled one observer\n")
+        case _ => panic("the cancelled observer should report cancellation")
+    }
+    (await release.send(9)).unwrap()
+    std::printf("observers %d %d task %d\n", (await observers[0].result()).unwrap(), (await observers[2].result()).unwrap(), (await slow.result()).unwrap())
+}

@@ -1,0 +1,4 @@
+error: type '&int32' does not conform to interface 'Add[&int32]'
+ -> language_tests/source_files/invalid/primitive_operator_reference_conformance.tr:6:4
+	    require[&int32](&value)
+	    ^^^^^^^^^^^^^^^

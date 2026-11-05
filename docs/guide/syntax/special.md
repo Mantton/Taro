@@ -27,10 +27,10 @@ These tokens at the start of a line prevent ASI:
 
 **Binary operators:**
 ```taro
-let x = a
+x := a
     + b     // Continues the expression
 
-let y = a
+y := a
     - b * c
 ```
 
@@ -71,19 +71,19 @@ func process()
 
 ```taro
 // These are equivalent:
-let x = 1
-let y = 2
+x := 1
+y := 2
 
-let x = 1;
-let y = 2;
+x := 1;
+y := 2;
 
 // Line continuation works:
-let sum = a
+sum := a
     + b
     + c     // All one expression
 
 // This is TWO statements (not continuation):
-let a = 1
+a := 1
 *ptr = 2    // '*' is unary dereference here, not continuation
 ```
 
@@ -92,10 +92,10 @@ let a = 1
 Unlike some operators, `&` and `*` at line start are treated as unary operators:
 
 ```taro
-let x = value
+x := value
 &x              // A separate reference expression
 
-let y = value
+y := value
 *ptr = y        // Two statements! *ptr is dereference
 ```
 
@@ -164,38 +164,38 @@ enum Color {
 When field name matches variable name:
 
 ```taro
-let x = 1
-let y = 2
+x := 1
+y := 2
 
 // Shorthand
-let point = Point { x, y }
+point := Point { x, y }
 
 // Equivalent to
-let point = Point { x: x, y: y }
+point := Point { x: x, y: y }
 
 // Mix of shorthand and explicit
-let point = Point { x, y: 10 }
+point := Point { x, y: 10 }
 ```
 
 ### Optional Binding Shorthand
 
 ```taro
 // Full form
-if let value = optionalValue { }
+if var value = optionalValue { }
 
 // Shorthand when names match
-if let optionalValue { }
-// Same as: if let optionalValue = optionalValue { }
+if var optionalValue { }
+// Same as: if var optionalValue = optionalValue { }
 ```
 
 ### Closure Shorthand
 
 ```taro
 // Single expression body (no braces)
-let double = |x| x * 2
+double := (x) => x * 2
 
 // Empty parameters
-let random = || generateRandom()
+random := () => generateRandom()
 ```
 
 ### Inferred Member Access
@@ -203,16 +203,24 @@ let random = || generateRandom()
 When type is known from context, enum variants and static members can be accessed with `.name`:
 
 ```taro
-let color: Color = .red        // Inferred Color.red
+var color: Color = .red        // Inferred Color::red
 
 match result {
-    case .ok(v) => v           // Inferred Result.ok
-    case .err(e) => panic(e)   // Inferred Result.err
+    case .ok(v) => v           // Inferred Result::ok
+    case .err(e) => panic(e)   // Inferred Result::err
 }
 
 func setColor(_ color: Color) { }
-setColor(.blue)                // Inferred Color.blue
+setColor(.blue)                // Inferred Color::blue
+
+func reply() -> Result[Response, Error] {
+    return .text(200, "ok")    // Response::text, then contextual .ok
+}
 ```
+
+In a Result context, lookup checks Result's own members first. A missing member
+may resolve on its known success type. An existing outer overload set keeps
+priority, even if none of its signatures accepts the arguments.
 
 ---
 
@@ -242,7 +250,7 @@ provide delimiters. The restriction resumes after the closing delimiter:
 Alternatively, bind the value first:
 
 ```taro
-let admin = User { isAdmin: true }
+admin := User { isAdmin: true }
 if admin.isAdmin { }
 ```
 
@@ -306,14 +314,14 @@ including before a closing delimiter on the following line:
 
 ```taro
 // CORRECT: Trailing comma before newline
-let arr = [
+arr := [
     1,
     2,
     3,
 ]
 
 // INCORRECT: ASI would insert semicolon!
-let arr = [
+arr := [
     1
     2   // Error! Semicolon inserted after 1
     3
@@ -344,11 +352,11 @@ let arr = [
 ### Closure vs Bitwise OR
 
 ```taro
-|x| x + 1       // Closure
+(x) => x + 1       // Closure
 a | b           // Bitwise OR
 
-// Closure at start of expression uses ||
-|| doSomething()    // Empty parameter closure
+// Empty parameter closures use parentheses and an arrow.
+() => doSomething()
 ```
 
 ### Range vs Member Access

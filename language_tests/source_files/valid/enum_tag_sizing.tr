@@ -19,22 +19,23 @@ struct Holder {
 
 func main() {
     // A payload-free enum needs one byte however many variants it has.
-    std.printf("%v %v\n", std.mem.sizeOf[Pair](), std.mem.sizeOf[Ten]())
+    std::printf("%v %v\n", std::mem::sizeOf[Pair](), std::mem::sizeOf[Ten]())
 
     // A payload is placed after the tag, aligned to what the payload needs.
-    std.printf("%v %v\n", std.mem.sizeOf[BytePayload](), std.mem.alignOf[BytePayload]())
-    std.printf("%v %v\n", std.mem.sizeOf[WordPayload](), std.mem.alignOf[WordPayload]())
+    std::printf("%v %v\n", std::mem::sizeOf[BytePayload](), std::mem::alignOf[BytePayload]())
+    std::printf("%v %v\n", std::mem::sizeOf[WordPayload](), std::mem::alignOf[WordPayload]())
 
-    // The alignment of a pointer-carrying variant survives the smaller tag.
-    std.printf("%v %v\n", std.mem.sizeOf[PointerPayload](), std.mem.alignOf[PointerPayload]())
+    // The two-word GC string header occupies 16 bytes. Its enum adds
+    // an eight-byte aligned tag prefix; alignment survives the smaller tag.
+    std::printf("%v %v\n", std::mem::sizeOf[PointerPayload](), std::mem::alignOf[PointerPayload]())
 
     // A small enum packs into a struct rather than dominating it.
-    std.printf("%v\n", std.mem.sizeOf[Holder]())
+    std::printf("%v\n", std::mem::sizeOf[Holder]())
 
     // The narrow tag still round-trips every variant.
-    let values = [Ten.a, Ten.e, Ten.j]
+    values := [Ten::a, Ten::e, Ten::j]
     var seen = 0
-    for value in &values {
+    for value in values {
         match value {
             case .a => seen += 1
             case .e => seen += 10
@@ -42,12 +43,12 @@ func main() {
             case _ => seen += 1000
         }
     }
-    std.printf("%v\n", seen)
+    std::printf("%v\n", seen)
 
     // And a pointer read back out of a small-tag enum is intact.
-    let held: PointerPayload = .one("aligned")
+    var held: PointerPayload = .one("aligned")
     match held {
-        case .one(text) => std.printf("%s\n", text)
-        case .nothing => std.print("nothing\n")
+        case .one(text) => std::printf("%s\n", text)
+        case .nothing => std::print("nothing\n")
     }
 }

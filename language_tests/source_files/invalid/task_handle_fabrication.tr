@@ -1,0 +1,3 @@
+import std::task::Task
+func fabricate() -> Task[string] { Task[string] { handle: unsafe { 0 as *mut uint8 } } }
+func main() {}

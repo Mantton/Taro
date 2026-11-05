@@ -1,18 +1,17 @@
-import std.optional.Optional
-import std.ops.PartialEq
-import std.marker.Copy
+import std::optional::Optional
+import std::ops::PartialEq
 
 /// Represents the result of a comparison between two values.
-public enum Ordering: Copy {
+public enum Ordering {
     case less
     case equal
     case greater
 }
 
-impl Ordering {
+extend Ordering {
     /// Returns true if the ordering indicates less than.
     @inline
-    public func isLess(&self) -> bool {
+    public func isLess() -> bool {
         match self {
             case .less => true
             case _ => false
@@ -21,7 +20,7 @@ impl Ordering {
 
     /// Returns true if the ordering indicates equality.
     @inline
-    public func isEqual(&self) -> bool {
+    public func isEqual() -> bool {
         match self {
             case .equal => true
             case _ => false
@@ -30,7 +29,7 @@ impl Ordering {
 
     /// Returns true if the ordering indicates greater than.
     @inline
-    public func isGreater(&self) -> bool {
+    public func isGreater() -> bool {
         match self {
             case .greater => true
             case _ => false
@@ -39,7 +38,7 @@ impl Ordering {
 
     /// Reverses the ordering.
     @inline
-    public func reverse(&self) -> Ordering {
+    public func reverse() -> Ordering {
         match self {
             case .less => .greater
             case .equal => .equal
@@ -49,7 +48,7 @@ impl Ordering {
 
     /// Chains two orderings: use the second if this is equal.
     @inline
-    public func then(&self, _ other: Ordering) -> Ordering {
+    public func then(_ other: Ordering) -> Ordering {
         match self {
             case .equal => other
             case .less => .less
@@ -65,11 +64,11 @@ impl Ordering {
 @lang("PartialOrd")
 public interface PartialOrd[Rhs = Self]: PartialEq[Rhs] {
     /// Compare two values, returning None if they cannot be compared.
-    func partialCmp(&self, _ other: &Rhs) -> Optional[Ordering]
+    func partialCmp(_ other: Rhs) -> Optional[Ordering]
 
     /// Returns true if `self < other`.
     @inline
-    func lt(&self, _ other: &Rhs) -> bool {
+    func lt(_ other: Rhs) -> bool {
         match self.partialCmp(other) {
             case .some(ordering) => ordering.isLess()
             case .none => false
@@ -78,7 +77,7 @@ public interface PartialOrd[Rhs = Self]: PartialEq[Rhs] {
 
     /// Returns true if `self <= other`.
     @inline
-    func le(&self, _ other: &Rhs) -> bool {
+    func le(_ other: Rhs) -> bool {
         match self.partialCmp(other) {
             case .some(ordering) => ordering.isLess() || ordering.isEqual()
             case .none => false
@@ -87,7 +86,7 @@ public interface PartialOrd[Rhs = Self]: PartialEq[Rhs] {
 
     /// Returns true if `self > other`.
     @inline
-    func gt(&self, _ other: &Rhs) -> bool {
+    func gt(_ other: Rhs) -> bool {
         match self.partialCmp(other) {
             case .some(ordering) => ordering.isGreater()
             case .none => false
@@ -96,7 +95,7 @@ public interface PartialOrd[Rhs = Self]: PartialEq[Rhs] {
 
     /// Returns true if `self >= other`.
     @inline
-    func ge(&self, _ other: &Rhs) -> bool {
+    func ge(_ other: Rhs) -> bool {
         match self.partialCmp(other) {
             case .some(ordering) => ordering.isGreater() || ordering.isEqual()
             case .none => false
@@ -110,5 +109,5 @@ public interface PartialOrd[Rhs = Self]: PartialEq[Rhs] {
 /// Every pair of values has a defined ordering relationship.
 public interface Ord: PartialOrd {
     /// Compare two values, returning their ordering.
-    func cmp(&self, _ other: &Self) -> Ordering
+    func cmp(_ other: Self) -> Ordering
 }

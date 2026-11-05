@@ -1,0 +1,28 @@
+static var defaults: int32 = 0
+func nextDefault() -> int32 { defaults += 1; defaults }
+class Base { value: int32; stamp: int32 = nextDefault() }
+extend Base {
+    init(_ value: int32) { self.value = value };
+    convenience init() { self.init(7) };
+    convenience init(label: string) { self.init(); self.value += 1 };
+}
+final class Child: Base { extra: int32 = nextDefault() }
+func main() {
+    // Warm both paths before comparing allocation counters for the same type.
+    warmDirect := Child(1)
+    warmConvenient := Child(label: "warm")
+    beforeDirect := std::runtime::gcStats().allocatedBytes
+    direct := Child(3)
+    afterDirect := std::runtime::gcStats().allocatedBytes
+    beforeConvenient := std::runtime::gcStats().allocatedBytes
+    convenient := Child(label: "chain")
+    afterConvenient := std::runtime::gcStats().allocatedBytes
+    assert(afterDirect > beforeDirect, "direct construction allocates the object")
+    assert(afterDirect - beforeDirect == afterConvenient - beforeConvenient, "convenience chain adds no allocation")
+    assert(warmDirect.stamp == 1 && warmConvenient.extra == 4, "warm construction defaults")
+    assert(direct.stamp == 5 && convenient.stamp == 7 && convenient.extra == 8 && defaults == 8, "each field default runs once")
+    var base: Base = convenient
+    assert(base.value == 8 && (base as? Child).isSome(), "inherited convenience constructs the requested subclass")
+    std::runtime::collect()
+    assert(direct.value == 3 && convenient.value == 8, "independent objects survive collection")
+}

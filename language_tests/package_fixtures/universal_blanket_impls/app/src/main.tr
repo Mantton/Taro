@@ -1,11 +1,11 @@
-import dep.{Adapted, Source, makeRemote}
+import dep::{Adapted, Source, makeRemote}
 
-struct LocalSource: Copy {
+struct LocalSource {
     value: int32
 }
 
-impl Source for LocalSource {
-    func source(&self) -> int32 {
+conform LocalSource to Source {
+    func source() -> int32 {
         self.value
     }
 }
@@ -15,11 +15,11 @@ func adaptGeneric[Value: Source](_ value: Value) -> int32 {
 }
 
 func main() {
-    let remote = makeRemote(40)
+    remote := makeRemote(40)
     assert(remote.adapted() == 41, "dependency type should use dependency blanket impl")
 
-    let local = LocalSource { value: 10 }
+    local := LocalSource { value: 10 }
     assert(local.adapted() == 11, "local type should use dependency blanket impl")
     assert(adaptGeneric(local) == 11, "generic caller should use dependency blanket impl")
-    std.print("ok\n")
+    std::print("ok\n")
 }

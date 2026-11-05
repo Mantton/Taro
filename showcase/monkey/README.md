@@ -7,7 +7,8 @@ environments; the VM uses compiler symbols, globals, stack slots, and captured
 free values.
 
 The implementation stays algorithmically comparable to the Go reference while
-using Taro's enums, results, interfaces, collections, and garbage collector.
+using Taro's enums, results, interfaces, shared collections, structs and explicit
+GC references.
 
 ## Run
 
@@ -20,6 +21,18 @@ taro run . -- --bench 35              # benchmark both engines
 taro test .
 make host-benchmark                   # matched Taro/Go diagnostic workloads
 ```
+
+## Benchmarks
+
+Use release/O3 builds and verify that both engines return `9227465` for
+`fib(35)`. Record the compiler revision, hardware, runtime settings and system
+load. Finish builds before timing and alternate matching executables when
+comparing changes or implementations.
+
+The [dictionary operation harness](../../development/benchmarks/dictionary_ops/README.md)
+separates construction, insertion and lookup. Save generated measurements and
+profiles in the ignored `development/benchmarks/results/` directory, under
+`target/`, or in a temporary directory; keep these local artifacts out of Git.
 
 ## Layout
 
@@ -44,8 +57,11 @@ Evaluator control flow uses `Result[Object, Signal]`, allowing errors and
 Monkey `return` statements to unwind through the same path.
 
 Hash keys retain their original values, so Dictionary equality resolves hash
-collisions. Closures retain environments by reference, including recursive
-bindings.
+collisions. Monkey uses structs and ordinary value copies. Recursive AST edges,
+shared scopes, and aggregate identities use explicit GC references; the tracing
+collector reclaims unreachable closure/environment cycles. Functions share their
+parsed parameter/body lists. Independent copies remain at compiler snapshot
+boundaries; the REPL shares its globals between VM instances.
 
 Bytecode remains a flat byte stream. Typed `Instruction` cases define operand
 widths, and the VM and disassembler share one decoder. The compiler reports

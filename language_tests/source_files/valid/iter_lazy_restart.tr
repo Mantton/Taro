@@ -1,0 +1,9 @@
+func main() {
+    var calls: int32 = 0
+    var values: List[int32] = [1, 2]
+    pipeline := values.lazy().map((value: int32) => { calls += 1; value * 2 })
+    assert(calls == 0, "lazy map does not execute during construction")
+    first := pipeline.collect()
+    second := pipeline.collect()
+    assert(calls == 4 && first[0] == 2 && second[1] == 4, "each terminal operation creates a fresh traversal")
+}

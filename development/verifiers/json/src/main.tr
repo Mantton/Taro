@@ -1,4 +1,4 @@
-import std.io.Reader
+import std::io::Reader
 
 const PROTOCOL_VERSION: usize = 1
 const RFC_MAX_DEPTH: usize = 1024
@@ -10,17 +10,16 @@ struct ChunkReader {
     chunkSize: usize
 }
 
-impl ChunkReader {
-    func new(_ source: string, _ chunkSize: usize) -> Self {
+extend ChunkReader {
+    static func new(_ source: string, _ chunkSize: usize) -> Self {
         ChunkReader { source, index: 0, chunkSize }
     }
 }
 
-impl Reader for ChunkReader {
+conform &ChunkReader to Reader {
     public func read(
-        &mut self,
-        _ destination: std.mem.MutableSpan[uint8],
-    ) -> std.result.Result[usize, std.io.Error] {
+        _ destination: std::mem::Span[uint8],
+    ) -> std::result::Result[usize, std::io::Error] {
         if self.index >= self.source.byteLen() || destination.len() == 0 {
             return .ok(0)
         }
@@ -29,7 +28,7 @@ impl Reader for ChunkReader {
         if count > destination.len() {
             count = destination.len()
         }
-        let remaining = self.source.byteLen() - self.index
+        remaining := self.source.byteLen() - self.index
         if count > remaining {
             count = remaining
         }
@@ -44,6 +43,28 @@ impl Reader for ChunkReader {
     }
 }
 
+@test
+func chunkReaderReferencesAdvanceOneCursor() {
+    var reader = ChunkReader::new("abc", 2)
+    alias := &reader
+    var bytes: [uint8; 2] = [0; 2]
+    assert(alias.read(bytes.asSpan()).unwrap() == 2, "first chunk")
+    assert(bytes[0] == ('a' as uint8) && bytes[1] == ('b' as uint8), "first bytes")
+    assert(reader.read(bytes.asSpan()).unwrap() == 1, "same cursor through receiver auto-reference")
+    assert(bytes[0] == ('c' as uint8), "remaining byte")
+    assert(alias.read(bytes.asSpan()).unwrap() == 0, "EOF stays exhausted")
+}
+
+@test
+func streamingDecoderRetainsTheReaderReference() {
+    var reader = ChunkReader::new("[1,{\"x\":true}]", 1)
+    var decoder = std::json::Decoder::new(&reader)
+    value := decoder.decodeValue().unwrap()
+    assert(std::json::stringify(&value).unwrap() == "[1,{\"x\":true}]", "streamed value")
+    assert(decoder.nextValue().unwrap().isNone(), "stream exhausted")
+    assert(reader.index == reader.source.byteLen(), "source cursor was advanced")
+}
+
 struct Outcome {
     accepted: bool
     canonical: bool
@@ -55,8 +76,8 @@ struct Outcome {
     errorInvariants: bool
 }
 
-func acceptedOutcome(_ value: std.json.Value, _ options: std.json.Options) -> Outcome {
-    let first = match std.json.stringifyWithOptions(&value, options) {
+func acceptedOutcome(_ value: std::json::Value, _ options: std::json::Options) -> Outcome {
+    first := match std::json::stringifyWithOptions(&value, options) {
         case .ok(encoded) => encoded
         case .err(_) => {
             return Outcome {
@@ -71,7 +92,7 @@ func acceptedOutcome(_ value: std.json.Value, _ options: std.json.Options) -> Ou
             }
         }
     }
-    let reparsed = match std.json.parseWithOptions(first, options) {
+    reparsed := match std::json::parseWithOptions(first, options) {
         case .ok(parsed) => parsed
         case .err(_) => {
             return Outcome {
@@ -86,7 +107,7 @@ func acceptedOutcome(_ value: std.json.Value, _ options: std.json.Options) -> Ou
             }
         }
     }
-    let second = match std.json.stringifyWithOptions(&reparsed, options) {
+    second := match std::json::stringifyWithOptions(&reparsed, options) {
         case .ok(encoded) => encoded
         case .err(_) => {
             return Outcome {
@@ -113,7 +134,7 @@ func acceptedOutcome(_ value: std.json.Value, _ options: std.json.Options) -> Ou
     }
 }
 
-func errorKindName(_ kind: std.json.ErrorKind) -> string {
+func errorKindName(_ kind: std::json::ErrorKind) -> string {
     match kind {
         case .unexpectedEof => "unexpectedEof"
         case .unexpectedToken => "unexpectedToken"
@@ -130,9 +151,9 @@ func errorKindName(_ kind: std.json.ErrorKind) -> string {
     }
 }
 
-func rejectedOutcome(_ error: &std.json.Error, _ inputLength: usize) -> Outcome {
-    let path = error.path()
-    let invariants = error.byteOffset() <= inputLength
+func rejectedOutcome(_ error: &std::json::Error, _ inputLength: usize) -> Outcome {
+    path := error.path()
+    invariants := error.byteOffset() <= inputLength
         && error.line() > 0
         && error.column() > 0
         && path.startsWith("$")
@@ -161,26 +182,26 @@ func trailingOutcome(_ inputLength: usize) -> Outcome {
     }
 }
 
-func jsonNumber(_ value: usize) -> std.json.Value {
-    let text = std.sprintf("%d", value)
-    match std.json.Number.parse(text) {
+func jsonNumber(_ value: usize) -> std::json::Value {
+    text := std::sprintf("%d", value)
+    match std::json::Number::parse(text) {
         case .ok(number) => return .number(number)
         case .err(_) => {
-            std.panic.panic("usize formatting must produce a valid JSON number")
+            std::panic::panic("usize formatting must produce a valid JSON number")
         }
     }
 }
 
-func insertString(_ object: &mut std.json.Object, _ key: string, _ value: string) {
-    let _ = object.insert(key, .string(value))
+func insertString(_ object: &std::json::Object, _ key: string, _ value: string) {
+    var _ = object.insert(key, .string(value))
 }
 
-func insertBool(_ object: &mut std.json.Object, _ key: string, _ value: bool) {
-    let _ = object.insert(key, .boolean(value))
+func insertBool(_ object: &std::json::Object, _ key: string, _ value: bool) {
+    var _ = object.insert(key, .boolean(value))
 }
 
-func insertNumber(_ object: &mut std.json.Object, _ key: string, _ value: usize) {
-    let _ = object.insert(key, jsonNumber(value))
+func insertNumber(_ object: &std::json::Object, _ key: string, _ value: usize) {
+    var _ = object.insert(key, jsonNumber(value))
 }
 
 func emitResult(
@@ -192,45 +213,45 @@ func emitResult(
     _ inputLength: usize,
     _ outcome: Outcome,
 ) {
-    var object = std.json.Object()
-    insertNumber(&mut object, "version", PROTOCOL_VERSION)
-    insertString(&mut object, "file", file)
-    insertString(&mut object, "class", classification)
-    insertString(&mut object, "profile", profile)
-    insertString(&mut object, "mode", mode)
-    insertNumber(&mut object, "chunk_size", chunkSize)
-    insertNumber(&mut object, "input_bytes", inputLength)
-    insertBool(&mut object, "accepted", outcome.accepted)
-    insertBool(&mut object, "canonical", outcome.canonical)
-    insertString(&mut object, "error_kind", outcome.errorKind)
-    insertNumber(&mut object, "error_offset", outcome.errorOffset)
-    insertNumber(&mut object, "error_line", outcome.errorLine)
-    insertNumber(&mut object, "error_column", outcome.errorColumn)
-    insertString(&mut object, "error_path", outcome.errorPath)
-    insertBool(&mut object, "error_invariants", outcome.errorInvariants)
+    var object = std::json::Object::new()
+    insertNumber(&object, "version", PROTOCOL_VERSION)
+    insertString(&object, "file", file)
+    insertString(&object, "class", classification)
+    insertString(&object, "profile", profile)
+    insertString(&object, "mode", mode)
+    insertNumber(&object, "chunk_size", chunkSize)
+    insertNumber(&object, "input_bytes", inputLength)
+    insertBool(&object, "accepted", outcome.accepted)
+    insertBool(&object, "canonical", outcome.canonical)
+    insertString(&object, "error_kind", outcome.errorKind)
+    insertNumber(&object, "error_offset", outcome.errorOffset)
+    insertNumber(&object, "error_line", outcome.errorLine)
+    insertNumber(&object, "error_column", outcome.errorColumn)
+    insertString(&object, "error_path", outcome.errorPath)
+    insertBool(&object, "error_invariants", outcome.errorInvariants)
 
-    let value = std.json.Value.object(object)
-    match std.json.stringify(&value) {
-        case .ok(line) => std.println(line)
+    value := std::json::Value::object(object)
+    match std::json::stringify(&value) {
+        case .ok(line) => std::println(line)
         case .err(error) => {
-            std.eprintln(std.sprintf("cannot encode certification result: %v", error))
-            std.process.exit(2)
+            std::eprintln(std::sprintf("cannot encode certification result: %v", error))
+            std::process::exit(2)
         }
     }
 }
 
-func optionsFor(_ profile: string) -> std.json.Options {
+func optionsFor(_ profile: string) -> std::json::Options {
     if profile == "rfc" {
-        return std.json.Options()
+        return std::json::Options::new()
             .withMaxDepth(RFC_MAX_DEPTH)
             .withMaxInputBytes(RFC_MAX_BYTES)
             .withDuplicateKeys(.useLast)
     }
-    return std.json.Options()
+    return std::json::Options::new()
 }
 
-func runOneShot(_ input: string, _ options: std.json.Options) -> Outcome {
-    match std.json.parseWithOptions(input, options) {
+func runOneShot(_ input: string, _ options: std::json::Options) -> Outcome {
+    match std::json::parseWithOptions(input, options) {
         case .ok(value) => return acceptedOutcome(value, options)
         case .err(error) => return rejectedOutcome(&error, input.byteLen())
     }
@@ -238,11 +259,11 @@ func runOneShot(_ input: string, _ options: std.json.Options) -> Outcome {
 
 func runStreaming(
     _ input: string,
-    _ options: std.json.Options,
+    _ options: std::json::Options,
     _ chunkSize: usize,
 ) -> Outcome {
-    let reader = ChunkReader(input, chunkSize)
-    var decoder = std.json.Decoder.withOptions(reader, options)
+    var reader = ChunkReader::new(input, chunkSize)
+    var decoder = std::json::Decoder::withOptions(&reader, options)
     match decoder.decodeValue() {
         case .err(error) => return rejectedOutcome(&error, input.byteLen())
         case .ok(value) => {
@@ -263,19 +284,19 @@ func classificationFor(_ filename: string) -> string? {
 }
 
 func runCorpus(_ directoryPath: string, _ matrix: string) {
-    var directory = match std.fs.readDir(directoryPath) {
+    var directory = match std::fs::readDir(directoryPath) {
         case .ok(value) => value
         case .err(error) => {
-            std.eprintln(std.sprintf("cannot read corpus directory %s: %v", directoryPath, error))
-            std.process.exit(2)
+            std::eprintln(std::sprintf("cannot read corpus directory %s: %v", directoryPath, error))
+            std::process::exit(2)
         }
     }
     loop {
         match directory.next() {
             case .none => break
             case .some(.err(error)) => {
-                std.eprintln(std.sprintf("cannot traverse corpus directory %s: %v", directoryPath, error))
-                std.process.exit(2)
+                std::eprintln(std::sprintf("cannot traverse corpus directory %s: %v", directoryPath, error))
+                std::process::exit(2)
             }
             case .some(.ok(entry)) => {
                 if !entry.isDirectory() {
@@ -290,11 +311,11 @@ func runCorpus(_ directoryPath: string, _ matrix: string) {
 }
 
 func loadInput(_ path: string) -> string {
-    match std.fs.read(path) {
-        case .ok(bytes) => return std.bytes.Buffer(bytes.asSpan()).intoString()
+    match std::fs::read(path) {
+        case .ok(bytes) => return std::bytes::Buffer::new(bytes.asSpan()).toString()
         case .err(error) => {
-            std.eprintln(std.sprintf("cannot read corpus input %s: %v", path, error))
-            std.process.exit(2)
+            std::eprintln(std::sprintf("cannot read corpus input %s: %v", path, error))
+            std::process::exit(2)
         }
     }
 }
@@ -304,7 +325,7 @@ func emitStreamingResult(
     _ classification: string,
     _ profile: string,
     _ input: string,
-    _ options: std.json.Options,
+    _ options: std::json::Options,
     _ chunkSize: usize,
 ) {
     emitResult(
@@ -319,13 +340,13 @@ func emitStreamingResult(
 }
 
 func runFile(_ directoryPath: string, _ filename: string, _ classification: string, _ matrix: string) {
-    let input = loadInput(std.path.join(directoryPath, filename))
-    let profiles: [string; 2] = ["rfc", "safe"]
+    input := loadInput(std::path::join(directoryPath, filename))
+    var profiles: [string; 2] = ["rfc", "safe"]
 
     var profileIndex: usize = 0
     while profileIndex < 2 {
-        let profile = *profiles.at(profileIndex)
-        let options = optionsFor(profile)
+        profile := *profiles.at(profileIndex)
+        options := optionsFor(profile)
         emitResult(
             filename,
             classification,
@@ -339,7 +360,7 @@ func runFile(_ directoryPath: string, _ filename: string, _ classification: stri
         if matrix == "full" {
             // Small conformance and fuzz corpora exercise every awkward byte
             // boundary; this catches refill bugs independently of document shape.
-            let chunkSizes: [usize; 5] = [1, 2, 3, 7, 4096]
+            var chunkSizes: [usize; 5] = [1, 2, 3, 7, 4096]
             var chunkIndex: usize = 0
             while chunkIndex < 5 {
                 emitStreamingResult(
@@ -355,7 +376,7 @@ func runFile(_ directoryPath: string, _ filename: string, _ classification: stri
         } else {
             // Large valid-document suites keep one deliberately awkward boundary
             // and one production-sized refill without multiplying every byte.
-            let chunkSizes: [usize; 2] = [7, 4096]
+            var chunkSizes: [usize; 2] = [7, 4096]
             var chunkIndex: usize = 0
             while chunkIndex < 2 {
                 emitStreamingResult(
@@ -374,17 +395,17 @@ func runFile(_ directoryPath: string, _ filename: string, _ classification: stri
 }
 
 func main() {
-    let arguments = std.env.args()
+    arguments := std::env::args()
     if arguments.len() != 3 {
-        std.eprintln("usage: json-certifier <normalized-corpus> <full|documents>")
-        std.process.exit(2)
+        std::eprintln("usage: json-certifier <normalized-corpus> <full|documents>")
+        std::process::exit(2)
     }
 
-    let directoryPath = arguments.at(1)
-    let matrix = arguments.at(2)
+    directoryPath := arguments.at(1)
+    matrix := arguments.at(2)
     if matrix != "full" && matrix != "documents" {
-        std.eprintln("json-certifier matrix must be full or documents")
-        std.process.exit(2)
+        std::eprintln("json-certifier matrix must be full or documents")
+        std::process::exit(2)
     }
     // Results are keyed by filename in the runner; reports use manifest order.
     runCorpus(directoryPath, matrix)

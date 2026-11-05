@@ -1,6 +1,7 @@
+use crate::executor::{TaskIdentity, TaskWake};
 use std::time::Duration as StdDuration;
 
-type TaskToken = u64;
+type TaskToken = TaskIdentity;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Interest {
@@ -10,14 +11,15 @@ pub(crate) enum Interest {
 
 #[cfg(unix)]
 mod imp {
-    use super::{Interest, StdDuration, TaskToken};
+    use super::{Interest, StdDuration, TaskToken, TaskWake};
+    use crate::hot_mutex::HotMutex;
     use libc::{self, c_int};
-    use std::collections::HashMap;
+    use rustc_hash::{FxHashMap, FxHashSet};
     use std::os::fd::RawFd;
+    #[cfg(target_os = "macos")]
     use std::ptr;
-    use std::sync::Mutex;
 
-    static REACTOR: Mutex<Option<Reactor>> = Mutex::new(None);
+    static REACTOR: HotMutex<Option<Reactor>> = HotMutex::new(None);
 
     struct SourceEntry {
         fd: RawFd,
@@ -27,6 +29,17 @@ mod imp {
         registered: bool,
     }
 
+    /// A task that has waited on I/O. Finishing it visits just its own sources,
+    /// however many connections the process has open.
+    struct WaitingTask {
+        wake: TaskWake,
+        sources: FxHashSet<usize>,
+        // Size at which to drop sources closed since: a long-lived task would
+        // otherwise remember every short-lived socket it ever waited on.
+        prune_at: usize,
+    }
+    const MIN_WAITING_TASK_PRUNE: usize = 16;
+
     struct Reactor {
         poll_fd: RawFd,
         #[cfg(target_os = "linux")]
@@ -35,8 +48,9 @@ mod imp {
         control_read_fd: RawFd,
         #[cfg(target_os = "macos")]
         control_write_fd: RawFd,
-        next_source_id: usize,
-        sources: HashMap<usize, SourceEntry>,
+        sources: FxHashMap<usize, SourceEntry>,
+        // External close may run from another (even expired) native session.
+        wake_targets: FxHashMap<TaskToken, WaitingTask>,
     }
 
     impl Reactor {
@@ -84,8 +98,8 @@ mod imp {
                 control_read_fd,
                 #[cfg(target_os = "macos")]
                 control_write_fd,
-                next_source_id: 1,
-                sources: HashMap::new(),
+                sources: FxHashMap::default(),
+                wake_targets: FxHashMap::default(),
             };
             reactor.register_control_source()?;
             Ok(reactor)
@@ -113,30 +127,7 @@ mod imp {
 
         #[cfg(target_os = "macos")]
         fn register_control_source(&mut self) -> Result<(), i32> {
-            let mut change = libc::kevent {
-                ident: self.control_read_fd as libc::uintptr_t,
-                filter: libc::EVFILT_READ,
-                flags: (libc::EV_ADD | libc::EV_ENABLE) as u16,
-                fflags: 0,
-                data: 0,
-                udata: ptr::null_mut(),
-            };
-
-            if unsafe {
-                libc::kevent(
-                    self.poll_fd,
-                    &mut change,
-                    1,
-                    ptr::null_mut(),
-                    0,
-                    ptr::null(),
-                )
-            } < 0
-            {
-                return Err(last_errno());
-            }
-
-            Ok(())
+            self.change_kqueue(self.control_read_fd, libc::EVFILT_READ, libc::EV_ADD | libc::EV_ENABLE, 0)
         }
 
         #[cfg(target_os = "linux")]
@@ -246,12 +237,11 @@ mod imp {
             }
         }
 
+        // The source id is the descriptor's lease id, so every operation
+        // reaches the descriptor through a lease and close defers until the
+        // last in-flight operation has released it.
         fn register_source(&mut self, fd: RawFd) -> usize {
-            let source_id = self.next_source_id;
-            self.next_source_id = self
-                .next_source_id
-                .checked_add(1)
-                .expect("async io source id overflow");
+            let source_id = crate::fd_lease::open(fd) as usize;
             self.sources.insert(
                 source_id,
                 SourceEntry {
@@ -268,9 +258,10 @@ mod imp {
         fn register_wait(
             &mut self,
             source_id: usize,
-            task_token: TaskToken,
+            target: TaskWake,
             interest: Interest,
         ) -> Result<(), i32> {
+            let task_token = target.identity();
             let Some(source) = self.sources.get_mut(&source_id) else {
                 return Err(libc::EBADF);
             };
@@ -292,54 +283,57 @@ mod imp {
                 "async io waiter registered more than once for one interest"
             );
 
+            // A failure to arm below leaves the waiter listed, so the task must
+            // already know this source to remove it again when it finishes.
+            let task = self
+                .wake_targets
+                .entry(task_token)
+                .or_insert_with(|| WaitingTask {
+                    wake: target,
+                    sources: FxHashSet::default(),
+                    prune_at: MIN_WAITING_TASK_PRUNE,
+                });
+            task.sources.insert(source_id);
+            if task.sources.len() >= task.prune_at {
+                let open = &self.sources;
+                task.sources.retain(|source| open.contains_key(source));
+                task.prune_at = (task.sources.len() * 2).max(MIN_WAITING_TASK_PRUNE);
+            }
+
             // The source is armed only after the waiter is visible, so readiness
             // that arrives immediately after arming has a task token to wake.
             self.arm_wait(source_id, interest)
         }
 
         fn cancel_task(&mut self, task_token: TaskToken) {
+            let Some(task) = self.wake_targets.remove(&task_token) else {
+                return;
+            };
             // Cancellation/finalization must remove the task from every source.
             // Any remaining waiters are rearmed on Linux so one-shot readiness
             // is not lost for other tasks.
-            #[cfg(target_os = "linux")]
-            let mut needs_rearm = Vec::new();
-
-            for (&source_id, source) in &mut self.sources {
-                #[cfg(not(target_os = "linux"))]
-                let _ = source_id;
-
-                #[cfg(target_os = "linux")]
-                let mut cleared = false;
-
-                let read_before = source.read_waiters.len();
+            for source_id in task.sources {
+                let Some(source) = self.sources.get_mut(&source_id) else {
+                    continue;
+                };
+                let before = source.read_waiters.len() + source.write_waiters.len();
                 source.read_waiters.retain(|waiter| *waiter != task_token);
-                if source.read_waiters.len() != read_before {
-                    #[cfg(target_os = "linux")]
-                    {
-                        cleared = true;
-                    }
-                }
-
-                let write_before = source.write_waiters.len();
                 source.write_waiters.retain(|waiter| *waiter != task_token);
-                if source.write_waiters.len() != write_before {
-                    #[cfg(target_os = "linux")]
-                    {
-                        cleared = true;
-                    }
-                }
+                let remaining = source.read_waiters.len() + source.write_waiters.len();
 
                 #[cfg(target_os = "linux")]
-                if cleared && (!source.read_waiters.is_empty() || !source.write_waiters.is_empty())
-                {
-                    needs_rearm.push(source_id);
+                if remaining != before && remaining != 0 {
+                    let _ = self.rearm_linux_source(source_id);
                 }
+                #[cfg(not(target_os = "linux"))]
+                let _ = (before, remaining);
             }
+        }
 
-            #[cfg(target_os = "linux")]
-            for source_id in needs_rearm {
-                let _ = self.rearm_linux_source(source_id);
-            }
+        fn wake_target(&self, task_token: &TaskToken) -> Option<TaskWake> {
+            self.wake_targets
+                .get(task_token)
+                .map(|task| task.wake.clone())
         }
 
         fn close_source(&mut self, source_id: usize) -> (c_int, Vec<TaskToken>) {
@@ -351,14 +345,7 @@ mod imp {
             extend_unique(&mut wake, &source.read_waiters);
             extend_unique(&mut wake, &source.write_waiters);
             debug_assert_unique_tasks(&wake);
-            (close_fd(source.fd), wake)
-        }
-
-        fn source_fd(&self, source_id: usize) -> Result<RawFd, i32> {
-            self.sources
-                .get(&source_id)
-                .map(|source| source.fd)
-                .ok_or(libc::EBADF)
+            (crate::fd_lease::close(source_id as u64), wake)
         }
 
         #[cfg(target_os = "linux")]
@@ -408,7 +395,7 @@ mod imp {
         }
 
         #[cfg(target_os = "macos")]
-        fn process_kqueue_events(&mut self, events: &[libc::kevent]) -> Vec<TaskToken> {
+        fn process_kqueue_events(&mut self, events: &[libc::kevent64_s]) -> Vec<TaskToken> {
             let mut wake = Vec::new();
             for event in events {
                 let source_id = event.udata as usize;
@@ -481,29 +468,39 @@ mod imp {
                 Interest::Read => libc::EVFILT_READ,
                 Interest::Write => libc::EVFILT_WRITE,
             };
-            let mut change = libc::kevent {
-                ident: source.fd as libc::uintptr_t,
+            self.change_kqueue(
+                source.fd,
                 filter,
-                flags: (libc::EV_ADD | libc::EV_ENABLE | libc::EV_ONESHOT) as u16,
+                libc::EV_ADD | libc::EV_ENABLE | libc::EV_ONESHOT,
+                source_id as u64,
+            )
+        }
+
+        #[cfg(target_os = "macos")]
+        fn change_kqueue(&self, fd: RawFd, filter: i16, flags: u16, udata: u64) -> Result<(), i32> {
+            let change = libc::kevent64_s {
+                ident: fd as u64,
+                filter,
+                flags,
                 fflags: 0,
                 data: 0,
-                udata: source_id as usize as *mut libc::c_void,
+                udata,
+                ext: [0; 2],
             };
-
             if unsafe {
-                libc::kevent(
+                libc::kevent64(
                     self.poll_fd,
-                    &mut change,
+                    &change,
                     1,
                     ptr::null_mut(),
                     0,
+                    libc::KEVENT_FLAG_IMMEDIATE,
                     ptr::null(),
                 )
             } < 0
             {
                 return Err(last_errno());
             }
-
             Ok(())
         }
 
@@ -540,20 +537,6 @@ mod imp {
                 millis.min(c_int::MAX as u128) as c_int
             }
         }
-    }
-
-    fn close_fd(fd: RawFd) -> c_int {
-        if fd < 0 {
-            return 0;
-        }
-
-        let result = unsafe { libc::close(fd) };
-        if result == 0 {
-            return 0;
-        }
-
-        let err = last_errno();
-        if err == libc::EINTR { 0 } else { -err }
     }
 
     fn set_nonblocking(fd: RawFd) -> Result<(), i32> {
@@ -636,6 +619,34 @@ mod imp {
             return 0;
         }
 
+        // Taro's executable entry does not install Rust main's process-wide
+        // SIGPIPE ignore handler. Suppress it per socket, leaving application
+        // signal policy untouched. Non-socket descriptors are also adopted.
+        #[cfg(target_os = "macos")]
+        {
+            let enabled: c_int = 1;
+            let status = unsafe {
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_NOSIGPIPE,
+                    (&enabled as *const c_int).cast(),
+                    std::mem::size_of_val(&enabled) as libc::socklen_t,
+                )
+            };
+            if status < 0 {
+                match last_errno() {
+                    libc::ENOTSOCK => {}
+                    // macOS refuses options on a socket its peer has already
+                    // reset. That peer is gone, not the listener that accepted it.
+                    libc::EINVAL => {
+                        unsafe { *libc::__error() = libc::ECONNABORTED };
+                        return 0;
+                    }
+                    _ => return 0,
+                }
+            }
+        }
         if let Err(_err) = ensure_reactor() {
             return 0;
         }
@@ -643,12 +654,19 @@ mod imp {
         with_reactor_mut(|reactor| reactor.register_source(fd)).unwrap_or(0)
     }
 
-    pub(crate) fn close_source(source_id: usize) -> (c_int, Vec<TaskToken>) {
+    pub(crate) fn close_source(source_id: usize) -> (c_int, Vec<TaskWake>) {
         if source_id == 0 {
             return (0, Vec::new());
         }
 
-        if let Some(result) = with_reactor_mut(|reactor| reactor.close_source(source_id)) {
+        if let Some(result) = with_reactor_mut(|reactor| {
+            let (status, tokens) = reactor.close_source(source_id);
+            let wake = tokens
+                .iter()
+                .filter_map(|token| reactor.wake_target(token))
+                .collect();
+            (status, wake)
+        }) {
             result
         } else {
             (0, Vec::new())
@@ -693,48 +711,58 @@ mod imp {
     }
 
     pub(crate) fn read_source(source_id: usize, buf: *mut u8, len: usize) -> isize {
-        let fd =
-            with_reactor_mut(|reactor| reactor.source_fd(source_id)).unwrap_or(Err(libc::EBADF));
-        let fd = match fd {
+        let fd = match crate::fd_lease::acquire(source_id as u64) {
             Ok(value) => value,
             Err(err) => return -(err as isize),
         };
 
         let result = unsafe { libc::read(fd, buf.cast(), len) };
-        if result < 0 {
+        let result = if result < 0 {
             -(last_errno() as isize)
         } else {
             result as isize
-        }
+        };
+        crate::fd_lease::release(source_id as u64);
+        result
     }
 
     pub(crate) fn write_source(source_id: usize, buf: *const u8, len: usize) -> isize {
-        let fd =
-            with_reactor_mut(|reactor| reactor.source_fd(source_id)).unwrap_or(Err(libc::EBADF));
-        let fd = match fd {
+        let fd = match crate::fd_lease::acquire(source_id as u64) {
             Ok(value) => value,
             Err(err) => return -(err as isize),
         };
 
+        #[cfg(target_os = "linux")]
+        let result = {
+            let sent = unsafe { libc::send(fd, buf.cast(), len, libc::MSG_NOSIGNAL) };
+            if sent < 0 && last_errno() == libc::ENOTSOCK {
+                unsafe { libc::write(fd, buf.cast(), len) }
+            } else {
+                sent
+            }
+        };
+        #[cfg(not(target_os = "linux"))]
         let result = unsafe { libc::write(fd, buf.cast(), len) };
-        if result < 0 {
+        let result = if result < 0 {
             -(last_errno() as isize)
         } else {
             result as isize
-        }
+        };
+        crate::fd_lease::release(source_id as u64);
+        result
     }
 
     pub(crate) fn register_wait(
         source_id: usize,
-        task_token: TaskToken,
+        target: TaskWake,
         interest: Interest,
     ) -> Result<(), i32> {
         ensure_reactor()?;
-        with_reactor_mut(|reactor| reactor.register_wait(source_id, task_token, interest))
+        with_reactor_mut(|reactor| reactor.register_wait(source_id, target, interest))
             .expect("async io reactor missing after initialization")
     }
 
-    pub(crate) fn wait(timeout: Option<StdDuration>) -> Vec<TaskToken> {
+    pub(crate) fn wait(timeout: Option<StdDuration>) -> Vec<TaskWake> {
         let poll_fd = {
             let guard = REACTOR.lock().unwrap();
             guard.as_ref().map(|r| r.poll_fd)
@@ -747,7 +775,6 @@ mod imp {
         {
             let mut events: [libc::epoll_event; 64] = [libc::epoll_event { events: 0, u64: 0 }; 64];
             let timeout_ms = epoll_timeout_ms(timeout);
-            crate::garbage_collector::enter_safepoint();
             let ready = unsafe {
                 libc::epoll_wait(
                     poll_fd,
@@ -756,7 +783,6 @@ mod imp {
                     timeout_ms,
                 )
             };
-            crate::garbage_collector::leave_safepoint();
 
             if ready < 0 {
                 let err = last_errno();
@@ -768,13 +794,19 @@ mod imp {
             if ready == 0 {
                 return Vec::new();
             }
-            with_reactor_mut(|reactor| reactor.process_epoll_events(&events[..ready as usize]))
-                .unwrap_or_default()
+            with_reactor_mut(|reactor| {
+                let tokens = reactor.process_epoll_events(&events[..ready as usize]);
+                tokens
+                    .iter()
+                    .filter_map(|token| reactor.wake_target(token))
+                    .collect()
+            })
+            .unwrap_or_default()
         }
 
         #[cfg(target_os = "macos")]
         {
-            let mut events: [libc::kevent; 64] = unsafe { std::mem::zeroed() };
+            let mut events: [libc::kevent64_s; 64] = unsafe { std::mem::zeroed() };
             let mut timeout_storage = timeout.map(|duration| libc::timespec {
                 tv_sec: duration.as_secs() as libc::time_t,
                 tv_nsec: duration.subsec_nanos() as libc::c_long,
@@ -782,19 +814,26 @@ mod imp {
             let timeout_ptr = timeout_storage
                 .as_mut()
                 .map_or(ptr::null(), |timespec| timespec as *const libc::timespec);
+            // A plain `kevent` with a zero timeout takes about 12 us to find nothing on
+            // macOS, and this flag about 0.2 us. A kqueue accepts `kevent` or `kevent64`,
+            // not both, so everything here uses the second.
+            let flags = if timeout.is_some_and(|duration| duration.is_zero()) {
+                libc::KEVENT_FLAG_IMMEDIATE
+            } else {
+                0
+            };
 
-            crate::garbage_collector::enter_safepoint();
             let ready = unsafe {
-                libc::kevent(
+                libc::kevent64(
                     poll_fd,
                     ptr::null(),
                     0,
                     events.as_mut_ptr(),
                     events.len() as c_int,
+                    flags,
                     timeout_ptr,
                 )
             };
-            crate::garbage_collector::leave_safepoint();
 
             if ready < 0 {
                 let err = last_errno();
@@ -806,19 +845,92 @@ mod imp {
             if ready == 0 {
                 return Vec::new();
             }
-            with_reactor_mut(|reactor| reactor.process_kqueue_events(&events[..ready as usize]))
-                .unwrap_or_default()
+            with_reactor_mut(|reactor| {
+                let tokens = reactor.process_kqueue_events(&events[..ready as usize]);
+                tokens
+                    .iter()
+                    .filter_map(|token| reactor.wake_target(token))
+                    .collect()
+            })
+            .unwrap_or_default()
         }
     }
 
     pub(crate) fn cancel_task(task_token: TaskToken) {
         let _ = with_reactor_mut(|reactor| reactor.cancel_task(task_token));
     }
+
+    #[cfg(test)]
+    pub(super) mod tests_support {
+        use super::*;
+        use crate::executor::test_task_wake;
+
+        pub(crate) fn wake_for(task: u64) -> TaskWake {
+            test_task_wake(task)
+        }
+
+        /// A private reactor over pipes, away from the process's real one.
+        pub(crate) struct TestReactor {
+            reactor: Reactor,
+            pipes: Vec<RawFd>,
+        }
+        impl TestReactor {
+            pub(crate) fn new() -> Self {
+                Self {
+                    reactor: Reactor::new().unwrap(),
+                    pipes: Vec::new(),
+                }
+            }
+            pub(crate) fn source(&mut self) -> usize {
+                let mut fds = [0; 2];
+                assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+                self.pipes.push(fds[1]);
+                self.reactor.register_source(fds[0])
+            }
+            pub(crate) fn wait(&mut self, source: usize, task: &TaskWake, read: bool) {
+                let interest = if read {
+                    Interest::Read
+                } else {
+                    Interest::Write
+                };
+                // A pipe's read end can't arm for writing on every platform;
+                // only the bookkeeping matters here.
+                let _ = self.reactor.register_wait(source, task.clone(), interest);
+            }
+            pub(crate) fn waiters(&self, source: usize) -> (usize, usize) {
+                let entry = &self.reactor.sources[&source];
+                (entry.read_waiters.len(), entry.write_waiters.len())
+            }
+            pub(crate) fn finish(&mut self, task: &TaskWake) {
+                self.reactor.cancel_task(task.identity());
+            }
+            pub(crate) fn close(&mut self, source: usize) {
+                self.reactor.close_source(source);
+            }
+            pub(crate) fn is_tracking(&self, task: &TaskWake) -> bool {
+                self.reactor.wake_targets.contains_key(&task.identity())
+            }
+            pub(crate) fn tracked_sources(&self, task: &TaskWake) -> usize {
+                self.reactor.wake_targets[&task.identity()].sources.len()
+            }
+        }
+        impl Drop for TestReactor {
+            fn drop(&mut self) {
+                let sources: Vec<_> = self.reactor.sources.keys().copied().collect();
+                for source in sources {
+                    self.reactor.close_source(source);
+                }
+                for &fd in &self.pipes {
+                    unsafe { libc::close(fd) };
+                }
+            }
+        }
+    }
 }
 
 #[cfg(not(unix))]
 mod imp {
-    use super::{Interest, StdDuration, TaskToken};
+    use super::{Interest, StdDuration, TaskToken, TaskWake};
 
     const UNSUPPORTED_ERRNO: i32 = 95;
 
@@ -826,7 +938,7 @@ mod imp {
         0
     }
 
-    pub(crate) fn close_source(_source_id: usize) -> (i32, Vec<TaskToken>) {
+    pub(crate) fn close_source(_source_id: usize) -> (i32, Vec<TaskWake>) {
         (0, Vec::new())
     }
 
@@ -848,7 +960,7 @@ mod imp {
 
     pub(crate) fn register_wait(
         _source_id: usize,
-        _task_token: TaskToken,
+        _target: TaskWake,
         _interest: Interest,
     ) -> Result<(), i32> {
         Err(UNSUPPORTED_ERRNO)
@@ -860,7 +972,7 @@ mod imp {
 
     pub(crate) fn notify() {}
 
-    pub(crate) fn wait(_timeout: Option<StdDuration>) -> Vec<TaskToken> {
+    pub(crate) fn wait(_timeout: Option<StdDuration>) -> Vec<TaskWake> {
         Vec::new()
     }
 
@@ -871,7 +983,7 @@ pub(crate) fn adopt_fd(fd: i32) -> usize {
     imp::adopt_fd(fd)
 }
 
-pub(crate) fn close_source(source_id: usize) -> (i32, Vec<TaskToken>) {
+pub(crate) fn close_source(source_id: usize) -> (i32, Vec<TaskWake>) {
     imp::close_source(source_id)
 }
 
@@ -893,10 +1005,10 @@ pub(crate) fn write_source(source_id: usize, buf: *const u8, len: usize) -> isiz
 
 pub(crate) fn register_wait(
     source_id: usize,
-    task_token: TaskToken,
+    target: TaskWake,
     interest: Interest,
 ) -> Result<(), i32> {
-    imp::register_wait(source_id, task_token, interest)
+    imp::register_wait(source_id, target, interest)
 }
 
 pub(crate) fn initialize() -> Result<(), i32> {
@@ -907,7 +1019,7 @@ pub(crate) fn notify() {
     imp::notify()
 }
 
-pub(crate) fn wait(timeout: Option<StdDuration>) -> Vec<TaskToken> {
+pub(crate) fn wait(timeout: Option<StdDuration>) -> Vec<TaskWake> {
     imp::wait(timeout)
 }
 
@@ -923,8 +1035,8 @@ pub extern "C" fn __rt__async_io_adopt_fd(fd: i32) -> usize {
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt__async_io_close_source(source_id: usize) -> i32 {
     let (result, waiters) = close_source(source_id);
-    if !waiters.is_empty() {
-        crate::executor::wake_tasks(&waiters);
+    for target in waiters {
+        target.wake();
     }
     result
 }
@@ -951,4 +1063,138 @@ pub extern "C" fn __rt__async_io_write_source(
     len: usize,
 ) -> isize {
     write_source(source_id, buf, len)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    fn is_open(fd: i32) -> bool {
+        (unsafe { libc::fcntl(fd, libc::F_GETFD) }) != -1
+    }
+
+    #[test]
+    fn disconnected_socket_write_returns_error_without_sigpipe() {
+        const CHILD: &str = "TARO_SOCKET_SIGPIPE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "io_poller::tests::disconnected_socket_write_returns_error_without_sigpipe",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                child.status.success(),
+                "disconnected write killed the child: {:?}\n{}",
+                child.status,
+                String::from_utf8_lossy(&child.stderr)
+            );
+            return;
+        }
+        // Rust main normally ignores SIGPIPE; Taro executable entry does not.
+        // Reset it in a separate process so the test models Taro accurately.
+        unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+        let mut fds = [0; 2];
+        assert_eq!(
+            unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) },
+            0
+        );
+        let source = adopt_fd(fds[0]);
+        assert_ne!(source, 0);
+        unsafe { libc::close(fds[1]) };
+        assert_eq!(
+            write_source(source, b"x".as_ptr(), 1),
+            -(libc::EPIPE as isize)
+        );
+        __rt__async_io_close_source(source);
+    }
+
+    mod waiting_tasks {
+        use super::super::imp::tests_support::{TestReactor, wake_for};
+
+        #[test]
+        fn finishing_a_task_clears_its_waits_and_leaves_other_tasks_waiting() {
+            let mut reactor = TestReactor::new();
+            let (one, two) = (reactor.source(), reactor.source());
+            let (leaving, staying) = (wake_for(1), wake_for(2));
+            reactor.wait(one, &leaving, true);
+            reactor.wait(one, &leaving, false);
+            reactor.wait(two, &leaving, true);
+            reactor.wait(one, &staying, true);
+            assert_eq!(reactor.waiters(one), (2, 1));
+            assert_eq!(reactor.waiters(two), (1, 0));
+
+            reactor.finish(&leaving);
+            assert_eq!(reactor.waiters(one), (1, 0));
+            assert_eq!(reactor.waiters(two), (0, 0));
+            assert!(reactor.is_tracking(&staying));
+            assert!(!reactor.is_tracking(&leaving));
+        }
+
+        #[test]
+        fn finishing_a_task_visits_only_the_sources_it_waited_on() {
+            // Other connections' sources stay out of the finishing task's work:
+            // on HEAD this cost one visit per open source for each finished task.
+            let mut reactor = TestReactor::new();
+            let own = reactor.source();
+            for _ in 0..64 {
+                reactor.source();
+            }
+            let task = wake_for(3);
+            reactor.wait(own, &task, true);
+            assert_eq!(reactor.tracked_sources(&task), 1);
+            reactor.finish(&task);
+            assert_eq!(reactor.waiters(own), (0, 0));
+        }
+
+        #[test]
+        fn a_task_that_never_waited_has_nothing_to_finish() {
+            let mut reactor = TestReactor::new();
+            let source = reactor.source();
+            let (waiting, idle) = (wake_for(4), wake_for(5));
+            reactor.wait(source, &waiting, true);
+            reactor.finish(&idle);
+            assert_eq!(reactor.waiters(source), (1, 0));
+        }
+
+        #[test]
+        fn a_long_lived_task_forgets_closed_sources() {
+            let mut reactor = TestReactor::new();
+            let task = wake_for(6);
+            let open = reactor.source();
+            reactor.wait(open, &task, true);
+            for _ in 0..1_000 {
+                let brief = reactor.source();
+                reactor.wait(brief, &task, true);
+                reactor.close(brief);
+            }
+            assert!(reactor.tracked_sources(&task) <= 32);
+            reactor.finish(&task);
+            assert_eq!(reactor.waiters(open), (0, 0));
+        }
+    }
+
+    #[test]
+    fn closing_a_source_defers_until_in_flight_operations_release_it() {
+        let (mut read_fd, mut write_fd) = (0, 0);
+        assert_eq!(create_pipe(&mut read_fd, &mut write_fd), 0);
+        let source = adopt_fd(read_fd);
+        assert_ne!(source, 0);
+
+        // An operation between loading the descriptor and its syscall.
+        assert_eq!(crate::fd_lease::acquire(source as u64), Ok(read_fd));
+        assert_eq!(__rt__async_io_close_source(source), 0);
+        assert!(
+            is_open(read_fd),
+            "close must not release a leased descriptor"
+        );
+        let mut byte = 0u8;
+        assert_eq!(read_source(source, &mut byte, 1), -(libc::EBADF as isize));
+
+        crate::fd_lease::release(source as u64);
+        assert!(!is_open(read_fd), "the last release closes the descriptor");
+        unsafe { libc::close(write_fd) };
+    }
 }

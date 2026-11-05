@@ -13,8 +13,6 @@ use crate::{
 pub(super) struct GatherLocalsVisitor<'cs, 'arena> {
     cs: &'cs ConstraintSystem<'arena>,
     checker: &'cs Checker<'arena>,
-    pattern_mutable: bool,
-    reference_sets_mutability: bool,
 }
 
 impl<'cs, 'arena> GatherLocalsVisitor<'cs, 'arena> {
@@ -23,13 +21,17 @@ impl<'cs, 'arena> GatherLocalsVisitor<'cs, 'arena> {
         checker: &'cs Checker<'arena>,
         pat: &hir::Pattern,
     ) {
-        let mut v = GatherLocalsVisitor {
-            cs,
-            checker,
-            pattern_mutable: false,
-            reference_sets_mutability: true,
-        };
+        let mut v = GatherLocalsVisitor { cs, checker };
         v.visit_pattern(pat)
+    }
+
+    pub fn from_binding_condition(
+        cs: &'cs ConstraintSystem<'arena>,
+        checker: &'cs Checker<'arena>,
+        condition: &hir::PatternBindingCondition,
+    ) {
+        let mut visitor = GatherLocalsVisitor { cs, checker };
+        visitor.visit_pattern(&condition.pattern);
     }
 
     pub fn from_local(
@@ -37,19 +39,20 @@ impl<'cs, 'arena> GatherLocalsVisitor<'cs, 'arena> {
         checker: &'cs Checker<'arena>,
         local: &hir::Local,
     ) {
-        let mut v = GatherLocalsVisitor {
-            cs,
-            checker,
-            pattern_mutable: local.mutability == Mutability::Mutable,
-            reference_sets_mutability: false,
-        };
-        v.declare(
-            local.id,
-            local.ty.as_deref(),
-            local.pattern.span,
-            local.mutability == Mutability::Mutable,
-        );
-        v.visit_pattern(&local.pattern)
+        let mut v = GatherLocalsVisitor { cs, checker };
+        if checker.constructor_self.get() == Some(local.pattern.id)
+            && let Some(payload) = checker.constructor_payload.get()
+        {
+            v.assign(local.pattern.span, local.id, Some(payload), true);
+        } else {
+            v.declare(
+                local.id,
+                local.ty.as_deref(),
+                local.pattern.span,
+                local.mutability == Mutability::Mutable,
+            );
+        }
+        v.visit_pattern(&local.pattern);
     }
 
     fn assign(
@@ -87,15 +90,8 @@ impl<'cs, 'arena> GatherLocalsVisitor<'cs, 'arena> {
 impl HirVisitor for GatherLocalsVisitor<'_, '_> {
     fn visit_pattern(&mut self, p: &hir::Pattern) -> Self::Result {
         match &p.kind {
-            hir::PatternKind::Reference { pattern, mutable } if self.reference_sets_mutability => {
-                let prev = self.pattern_mutable;
-                self.pattern_mutable = *mutable == Mutability::Mutable;
-                self.visit_pattern(pattern);
-                self.pattern_mutable = prev;
-                return;
-            }
             hir::PatternKind::Binding { .. } => {
-                let _ = self.assign(p.span, p.id, None, self.pattern_mutable);
+                let _ = self.assign(p.span, p.id, None, true);
             }
             _ => {}
         }

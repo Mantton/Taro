@@ -1,17 +1,17 @@
 //+cfg family("unix")
 
-func assertMappedErrno(_ code: int32, _ kind: std.io.ErrorKind, _ message: string) {
-    let err = std.sys.io.unix.mapErrno(code)
-    std.assert(err.isKind(kind), message)
+func assertMappedErrno(_ code: int32, _ kind: std::io::ErrorKind, _ message: string) {
+    err := std::sys::io::unix::mapErrno(code)
+    std::assert(err.isKind(kind), message)
     match err.rawOsError() {
-        case .some(actual) => std.assert(actual == code, "mapped error should preserve raw errno")
-        case .none => std.panic.panic("mapped error should contain raw errno")
+        case .some(actual) => std::assert(actual == code, "mapped error should preserve raw errno")
+        case .none => std::panic::panic("mapped error should contain raw errno")
     }
 }
 
 @test
 func testUnixErrnoMapperKnownCodes() {
-    assertMappedErrno(std.libc.EINPROGRESS, .wouldBlock, "EINPROGRESS should map to wouldBlock")
+    assertMappedErrno(std::libc::EINPROGRESS, .wouldBlock, "EINPROGRESS should map to wouldBlock")
     assertMappedErrno(2, .notFound, "ENOENT should map to notFound")
     assertMappedErrno(13, .permissionDenied, "EACCES should map to permissionDenied")
     assertMappedErrno(16, .resourceBusy, "EBUSY should map to resourceBusy")
@@ -29,7 +29,9 @@ func testUnixErrnoMapperLinuxCodes() {
     assertMappedErrno(11, .wouldBlock, "linux EWOULDBLOCK should map to wouldBlock")
     assertMappedErrno(39, .directoryNotEmpty, "linux ENOTEMPTY should map to directoryNotEmpty")
     assertMappedErrno(98, .addressInUse, "linux EADDRINUSE should map to addressInUse")
+    assertMappedErrno(103, .connectionAborted, "linux ECONNABORTED should let an accept loop continue")
     assertMappedErrno(104, .connectionReset, "linux ECONNRESET should map to connectionReset")
+    assertMappedErrno(105, .resourceExhausted, "linux ENOBUFS should let an accept loop back off")
     assertMappedErrno(110, .timedOut, "linux ETIMEDOUT should map to timedOut")
     assertMappedErrno(111, .connectionRefused, "linux ECONNREFUSED should map to connectionRefused")
 }

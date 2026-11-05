@@ -6,6 +6,6 @@ type InterfaceSetImplBoth = InterfaceSetImplLeft & InterfaceSetImplRight
 struct InterfaceSetExplicitValue {}
 struct InterfaceSetInlineValue: InterfaceSetImplBoth {}
 
-impl InterfaceSetImplBoth for InterfaceSetExplicitValue {}
+conform InterfaceSetExplicitValue to InterfaceSetImplBoth {}
 
 func main() {}

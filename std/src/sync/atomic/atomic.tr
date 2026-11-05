@@ -1,0 +1,251 @@
+import std::marker::AnyObject
+import std::intrinsic::{__intrinsic_class_owner, __intrinsic_class_from_owner}
+import std::intrinsic::{__intrinsic_atomic_load, __intrinsic_atomic_store, __intrinsic_atomic_swap, __intrinsic_atomic_compare_exchange, __intrinsic_atomic_add}
+import std::optional::Optional
+
+// All operations are sequentially consistent. Share these values by reference;
+// do not copy an atomic after its first use. @NoCopy makes vet diagnose copies.
+// Zero initialization is valid. Integer add wraps and returns the NEW value;
+// swap returns the old value; compareExchange returns whether it exchanged.
+
+@NoCopy
+public struct Int8 { private value: int8 }
+
+extend Int8 {
+    public static func new(_ value: int8 = 0) -> Self { Self { value } }
+}
+
+extend &Int8 {
+    public func load() -> int8 { unsafe { __intrinsic_atomic_load(&self.value as *const int8) } }
+    public func store(_ value: int8) { unsafe { __intrinsic_atomic_store(&self.value as *mut int8, value) } }
+    public func swap(_ value: int8) -> int8 { unsafe { __intrinsic_atomic_swap(&self.value as *mut int8, value) } }
+    public func compareExchange(_ expected: int8, _ desired: int8) -> bool { unsafe { __intrinsic_atomic_compare_exchange(&self.value as *mut int8, expected, desired) } }
+    public func add(_ delta: int8) -> int8 { unsafe { __intrinsic_atomic_add(&self.value as *mut int8, delta) } }
+}
+
+
+@NoCopy
+public struct Uint8 { private value: uint8 }
+
+extend Uint8 {
+    public static func new(_ value: uint8 = 0) -> Self { Self { value } }
+}
+
+extend &Uint8 {
+    public func load() -> uint8 { unsafe { __intrinsic_atomic_load(&self.value as *const uint8) } }
+    public func store(_ value: uint8) { unsafe { __intrinsic_atomic_store(&self.value as *mut uint8, value) } }
+    public func swap(_ value: uint8) -> uint8 { unsafe { __intrinsic_atomic_swap(&self.value as *mut uint8, value) } }
+    public func compareExchange(_ expected: uint8, _ desired: uint8) -> bool { unsafe { __intrinsic_atomic_compare_exchange(&self.value as *mut uint8, expected, desired) } }
+    public func add(_ delta: uint8) -> uint8 { unsafe { __intrinsic_atomic_add(&self.value as *mut uint8, delta) } }
+}
+
+
+@NoCopy
+public struct Int16 { private value: int16 }
+
+extend Int16 {
+    public static func new(_ value: int16 = 0) -> Self { Self { value } }
+}
+
+extend &Int16 {
+    public func load() -> int16 { unsafe { __intrinsic_atomic_load(&self.value as *const int16) } }
+    public func store(_ value: int16) { unsafe { __intrinsic_atomic_store(&self.value as *mut int16, value) } }
+    public func swap(_ value: int16) -> int16 { unsafe { __intrinsic_atomic_swap(&self.value as *mut int16, value) } }
+    public func compareExchange(_ expected: int16, _ desired: int16) -> bool { unsafe { __intrinsic_atomic_compare_exchange(&self.value as *mut int16, expected, desired) } }
+    public func add(_ delta: int16) -> int16 { unsafe { __intrinsic_atomic_add(&self.value as *mut int16, delta) } }
+}
+
+
+@NoCopy
+public struct Uint16 { private value: uint16 }
+
+extend Uint16 {
+    public static func new(_ value: uint16 = 0) -> Self { Self { value } }
+}
+
+extend &Uint16 {
+    public func load() -> uint16 { unsafe { __intrinsic_atomic_load(&self.value as *const uint16) } }
+    public func store(_ value: uint16) { unsafe { __intrinsic_atomic_store(&self.value as *mut uint16, value) } }
+    public func swap(_ value: uint16) -> uint16 { unsafe { __intrinsic_atomic_swap(&self.value as *mut uint16, value) } }
+    public func compareExchange(_ expected: uint16, _ desired: uint16) -> bool { unsafe { __intrinsic_atomic_compare_exchange(&self.value as *mut uint16, expected, desired) } }
+    public func add(_ delta: uint16) -> uint16 { unsafe { __intrinsic_atomic_add(&self.value as *mut uint16, delta) } }
+}
+
+
+@NoCopy
+public struct Int32 { private value: int32 }
+
+extend Int32 {
+    public static func new(_ value: int32 = 0) -> Self { Self { value } }
+}
+
+extend &Int32 {
+    public func load() -> int32 { unsafe { __intrinsic_atomic_load(&self.value as *const int32) } }
+    public func store(_ value: int32) { unsafe { __intrinsic_atomic_store(&self.value as *mut int32, value) } }
+    public func swap(_ value: int32) -> int32 { unsafe { __intrinsic_atomic_swap(&self.value as *mut int32, value) } }
+    public func compareExchange(_ expected: int32, _ desired: int32) -> bool { unsafe { __intrinsic_atomic_compare_exchange(&self.value as *mut int32, expected, desired) } }
+    public func add(_ delta: int32) -> int32 { unsafe { __intrinsic_atomic_add(&self.value as *mut int32, delta) } }
+}
+
+
+@NoCopy
+public struct Uint32 { private value: uint32 }
+
+extend Uint32 {
+    public static func new(_ value: uint32 = 0) -> Self { Self { value } }
+}
+
+extend &Uint32 {
+    public func load() -> uint32 { unsafe { __intrinsic_atomic_load(&self.value as *const uint32) } }
+    public func store(_ value: uint32) { unsafe { __intrinsic_atomic_store(&self.value as *mut uint32, value) } }
+    public func swap(_ value: uint32) -> uint32 { unsafe { __intrinsic_atomic_swap(&self.value as *mut uint32, value) } }
+    public func compareExchange(_ expected: uint32, _ desired: uint32) -> bool { unsafe { __intrinsic_atomic_compare_exchange(&self.value as *mut uint32, expected, desired) } }
+    public func add(_ delta: uint32) -> uint32 { unsafe { __intrinsic_atomic_add(&self.value as *mut uint32, delta) } }
+}
+
+
+@NoCopy
+public struct Int64 { private value: int64 }
+
+extend Int64 {
+    public static func new(_ value: int64 = 0) -> Self { Self { value } }
+}
+
+extend &Int64 {
+    public func load() -> int64 { unsafe { __intrinsic_atomic_load(&self.value as *const int64) } }
+    public func store(_ value: int64) { unsafe { __intrinsic_atomic_store(&self.value as *mut int64, value) } }
+    public func swap(_ value: int64) -> int64 { unsafe { __intrinsic_atomic_swap(&self.value as *mut int64, value) } }
+    public func compareExchange(_ expected: int64, _ desired: int64) -> bool { unsafe { __intrinsic_atomic_compare_exchange(&self.value as *mut int64, expected, desired) } }
+    public func add(_ delta: int64) -> int64 { unsafe { __intrinsic_atomic_add(&self.value as *mut int64, delta) } }
+}
+
+
+@NoCopy
+public struct Uint64 { private value: uint64 }
+
+extend Uint64 {
+    public static func new(_ value: uint64 = 0) -> Self { Self { value } }
+}
+
+extend &Uint64 {
+    public func load() -> uint64 { unsafe { __intrinsic_atomic_load(&self.value as *const uint64) } }
+    public func store(_ value: uint64) { unsafe { __intrinsic_atomic_store(&self.value as *mut uint64, value) } }
+    public func swap(_ value: uint64) -> uint64 { unsafe { __intrinsic_atomic_swap(&self.value as *mut uint64, value) } }
+    public func compareExchange(_ expected: uint64, _ desired: uint64) -> bool { unsafe { __intrinsic_atomic_compare_exchange(&self.value as *mut uint64, expected, desired) } }
+    public func add(_ delta: uint64) -> uint64 { unsafe { __intrinsic_atomic_add(&self.value as *mut uint64, delta) } }
+}
+
+
+@NoCopy
+public struct Usize { private value: usize }
+
+extend Usize {
+    public static func new(_ value: usize = 0) -> Self { Self { value } }
+}
+
+extend &Usize {
+    public func load() -> usize { unsafe { __intrinsic_atomic_load(&self.value as *const usize) } }
+    public func store(_ value: usize) { unsafe { __intrinsic_atomic_store(&self.value as *mut usize, value) } }
+    public func swap(_ value: usize) -> usize { unsafe { __intrinsic_atomic_swap(&self.value as *mut usize, value) } }
+    public func compareExchange(_ expected: usize, _ desired: usize) -> bool { unsafe { __intrinsic_atomic_compare_exchange(&self.value as *mut usize, expected, desired) } }
+    public func add(_ delta: usize) -> usize { unsafe { __intrinsic_atomic_add(&self.value as *mut usize, delta) } }
+}
+
+
+/// A sequentially consistent boolean. Zero initializes to false.
+@NoCopy
+public struct Bool { private value: uint8 }
+extend Bool {
+    public static func new(_ value: bool = false) -> Self {
+        Self { value: if value { 1_u8 } else { 0_u8 } }
+    }
+}
+extend &Bool {
+    public func load() -> bool { unsafe { __intrinsic_atomic_load(&self.value as *const uint8) != 0 } }
+    public func store(_ value: bool) { unsafe { __intrinsic_atomic_store(&self.value as *mut uint8, if value { 1_u8 } else { 0_u8 }) } }
+    public func swap(_ value: bool) -> bool { unsafe { __intrinsic_atomic_swap(&self.value as *mut uint8, if value { 1_u8 } else { 0_u8 }) != 0 } }
+    public func compareExchange(_ expected: bool, _ desired: bool) -> bool {
+        unsafe { __intrinsic_atomic_compare_exchange(&self.value as *mut uint8, if expected { 1_u8 } else { 0_u8 }, if desired { 1_u8 } else { 0_u8 }) }
+    }
+}
+
+/// A strong, traced reference slot. Loading snapshots an ordinary strong
+/// reference; replacement never invalidates previously loaded references.
+/// This synchronizes the slot, not mutable access to the referenced value.
+/// For class C, &C names a mutable handle variable, not the object itself;
+/// reassigning that variable changes what a loaded reference observes.
+@NoCopy
+public struct Reference[T] { private value: *const T }
+
+extend[T] Reference[T] {
+    public static func new(_ value: Optional[&T] = .none) -> Self {
+        Self { value: Reference[T]::raw(value) }
+    }
+    internal static func raw(_ value: Optional[&T]) -> *const T {
+        match value {
+            case .some(target) => return unsafe { target as *const T }
+            case .none => return unsafe { (0 as usize) as *const T }
+        }
+    }
+    internal static func strong(_ value: *const uint8) -> Optional[&T] {
+        if unsafe { value as usize } == 0 { return .none }
+        return .some(unsafe { value as &T })
+    }
+}
+
+extend[T] &Reference[T] {
+    public func load() -> Optional[&T] {
+        Reference[T]::strong(unsafe { __intrinsic_atomic_load(&self.value as *const *const uint8) })
+    }
+    public func store(_ value: Optional[&T]) {
+        unsafe { __intrinsic_atomic_store(&self.value as *mut *const uint8, Reference[T]::raw(value) as *const uint8) }
+    }
+    public func swap(_ value: Optional[&T]) -> Optional[&T] {
+        Reference[T]::strong(unsafe { __intrinsic_atomic_swap(&self.value as *mut *const uint8, Reference[T]::raw(value) as *const uint8) })
+    }
+    /// Compares reference identity; .none compares as an empty slot.
+    public func compareExchange(_ expected: Optional[&T], _ desired: Optional[&T]) -> bool {
+        unsafe { __intrinsic_atomic_compare_exchange(&self.value as *mut *const uint8, Reference[T]::raw(expected) as *const uint8, Reference[T]::raw(desired) as *const uint8) }
+    }
+}
+
+/// A strong, traced snapshot of a concrete class object. Reassigning the
+/// publisher's handle variable does not change a stored or loaded snapshot.
+/// Only the slot is synchronized; object fields still need synchronization
+/// when modified concurrently. Erased interface types require more metadata
+/// and are rejected. Zero initialization creates an empty slot.
+@lang("AtomicHandle")
+@NoCopy
+public struct Handle[C: AnyObject] { private value: *const uint8 }
+
+extend[C: AnyObject] Handle[C] {
+    public static func new(_ value: Optional[C] = .none) -> Self {
+        Self { value: Handle[C]::raw(value) }
+    }
+    internal static func raw(_ value: Optional[C]) -> *const uint8 {
+        match value {
+            case .some(target) => unsafe { __intrinsic_class_owner(&target) }
+            case .none => unsafe { (0 as usize) as *const uint8 }
+        }
+    }
+    internal static func strong(_ value: *const uint8) -> Optional[C] {
+        if unsafe { value as usize } == 0 { return .none }
+        return .some(unsafe { __intrinsic_class_from_owner[C](value) })
+    }
+}
+
+extend[C: AnyObject] &Handle[C] {
+    public func load() -> Optional[C] {
+        Handle[C]::strong(unsafe { __intrinsic_atomic_load(&self.value as *const *const uint8) })
+    }
+    public func store(_ value: Optional[C]) {
+        unsafe { __intrinsic_atomic_store(&self.value as *mut *const uint8, Handle[C]::raw(value)) }
+    }
+    public func swap(_ value: Optional[C]) -> Optional[C] {
+        Handle[C]::strong(unsafe { __intrinsic_atomic_swap(&self.value as *mut *const uint8, Handle[C]::raw(value)) })
+    }
+    /// Compares object identity; .none compares as an empty slot.
+    public func compareExchange(_ expected: Optional[C], _ desired: Optional[C]) -> bool {
+        unsafe { __intrinsic_atomic_compare_exchange(&self.value as *mut *const uint8, Handle[C]::raw(expected), Handle[C]::raw(desired)) }
+    }
+}

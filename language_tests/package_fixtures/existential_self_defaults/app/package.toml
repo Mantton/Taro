@@ -1,0 +1,6 @@
+[package]
+name = "github.com/example/erasedselfapp"
+kind = "executable"
+
+[require]
+"github.com/example/erasedselfdep" = { path = "../dep", alias = "dep" }

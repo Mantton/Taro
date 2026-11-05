@@ -1,0 +1,45 @@
+interface Label { func label() -> string; }
+struct Text { text: string }
+conform Text to Label {
+    func label() -> string { self.text }
+}
+struct Packet { first: any Label; number: &int32; last: any Label }
+
+@noinline
+func label(_ text: string) -> any Label { Text { text: text } }
+
+@noinline
+func number(_ value: int32) -> &int32 {
+    local := value
+    &local
+}
+
+@noinline
+func inspect(_ packet: Packet) -> string {
+    std::runtime::collect()
+    assert(*packet.number == 41, "anonymous aggregate reference survives collection")
+    packet.first.label() + packet.last.label()
+}
+
+@noinline
+func compose(_ cold: bool) -> string {
+    if cold {
+        // Field evaluation and erased-value copies can collect before the
+        // anonymous aggregate is complete. Its unwritten scanner bytes stay zero.
+        return inspect(Packet {
+            first: label("left " + "value"),
+            number: number(41),
+            last: label("right " + "value"),
+        })
+    }
+    "hot"
+}
+
+func main() {
+    var index: usize = 0
+    while index < 8 {
+        assert(compose(false) == "hot", "unused cold temporaries are absent from entry roots")
+        assert(compose(true) == "left valueright value", "anonymous erased fields survive copies and collection")
+        index += 1
+    }
+}

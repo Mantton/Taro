@@ -1,0 +1,12 @@
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_CONTAINS: Expected exactly 2 arguments, but 1 was provided
+// EXPECT_STDERR_NOT_CONTAINS: invalid LLVM
+// EXPECT_STDERR_NOT_CONTAINS: internal error
+// EXPECT_STDERR_NOT_CONTAINS: panicked
+class Base { value: int32 }
+extend Base { init(_ value: int32) { self.value = value }; }
+class Middle: Base { other: &int32 }
+extend Middle { init(_ value: int32, other: &int32) { super.init(value); self.other = other }; }
+class Child: Middle {}
+extend Child { init() { super.init(1) }; }
+func main() { value := Child() }

@@ -1,0 +1,15 @@
+struct Cell { value: int32 }
+extend &Cell { func bump() { self.value += 1 }; }
+struct Buffer { cell: Cell }
+extend &Buffer {
+    subscript(index: usize) -> Cell {
+        get { self.cell }
+        set(value) { self.cell = value }
+    }
+}
+func main() {
+    var buffer = Buffer { cell: Cell { value: 7 } }
+    reference := &buffer[0 as usize]
+    buffer[0 as usize].value = 9
+    buffer[0 as usize].bump()
+}

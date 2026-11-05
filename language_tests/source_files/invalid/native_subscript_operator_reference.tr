@@ -1,0 +1,16 @@
+import std::ops::AddAssign
+struct Cell { value: int32 }
+conform &Cell to AddAssign[int32] {
+    func addAssign(_ value: int32) { self.value += value }
+}
+struct Buffer { cell: Cell }
+extend &Buffer {
+    subscript(index: usize) -> Cell {
+        get { self.cell }
+        set(value) { self.cell = value }
+    }
+}
+func main() {
+    var buffer = Buffer { cell: Cell { value: 7 } }
+    buffer[0 as usize] += 1_i32
+}

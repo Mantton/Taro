@@ -1,0 +1,4 @@
+func forge(_ pointer: *mut uint8) -> string {
+    std::string::Builder { state: pointer }.toString()
+}
+func main() {}

@@ -1,0 +1,5 @@
+func main() {
+    var value: uint8 = 1
+    var amount: int32 = 2
+    value <<= amount // Shift amounts use the operand's own integer type.
+}

@@ -7,13 +7,22 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import language_tests
 from language_tests import TestEnvironment, parse_test_directives, run_test
 
 
+def completed_process(command, returncode, stdout, stderr):
+    """Model Popen's result without starting a compiler or child process."""
+    return Mock(returncode=returncode, communicate=Mock(return_value=(stdout, stderr)))
+
+
 class LanguageTestDirectiveTests(unittest.TestCase):
+    def test_repository_codegen_matrix_references_live_fixtures(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        self.assertTrue(language_tests.load_test_manifest(root / "language_tests/codegen_matrix.txt"))
+
     def test_malformed_directives_are_errors(self) -> None:
         for directive in (
             '// STDIN: "unfinished',
@@ -28,6 +37,8 @@ class LanguageTestDirectiveTests(unittest.TestCase):
             '// CHECK_ONLY\n// TEST',
             '// CHECK_ONLY: x',
             '// TEST:',
+            '// VET: invalid',
+            '// VET\n// TEST',
             '// OVERFLOW_CHECKS: true',
             '// ARGS',
             '// ENV',
@@ -37,6 +48,12 @@ class LanguageTestDirectiveTests(unittest.TestCase):
                 source.write_text(directive + "\n", encoding="utf-8")
                 with self.assertRaises(ValueError):
                     parse_test_directives(source)
+
+    def test_vet_directive_selects_analysis_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "vet.tr"
+            source.write_text("// VET\nfunc main() {}\n", encoding="utf-8")
+            self.assertEqual(parse_test_directives(source)["command"], "vet")
 
     def test_stdin_is_decoded_from_a_json_string(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -58,9 +75,9 @@ class LanguageTestDirectiveTests(unittest.TestCase):
                 with (
                     patch.object(language_tests, "SOURCE_FILES_DIR", root),
                     patch.object(language_tests, "OUTPUTS_DIR", root / "outputs"),
-                    patch.object(language_tests.subprocess, "run") as run,
+                    patch.object(language_tests.subprocess, "Popen") as run,
                 ):
-                    run.return_value = subprocess.CompletedProcess([], 0, "", "")
+                    run.return_value = completed_process([], 0, "", "")
                     self.assertTrue(run_test(source, env, profile, None)[0])
                     self.assertIn("--overflow-checks", run.call_args.args[0])
 
@@ -88,13 +105,13 @@ class LanguageTestDirectiveTests(unittest.TestCase):
                         symbols = Path(str(binary) + ".dSYM")
                         symbols.mkdir()
                         (symbols / "debug-data").write_bytes(b"symbols")
-                        return subprocess.CompletedProcess(command, exit_code, "ok\n", "")
+                        return completed_process(command, exit_code, "ok\n", "")
 
                     with (
                         patch.object(language_tests, "SOURCE_FILES_DIR", root),
                         patch.object(language_tests, "OUTPUTS_DIR", outputs),
                         patch.object(
-                            language_tests.subprocess, "run", side_effect=compile_and_run
+                            language_tests.subprocess, "Popen", side_effect=compile_and_run
                         ),
                     ):
                         self.assertEqual(
@@ -121,9 +138,40 @@ class LanguageTestOracleTests(unittest.TestCase):
         source = self.sources / name
         source.parent.mkdir(parents=True, exist_ok=True)
         source.write_text(directives, encoding="utf-8")
-        with patch.object(language_tests.subprocess, "run", return_value=
-                          subprocess.CompletedProcess([], exit_code, stdout, stderr)):
+        with patch.object(language_tests.subprocess, "Popen", return_value=
+                          completed_process([], exit_code, stdout, stderr)):
             return run_test(source, self.env, "debug", None)
+
+    def test_compiler_temp_files_stay_inside_the_run_directory(self) -> None:
+        source = self.sources / "valid/cache.tr"
+        source.parent.mkdir(parents=True)
+        source.write_text("", encoding="utf-8")
+        with patch.object(language_tests.subprocess, "Popen", return_value=
+                          completed_process([], 0, "", "")) as run:
+            run_test(source, self.env, "debug", None)
+        temp = Path(run.call_args.kwargs["env"]["TMPDIR"])
+        self.assertTrue(temp.is_dir())
+        self.assertEqual(temp.parent, self.env.temp_dir)
+
+    def test_timeout_kills_the_process_group_and_reaps_the_compiler(self) -> None:
+        source = self.sources / "valid/hung.tr"
+        source.parent.mkdir(parents=True)
+        source.write_text("", encoding="utf-8")
+        process = Mock(pid=12345)
+        process.communicate.side_effect = [
+            subprocess.TimeoutExpired("taro", 1), ("partial output", "")
+        ]
+        with (
+            patch.object(language_tests.subprocess, "Popen", return_value=process) as spawn,
+            patch.object(language_tests.os, "killpg") as kill_group,
+        ):
+            passed, message, details = run_test(source, self.env, "debug", None)
+        self.assertFalse(passed)
+        self.assertIn("Timed out", message)
+        self.assertEqual(details["stdout"], "partial output")
+        self.assertTrue(spawn.call_args.kwargs["start_new_session"])
+        kill_group.assert_called_once_with(process.pid, language_tests.signal.SIGKILL)
+        self.assertEqual(process.communicate.call_count, 2)
 
     def test_missing_valid_snapshot_means_empty_stdout_without_writing(self) -> None:
         self.assertTrue(self.run_case("valid/empty.tr")[0])
@@ -172,6 +220,32 @@ class LanguageTestOracleTests(unittest.TestCase):
                     "invalid/broken.tr", stderr="error: broken\n", exit_code=1,
                     directives=f"// EXPECT_EXIT: {expected}\n",
                 )[0], passes)
+
+    def test_nonzero_expectation_accepts_failure_status_and_signals_only(self) -> None:
+        for code in (1, 2, -6, 134, 0):
+            with self.subTest(code=code):
+                self.assertEqual(self.run_case(
+                    "valid/fatal.tr", exit_code=code,
+                    directives="// EXPECT_EXIT: nonzero\n",
+                )[0], code != 0)
+
+
+class LanguageTestRunTests(unittest.TestCase):
+    def test_every_failure_is_reported_in_each_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sources = Path(directory)
+            tests = [sources / "valid" / name for name in ["passed.tr", "failed.tr"]]
+            for profile in ("debug", "release"):
+                with (
+                    self.subTest(profile=profile),
+                    patch.object(language_tests, "SOURCE_FILES_DIR", sources),
+                    patch.object(language_tests, "run_test", side_effect=lambda path, *_:
+                                 (path.stem == "passed", "Unexpected exit code", None)),
+                    patch("builtins.print"),
+                ):
+                    passed, failures = language_tests.run_tests(tests, None, 1, profile, None)
+                self.assertEqual(passed, 1)
+                self.assertEqual(failures, [(Path(profile) / "valid/failed.tr", "Unexpected exit code", None)])
 
 
 if __name__ == "__main__":

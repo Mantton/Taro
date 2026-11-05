@@ -17,7 +17,7 @@
 ///
 /// Every operand is a scalar, so an instruction is a small value that copies
 /// rather than moves, and can be passed around as freely as the byte it replaces.
-public enum Instruction: Copy {
+public enum Instruction {
     /// Push constant `index` from the constant pool.
     case constant(uint16)
     case add
@@ -65,22 +65,22 @@ public enum Instruction: Copy {
 /// An offset is a `uint16` because a jump operand is: a stream the compiler
 /// will emit cannot be longer than one can address. Keeping the payloads small
 /// is what lets the machine return this from its innermost loop in registers.
-public enum DecodeError: Copy {
+public enum DecodeError {
     case unknownOpcode(byte: uint8, offset: uint16)
     case truncatedOperand(opcode: Opcode, offset: uint16)
 }
 
-impl DecodeError {
-    public func describe(&self) -> string {
+extend DecodeError {
+    public func describe() -> string {
         match self {
             case .unknownOpcode(byte, offset) => {
-                return sprintf("unknown opcode %v at offset %v", *byte, *offset)
+                return sprintf("unknown opcode %v at offset %v", byte, offset)
             }
             case .truncatedOperand(opcode, offset) => {
                 return sprintf(
                     "instruction %s at offset %v is missing operand bytes",
                     opcode.name(),
-                    *offset,
+                    offset,
                 )
             }
         }
@@ -93,9 +93,9 @@ public struct Decoded {
     public width: usize
 }
 
-impl Instruction {
+extend Instruction {
     /// The opcode this instruction encodes to.
-    public func opcode(&self) -> Opcode {
+    public func opcode() -> Opcode {
         match self {
             case .constant(_) => .constant
             case .add => .add
@@ -131,17 +131,17 @@ impl Instruction {
     }
 
     /// How many bytes the encoded form occupies, opcode included.
-    public func width(&self) -> usize {
+    public func width() -> usize {
         return 1 + self.opcode().operandWidth()
     }
 }
 
-impl Opcode {
+extend Opcode {
     /// How many bytes this opcode's operands occupy.
     ///
     /// Derived from the opcode alone, which is what lets a decoder know how far to
     /// advance before it has understood the instruction.
-    public func operandWidth(&self) -> usize {
+    public func operandWidth() -> usize {
         match self {
             case .constant => 2
             case .jump => 2
@@ -167,7 +167,7 @@ impl Opcode {
 }
 
 /// Appends `value` big-endian, matching the reference implementation's layout.
-func appendUint16(_ value: uint16, into bytes: &mut List[uint8]) {
+func appendUint16(_ value: uint16, into bytes: List[uint8]) {
     bytes.append((value >> 8) as uint8)
     bytes.append((value & 255) as uint8)
 }
@@ -178,9 +178,9 @@ func appendUint16(_ value: uint16, into bytes: &mut List[uint8]) {
 /// instruction stream, the way the reference implementation's `ReadUint16`
 /// does, rather than paying to rebuild a typed instruction for every step.
 @inline
-public func readUint16(_ bytes: &List[uint8], at offset: usize) -> uint16 {
-    let high = (*bytes.at(offset)) as uint16
-    let low = (*bytes.at(offset + 1)) as uint16
+public func readUint16(_ bytes: List[uint8], at offset: usize) -> uint16 {
+    high := bytes[offset] as uint16
+    low := bytes[offset + 1] as uint16
     return (high << 8) | low
 }
 
@@ -189,7 +189,7 @@ public func readUint16(_ bytes: &List[uint8], at offset: usize) -> uint16 {
 /// Every case is spelled out rather than driven by a width table: a new
 /// instruction does not compile until its operands are written, which is the
 /// check the reference implementation defers to a run-time lookup.
-public func encode(_ instruction: Instruction, into bytes: &mut List[uint8]) {
+public func encode(_ instruction: Instruction, into bytes: List[uint8]) {
     bytes.append(instruction.opcode().toByte())
     match instruction {
         case .constant(index) => appendUint16(index, into: bytes)
@@ -217,8 +217,8 @@ public func encode(_ instruction: Instruction, into bytes: &mut List[uint8]) {
 
 /// The encoded form of `instruction` on its own.
 public func encoded(_ instruction: Instruction) -> List[uint8] {
-    var bytes = List[uint8]()
-    encode(instruction, into: &mut bytes)
+    var bytes = List[uint8]::new()
+    encode(instruction, into: bytes)
     return bytes
 }
 
@@ -240,24 +240,24 @@ func reportOffset(_ value: usize) -> uint16 {
     return value as uint16
 }
 
-public func decode(_ bytes: &List[uint8], at offset: usize) -> Result[Decoded, DecodeError] {
+public func decode(_ bytes: List[uint8], at offset: usize) -> Result[Decoded, DecodeError] {
     if offset >= bytes.len() {
         return .err(.unknownOpcode(byte: 0, offset: reportOffset(offset)))
     }
 
-    let byte = *bytes.at(offset)
-    var opcode = Opcode.constant
-    match Opcode.fromByte(byte) {
+    byte := *bytes.at(offset)
+    var opcode = Opcode::constant
+    match Opcode::fromByte(byte) {
         case .some(found) => opcode = found
         case .none => return .err(.unknownOpcode(byte: byte, offset: reportOffset(offset)))
     }
 
-    let operands = offset + 1
+    operands := offset + 1
     if operands + opcode.operandWidth() > bytes.len() {
         return .err(.truncatedOperand(opcode: opcode, offset: reportOffset(offset)))
     }
 
-    let width = 1 + opcode.operandWidth()
+    width := 1 + opcode.operandWidth()
     match opcode {
         case .constant => {
             return .ok(Decoded { instruction: .constant(readUint16(bytes, at: operands)), width: width })
@@ -296,8 +296,8 @@ public func decode(_ bytes: &List[uint8], at offset: usize) -> Result[Decoded, D
             return .ok(Decoded { instruction: .call(arguments: *bytes.at(operands)), width: width })
         }
         case .closure => {
-            let constant = readUint16(bytes, at: operands)
-            let free = *bytes.at(operands + 2)
+            constant := readUint16(bytes, at: operands)
+            free := *bytes.at(operands + 2)
             return .ok(Decoded { instruction: .closure(constant: constant, free: free), width: width })
         }
         case .add => return .ok(Decoded { instruction: .add, width: width })

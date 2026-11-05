@@ -1,11 +1,17 @@
 //! Stable Unix subprocess shims for the Taro standard library.
 //!
 //! Process creation stays in Rust's standard library instead of exposing
-//! `fork` to Taro. The runtime already owns worker, cleanup, and collector
+//! `fork` to Taro. The runtime already owns worker, I/O, and native service
 //! threads; running arbitrary managed code between `fork` and `exec` would be
 //! unsound in that environment. The ABI below copies raw Unix bytes, executes
 //! argv directly, and keeps child ownership in a registry so abandoned
 //! children can be reaped without killing them.
+//!
+//! Native ABI review: command configuration owns copies of wire strings.
+//! Synchronous spawn/status/output operations finish using caller output slots
+//! before returning, even when internally joining pipe-reader workers. Output
+//! snapshot byte pointers remain tied to that snapshot's explicit close; no
+//! incoming Taro pointer is retained by a child or those workers.
 
 use crate::env::lock_process_state;
 use crate::panic_unwind::RtString;

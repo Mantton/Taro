@@ -1,12 +1,11 @@
-// Marker interfaces for move semantics and derivable protocols.
-
-@lang("Copy")
-public interface Copy {}
+// Compiler-known interfaces: explicit cloning and class identity.
 
 @lang("Clone")
 public interface Clone {
-    func clone(&self) -> Self
+    func clone() -> Self
 }
 
-@lang("Sendable")
-public interface Sendable {}
+/// A class identity. Conformance is compiler-provided; inline values and
+/// references to class-handle slots do not satisfy this bound.
+@lang("AnyObject")
+public interface AnyObject {}

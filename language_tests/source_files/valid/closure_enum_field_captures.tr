@@ -1,0 +1,22 @@
+enum State { case closed; case open(Item) }
+struct Item { value: int32 }
+struct Document { state: State; revision: int32 }
+func main() {
+    var document: Document = Document { state: State::open(Item { value: 7 }), revision: 1 }
+    read := () => {
+        match document.state {
+            case .closed => 0
+            case .open(item) => item.value
+        }
+    }
+    document.revision = 2
+    assert(read() == 7, "enum field capture leaves unrelated inline field writable")
+    document.state = State::closed
+    readAgain := () => {
+        match document.state {
+            case .closed => 0
+            case .open(item) => item.value
+        }
+    }
+    assert(readAgain() == 0, "case replacement allowed after last capture use")
+}

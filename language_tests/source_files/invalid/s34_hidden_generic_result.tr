@@ -1,0 +1,8 @@
+interface Duplicate[Value = Self] { func duplicate() -> Value; }
+struct Counter { value: int32 }
+conform Counter to Duplicate { func duplicate() -> Counter { Counter { value: self.value } }; }
+func duplicate[Value, T: Duplicate[Value]](_ value: &T) -> Value { value.duplicate() }
+func main() {
+    var boxed: any Duplicate = Counter { value: 7 } // any Duplicate; Value is its hidden concrete type.
+    var result: any Duplicate = duplicate(&boxed) // Error: hidden Self is not an independent known Value.
+}

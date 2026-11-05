@@ -450,35 +450,6 @@ impl<'a> Actor<'a> {
 
         let cache_key = lockfile::canonical_git_cache_key(&package.0, canonical_url);
         let cache_path = store_root.join(cache_key);
-        let legacy_path = store_root.join(package.hashed_name());
-
-        if !cache_path.exists() && legacy_path.exists() {
-            let legacy_repo = git2::Repository::open(&legacy_path).map_err(|e| {
-                format!(
-                    "failed to open legacy cache at '{}': {}",
-                    legacy_path.display(),
-                    e
-                )
-            })?;
-
-            git::ensure_repo_origin(&legacy_repo, canonical_url).map_err(|e| {
-                format!(
-                    "legacy cache '{}' failed origin validation ({}). Remove that directory and retry",
-                    legacy_path.display(),
-                    e
-                )
-            })?;
-
-            std::fs::rename(&legacy_path, &cache_path).map_err(|e| {
-                format!(
-                    "failed to migrate legacy cache from '{}' to '{}': {}",
-                    legacy_path.display(),
-                    cache_path.display(),
-                    e
-                )
-            })?;
-        }
-
         if cache_path.exists() {
             let repo = git2::Repository::open(&cache_path).map_err(|err| {
                 format!(
@@ -613,17 +584,34 @@ impl<'a> Actor<'a> {
     fn build_dependency_graph(&self) -> Result<DependencyGraph, ReportedError> {
         let mut graph = DependencyGraph::new();
         let mut nodes = FxHashMap::<RPkg<'a>, petgraph::graph::NodeIndex>::default();
-        let mut idx = |p: RPkg<'a>, g: &mut DependencyGraph| {
-            *nodes
-                .entry(p)
-                .or_insert_with(|| g.add_node(p.as_ref().clone()))
-        };
-
-        for (&pkg, deps) in &self.resolved_package_dependencies {
-            let pkg_ix = idx(pkg, &mut graph);
-            for (name, &dependency) in deps {
-                let dep_ix = idx(dependency, &mut graph);
-                graph.add_edge(dep_ix, pkg_ix, name.clone());
+        // ArenaIntern hashes its address. Iterating those maps directly makes
+        // graph node IDs, topological tie breaks and metadata package indices
+        // depend on allocation order. Give petgraph stable node/edge inputs.
+        let mut packages = self
+            .resolved_package_dependencies
+            .keys()
+            .copied()
+            .map(|package| {
+                package
+                    .unique_identifier()
+                    .map(|identity| ((package.package.0.clone(), identity), package))
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                eprintln!("error: failed to identify dependency graph node: {error}");
+                ReportedError
+            })?;
+        packages.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        for (_, package) in &packages {
+            nodes.insert(*package, graph.add_node(package.as_ref().clone()));
+        }
+        for (_, package) in packages {
+            let mut dependencies: Vec<_> = self.resolved_package_dependencies[&package]
+                .iter()
+                .collect();
+            dependencies.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+            for (name, dependency) in dependencies {
+                graph.add_edge(nodes[dependency], nodes[&package], name.clone());
             }
         }
 

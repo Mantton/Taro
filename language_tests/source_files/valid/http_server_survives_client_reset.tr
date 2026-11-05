@@ -1,0 +1,65 @@
+import std::http::{Error, Request, Response, Server}
+import std::net::{SocketAddress, TcpStream}
+import std::result::Result
+import std::mem::Span
+
+struct Linger { enabled: int32; seconds: int32 }
+
+@cfg(os("macos"))
+const SO_LINGER: int32 = 0x80
+@cfg(os("macos"))
+func addressHead() -> (uint8, uint8) { (16_u8, 2_u8) }
+
+@cfg(os("linux"))
+const SO_LINGER: int32 = 13
+@cfg(os("linux"))
+func addressHead() -> (uint8, uint8) { (2_u8, 0_u8) }
+
+// Connects, then resets, before the server has had a chance to accept.
+func connectAndReset(_ port: uint16) {
+    fd := std::libc::socket(2, 1, 0)
+    std::assert(fd >= 0, "created a socket")
+    var linger = Linger { enabled: 1, seconds: 0 }
+    head := addressHead()
+    var address: [uint8; 16] = [head.0, head.1, (port >> 8_u16) as uint8, (port & 255_u16) as uint8, 127_u8, 0_u8, 0_u8, 1_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8]
+    std::assert(unsafe { std::libc::connect(fd, (&address as *mut [uint8; 16]) as *const uint8, 16) } == 0, "connected")
+    std::assert(unsafe { std::libc::setsockopt(fd, std::libc::SOL_SOCKET, SO_LINGER, (&linger as *mut Linger) as *const uint8, 8) } == 0, "asked for a reset on close")
+    var _ = std::libc::close(fd)
+}
+
+func respond(_ request: &Request) async -> Result[Response, Error] {
+    return .ok(Response::text(200_u16, "served"))
+}
+
+func exchange(_ stream: TcpStream) async -> bool {
+    request := "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+    if (await stream.writeAll(Span[uint8]::fromString(&request))).isErr() { return false }
+    var bytes: [uint8; 128] = [0_u8; 128]
+    span := unsafe { Span[uint8]::from((&bytes as *mut [uint8; 128]) as *mut uint8, 128) }
+    return match await stream.read(span) {
+        case .ok(count) => count > 0
+        case .err(_) => false
+    }
+}
+
+func main() async {
+    server := Server::bind(SocketAddress::localhost(0_u16)).unwrap()
+    address := server.localAddress().unwrap()
+    serving := std::task::spawn(() async => { return await server.serve(respond) })
+
+    var round = 0
+    while round < 20 {
+        var client = 0
+        while client < 10 {
+            connectAndReset(address.port())
+            client += 1
+        }
+        await std::task::sleep(std::time::Duration::fromMillis(1_u64))
+        round += 1
+    }
+
+    std::assert(await exchange((await TcpStream::connect(address)).unwrap()), "the server still answers after clients reset")
+    server.close().unwrap()
+    (await serving.result()).unwrap().unwrap()
+    std::println("ok")
+}

@@ -1,0 +1,4 @@
+error: type annotations needed: unable to infer type
+ -> language_tests/source_files/invalid/conditional_erasure_inference.tr:7:4
+	    inspect(Wrapper[bool] { value: true }) // An unproved conditional impl cannot supply inference.
+	    ^^^^^^^

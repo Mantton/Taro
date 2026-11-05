@@ -1,0 +1,27 @@
+interface Other[Rhs = Self] {}
+interface Duplicate[Storage = Self] {
+    func duplicate() async -> Self
+    func read() -> int32
+}
+interface Nested[Storage = any Other[Self]] {
+    func duplicate() async -> Self
+    func read() -> int32
+}
+struct Counter { value: int32 }
+conform Counter to Other {}
+conform Counter to Duplicate {
+    func duplicate() async -> Self { await std::testing::yieldNow(); Counter { value: self.value + 1 } }
+    func read() -> int32 { self.value }
+}
+conform Counter to Nested {
+    func duplicate() async -> Self { await std::testing::yieldNow(); Counter { value: self.value + 2 } }
+    func read() -> int32 { self.value }
+}
+func main() async {
+    var value: any Duplicate = Counter { value: 7 } // any Duplicate[hidden Self]
+    var next: any Duplicate = await value.duplicate() // fresh owned existential
+    assert(next.read() == 8, "interface defaults bind to the opened concrete Self")
+    var nested: any Nested = Counter { value: 9 } // any Nested[any Other[hidden Self]]
+    var last: any Nested = await nested.duplicate() // fresh owned existential
+    assert(last.read() == 11, "nested binders preserve the outer opened Self")
+}

@@ -1,0 +1,30 @@
+import models
+final class Grandchild[T]: models::Child[T] { extra: int32 = 23 }
+final class ShapedGrandchild[T: models::Marker, V, const N: usize]: models::ShapedChild[T, V, N] { leaf: int32 = 31 }
+final class HiddenGrandchild: models::HiddenChild { leaf: int32 = 43 }
+func main() {
+    var hidden: HiddenGrandchild = HiddenGrandchild()
+    assert(hidden.value == 41 && hidden.leaf == 43, "public inherited convenience retains private implementation entries")
+    var convenient: Grandchild[string] = Grandchild[string](pair: (["first"], ["discarded"]))
+    assert(convenient.get()[0] == "first" && convenient.extra == 23, "imported convenience consumes a noncopyable pair")
+    var generic: ShapedGrandchild[models::Box[List[string]], bool, 5] = ShapedGrandchild[models::Box[List[string]], bool, 5](
+        models::Box[List[string]] { value: ["convenient"] }, flags: [false, true, false],
+    )
+    assert(generic.get().value[0] == "convenient" && generic.tags == 3, "imported generic convenience preserves constructor context")
+    var shaped: ShapedGrandchild[models::Box[List[string]], bool, 5] = ShapedGrandchild[models::Box[List[string]], bool, 5](
+        models::Box[List[string]] { value: ["kept", "payload"] }, tag: [true, false],
+    )
+    assert(shaped.get().value[1] == "payload", "imported source-shaped borrowed getter")
+    assert(shaped.tags == 2 && shaped.marker + shaped.leaf == 60, "imported source environment and nominal defaults")
+    assert(shaped.extra.isNone() && shaped.dimension == 5, "imported unrelated nominal type and const parameters")
+    var imported: models::Child[string] = models::Child[string](["left", "right"])
+    var derived: Grandchild[string] = Grandchild[string](["new", "value"], flag: false)
+    var base: models::Base[List[string]] = derived
+    assert(imported.get()[1] == "right", "imported generic inherited entry")
+    assert(imported.flag, "imported inherited default argument")
+    assert(!derived.flag, "derived explicit argument replaces default")
+    assert(derived.extra == 23, "downstream subclass defaults")
+    assert(base.kind() == 17, "subclass publication preserves inherited override")
+    assert(base.get()[0] == "new", "no hidden payload copying")
+    assert((base as? Grandchild[string]).isSome(), "most-derived descriptor")
+}

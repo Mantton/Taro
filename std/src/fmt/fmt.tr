@@ -1,7 +1,7 @@
-import std.collections.List
-import std.mem.Span
-import std.panic.panic
-import std.string.Builder
+import std::collections::List
+import std::mem::Span
+import std::panic::panic
+import std::string::Builder
 
 const BYTE_ZERO: uint8 = 48
 const BYTE_NINE: uint8 = 57
@@ -28,8 +28,8 @@ public struct FormatState {
     public signSpace: bool
 }
 
-impl FormatState {
-    public func default() -> Self {
+extend FormatState {
+    public static func default() -> Self {
         FormatState {
             width: 0,
             precision: 0,
@@ -48,93 +48,120 @@ public struct Formatter {
     buffer: Builder
 }
 
-impl Formatter {
-    public func new() -> Self {
-        Formatter { buffer: Builder() }
+extend Formatter {
+    public static func new() -> Self {
+        Formatter { buffer: Builder::new() }
     }
 
-    public func writeByte(&mut self, _ value: uint8) {
+    public func writeByte(_ value: uint8) {
         self.buffer.writeByte(value)
     }
 
-    public func writeRune(&mut self, _ value: rune) {
+    public func writeRune(_ value: rune) {
         self.buffer.writeRune(value)
     }
 
-    public func writeString(&mut self, _ value: string) {
+    public func writeString(_ value: string) {
         self.buffer.writeString(value)
     }
 
-    public func intoString(self) -> string {
-        self.buffer.intoString()
+    public func toString() -> string {
+        self.buffer.toString()
     }
 }
 
 public interface Display {
-    func display(&self, _ into: &mut Formatter)
+    func display(_ into: &Formatter)
 }
 
 public interface Formattable: Display {
-    func format(&self, _ into: &mut Formatter, _ spec: rune, _ state: &FormatState)
+    func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState)
 }
 
-func appendUnsignedDecimal(_ out: &mut Builder, _ value: uint64) {
-    if value == 0 {
-        out.writeByte(BYTE_ZERO)
-        return
-    }
-
+// uint64 needs at most 20 decimal digits. Keep reversal storage local instead
+// of creating a shared List and its element buffer for every number.
+internal func appendUnsignedDecimal(_ out: &Builder, _ value: uint64) {
+    var digits: [uint8; 20] = [0; 20]
+    var count: usize = 0
     var n = value
-    var rev = List[uint8]()
-    while n > 0 {
-        let digit = (n % 10) as uint8
-        rev.append(BYTE_ZERO + digit)
-        n = n / 10
-    }
-
-    var idx = rev.len()
-    while idx > 0 {
-        idx -= 1
-        out.writeByte(*rev.at(idx))
-    }
-}
-
-func appendSignedDecimal(_ out: &mut Builder, _ value: int64) {
-    if value < 0 {
-        out.writeByte(BYTE_MINUS)
-    }
-
-    var n = value
-    var rev = List[uint8]()
     loop {
+        digits[count] = BYTE_ZERO + ((n % 10) as uint8)
+        count += 1
+        n /= 10
+        if n == 0 { break }
+    }
+    while count > 0 {
+        count -= 1
+        out.writeByte(digits[count])
+    }
+}
+
+internal func appendSignedDecimal(_ out: &Builder, _ value: int64) {
+    if value < 0 { out.writeByte(BYTE_MINUS) }
+    var digits: [uint8; 20] = [0; 20]
+    var count: usize = 0
+    var n = value
+    loop {
+        // Negate only the remainder, so int64's minimum stays representable.
         var digit = n % 10
-        if digit < 0 {
-            digit = -digit
-        }
-
-        rev.append(BYTE_ZERO + (digit as uint8))
-        n = n / 10
-        if n == 0 {
-            break
-        }
+        if digit < 0 { digit = -digit }
+        digits[count] = BYTE_ZERO + (digit as uint8)
+        count += 1
+        n /= 10
+        if n == 0 { break }
     }
-
-    var idx = rev.len()
-    while idx > 0 {
-        idx -= 1
-        out.writeByte(*rev.at(idx))
+    while count > 0 {
+        count -= 1
+        out.writeByte(digits[count])
     }
 }
 
-func writeSignedInteger(_ into: &mut Formatter, _ value: int64) {
-    appendSignedDecimal(&mut into.buffer, value)
+// Formats with a known decimal contract need neither printf's existential
+// arguments nor its scratch formatter and field-padding machinery.
+internal func unsignedDecimalString(_ value: uint64) -> string {
+    var digits: [uint8; 20] = [0; 20]
+    var start: usize = 20
+    var n = value
+    loop {
+        start -= 1
+        digits[start] = BYTE_ZERO + ((n % 10_u64) as uint8)
+        n /= 10_u64
+        if n == 0_u64 { break }
+    }
+    bytes := unsafe { Span[uint8]::from((&digits as *mut [uint8; 20]) as *mut uint8, 20) }
+    return std::string::stringFromBytes(bytes.slice(start, 20 - start))
 }
 
-func writeUnsignedInteger(_ into: &mut Formatter, _ value: uint64) {
-    appendUnsignedDecimal(&mut into.buffer, value)
+internal func signedDecimalString(_ value: int64) -> string {
+    var digits: [uint8; 20] = [0; 20]
+    var start: usize = 20
+    var n = value
+    loop {
+        // Negate only the remainder, so int64's minimum stays representable.
+        var digit = n % 10
+        if digit < 0 { digit = -digit }
+        start -= 1
+        digits[start] = BYTE_ZERO + (digit as uint8)
+        n /= 10
+        if n == 0 { break }
+    }
+    if value < 0 {
+        start -= 1
+        digits[start] = BYTE_MINUS
+    }
+    bytes := unsafe { Span[uint8]::from((&digits as *mut [uint8; 20]) as *mut uint8, 20) }
+    return std::string::stringFromBytes(bytes.slice(start, 20 - start))
 }
 
-func formatSignedInteger(_ into: &mut Formatter, _ value: int64, _ spec: rune) {
+func writeSignedInteger(_ into: &Formatter, _ value: int64) {
+    appendSignedDecimal(&into.buffer, value)
+}
+
+func writeUnsignedInteger(_ into: &Formatter, _ value: uint64) {
+    appendUnsignedDecimal(&into.buffer, value)
+}
+
+func formatSignedInteger(_ into: &Formatter, _ value: int64, _ spec: rune) {
     if !(spec == 'd' || spec == 'v') {
         panic("printf: invalid format specifier for integer argument")
     }
@@ -142,7 +169,7 @@ func formatSignedInteger(_ into: &mut Formatter, _ value: int64, _ spec: rune) {
     writeSignedInteger(into, value)
 }
 
-func formatUnsignedInteger(_ into: &mut Formatter, _ value: uint64, _ spec: rune) {
+func formatUnsignedInteger(_ into: &Formatter, _ value: uint64, _ spec: rune) {
     if !(spec == 'd' || spec == 'v') {
         panic("printf: invalid format specifier for integer argument")
     }
@@ -151,7 +178,7 @@ func formatUnsignedInteger(_ into: &mut Formatter, _ value: uint64, _ spec: rune
 }
 
 /// Writes `count` copies of `fill`.
-func writeFill(_ into: &mut Formatter, _ fill: uint8, _ count: usize) {
+func writeFill(_ into: &Formatter, _ fill: uint8, _ count: usize) {
     var written: usize = 0
     while written < count {
         into.writeByte(fill)
@@ -163,7 +190,7 @@ func writeFill(_ into: &mut Formatter, _ fill: uint8, _ count: usize) {
 ///
 /// Padding is applied here, once, rather than by each `Formattable`, so every
 /// type is padded consistently and a new one gets the behaviour for free.
-func writePadded(_ into: &mut Formatter, _ rendered: string, _ state: &FormatState) {
+func writePadded(_ into: &Formatter, _ rendered: string, _ state: &FormatState) {
     if !state.hasWidth {
         into.writeString(rendered)
         return
@@ -171,13 +198,13 @@ func writePadded(_ into: &mut Formatter, _ rendered: string, _ state: &FormatSta
 
     // Width counts characters, not bytes, so a multi-byte rune occupies one
     // column rather than as many columns as it takes bytes to encode.
-    let visible = rendered.runeCount()
+    visible := rendered.runeCount()
     if visible >= state.width {
         into.writeString(rendered)
         return
     }
 
-    let padding = state.width - visible
+    padding := state.width - visible
     if state.leftAlign {
         into.writeString(rendered)
         writeFill(into, BYTE_SPACE, padding)
@@ -187,7 +214,7 @@ func writePadded(_ into: &mut Formatter, _ rendered: string, _ state: &FormatSta
     if state.zeroPad {
         // A sign belongs in front of the zeros: `%04d` of -7 is `-007`.
         if rendered.startsWith("-") {
-            let digits = std.string.stringLen(rendered) - 1
+            digits := std::string::stringLen(rendered) - 1
             into.writeByte(BYTE_MINUS)
             writeFill(into, BYTE_ZERO, padding)
             into.writeString(rendered.substring(1, digits))
@@ -202,19 +229,59 @@ func writePadded(_ into: &mut Formatter, _ rendered: string, _ state: &FormatSta
     into.writeString(rendered)
 }
 
-public func formatPrintf(_ format: string, _ args: Span[any Display]) -> string {
-    let format_len = std.string.stringLen(format)
-    let format_data = std.string.stringData(format)
+// Room for a typical argument, which usually spares the text a second allocation.
+const FORMAT_ARGUMENT_BYTES: usize = 16
 
-    var writer = Formatter.new()
+// Argument sources share parsing and padding. A known single argument keeps
+// its concrete type instead of being boxed into an erased variadic container.
+interface PrintfArguments {
+    func len() -> usize
+    func render(_ into: &Formatter, _ index: usize, _ spec: rune, _ state: &FormatState)
+}
+
+struct ErasedPrintfArguments { values: Span[any Display] }
+conform ErasedPrintfArguments to PrintfArguments {
+    func len() -> usize { self.values.len() }
+    func render(_ into: &Formatter, _ index: usize, _ spec: rune, _ state: &FormatState) {
+        formatArgument(into, self.values.at(index), spec, state)
+    }
+}
+
+struct SinglePrintfArgument[Value: Formattable] { value: Value }
+conform[Value: Formattable] SinglePrintfArgument[Value] to PrintfArguments {
+    func len() -> usize { 1 as usize }
+    func render(_ into: &Formatter, _ index: usize, _ spec: rune, _ state: &FormatState) {
+        // Ordinary value copying preserves nested erased-value snapshots;
+        // class and explicit-reference arguments retain their target identity.
+        var snapshot = self.value
+        snapshot.format(into, spec, state)
+    }
+}
+
+public func formatPrintf(_ format: string, _ args: Span[any Display]) -> string {
+    formatPrintfWith(format, ErasedPrintfArguments { values: args })
+}
+
+internal func formatPrintfOne[Value: Formattable](_ format: string, _ value: Value) -> string {
+    formatPrintfWith(format, SinglePrintfArgument[Value] { value })
+}
+
+func formatPrintfWith[Args: PrintfArguments](_ format: string, _ args: Args) -> string {
+    format_len := std::string::stringLen(format)
+    format_data := std::string::stringData(format)
+
+    var writer = Formatter::new()
+    writer.buffer.reserve(format_len + args.len() * FORMAT_ARGUMENT_BYTES)
     var index: usize = 0
     var arg_index: usize = 0
 
     while index < format_len {
-        let ch = format_data.add(index).read()
+        ch := unsafe { format_data.add(index).read() }
         if ch != BYTE_PERCENT {
-            writer.writeByte(ch)
-            index += 1
+            var end = index + 1
+            while end < format_len && unsafe { format_data.add(end).read() } != BYTE_PERCENT { end += 1 }
+            writer.buffer.writeStringRange(format, index, end - index)
+            index = end
             continue
         }
 
@@ -224,7 +291,7 @@ public func formatPrintf(_ format: string, _ args: Span[any Display]) -> string 
         }
 
         // An escaped percent takes no flags, so it is settled before they are read.
-        if format_data.add(index).read() == BYTE_PERCENT {
+        if unsafe { format_data.add(index).read() } == BYTE_PERCENT {
             writer.writeByte(BYTE_PERCENT)
             index += 1
             continue
@@ -232,10 +299,10 @@ public func formatPrintf(_ format: string, _ args: Span[any Display]) -> string 
 
         // Flags, then width. `%-8s` and `%04d` are what a column of aligned
         // output needs, and are the forms this understands.
-        var state = FormatState.default()
+        var state = FormatState::default()
         var readingFlags = true
         while readingFlags && index < format_len {
-            let flag = format_data.add(index).read()
+            flag := unsafe { format_data.add(index).read() }
             if flag == BYTE_MINUS {
                 state.leftAlign = true
                 index += 1
@@ -248,7 +315,7 @@ public func formatPrintf(_ format: string, _ args: Span[any Display]) -> string 
         }
 
         while index < format_len {
-            let digit = format_data.add(index).read()
+            digit := unsafe { format_data.add(index).read() }
             if digit < BYTE_ZERO || digit > BYTE_NINE {
                 break
             }
@@ -261,7 +328,7 @@ public func formatPrintf(_ format: string, _ args: Span[any Display]) -> string 
             panic("printf: dangling '%' at end of format string")
         }
 
-        let spec_byte = format_data.add(index).read()
+        spec_byte := unsafe { format_data.add(index).read() }
         if spec_byte != BYTE_D && spec_byte != BYTE_S && spec_byte != BYTE_V {
             panic("printf: unknown format specifier")
         }
@@ -270,7 +337,7 @@ public func formatPrintf(_ format: string, _ args: Span[any Display]) -> string 
             panic("printf: missing format argument")
         }
 
-        let spec = if spec_byte == BYTE_D {
+        spec := if spec_byte == BYTE_D {
             'd'
         } else if spec_byte == BYTE_S {
             's'
@@ -278,19 +345,15 @@ public func formatPrintf(_ format: string, _ args: Span[any Display]) -> string 
             'v'
         }
 
-        // Rendered aside first so the field width can be measured against the
-        // finished text, whatever the argument's own formatting produced.
-        var scratch = Formatter.new()
-        let value = args.at(arg_index)
-        let maybe_formattable = (*value) as? any Formattable
-        match maybe_formattable {
-            case .some(formattable) => formattable.format(&mut scratch, spec, &state)
-            case .none => match spec == 'v' {
-                case true => (*value).display(&mut scratch)
-                case false => panic("printf: argument does not support requested format specifier")
-            }
+        // A field width is measured against the finished text, whatever the
+        // argument's own formatting produced, so that text is rendered aside first.
+        if state.hasWidth {
+            var scratch = Formatter::new()
+            args.render(&scratch, arg_index, spec, &state)
+            writePadded(&writer, scratch.toString(), &state)
+        } else {
+            args.render(&writer, arg_index, spec, &state)
         }
-        writePadded(&mut writer, scratch.intoString(), &state)
         arg_index += 1
         index += 1
     }
@@ -299,19 +362,33 @@ public func formatPrintf(_ format: string, _ args: Span[any Display]) -> string 
         panic("printf: extra arguments provided")
     }
 
-    writer.intoString()
+    writer.buffer.takeString()
 }
 
-impl Display for string {
-    public func display(&self, _ into: &mut Formatter) {
-        into.writeString(*self)
+func formatArgument(_ into: &Formatter, _ value: &any Display, _ spec: rune, _ state: &FormatState) {
+    // Cast through the reference: the successful result is still a value
+    // snapshot, without first copying a separate Display temporary.
+    match value as? any Formattable {
+        case .some(formattable) => formattable.format(into, spec, state)
+        case .none => {
+            match spec == 'v' {
+                case true => (*value).display(into)
+                case false => panic("printf: argument does not support requested format specifier")
+            }
+        }
     }
 }
 
-impl Formattable for string {
-    public func format(&self, _ into: &mut Formatter, _ spec: rune, _ state: &FormatState) {
+conform string to Display {
+    public func display(_ into: &Formatter) {
+        into.writeString(self)
+    }
+}
+
+conform string to Formattable {
+    public func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
         if spec == 's' || spec == 'v' {
-            into.writeString(*self)
+            into.writeString(self)
             return
         }
 
@@ -319,9 +396,9 @@ impl Formattable for string {
     }
 }
 
-impl Display for bool {
-    public func display(&self, _ into: &mut Formatter) {
-        if *self {
+conform bool to Display {
+    public func display(_ into: &Formatter) {
+        if self {
             into.writeString("true")
         } else {
             into.writeString("false")
@@ -329,10 +406,10 @@ impl Display for bool {
     }
 }
 
-impl Formattable for bool {
-    public func format(&self, _ into: &mut Formatter, _ spec: rune, _ state: &FormatState) {
+conform bool to Formattable {
+    public func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
         if spec == 'v' {
-            if *self {
+            if self {
                 into.writeString("true")
             } else {
                 into.writeString("false")
@@ -344,16 +421,16 @@ impl Formattable for bool {
     }
 }
 
-impl Display for rune {
-    public func display(&self, _ into: &mut Formatter) {
-        into.writeRune(*self)
+conform rune to Display {
+    public func display(_ into: &Formatter) {
+        into.writeRune(self)
     }
 }
 
-impl Formattable for rune {
-    public func format(&self, _ into: &mut Formatter, _ spec: rune, _ state: &FormatState) {
+conform rune to Formattable {
+    public func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
         if spec == 'v' {
-            into.writeRune(*self)
+            into.writeRune(self)
             return
         }
 
@@ -361,117 +438,117 @@ impl Formattable for rune {
     }
 }
 
-impl Display for int8 {
-    public func display(&self, _ into: &mut Formatter) { writeSignedInteger(into, *self as int64) }
+conform int8 to Display {
+    public func display(_ into: &Formatter) { writeSignedInteger(into, self as int64) }
 }
 
-impl Formattable for int8 {
-    public func format(&self, _ into: &mut Formatter, _ spec: rune, _ state: &FormatState) {
-        formatSignedInteger(into, *self as int64, spec)
+conform int8 to Formattable {
+    public func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
+        formatSignedInteger(into, self as int64, spec)
     }
 }
 
-impl Display for int16 {
-    public func display(&self, _ into: &mut Formatter) { writeSignedInteger(into, *self as int64) }
+conform int16 to Display {
+    public func display(_ into: &Formatter) { writeSignedInteger(into, self as int64) }
 }
 
-impl Formattable for int16 {
-    public func format(&self, _ into: &mut Formatter, _ spec: rune, _ state: &FormatState) {
-        formatSignedInteger(into, *self as int64, spec)
+conform int16 to Formattable {
+    public func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
+        formatSignedInteger(into, self as int64, spec)
     }
 }
 
-impl Display for int32 {
-    public func display(&self, _ into: &mut Formatter) { writeSignedInteger(into, *self as int64) }
+conform int32 to Display {
+    public func display(_ into: &Formatter) { writeSignedInteger(into, self as int64) }
 }
 
-impl Formattable for int32 {
-    public func format(&self, _ into: &mut Formatter, _ spec: rune, _ state: &FormatState) {
-        formatSignedInteger(into, *self as int64, spec)
+conform int32 to Formattable {
+    public func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
+        formatSignedInteger(into, self as int64, spec)
     }
 }
 
-impl Display for int64 {
-    public func display(&self, _ into: &mut Formatter) { writeSignedInteger(into, *self) }
+conform int64 to Display {
+    public func display(_ into: &Formatter) { writeSignedInteger(into, self) }
 }
 
-impl Formattable for int64 {
-    public func format(&self, _ into: &mut Formatter, _ spec: rune, _ state: &FormatState) {
-        formatSignedInteger(into, *self, spec)
+conform int64 to Formattable {
+    public func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
+        formatSignedInteger(into, self, spec)
     }
 }
 
-impl Display for isize {
-    public func display(&self, _ into: &mut Formatter) { writeSignedInteger(into, *self as int64) }
+conform isize to Display {
+    public func display(_ into: &Formatter) { writeSignedInteger(into, self as int64) }
 }
 
-impl Formattable for isize {
-    public func format(&self, _ into: &mut Formatter, _ spec: rune, _ state: &FormatState) {
-        formatSignedInteger(into, *self as int64, spec)
+conform isize to Formattable {
+    public func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
+        formatSignedInteger(into, self as int64, spec)
     }
 }
 
-impl Display for uint8 {
-    public func display(&self, _ into: &mut Formatter) { writeUnsignedInteger(into, *self as uint64) }
+conform uint8 to Display {
+    public func display(_ into: &Formatter) { writeUnsignedInteger(into, self as uint64) }
 }
 
-impl Formattable for uint8 {
-    public func format(&self, _ into: &mut Formatter, _ spec: rune, _ state: &FormatState) {
-        formatUnsignedInteger(into, *self as uint64, spec)
+conform uint8 to Formattable {
+    public func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
+        formatUnsignedInteger(into, self as uint64, spec)
     }
 }
 
-impl Display for uint16 {
-    public func display(&self, _ into: &mut Formatter) { writeUnsignedInteger(into, *self as uint64) }
+conform uint16 to Display {
+    public func display(_ into: &Formatter) { writeUnsignedInteger(into, self as uint64) }
 }
 
-impl Formattable for uint16 {
-    public func format(&self, _ into: &mut Formatter, _ spec: rune, _ state: &FormatState) {
-        formatUnsignedInteger(into, *self as uint64, spec)
+conform uint16 to Formattable {
+    public func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
+        formatUnsignedInteger(into, self as uint64, spec)
     }
 }
 
-impl Display for uint32 {
-    public func display(&self, _ into: &mut Formatter) { writeUnsignedInteger(into, *self as uint64) }
+conform uint32 to Display {
+    public func display(_ into: &Formatter) { writeUnsignedInteger(into, self as uint64) }
 }
 
-impl Formattable for uint32 {
-    public func format(&self, _ into: &mut Formatter, _ spec: rune, _ state: &FormatState) {
-        formatUnsignedInteger(into, *self as uint64, spec)
+conform uint32 to Formattable {
+    public func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
+        formatUnsignedInteger(into, self as uint64, spec)
     }
 }
 
-impl Display for uint64 {
-    public func display(&self, _ into: &mut Formatter) { writeUnsignedInteger(into, *self) }
+conform uint64 to Display {
+    public func display(_ into: &Formatter) { writeUnsignedInteger(into, self) }
 }
 
-impl Formattable for uint64 {
-    public func format(&self, _ into: &mut Formatter, _ spec: rune, _ state: &FormatState) {
-        formatUnsignedInteger(into, *self, spec)
+conform uint64 to Formattable {
+    public func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
+        formatUnsignedInteger(into, self, spec)
     }
 }
 
-impl Display for usize {
-    public func display(&self, _ into: &mut Formatter) { writeUnsignedInteger(into, *self as uint64) }
+conform usize to Display {
+    public func display(_ into: &Formatter) { writeUnsignedInteger(into, self as uint64) }
 }
 
-impl Formattable for usize {
-    public func format(&self, _ into: &mut Formatter, _ spec: rune, _ state: &FormatState) {
-        formatUnsignedInteger(into, *self as uint64, spec)
+conform usize to Formattable {
+    public func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
+        formatUnsignedInteger(into, self as uint64, spec)
     }
 }
 
-impl[Element: Display] Display for List[Element] {
-    public func display(&self, _ into: &mut Formatter) {
+conform[Element: Display] List[Element] to Display {
+    public func display(_ into: &Formatter) {
         into.writeByte('[' as uint8)
 
         var idx: usize = 0
-        let count = self.len()
+        count := self.len()
         while idx < count {
             if idx > 0 {
                 into.writeString(", ")
             }
-            let value = self.at(idx)
+            value := self.at(idx)
             value.display(into)
             idx += 1
         }
@@ -480,8 +557,8 @@ impl[Element: Display] Display for List[Element] {
     }
 }
 
-impl[Element: Formattable] Formattable for List[Element] {
-    public func format(&self, _ into: &mut Formatter, _ spec: rune, _ state: &FormatState) {
+conform[Element: Formattable] List[Element] to Formattable {
+    public func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
         if spec != 'v' {
             panic("printf: invalid format specifier for list argument")
         }
@@ -489,12 +566,12 @@ impl[Element: Formattable] Formattable for List[Element] {
         into.writeByte('[' as uint8)
 
         var idx: usize = 0
-        let count = self.len()
+        count := self.len()
         while idx < count {
             if idx > 0 {
                 into.writeString(", ")
             }
-            let value = self.at(idx)
+            value := self.at(idx)
             value.format(into, spec, state)
             idx += 1
         }

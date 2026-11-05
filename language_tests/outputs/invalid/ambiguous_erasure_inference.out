@@ -1,0 +1,4 @@
+error: type annotations needed: unable to infer type
+ -> language_tests/source_files/invalid/ambiguous_erasure_inference.tr:7:4
+	    inspect(Source {}) // Two distinct proven conformances cannot choose T automatically.
+	    ^^^^^^^

@@ -1,0 +1,8 @@
+error: enum payload fields inherit the variant’s visibility; remove the field visibility modifier
+ -> language_tests/source_files/invalid/enum_payload_visibility.tr:2:25
+	    case structPayload { private value: int32 }
+	                         ^^^^^^^
+error: enum payload fields inherit the variant’s visibility; remove the field visibility modifier
+ -> language_tests/source_files/invalid/enum_payload_visibility.tr:3:22
+	    case tuplePayload(public int32)
+	                      ^^^^^^

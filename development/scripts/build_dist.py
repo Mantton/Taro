@@ -7,6 +7,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import disk_guard
+
 """
 build_dist.py
 
@@ -93,6 +95,7 @@ def main():
     script_dir = Path(__file__).resolve().parent
     repo_root = script_dir.parent.parent
     args = parse_args(repo_root)
+    disk_guard.enforce()
 
     profile = args.profile
     dist_dir = args.dist_dir.absolute()
@@ -134,7 +137,7 @@ def main():
             "-p",
             "taro-bin",
             *release_flag(profile),
-        ],
+            ],
         cwd=repo_root,
     )
 
@@ -173,6 +176,7 @@ def main():
 
         print(f"Copying {src_lib} -> {dst_lib}")
         shutil.copy2(src_lib, dst_lib)
+        shutil.copy2(repo_root / "runtime" / "GO-LICENSE", lib_dir / "GO-LICENSE")
 
         manifest_command = [str(dst_bin), "runtime-manifest", str(dst_lib)]
         if target:

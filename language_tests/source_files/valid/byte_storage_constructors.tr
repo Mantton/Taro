@@ -1,0 +1,15 @@
+func main() {
+    var builder: std::string::Builder = std::string::Builder::new()
+    builder.writeString("hello")
+    builder.writeByte(33_u8)
+    var text: string = builder.toString()
+    assert(text == "hello!", "builder methods establish immutable storage")
+
+    var buffer: std::bytes::Buffer = std::bytes::Buffer::new(text)
+    var bytes: [uint8] = buffer.toBytes()
+    assert(bytes.len() == 6 && *bytes.at(0) == 104_u8, "buffer constructors preserve initialized extent")
+
+    var cstring: std::ffi::CString = std::ffi::CString::tryNew("ok").unwrap()
+    var pointer: *const uint8 = cstring.asPtr()
+    assert(unsafe { pointer.add(2).read() } == 0_u8, "CString construction appends its terminator")
+}

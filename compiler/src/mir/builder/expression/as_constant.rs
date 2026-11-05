@@ -15,13 +15,15 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 let value = match kind {
                     crate::hir::DefinitionKind::Function
                     | crate::hir::DefinitionKind::AssociatedFunction
-                    | crate::hir::DefinitionKind::AssociatedOperator
                     | crate::hir::DefinitionKind::VariantConstructor(
                         crate::sema::resolve::models::VariantCtorKind::Function,
                     ) => mir::ConstantKind::Function(
                         *id,
                         (*generic_args).unwrap_or(GenericArguments::empty()),
-                        expr.ty,
+                        // The THIR expression can already be instantiated in
+                        // caller coordinates. Function constants retain the
+                        // callee template separately from that expression type.
+                        self.gcx.try_get_type(*id).unwrap_or(expr.ty),
                     ),
                     crate::hir::DefinitionKind::ModuleVariable => {
                         mir::ConstantKind::GlobalVariableAddress(*id)

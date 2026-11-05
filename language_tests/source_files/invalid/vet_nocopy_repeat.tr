@@ -1,0 +1,7 @@
+// VET
+@NoCopy
+struct State { value: int32 }
+func main() {
+    var repeated: [State; 2] = [State { value: 1 }; 2]
+    var _ = &repeated
+}

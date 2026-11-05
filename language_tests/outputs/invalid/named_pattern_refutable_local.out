@@ -1,0 +1,4 @@
+error: local binding requires an irrefutable pattern
+ -> language_tests/source_files/invalid/named_pattern_refutable_local.tr:3:8
+	    var Flag { enabled: true } = Flag { enabled: false }
+	        ^^^^^^^^^^^^^^^^^^^^^^

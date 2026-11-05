@@ -1,74 +1,72 @@
 @test
 func testStringBuilderWritesBytesRunesAndStrings() {
-    var builder = std.string.Builder()
-    std.testing.assertEqual(builder.len(), 0 as usize, "new builder should be empty")
+    var builder = std::string::Builder::new()
+    std::testing::assertEqual(builder.len(), 0 as usize, "new builder should be empty")
 
     builder.writeString("hello")
     builder.writeByte(' ' as uint8)
     builder.writeRune('π')
-    builder.writeRune(std.intrinsic.__intrinsic_rune_from_u32_unchecked(0x1F680_u32))
+    builder.writeRune(std::intrinsic::__intrinsic_rune_from_u32_unchecked(0x1F680_u32))
 
-    std.testing.assertEqual(builder.len(), 12 as usize, "builder length should count encoded UTF-8 bytes")
-    std.testing.assertEqual(builder.intoString(), "hello π🚀", "builder should preserve write order and UTF-8")
+    std::testing::assertEqual(builder.len(), 12 as usize, "builder length should count encoded UTF-8 bytes")
+    std::testing::assertEqual(builder.toString(), "hello π🚀", "builder should preserve write order and UTF-8")
 }
 
 @test
 func testStringBuilderReserveClearAndReuse() {
-    var builder = std.string.Builder()
+    var builder = std::string::Builder::new()
     builder.reserve(256 as usize)
-    std.testing.assertEqual(builder.len(), 0 as usize, "reserve should not change builder length")
+    std::testing::assertEqual(builder.len(), 0 as usize, "reserve should not change builder length")
 
     builder.writeString("discarded")
     builder.clear()
-    std.testing.assertEqual(builder.len(), 0 as usize, "clear should reset builder length")
+    std::testing::assertEqual(builder.len(), 0 as usize, "clear should reset builder length")
 
     builder.writeString("reused")
-    std.testing.assertEqual(builder.intoString(), "reused", "cleared builder should retain usable storage")
+    std::testing::assertEqual(builder.toString(), "reused", "cleared builder should retain usable storage")
 }
 
 @test
 func testStringBuilderHandlesRepeatedGrowth() {
-    var builder = std.string.Builder()
+    var builder = std::string::Builder::new()
     var index: usize = 0
     while index < (2048 as usize) {
         builder.writeString("ab")
         index += 1
     }
 
-    let result = builder.intoString()
-    std.testing.assertEqual(result.byteLen(), 4096 as usize, "repeated writes should preserve every byte")
-    std.testing.assertTrue(result.startsWith("abababab"), "grown builder should preserve its prefix")
-    std.testing.assertTrue(result.endsWith("abababab"), "grown builder should preserve its suffix")
+    result := builder.toString()
+    std::testing::assertEqual(result.byteLen(), 4096 as usize, "repeated writes should preserve every byte")
+    std::testing::assertTrue(result.startsWith("abababab"), "grown builder should preserve its prefix")
+    std::testing::assertTrue(result.endsWith("abababab"), "grown builder should preserve its suffix")
 }
 
 @test
-func testStringBuilderStorageSurvivesCollectionAndTransfer() {
-    var builder = std.string.Builder()
+func testStringBuilderSnapshotPreservesContents() {
+    var builder = std::string::Builder::new()
     builder.writeString("before")
-    std.runtime.collect()
     builder.writeString("-after")
 
-    let result = builder.intoString()
-    std.runtime.collect()
-    std.testing.assertEqual(result, "before-after", "builder and transferred string storage should remain GC-rooted")
+    result := builder.toString()
+    std::testing::assertEqual(result, "before-after", "builder snapshot preserves its accumulated bytes")
 }
 
 @test
 func testStringBuilderAllowsRawInvalidUtf8Bytes() {
-    var builder = std.string.Builder()
+    var builder = std::string::Builder::new()
     builder.writeByte(0xff_u8)
     builder.writeByte('x' as uint8)
-    let result = builder.intoString()
+    result := builder.toString()
 
-    std.testing.assertEqual(result.byteLen(), 2 as usize, "raw byte writes should retain their length")
-    std.testing.assertEqual(result.byteAt(0), 0xff_u8, "raw byte writes should remain unchanged")
-    std.testing.assertEqual(result.byteAt(1), 'x' as uint8, "valid bytes should follow invalid bytes")
+    std::testing::assertEqual(result.byteLen(), 2 as usize, "raw byte writes should retain their length")
+    std::testing::assertEqual(result.byteAt(0), 0xff_u8, "raw byte writes should remain unchanged")
+    std::testing::assertEqual(result.byteAt(1), 'x' as uint8, "valid bytes should follow invalid bytes")
 }
 
 @test
 @expectPanic
 func testStringBuilderReserveRejectsOverflowingCapacity() {
-    var builder = std.string.Builder()
-    let tooLarge = std.mem.maxBufferCapacity[uint8]() + (1 as usize)
+    var builder = std::string::Builder::new()
+    tooLarge := std::mem::maxBufferCapacity[uint8]() + (1 as usize)
     builder.reserve(tooLarge)
 }

@@ -1,9 +1,9 @@
-import adex_iris.config.ReferenceConfig
-import adex_iris.data.{makeFolds, parseDataset}
-import adex_iris.model.Network
-import adex_iris.training.{CrossValidationMetrics, FoldMetrics, crossValidate}
-import std.collections.List
-import std.string.Builder
+import adex_iris::config::ReferenceConfig
+import adex_iris::data::{makeFolds, parseDataset}
+import adex_iris::model::Network
+import adex_iris::training::{CrossValidationMetrics, FoldMetrics, crossValidate}
+import std::collections::List
+import std::string::Builder
 
 struct Arguments {
     dataPath: string
@@ -28,10 +28,10 @@ func parseArguments(_ passed: &List[string]) -> Result[Arguments, string] {
     var smoke = false
     var index: usize = 0
     while index < passed.len() {
-        let argument: string = *passed.at(index)
+        var argument: string = passed[index]
         if argument == "--data" {
             if index + 1 >= passed.len() { return argumentError("--data requires a path") }
-            dataPath = *passed.at(index + 1)
+            dataPath = passed[index + 1]
             index += 2
             continue
         }
@@ -42,7 +42,7 @@ func parseArguments(_ passed: &List[string]) -> Result[Arguments, string] {
         }
         if argument == "--fold" {
             if index + 1 >= passed.len() { return argumentError("--fold requires a value") }
-            let value: string = *passed.at(index + 1)
+            var value: string = passed[index + 1]
             if value == "all" {
                 allFolds = true
             } else {
@@ -66,7 +66,7 @@ func parseArguments(_ passed: &List[string]) -> Result[Arguments, string] {
         }
         if argument == "--format" {
             if index + 1 >= passed.len() { return argumentError("--format requires a value") }
-            let value: string = *passed.at(index + 1)
+            var value: string = passed[index + 1]
             if value == "json" {
                 json = true
             } else if value == "human" {
@@ -81,17 +81,17 @@ func parseArguments(_ passed: &List[string]) -> Result[Arguments, string] {
     }
     if dataPath.byteLen() == 0 { return argumentError("--data is required") }
     if allFolds {
-        let selectedFold: usize? = .none
+        var selectedFold: usize? = .none
         return .ok(Arguments { dataPath, selectedFold, json, smoke })
     }
-    let selectedFold: usize? = .some(selectedFoldValue)
+    var selectedFold: usize? = .some(selectedFoldValue)
     return .ok(Arguments { dataPath, selectedFold, json, smoke })
 }
 
 func encodeDouble(_ value: double) -> string {
     if value - value != 0.0 { return "null" }
     var magnitude = value
-    var output = Builder()
+    var output = Builder::new()
     if magnitude < 0.0 {
         output.writeByte('-' as uint8)
         magnitude = -magnitude
@@ -111,17 +111,17 @@ func encodeDouble(_ value: double) -> string {
         output.writeByte(('0' as uint8) + digit)
         place += 1
     }
-    return output.intoString()
+    return output.toString()
 }
 
 func metricsJson(_ metrics: &CrossValidationMetrics) -> string {
-    var output = Builder()
+    var output = Builder::new()
     output.writeString("{\"schema\":1,\"folds\":[")
     var index: usize = 0
     while index < metrics.folds().len() {
         if index > 0 { output.writeByte(',' as uint8) }
-        let fold: &FoldMetrics = metrics.folds().at(index)
-        let finiteText = if fold.finite { "true" } else { "false" }
+        var fold: &FoldMetrics = &metrics.folds()[index]
+        finiteText := if fold.finite { "true" } else { "false" }
         output.writeString(sprintf(
             "{\"fold\":%d,\"training_samples\":%d,\"testing_samples\":%d,\"correct\":%d,\"loss\":%s,\"finite\":%s}",
             fold.fold,
@@ -133,7 +133,7 @@ func metricsJson(_ metrics: &CrossValidationMetrics) -> string {
         ))
         index += 1
     }
-    let finiteText = if metrics.finite { "true" } else { "false" }
+    finiteText := if metrics.finite { "true" } else { "false" }
     output.writeString(sprintf(
         "],\"correct\":%d,\"samples\":%d,\"accuracy\":%s,\"finite\":%s,\"confusion\":[",
         metrics.correct,
@@ -155,13 +155,13 @@ func metricsJson(_ metrics: &CrossValidationMetrics) -> string {
         actual += 1
     }
     output.writeString("]}")
-    return output.intoString()
+    return output.toString()
 }
 
 func printHuman(_ metrics: &CrossValidationMetrics) {
     var index: usize = 0
     while index < metrics.folds().len() {
-        let fold: &FoldMetrics = metrics.folds().at(index)
+        var fold: &FoldMetrics = &metrics.folds()[index]
         printf(
             "fold %d: %d/%d accuracy=%s loss=%s\n",
             fold.fold,
@@ -185,46 +185,46 @@ func printHuman(_ metrics: &CrossValidationMetrics) {
 }
 
 func main() {
-    let raw = std.env.args()
-    var passed = List[string]()
+    raw := std::env::args()
+    var passed = List[string]::new()
     var rawIndex: usize = 1
     while rawIndex < raw.len() { passed.append(raw.at(rawIndex)); rawIndex += 1 }
-    let arguments = match parseArguments(&passed) {
+    arguments := match parseArguments(&passed) {
         case .ok(value) => value
-        case .err(error) => { eprintf("adex-iris: %s\n", error); usage(); std.process.exit(2) }
+        case .err(error) => { eprintf("adex-iris: %s\n", error); usage(); std::process::exit(2) }
     }
-    let source = match std.fs.readToString(arguments.dataPath) {
+    source := match std::fs::readToString(arguments.dataPath) {
         case .ok(value) => value
         case .err(error) => {
             eprintf("adex-iris: cannot read %s: %v\n", arguments.dataPath, error)
-            std.process.exit(2)
+            std::process::exit(2)
         }
     }
-    let dataset = match parseDataset(source) {
+    dataset := match parseDataset(source) {
         case .ok(value) => value
         case .err(error) => {
             eprintf("adex-iris: invalid dataset: %s\n", error)
-            std.process.exit(2)
+            std::process::exit(2)
         }
     }
-    let folds = makeFolds(&dataset, 53269_u64)
-    let config = ReferenceConfig.standard()
+    folds := makeFolds(&dataset, 53269_u64)
+    config := ReferenceConfig::standard()
     if arguments.smoke {
-        let fold = folds.at(0)
-        var network = Network.initialized(53269_u64, &config)
-        let result = network.runSample(dataset.sample(*fold.testing().at(0)), fold.scaler(), &config, false)
-        let finiteText = if result.finite { "true" } else { "false" }
+        fold := &folds[0]
+        var network = Network::initialized(53269_u64, &config)
+        result := network.runSample(dataset.sample(fold.testing()[0]), fold.scaler(), &config, false)
+        finiteText := if result.finite { "true" } else { "false" }
         printf(
             "{\"schema\":1,\"prediction\":%d,\"loss\":%s,\"finite\":%s}\n",
             result.prediction,
             encodeDouble(result.loss),
             finiteText,
         )
-        if !result.finite { std.process.exit(1) }
+        if !result.finite { std::process::exit(1) }
         return
     }
-    let metrics = crossValidate(&dataset, &folds, arguments.selectedFold, &config)
+    metrics := crossValidate(&dataset, &folds, arguments.selectedFold, &config)
     if arguments.json { println(metricsJson(&metrics)) } else { printHuman(&metrics) }
-    if !metrics.finite { std.process.exit(1) }
-    if arguments.selectedFold.isNone() && metrics.correct < 135 { std.process.exit(1) }
+    if !metrics.finite { std::process::exit(1) }
+    if arguments.selectedFold.isNone() && metrics.correct < 135 { std::process::exit(1) }
 }

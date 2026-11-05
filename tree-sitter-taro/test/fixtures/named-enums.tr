@@ -1,0 +1,25 @@
+enum Event {
+    case click { readonly x: int32, y: int32 }
+    case message { content: string }
+    case tuple(readonly int32, y: int32)
+    case empty {}
+    case closed
+}
+
+func inspect(_ address: *const int32) {
+    var event: Event = Event::click { x: 1, y: 2 }
+    match event {
+        case Event::click { y, x } => { print(x) }
+        case _ => {}
+    }
+}
+
+struct Point { x: int32; y: int32 }
+func named(_ event: &Event, _ point: Point) {
+    var next: Event = .message { content: "hello" }
+    match event {
+        case .click { x: horizontal, .. } => { print(horizontal) }
+        case _ => {}
+    }
+    var Point { x, .. } = point
+}

@@ -117,7 +117,7 @@ fn fold_ty_kind<'ctx, F: TypeFolder<'ctx> + ?Sized>(
     match kind {
         // Primitive/leaf types - no folding needed
         Bool | Rune | String | Int(_) | UInt(_) | Float(_) | Infer(_) | Parameter(_)
-        | Opaque(_) | Error | Never => None,
+        | ExistentialSelf(_) | Opaque(_) | Error | Never => None,
 
         // Types with single Ty parameter
         Array { element, len } => {
@@ -141,12 +141,12 @@ fn fold_ty_kind<'ctx, F: TypeFolder<'ctx> + ?Sized>(
                 Some(Pointer(new_t, m))
             }
         }
-        Reference(t, m) => {
+        Reference(t) => {
             let new_t = t.fold_with(folder);
             if new_t == t {
                 None
             } else {
-                Some(Reference(new_t, m))
+                Some(Reference(new_t))
             }
         }
 
@@ -170,7 +170,11 @@ fn fold_ty_kind<'ctx, F: TypeFolder<'ctx> + ?Sized>(
         }
 
         // Function type - fold inputs and output
-        FnPointer { inputs, output } => {
+        FnPointer {
+            inputs,
+            output,
+            effects,
+        } => {
             let folded_inputs = fold_ty_list(gcx, inputs, folder);
             let folded_output = output.fold_with(folder);
 
@@ -178,6 +182,7 @@ fn fold_ty_kind<'ctx, F: TypeFolder<'ctx> + ?Sized>(
                 None
             } else {
                 Some(FnPointer {
+                    effects,
                     inputs: folded_inputs,
                     output: folded_output,
                 })
@@ -191,7 +196,6 @@ fn fold_ty_kind<'ctx, F: TypeFolder<'ctx> + ?Sized>(
             })
         }
 
-        // Alias type - fold generic args
         Alias { kind, def_id, args } => {
             let folded_args = args.fold_with(folder);
             if args == folded_args {
@@ -296,7 +300,9 @@ impl<'ctx> TypeFoldable<'ctx> for StructDefinition<'ctx> {
 
         let fields = folder.gcx().store.arenas.global.alloc_slice_clone(&fields);
         StructDefinition {
+            class_info: self.class_info,
             adt_def: self.adt_def,
+            has_initializer: self.has_initializer,
             repr: self.repr,
             fields,
         }
@@ -316,7 +322,7 @@ impl<'ctx> TypeFoldable<'ctx> for EnumVariantKind<'ctx> {
     fn fold_with<F: TypeFolder<'ctx> + ?Sized>(self, folder: &mut F) -> Self {
         match self {
             EnumVariantKind::Unit => self,
-            EnumVariantKind::Tuple(fields) => {
+            EnumVariantKind::Tuple(fields) | EnumVariantKind::Struct(fields) => {
                 let folded_fields: Vec<_> = fields
                     .iter()
                     .map(|field| (*field).fold_with(folder))
@@ -328,7 +334,11 @@ impl<'ctx> TypeFoldable<'ctx> for EnumVariantKind<'ctx> {
                     .arenas
                     .global
                     .alloc_slice_clone(&folded_fields);
-                EnumVariantKind::Tuple(folded_fields)
+                if matches!(self, EnumVariantKind::Struct(..)) {
+                    EnumVariantKind::Struct(folded_fields)
+                } else {
+                    EnumVariantKind::Tuple(folded_fields)
+                }
             }
         }
     }

@@ -25,6 +25,15 @@ pub fn build_package<'ctx>(
     package: thir::ThirPackage<'ctx>,
     gcx: GlobalContext<'ctx>,
 ) -> CompileResult<&'ctx MirPackage<'ctx>> {
+    build_package_with_vet(package, gcx, false)
+}
+
+pub(crate) fn build_package_with_vet<'ctx>(
+    package: thir::ThirPackage<'ctx>,
+    gcx: GlobalContext<'ctx>,
+    vet: bool,
+) -> CompileResult<&'ctx MirPackage<'ctx>> {
+    let mut findings = Vec::new();
     let async_entry = package.entry.and_then(|entry| {
         package.functions.get(&entry).and_then(|func| {
             func.is_async
@@ -40,12 +49,42 @@ pub fn build_package<'ctx>(
         if func.body.is_none() {
             continue;
         }
+        // Some compiler-generated bodies obtain signatures from the synthetic
+        // registry. Persist those too: imported ownership certificates are
+        // validated before that registry is installed during hydration.
+        let missing_signature =
+            gcx.with_session_type_database(|db| !db.def_to_fn_sig.contains_key(&id));
+        if missing_signature {
+            gcx.cache_signature(id, gcx.get_signature(id).clone());
+        }
         let mut body = MirBuilder::build_function(gcx, &func);
+        if vet {
+            findings.extend(crate::mir::vet::check_body(gcx, &body));
+        }
 
         // Run local passes (prune, simplify, validate)
-        optimize::run_local_passes(gcx, &mut body)?;
+        let adapter = gcx.store.synthetic_definitions.borrow().get(&id).is_some_and(|definition|
+            matches!(definition.kind, crate::sema::models::SyntheticDefinitionKind::AdoptedClassDefault { .. }
+                | crate::sema::models::SyntheticDefinitionKind::AdoptedClassDefaultArgument { .. }));
+        if !adapter {
+            optimize::run_local_passes(gcx, &mut body)?;
+        }
 
         pending.push((id, body));
+    }
+
+    pending.sort_by_key(|(id, _)| *id);
+    crate::mir::class_defaults::collect(gcx, pending.iter().map(|(_, body)| body))?;
+
+    // Exact default calls need the original generic body's conditional proofs.
+    // Check forwarding bodies only after those facts have been published.
+    for (id, body) in &mut pending {
+        let adapter = gcx.store.synthetic_definitions.borrow().get(id).is_some_and(|definition|
+            matches!(definition.kind, crate::sema::models::SyntheticDefinitionKind::AdoptedClassDefault { .. }
+                | crate::sema::models::SyntheticDefinitionKind::AdoptedClassDefaultArgument { .. }));
+        if adapter {
+            optimize::run_local_passes(gcx, body)?;
+        }
     }
 
     // The entry wrapper participates in the same canonical/global pipeline as
@@ -126,6 +165,21 @@ pub fn build_package<'ctx>(
         eprintln!("=== End MIR Dump ===\n");
     }
 
+    if !findings.is_empty() {
+        findings.sort_by_key(|finding| {
+            (
+                finding.span.file,
+                finding.span.start.line,
+                finding.span.start.offset,
+                finding.message.clone(),
+            )
+        });
+        findings.dedup();
+        for finding in findings {
+            gcx.dcx().emit_warning(finding.message, Some(finding.span));
+        }
+        return Err(crate::error::ReportedError);
+    }
     Ok(final_pkg)
 }
 
@@ -142,13 +196,6 @@ fn build_async_entry_wrapper<'ctx>(
     } else {
         output_ty
     };
-    let output_ref_ty = gcx
-        .store
-        .interners
-        .intern_ty(crate::sema::models::TyKind::Reference(
-            output_storage_ty,
-            crate::hir::Mutability::Mutable,
-        ));
     let output_ptr_ty = gcx
         .store
         .interners
@@ -165,13 +212,17 @@ fn build_async_entry_wrapper<'ctx>(
         ));
 
     let mut body = Body {
+        // Fresh compiler bootstrap: all storage is primitive/raw, and run_main
+        // synchronously consumes the fresh native entry frame. No source
+        // reference is formed, erased, retained or leaked at this boundary.
+        escape_locals: Vec::new(),
+
         owner: wrapper_id,
         source_scopes: Body::initial_source_scopes(wrapper_id),
         locals: Default::default(),
         basic_blocks: Default::default(),
         start_block: BasicBlockId::from_raw(0),
         return_local: LocalId::from_raw(0),
-        escape_locals: vec![],
         phase: crate::mir::MirPhase::Built,
         is_async: false,
     };
@@ -203,14 +254,6 @@ fn build_async_entry_wrapper<'ctx>(
         LocalKind::Temp,
         true,
         Some(gcx.intern_symbol("$main_handle")),
-        span,
-    );
-    let output_ref_local = push_local(
-        &mut body,
-        output_ref_ty,
-        LocalKind::Temp,
-        true,
-        Some(gcx.intern_symbol("$main_out_ref")),
         span,
     );
     let output_ptr_local = push_local(
@@ -246,12 +289,13 @@ fn build_async_entry_wrapper<'ctx>(
     let prepare_block = body.basic_blocks.push(BasicBlockData {
         note: Some("async-entry-prepare".into()),
         statements: vec![
+            // Entry results are primitive status/unit storage. Initialize the
+            // storage before forming a valid mutable reference for the ABI.
             crate::mir::Statement {
                 kind: crate::mir::StatementKind::Assign(
-                    Place::from_local(output_ref_local),
-                    crate::mir::Rvalue::Ref {
-                        mutable: true,
-                        place: Place::from_local(output_storage_local.unwrap_or(return_local)),
+                    Place::from_local(output_storage_local.unwrap_or(return_local)),
+                    crate::mir::Rvalue::Zeroed {
+                        ty: output_storage_ty,
                     },
                 ),
                 span,
@@ -259,10 +303,8 @@ fn build_async_entry_wrapper<'ctx>(
             crate::mir::Statement {
                 kind: crate::mir::StatementKind::Assign(
                     Place::from_local(output_ptr_local),
-                    crate::mir::Rvalue::Cast {
-                        operand: Operand::Copy(Place::from_local(output_ref_local)),
-                        ty: output_ptr_ty,
-                        kind: crate::mir::CastKind::Pointer,
+                    crate::mir::Rvalue::CleanupAddress {
+                        place: Place::from_local(output_storage_local.unwrap_or(return_local)),
                     },
                 ),
                 span,
@@ -300,7 +342,6 @@ fn build_async_entry_wrapper<'ctx>(
                 entry_ty,
             ),
             args: vec![],
-            devirt_hint: None,
             destination: Place::from_local(handle_local),
             target: prepare_block,
             unwind: CallUnwindAction::Terminate,
@@ -308,7 +349,7 @@ fn build_async_entry_wrapper<'ctx>(
         span,
     });
 
-    let run_root_id = find_or_register_async_runtime_function(gcx, AsyncRuntimeFn::RunRoot, span);
+    let run_root_id = find_or_register_async_runtime_function(gcx, AsyncRuntimeFn::RunMain, span);
     let run_root_ty = gcx.get_type(run_root_id);
     body.basic_blocks[prepare_block].terminator = Some(Terminator {
         kind: TerminatorKind::Call {
@@ -317,7 +358,6 @@ fn build_async_entry_wrapper<'ctx>(
                 Operand::Copy(Place::from_local(handle_local)),
                 Operand::Copy(Place::from_local(output_raw_local)),
             ],
-            devirt_hint: None,
             destination: Place::from_local(run_root_void_local),
             target: ret_block,
             unwind: CallUnwindAction::Terminate,
@@ -348,6 +388,7 @@ fn register_async_entry_definition<'ctx>(
         .alloc(signature.clone());
     let entry_name = gcx.definition_symbol_or_fallback(entry_id);
     let def = crate::sema::models::SyntheticDefinition {
+        kind: crate::sema::models::SyntheticDefinitionKind::Ordinary,
         name: gcx.intern_symbol(&format!("{}$async_entry", gcx.symbol_text(entry_name))),
         generics: gcx
             .store
@@ -382,7 +423,6 @@ fn push_local<'ctx>(
         name,
         span,
     });
-    body.escape_locals.push(false);
     local
 }
 

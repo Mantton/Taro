@@ -1,0 +1,4 @@
+error: use of uninitialized value 'self'
+ -> language_tests/source_files/invalid/fallible_initializer_incomplete.tr:3:8
+	    init() -> Result[Self, string] { self.value = 7 }
+	        ^^^^^^^^^^^^^^^^^^^^^^^^^^

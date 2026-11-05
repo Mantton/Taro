@@ -1,0 +1,23 @@
+struct Item { value: int32 }
+extend Item { func training() -> &int32 { &self.value }
+}
+func create() -> List[Item] { [Item { value: 42 }] }
+struct Network { values: List[Item] }
+extend &Network {
+    func update() {
+        var index: usize = 0
+        while index < self.values.len() {
+            reference := &self.values[index]
+            reference.value = 43
+            index += 1
+        }
+    }
+}
+func main() {
+    first := create()
+    var index: usize = 0
+    assert(*first[index].training() == 42, "indexed method")
+    var network = Network { values: first }
+    network.update()
+    assert(network.values[index].value == 43, "indexed reference updates shared List storage")
+}

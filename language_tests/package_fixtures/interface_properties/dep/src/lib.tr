@@ -1,12 +1,12 @@
 public interface Named {
     var name: string {
-        get(&self)
+        get
     };
 }
 
 public interface DefaultNamed {
     var name: string {
-        get(&self) {
+        get {
             "default"
         }
     };
@@ -16,11 +16,11 @@ public struct Remote {
     public name: string
 }
 
-impl Named for Remote {}
+conform Remote to Named {}
 
 public struct DefaultRemote {}
 
-impl DefaultNamed for DefaultRemote {}
+conform DefaultRemote to DefaultNamed {}
 
 public func makeRemote() -> Remote {
     Remote { name: "remote" }
@@ -29,3 +29,10 @@ public func makeRemote() -> Remote {
 public func makeDefaultRemote() -> DefaultRemote {
     DefaultRemote {}
 }
+
+public interface Value[T] {
+    var value: T { get };
+}
+public struct Wrapper[T] { value: T }
+conform[T] Wrapper[T] to Value[T] {}
+public func wrap[T](_ value: T) -> Wrapper[T] { Wrapper[T] { value } }

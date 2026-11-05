@@ -1,0 +1,89 @@
+// G23: scoped children are drained when their scope ends early. A parent that
+// is cancelled (once or repeatedly) or panics publishes its outcome only after
+// group children and select/race/withTimeout branches have run their cleanup.
+// ENV: TARO_WORKERS=4
+// EXPECT_STDERR_COUNT: 1 task panic: scope body panic
+func child(_ started: std::sync::Sender[int32], _ log: std::sync::Sender[int32]) async -> int32 {
+    defer { log.trySend(1).unwrap() }
+    started.trySend(1).unwrap()
+    await std::task::sleep(std::time::Duration::fromSeconds(30_u64))
+    return 0
+}
+
+func cleaned(_ log: std::sync::Receiver[int32]) -> int32 {
+    var count = 0_i32
+    while true {
+        match log.tryRecv() {
+            case .ok(.some(_)) => count += 1
+            case _ => return count
+        }
+    }
+    return count
+}
+
+func describe[T](_ r: Result[T, std::task::TaskError]) -> string {
+    match r {
+        case .ok(_) => return "ok"
+        case .err(.cancelled) => return "cancelled"
+        case .err(.panicked(p)) => return std::sprintf("panicked(%s)", p.message())
+    }
+}
+
+func main() async {
+    var (started, running) = std::sync::bounded[int32](4).unwrap()
+    var (log, events) = std::sync::unbounded[int32]()
+    var round = 0
+    var groupDrained = 0
+    var selectDrained = 0
+    var timeoutDrained = 0
+    while round < 20 {
+        group := std::task::spawn(() async => {
+            await std::task::withTaskGroup[int32, (), _]((group: &std::task::TaskGroup[int32]) async => {
+                group.spawn(() async => { await child(started, log) })
+                group.spawn(() async => { await child(started, log) })
+                await std::task::sleep(std::time::Duration::fromSeconds(30_u64))
+            })
+        })
+        var _ = await running.recv()
+        var _ = await running.recv()
+        group.cancel()
+        var _ = await group.result()
+        if cleaned(events) == 2 { groupDrained += 1 }
+
+        selection := std::task::spawn(() async => {
+            var _ = await std::task::select(
+                () async => { await child(started, log) },
+                () async => { await child(started, log) },
+            )
+        })
+        var _ = await running.recv()
+        var _ = await running.recv()
+        selection.cancel()
+        selection.cancel()
+        var _ = await selection.result()
+        if cleaned(events) == 2 { selectDrained += 1 }
+
+        timeout := std::task::spawn(() async => {
+            var _ = await std::task::withTimeout(
+                std::time::Duration::fromSeconds(20_u64),
+                () async => { await child(started, log) },
+            )
+        })
+        var _ = await running.recv()
+        timeout.cancel()
+        var _ = await timeout.result()
+        if cleaned(events) == 1 { timeoutDrained += 1 }
+        round += 1
+    }
+    std::printf("cancelled parents drained: group %d select %d timeout %d of 20\n", groupDrained, selectDrained, timeoutDrained)
+
+    panicking := std::task::spawn(() async => {
+        await std::task::withTaskGroup[int32, (), _]((group: &std::task::TaskGroup[int32]) async => {
+            group.spawn(() async => { await child(started, log) })
+            var _ = await running.recv()
+            panic("scope body panic")
+        })
+    })
+    outcome := describe(await panicking.result())
+    std::printf("panicking parent: %s, children cleaned %d\n", outcome, cleaned(events))
+}

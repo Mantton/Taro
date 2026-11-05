@@ -49,7 +49,7 @@ public enum TokenKind {
 ///
 /// Mirrors `std.json.ValueKind`: the parser mostly asks "is this a `)`?", which
 /// needs no payload, and comparing tags keeps those checks a single `==`.
-public enum TokenTag: Copy, PartialEq {
+public enum TokenTag: PartialEq {
     case illegal
     case eof
     case identifier
@@ -83,9 +83,9 @@ public enum TokenTag: Copy, PartialEq {
     case produce
 }
 
-impl TokenTag {
+extend TokenTag {
     /// How this tag is written in a diagnostic.
-    public func describe(&self) -> string {
+    public func describe() -> string {
         match self {
             case .illegal => "illegal character"
             case .eof => "end of input"
@@ -122,8 +122,8 @@ impl TokenTag {
     }
 }
 
-impl TokenKind {
-    public func tag(&self) -> TokenTag {
+extend TokenKind {
+    public func tag() -> TokenTag {
         match self {
             case .illegal(_) => .illegal
             case .eof => .eof
@@ -160,24 +160,24 @@ impl TokenKind {
     }
 
     /// How this token is written in a diagnostic, including its payload.
-    public func describe(&self) -> string {
+    public func describe() -> string {
         match self {
-            case .identifier(name) => sprintf("identifier '%s'", *name)
-            case .integer(value) => sprintf("integer %v", *value)
-            case .text(value) => sprintf("string \"%s\"", *value)
+            case .identifier(name) => sprintf("identifier '%s'", name)
+            case .integer(value) => sprintf("integer %v", value)
+            case .text(value) => sprintf("string \"%s\"", value)
             case _ => self.tag().describe()
         }
     }
 }
 
 /// A source position, one-based, used for parser diagnostics.
-public struct Position: Copy {
+public struct Position {
     public line: usize
     public column: usize
 }
 
-impl Position {
-    public func new(line: usize, column: usize) -> Self {
+extend Position {
+    public static func new(line: usize, column: usize) -> Self {
         return Position { line, column }
     }
 }
@@ -188,8 +188,8 @@ public struct Token {
     public position: Position
 }
 
-impl Token {
-    public func new(kind: TokenKind, position: Position) -> Self {
+extend Token {
+    public static func new(kind: TokenKind, position: Position) -> Self {
         return Token { kind, position }
     }
 }

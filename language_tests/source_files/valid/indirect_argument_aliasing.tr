@@ -2,7 +2,7 @@
 
 const LEN: usize = 512
 
-struct Big: Copy {
+struct Big {
     data: [int64; LEN]
 }
 
@@ -44,7 +44,7 @@ func rotatedRight(_ input: Big) -> Big {
 
 const HALF: usize = 256
 
-struct Pair: Copy {
+struct Pair {
     a: [int64; HALF]
     b: [int64; HALF]
 }
@@ -78,7 +78,7 @@ func checksum(_ input: Big) -> int64 {
 
 func main() {
     var value = makeBig(1)
-    let expected = checksum(value)
+    expected := checksum(value)
 
     value = reversed(value)
     assert(checksum(value) == expected, "reversal should preserve the checksum")

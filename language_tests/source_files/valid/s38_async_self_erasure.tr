@@ -1,0 +1,17 @@
+interface Duplicate { func duplicate() async -> Self; func read() -> int32; }
+struct Counter { value: int32; label: string }
+conform Counter to Duplicate {
+    func duplicate() async -> Self {
+        await std::testing::yieldNow()
+        Counter { value: self.value + 1, label: self.label }
+    }
+    func read() -> int32 { assert(self.label == "retained-payload", "owned ready payload remains rooted"); self.value }
+}
+func main() async {
+    var original: any Duplicate = Counter { value: 7, label: "retained-" + "payload" }
+    var next: any Duplicate = await original.duplicate()
+    assert(original.read() == 7 && next.read() == 8, "erasure occurs after the concrete async result is ready")
+    callback := next.duplicate // Borrowing bound async method, inferred result erasure.
+    var last: any Duplicate = await callback()
+    assert(last.read() == 9, "bound async Self method uses the same result adaptation")
+}

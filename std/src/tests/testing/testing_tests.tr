@@ -2,25 +2,25 @@
 
 @test
 func testPasses() {
-    std.testing.assertEqual(1 + 1, 2, "1 + 1 should be 2")
+    std::testing::assertEqual(1 + 1, 2, "1 + 1 should be 2")
 }
 
 @test
 @expectPanic("intent")
 func testExpectPanic() {
-    std.panic.panic("intentional")
+    std::panic::panic("intentional")
 }
 
 @test
 @expectPanic("assert should")
 func testAssertPanics() {
-    std.assert(false, "assert should panic")
+    std::assert(false, "assert should panic")
 }
 
 @test
 @skip
 func testSkipped() {
-    std.testing.fail("should never run")
+    std::testing::fail("should never run")
 }
 
 @cfg(profile("debug"))
@@ -35,38 +35,38 @@ func profileName() -> string {
 
 @test
 func testDebugAssertProfileCfg() {
-    let isDebug = #cfg(profile("debug"))
-    let isRelease = #cfg(profile("release"))
+    isDebug := #cfg(profile("debug"))
+    isRelease := #cfg(profile("release"))
 
-    std.testing.assertTrue(
+    std::testing::assertTrue(
         isDebug || isRelease,
         "expected either debug or release profile cfg to be true",
     )
-    std.testing.assertFalse(
+    std::testing::assertFalse(
         isDebug && isRelease,
         "debug and release profile cfg cannot both be true",
     )
 
     if isDebug {
-        std.testing.assertTrue(
-            std.string.stringEq(profileName(), "debug"),
+        std::testing::assertTrue(
+            std::string::stringEq(profileName(), "debug"),
             "profile-selected declaration should be debug variant",
         )
     } else {
-        std.testing.assertTrue(
-            std.string.stringEq(profileName(), "release"),
+        std::testing::assertTrue(
+            std::string::stringEq(profileName(), "release"),
             "profile-selected declaration should be release variant",
         )
     }
 
-    std.debugAssert(true, "debug assert should not panic")
+    std::debugAssert(true, "debug assert should not panic")
 }
 
 @tag("smoke")
 namespace TaggedNamespace {
     @test
     func testNamespaceTagInheritance() {
-        std.testing.assertTrue(true, "namespace tag smoke should be inherited")
+        std::testing::assertTrue(true, "namespace tag smoke should be inherited")
     }
 
     @tag("slow")
@@ -74,7 +74,7 @@ namespace TaggedNamespace {
         @test
         @tag("unit")
         func testNestedNamespaceTagInheritance() {
-            std.testing.assertTrue(true, "nested namespace tags should be inherited")
+            std::testing::assertTrue(true, "nested namespace tags should be inherited")
         }
     }
 }
@@ -82,5 +82,5 @@ namespace TaggedNamespace {
 @test
 @tag("SMOKE")
 func testFunctionTagSyntax() {
-    std.testing.assertTrue(true, "function-level @tag(\"...\") should be accepted")
+    std::testing::assertTrue(true, "function-level @tag(\"...\") should be accepted")
 }

@@ -1,0 +1,70 @@
+struct Payload { value: int32 }
+enum State { case empty; case payload(Payload) }
+final class Shared { value: int32 }
+extend Shared { init(_ value: int32) { self.value = value } }
+enum Handles { case shared(Shared); case reference(&int32) }
+func edit(_ value: &Payload) -> bool { value.value += 10; true }
+func reject(_ value: &Payload) -> bool { value.value = 99; false }
+func number(_ state: &State) -> int32 {
+    match *state {
+        case .empty => 0
+        case .payload(value) => value.value
+    }
+}
+func keep(_ value: &Payload) -> &Payload { value }
+func selectCopy(_ state: &State) -> &Payload {
+    match *state {
+        case .payload(value) => keep(&value)
+        case .empty => panic("payload expected")
+    }
+}
+func replaceDuringGuard(_ state: &State) -> bool { *state = .empty; false }
+func main() {
+    var state: State = .payload(Payload { value: 1 })
+    match *&state {
+        case .payload(value) => { value.value = 11; assert(value.value == 11, "local copy is writable") }
+        case .empty => panic("payload expected")
+    }
+    assert(number(&state) == 1, "matching through a reference copies inline payloads")
+    match *&state {
+        case .payload(value) if edit(&value) => assert(value.value == 11, "guard and body use the same copied binding")
+        case _ => panic("guard expected")
+    }
+    assert(number(&state) == 1, "guard writes do not mutate the source")
+    match *&state {
+        case .payload(value) if reject(&value) => panic("guard should reject")
+        case .payload(value) => assert(value.value == 1, "failed guard leaves the source for later arms")
+        case .empty => panic("payload expected")
+    }
+    if case .payload(local) = state {
+        local = Payload { value: 30 }
+        assert(local.value == 30, "if-case bindings are writable")
+    }
+    if case .payload(local) = *&state {
+        local.value += 2
+        assert(local.value == 3, "if-case explicit dereference copies payloads")
+    }
+    retained := selectCopy(&state)
+    match *&state {
+        case .payload(local) if replaceDuringGuard(&state) => panic("guard should reject")
+        case .payload(local) => assert(local.value == 1, "fallback uses valid snapshot after source replacement")
+        case .empty => panic("match snapshot should retain the selected value")
+    }
+    assert(number(&state) == 0, "guard can still replace the original enum")
+    retained.value = 5
+    assert(retained.value == 5, "a called function may retain a reference to the independent binding copy")
+    object := Shared(7)
+    var handles: Handles = .shared(object)
+    match *&handles {
+        case .shared(value) => value.value = 9
+        case _ => panic("shared expected")
+    }
+    assert(object.value == 9, "copied class handles share their object")
+    var value: int32 = 3
+    handles = .reference(&value)
+    match *&handles {
+        case .reference(reference) => *reference = 8
+        case _ => panic("reference expected")
+    }
+    assert(value == 8, "copied reference values share their referent")
+}

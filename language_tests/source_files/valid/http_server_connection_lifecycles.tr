@@ -1,0 +1,164 @@
+import std::collections::List
+import std::http::{Body, Error, Request, Response, Server}
+import std::net::{SocketAddress, TcpStream}
+import std::result::Result
+import std::mem::Span
+
+struct FileLimit { soft: uint64; hard: uint64 }
+
+extern "C" {
+    unsafe func getrlimit(_ resource: int32, _ limit: *mut FileLimit) -> int32
+    unsafe func setrlimit(_ resource: int32, _ limit: *const FileLimit) -> int32
+}
+
+@cfg(os("macos"))
+const RLIMIT_NOFILE: int32 = 8
+@cfg(os("linux"))
+const RLIMIT_NOFILE: int32 = 7
+
+const MANY: int32 = 300
+const LARGE: usize = 1048576
+
+func raiseDescriptorLimit() {
+    var limit = FileLimit { soft: 0_u64, hard: 0_u64 }
+    std::assert(unsafe { getrlimit(RLIMIT_NOFILE, &limit as *mut FileLimit) } == 0, "read the limit")
+    if limit.soft < 1024_u64 {
+        limit.soft = if limit.hard < 1024_u64 { limit.hard } else { 1024_u64 }
+        std::assert(unsafe { setrlimit(RLIMIT_NOFILE, &limit as *const FileLimit) } == 0, "raise the limit")
+    }
+}
+
+func respond(_ request: &Request) async -> Result[Response, Error] {
+    if request.url.endsWith("/large") {
+        var bytes = List[uint8]::new(withCapacity: LARGE)
+        var index: usize = 0
+        while index < LARGE {
+            bytes.append((index % 251) as uint8)
+            index += 1
+        }
+        var response = Response::new(200_u16)
+        response.body = Body::fromBytes(bytes)
+        return .ok(response)
+    }
+    return .ok(Response::text(200_u16, "served"))
+}
+
+func send(_ stream: TcpStream, _ text: string) async {
+    (await stream.writeAll(Span[uint8]::fromString(&text))).unwrap()
+}
+
+// Everything up to and including a response's blank line, and any bytes after it.
+func readHead(_ stream: TcpStream) async -> (string, List[uint8]) {
+    var received = List[uint8]::new()
+    var chunk: [uint8; 4096] = [0_u8; 4096]
+    span := unsafe { Span[uint8]::from((&chunk as *mut [uint8; 4096]) as *mut uint8, 4096) }
+    loop {
+        count := (await stream.read(span)).unwrap()
+        std::assert(count > 0, "connection stayed open for the response")
+        var index: usize = 0
+        while index < count {
+            received.append(*span.at(index))
+            index += 1
+        }
+        var end: usize = 3
+        while end < received.len() {
+            if *received.at(end - 3) == 13_u8 && *received.at(end - 2) == 10_u8 && *received.at(end - 1) == 13_u8 && *received.at(end) == 10_u8 {
+                head := std::string::stringFromBytes(received.asSpan().slice(0, end + 1))
+                var rest = List[uint8]::new()
+                var after = end + 1
+                while after < received.len() {
+                    rest.append(*received.at(after))
+                    after += 1
+                }
+                return (head, rest)
+            }
+            end += 1
+        }
+    }
+}
+
+// Reads until `count` bytes are in hand, counting those `already` received.
+func readBody(_ stream: TcpStream, _ already: List[uint8], _ count: usize) async -> List[uint8] {
+    var body = already
+    var chunk: [uint8; 16384] = [0_u8; 16384]
+    span := unsafe { Span[uint8]::from((&chunk as *mut [uint8; 16384]) as *mut uint8, 16384) }
+    while body.len() < count {
+        size := (await stream.read(span)).unwrap()
+        std::assert(size > 0, "body ended early")
+        var index: usize = 0
+        while index < size {
+            body.append(*span.at(index))
+            index += 1
+        }
+    }
+    return body
+}
+
+func repeated(_ length: int32) -> string {
+    var builder = std::string::Builder::new()
+    var index = 0
+    while index < length {
+        builder.writeByte(97_u8)
+        index += 1
+    }
+    return builder.toString()
+}
+
+func exchange(_ address: SocketAddress) async {
+    // More connections open at once than the default used to allow: the last of
+    // them would never have been accepted, so it would never have been answered.
+    var clients = List[TcpStream]::new()
+    var index = 0
+    while index < MANY {
+        clients.append((await TcpStream::connect(address)).unwrap())
+        index += 1
+    }
+    for client in clients { await send(client, "GET /small HTTP/1.1\r\nHost: x\r\n\r\n") }
+    for client in clients {
+        head := (await readHead(client)).0
+        std::assert(head.startsWith("HTTP/1.1 200"), "every open connection is served")
+    }
+    for client in clients { client.close().unwrap() }
+
+    stream := (await TcpStream::connect(address)).unwrap()
+    // Long enough idle that the connection has given up its buffers.
+    await std::task::sleep(std::time::Duration::fromMillis(250_u64))
+    // A head larger than any first read has to grow them again.
+    await send(stream, std::sprintf("GET /small HTTP/1.1\r\nHost: x\r\nX-Padding: %s\r\n\r\n", repeated(9000)))
+    first := await readHead(stream)
+    std::assert(first.0.startsWith("HTTP/1.1 200"), "a large head works after idling")
+    std::assert(first.1.len() <= 6, "no more than this response's body arrived")
+    var _ = await readBody(stream, first.1, 6)
+
+    await std::task::sleep(std::time::Duration::fromMillis(250_u64))
+    // Larger than one gathered write and than the socket's buffers: most of it
+    // goes out across waits, after each of which the write continues in place.
+    await send(stream, "GET /large HTTP/1.1\r\nHost: x\r\n\r\n")
+    await std::task::sleep(std::time::Duration::fromMillis(100_u64))
+    large := await readHead(stream)
+    std::assert(large.0.startsWith("HTTP/1.1 200"), "a large response starts")
+    body := await readBody(stream, large.1, LARGE)
+    std::assert(body.len() == LARGE, "exactly the body arrived")
+    var at: usize = 0
+    while at < LARGE {
+        std::assert(*body.at(at) == (at % 251) as uint8, "the body arrived unchanged")
+        at += 1
+    }
+
+    // And the same connection is still good for another exchange.
+    await send(stream, "GET /small HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+    last := (await readHead(stream)).0
+    std::assert(last.startsWith("HTTP/1.1 200"), "the connection survives all of the above")
+    stream.close().unwrap()
+}
+
+func main() async {
+    raiseDescriptorLimit()
+    server := Server::bind(SocketAddress::localhost(0_u16)).unwrap()
+    address := server.localAddress().unwrap()
+    serving := std::task::spawn(() async => { (await server.serve(respond)).unwrap() })
+    await exchange(address)
+    server.close().unwrap()
+    var _ = await serving.result()
+    std::println("ok")
+}

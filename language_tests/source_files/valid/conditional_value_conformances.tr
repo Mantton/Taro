@@ -1,0 +1,65 @@
+import std::marker::Clone
+
+struct Wrapper[T]: Clone { value: T }
+struct Nested[T]: Clone { wrapper: Wrapper[T] }
+enum Choice[T]: Clone { case empty; case value(T) }
+struct Owned { value: int32 }
+struct CloneOnly: Clone { value: int32 }
+struct Phantom[T]: Clone { value: int32 }
+type Payload[T] = (int32, [T; 2])
+struct Aliased[T] { payload: Payload[T] }
+interface Source {
+    type Value
+}
+struct NumberSource {}
+conform NumberSource to Source {
+    type Value = int32
+}
+struct Associated[T: Source] { value: T::Value }
+
+func duplicate[T](_ value: Wrapper[T]) -> (Wrapper[T], Wrapper[T]) {
+    (value, value)
+}
+func duplicateAlias[T](_ value: Aliased[T]) -> (Aliased[T], Aliased[T]) {
+    (value, value)
+}
+func cloneWrapped[T: Clone](_ value: &Wrapper[T]) -> Wrapper[T] { (*value).clone() }
+
+func main() {
+    var owned: Wrapper[Owned] = Wrapper[Owned] { value: Owned { value: 1 } }
+    var moved: Wrapper[Owned] = owned // Valid type, but no Copy or Clone.
+    assert(moved.value.value == 1, "noncopyable instantiation remains valid")
+    var choice: Choice[Owned] = .value(Owned { value: 2 })
+    var movedChoice: Choice[Owned] = choice
+    match movedChoice { case .value(value) => assert(value.value == 2, "move enum")
+        case .empty => std::panic::panic("empty")
+    }
+
+    var value: Wrapper[int32] = Wrapper[int32] { value: 3 }
+    var (left, right) = duplicate(value)
+    assert(value.value + left.value + right.value == 9, "conditional Copy")
+    assert(cloneWrapped(&value).value == 3, "conditional Clone")
+    var nested: Nested[int32] = Nested[int32] { wrapper: value }
+    var copied: Nested[int32] = nested
+    assert(nested.clone().wrapper.value + copied.wrapper.value == 6, "nested conditions")
+
+    var cloneOnly: Wrapper[CloneOnly] = Wrapper[CloneOnly] { value: CloneOnly { value: 4 } }
+    var cloned: Wrapper[CloneOnly] = cloneOnly.clone()
+    assert(cloneOnly.value.value == cloned.value.value, "Clone need not require Copy")
+    var payload: Choice[CloneOnly] = .value(CloneOnly { value: 5 })
+    var payloadClone: Choice[CloneOnly] = payload.clone()
+    match payloadClone {
+        case .value(value) => assert(value.value == 5, "all-case conditional enum Clone")
+        case .empty => std::panic::panic("empty")
+    }
+    var phantom: Phantom[Owned] = Phantom[Owned] { value: 6 }
+    var phantomCopy: Phantom[Owned] = phantom
+    assert(phantom.clone().value == phantomCopy.value, "unused parameter imposes no conformance")
+
+    var alias: Aliased[int32] = Aliased[int32] { payload: (7, [8, 9]) }
+    var (aliasLeft, aliasRight) = duplicateAlias(alias)
+    assert(alias.payload.0 + aliasLeft.payload.0 + aliasRight.payload.0 == 21, "aliased generic Copy")
+    var associated: Associated[NumberSource] = Associated[NumberSource] { value: 10 }
+    var associatedCopy: Associated[NumberSource] = associated
+    assert(associated.value == associatedCopy.value, "associated component Copy")
+}

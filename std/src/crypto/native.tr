@@ -1,0 +1,16 @@
+// Native primitives retain no managed pointers. Potentially long native work
+// uses the existing blocking boundary, publishing roots while GC proceeds.
+extern "blocking" {
+    internal unsafe func __rt__crypto_random(_ into: *mut uint8, _ length: usize) -> bool
+    internal unsafe func __rt__crypto_digest(_ algorithm: uint8, _ data: *const uint8, _ length: usize, _ into: *mut uint8) -> bool
+    internal unsafe func __rt__crypto_hmac(_ algorithm: uint8, _ key: *const uint8, _ keyLength: usize, _ data: *const uint8, _ length: usize, _ into: *mut uint8) -> bool
+    internal unsafe func __rt__crypto_hmac_verify(_ algorithm: uint8, _ key: *const uint8, _ keyLength: usize, _ data: *const uint8, _ length: usize, _ tag: *const uint8, _ tagLength: usize) -> bool
+    internal unsafe func __rt__crypto_equal(_ left: *const uint8, _ leftLength: usize, _ right: *const uint8, _ rightLength: usize) -> bool
+    internal unsafe func __rt__crypto_aead_crypt(_ owner: *const uint8, _ seal: bool, _ input: *const uint8, _ length: usize, _ additionalData: *const uint8, _ additionalLength: usize) -> usize
+}
+extern "taro_rt" {
+    internal unsafe func __rt__crypto_aead_new(_ key: *const uint8, _ length: usize, _ code: *mut uint8) -> *mut uint8
+    internal unsafe func __rt__crypto_aead_close(_ owner: *const uint8)
+    internal unsafe func __rt__crypto_output(_ handle: usize, _ length: *mut usize, _ code: *mut uint8) -> *const uint8
+    internal unsafe func __rt__crypto_output_close(_ handle: usize)
+}

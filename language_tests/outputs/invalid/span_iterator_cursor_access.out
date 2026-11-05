@@ -1,0 +1,4 @@
+error: field 'cursor' of SpanIterator[int32] is not visible here
+ -> language_tests/source_files/invalid/span_iterator_cursor_access.tr:4:12
+	    var _ = iterator.cursor
+	            ^^^^^^^^^^^^^^^

@@ -1,171 +1,169 @@
-import std.hash.{Hashable, Hasher}
-import std.marker.Clone
+import std::hash::{Hashable, Hasher}
+import std::marker::Clone
 
 @test
 func testSetBasicStringOperations() {
-    var set: std.collections.Set[string] = std.collections.Set()
-    std.testing.assertTrue(set.isEmpty(), "new set should start empty")
+    var set: std::collections::Set[string] = std::collections::Set::new()
+    std::testing::assertTrue(set.isEmpty(), "new set should start empty")
 
     set.insert("Hello, World")
-    std.testing.assertTrue(set.contains(&"Hello, World"), "set should contain inserted value")
-    std.testing.assertFalse(set.contains(&"Hello"), "set should not contain partial/missing value")
+    std::testing::assertTrue(set.contains(&"Hello, World"), "set should contain inserted value")
+    std::testing::assertFalse(set.contains(&"Hello"), "set should not contain partial/missing value")
 }
 
 struct SetCollisionKey {
     id: int32
 }
 
-impl std.ops.PartialEq for SetCollisionKey {
-    public func eq(&self, _ other: &SetCollisionKey) -> bool {
+conform SetCollisionKey to std::ops::PartialEq {
+    public func eq(_ other: SetCollisionKey) -> bool {
         self.id == other.id
     }
 }
 
-impl Hashable for SetCollisionKey {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {
+conform SetCollisionKey to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
         // Constant marker forces probe-chain collisions.
-        let marker: [uint8; 1] = [1]
+        var marker: [uint8; 1] = [1]
         hasher.write(marker.asSpan())
     }
 }
 
 @test
 func testSetCollisionInsertContainsRemove() {
-    var set: std.collections.Set[SetCollisionKey] = std.collections.Set()
+    var set: std::collections::Set[SetCollisionKey] = std::collections::Set::new()
 
     set.insert(SetCollisionKey { id: 1 })
     set.insert(SetCollisionKey { id: 2 })
     set.insert(SetCollisionKey { id: 2 })
 
-    std.testing.assertEqual(set.len(), 2 as usize, "set should deduplicate equal elements")
-    std.testing.assertTrue(set.contains(&SetCollisionKey { id: 1 }), "set should contain key 1")
-    std.testing.assertTrue(set.contains(&SetCollisionKey { id: 2 }), "set should contain key 2")
-    std.testing.assertFalse(set.contains(&SetCollisionKey { id: 3 }), "set should not contain missing key")
+    std::testing::assertEqual(set.len(), 2 as usize, "set should deduplicate equal elements")
+    std::testing::assertTrue(set.contains(&SetCollisionKey { id: 1 }), "set should contain key 1")
+    std::testing::assertTrue(set.contains(&SetCollisionKey { id: 2 }), "set should contain key 2")
+    std::testing::assertFalse(set.contains(&SetCollisionKey { id: 3 }), "set should not contain missing key")
 
-    let removed = set.remove(&SetCollisionKey { id: 2 })
-    std.testing.assertTrue(removed, "remove should succeed for present collision key")
-    std.testing.assertFalse(set.contains(&SetCollisionKey { id: 2 }), "removed collision key should be absent")
-    std.testing.assertEqual(set.len(), 1 as usize, "set len should update after remove")
+    removed := set.remove(&SetCollisionKey { id: 2 })
+    std::testing::assertTrue(removed, "remove should succeed for present collision key")
+    std::testing::assertFalse(set.contains(&SetCollisionKey { id: 2 }), "removed collision key should be absent")
+    std::testing::assertEqual(set.len(), 1 as usize, "set len should update after remove")
 
-    let removedMissing = set.remove(&SetCollisionKey { id: 2 })
-    std.testing.assertFalse(removedMissing, "remove should fail for missing key")
+    removedMissing := set.remove(&SetCollisionKey { id: 2 })
+    std::testing::assertFalse(removedMissing, "remove should fail for missing key")
 }
 
 @test
 func testSetIteration() {
-    var set: std.collections.Set[int32] = std.collections.Set()
+    var set: std::collections::Set[int32] = std::collections::Set::new()
     set.insert(1)
     set.insert(2)
     set.insert(3)
 
     var sum = 0
-    for x in &set {
-        sum += *x
+    for x in set {
+        sum += x
     }
-    std.testing.assertEqual(sum, 6, "set iteration should visit all elements")
+    std::testing::assertEqual(sum, 6, "set iteration should visit all elements")
 
-    var mutSum = 0
-    for x in &mut set {
-        mutSum += *x
-    }
-    std.testing.assertEqual(mutSum, 6, "set mut ref iteration should visit all elements")
+    alias := set
+    alias.insert(4)
+    std::testing::assertEqual(set.len(), 4 as usize, "set copies share elements")
 }
 
 @test
 func testSetClear() {
-    var set: std.collections.Set[int32] = std.collections.Set()
+    var set: std::collections::Set[int32] = std::collections::Set::new()
     set.insert(1)
     set.insert(2)
     set.clear()
-    std.testing.assertTrue(set.isEmpty(), "set should be empty after clear")
-    std.testing.assertEqual(set.len(), 0 as usize, "set len should be 0 after clear")
+    std::testing::assertTrue(set.isEmpty(), "set should be empty after clear")
+    std::testing::assertEqual(set.len(), 0 as usize, "set len should be 0 after clear")
 }
 
 @test
 func testSetCloneProducesIndependentStorage() {
-    var original: std.collections.Set[int32] = std.collections.Set()
+    var original: std::collections::Set[int32] = std::collections::Set::new()
     original.insert(1)
     original.insert(2)
 
     var copy = original.clone()
     copy.insert(3)
-    let removed = copy.remove(&1)
+    removed := copy.remove(&1)
 
-    std.testing.assertTrue(removed, "clone remove should succeed for copied storage")
-    std.testing.assertTrue(original.contains(&1), "clone mutation should not affect the original set")
-    std.testing.assertFalse(original.contains(&3), "clone insert should not affect the original set")
-    std.testing.assertTrue(copy.contains(&3), "clone insert should update copied storage")
-    std.testing.assertFalse(copy.contains(&1), "clone remove should update copied storage")
+    std::testing::assertTrue(removed, "clone remove should succeed for copied storage")
+    std::testing::assertTrue(original.contains(&1), "clone mutation should not affect the original set")
+    std::testing::assertFalse(original.contains(&3), "clone insert should not affect the original set")
+    std::testing::assertTrue(copy.contains(&3), "clone insert should update copied storage")
+    std::testing::assertFalse(copy.contains(&1), "clone remove should update copied storage")
 }
 
 @test
 func testSetUnion() {
-    var a: std.collections.Set[int32] = std.collections.Set()
+    var a: std::collections::Set[int32] = std::collections::Set::new()
     a.insert(1)
     a.insert(2)
-    
-    var b: std.collections.Set[int32] = std.collections.Set()
+
+    var b: std::collections::Set[int32] = std::collections::Set::new()
     b.insert(2)
     b.insert(3)
 
-    let c = a.union(&b)
-    std.testing.assertEqual(c.len(), 3 as usize, "union should contain distinct elements")
-    std.testing.assertTrue(c.contains(&1), "union contains 1")
-    std.testing.assertTrue(c.contains(&2), "union contains 2")
-    std.testing.assertTrue(c.contains(&3), "union contains 3")
+    c := a.union(b)
+    std::testing::assertEqual(c.len(), 3 as usize, "union should contain distinct elements")
+    std::testing::assertTrue(c.contains(&1), "union contains 1")
+    std::testing::assertTrue(c.contains(&2), "union contains 2")
+    std::testing::assertTrue(c.contains(&3), "union contains 3")
 }
 
 @test
 func testSetIntersection() {
-    var a: std.collections.Set[int32] = std.collections.Set()
+    var a: std::collections::Set[int32] = std::collections::Set::new()
     a.insert(1)
     a.insert(2)
     a.insert(3)
-    
-    var b: std.collections.Set[int32] = std.collections.Set()
+
+    var b: std::collections::Set[int32] = std::collections::Set::new()
     b.insert(2)
     b.insert(3)
     b.insert(4)
 
-    let c = a.intersection(&b)
-    std.testing.assertEqual(c.len(), 2 as usize, "intersection should contain shared elements")
-    std.testing.assertTrue(c.contains(&2), "intersection contains 2")
-    std.testing.assertTrue(c.contains(&3), "intersection contains 3")
-    std.testing.assertFalse(c.contains(&1), "intersection should not contain 1")
+    c := a.intersection(b)
+    std::testing::assertEqual(c.len(), 2 as usize, "intersection should contain shared elements")
+    std::testing::assertTrue(c.contains(&2), "intersection contains 2")
+    std::testing::assertTrue(c.contains(&3), "intersection contains 3")
+    std::testing::assertFalse(c.contains(&1), "intersection should not contain 1")
 }
 
 @test
 func testSetDifference() {
-    var a: std.collections.Set[int32] = std.collections.Set()
+    var a: std::collections::Set[int32] = std::collections::Set::new()
     a.insert(1)
     a.insert(2)
     a.insert(3)
-    
-    var b: std.collections.Set[int32] = std.collections.Set()
+
+    var b: std::collections::Set[int32] = std::collections::Set::new()
     b.insert(2)
     b.insert(4)
 
-    let c = a.difference(&b)
-    std.testing.assertEqual(c.len(), 2 as usize, "difference should contain elements only in A")
-    std.testing.assertTrue(c.contains(&1), "difference contains 1")
-    std.testing.assertTrue(c.contains(&3), "difference contains 3")
-    std.testing.assertFalse(c.contains(&2), "difference should not contain 2")
+    c := a.difference(b)
+    std::testing::assertEqual(c.len(), 2 as usize, "difference should contain elements only in A")
+    std::testing::assertTrue(c.contains(&1), "difference contains 1")
+    std::testing::assertTrue(c.contains(&3), "difference contains 3")
+    std::testing::assertFalse(c.contains(&2), "difference should not contain 2")
 }
 
 @test
 func testSetSubsets() {
-    var a: std.collections.Set[int32] = std.collections.Set()
+    var a: std::collections::Set[int32] = std::collections::Set::new()
     a.insert(1)
     a.insert(2)
-    
-    var b: std.collections.Set[int32] = std.collections.Set()
+
+    var b: std::collections::Set[int32] = std::collections::Set::new()
     b.insert(1)
     b.insert(2)
     b.insert(3)
 
-    std.testing.assertTrue(a.isSubset(of: &b), "A should be subset of B")
-    std.testing.assertFalse(b.isSubset(of: &a), "B should not be subset of A")
+    std::testing::assertTrue(a.isSubset(of: b), "A should be subset of B")
+    std::testing::assertFalse(b.isSubset(of: a), "B should not be subset of A")
 
-    std.testing.assertTrue(b.isSuperset(of: &a), "B should be superset of A")
-    std.testing.assertFalse(a.isSuperset(of: &b), "A should not be superset of B")
+    std::testing::assertTrue(b.isSuperset(of: a), "B should be superset of A")
+    std::testing::assertFalse(a.isSuperset(of: b), "A should not be superset of B")
 }

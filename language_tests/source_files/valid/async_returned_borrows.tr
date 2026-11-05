@@ -1,0 +1,37 @@
+struct Record { value: int32 }
+struct Selection { record: &Record }
+func tick() async {}
+func field(_ record: &Record) async -> &int32 {
+    await tick()
+    &record.value
+}
+func mutableField(_ record: &Record) async -> &int32 {
+    await tick()
+    &record.value
+}
+func select(_ record: &Record) async -> Selection {
+    await tick()
+    Selection { record }
+}
+extend Selection {
+    func forward( _ other: &int32) async -> Selection {
+        await tick()
+        self
+    }
+}
+func main() async {
+    var record: Record = Record { value: 7 }
+    var shared: &int32 = await field(&record)
+    assert(*shared == 7, "returned shared reference")
+    var exclusive: &int32 = await mutableField(&record)
+    *exclusive = 11
+    assert(record.value == 11, "returned exclusive borrow ends at last use")
+    var other: int32 = 13
+    var selection: Selection = await select(&record)
+    var forwarded: Selection = await selection.forward(&other)
+    other = 17 // The ready result forwards owned self, not this input.
+    assert(forwarded.record.value == 11, "returned non-Escapable view")
+    assert(other == 17, "unrelated input no longer borrowed")
+    record.value = 19
+    assert(record.value == 19, "view dependency ends at last use")
+}

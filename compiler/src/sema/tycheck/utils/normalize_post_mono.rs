@@ -28,12 +28,47 @@ use crate::{
 /// - Type parameters are encountered (should be substituted during monomorphization)
 /// - Projections cannot be resolved (indicates a missing conformance)
 pub fn normalize_post_monomorphization<'ctx>(gcx: GlobalContext<'ctx>, ty: Ty<'ctx>) -> Ty<'ctx> {
-    let mut folder = PostMonoNormalizeFolder { gcx };
-    ty.fold_with(&mut folder)
+    try_normalize_post_monomorphization(gcx, ty)
+        .unwrap_or_else(|error| panic!("ICE: {}", error.format(gcx)))
+}
+
+/// An erased payload's unbound associated type is a source limitation, not a
+/// missing concrete conformance or an inference-engine invariant failure.
+#[derive(Clone, Copy, Debug)]
+pub struct UnboundErasedProjection<'ctx> {
+    pub projection: Ty<'ctx>,
+    pub associated_type: DefinitionID,
+}
+impl<'ctx> UnboundErasedProjection<'ctx> {
+    pub fn format(self, gcx: GlobalContext<'ctx>) -> String {
+        format!(
+            "cannot use unbound erased associated type '{}'; bind the associated type explicitly",
+            self.projection.format(gcx)
+        )
+    }
+}
+
+/// Recover only the expected erased-projection boundary. Inference variables,
+/// unsubstituted parameters and missing concrete witnesses remain compiler
+/// invariant failures, rather than being accepted as arbitrary error storage.
+pub fn try_normalize_post_monomorphization<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    ty: Ty<'ctx>,
+) -> Result<Ty<'ctx>, UnboundErasedProjection<'ctx>> {
+    let mut folder = PostMonoNormalizeFolder {
+        gcx,
+        erased_projection: None,
+    };
+    let result = ty.fold_with(&mut folder);
+    match folder.erased_projection {
+        Some(error) => Err(error),
+        None => Ok(result),
+    }
 }
 
 struct PostMonoNormalizeFolder<'ctx> {
     gcx: GlobalContext<'ctx>,
+    erased_projection: Option<UnboundErasedProjection<'ctx>>,
 }
 
 impl<'ctx> TypeFolder<'ctx> for PostMonoNormalizeFolder<'ctx> {
@@ -42,6 +77,9 @@ impl<'ctx> TypeFolder<'ctx> for PostMonoNormalizeFolder<'ctx> {
     }
 
     fn fold_ty(&mut self, ty: Ty<'ctx>) -> Ty<'ctx> {
+        if self.erased_projection.is_some() {
+            return Ty::error(self.gcx);
+        }
         match ty.kind() {
             // Handle all alias kinds
             TyKind::Alias { kind, def_id, args } => {
@@ -69,10 +107,31 @@ impl<'ctx> TypeFolder<'ctx> for PostMonoNormalizeFolder<'ctx> {
                             .collect();
                         let folded_args = self.gcx.store.interners.intern_generic_args(folded_args);
 
-                        // Resolve projection: T.Item where T is concrete
+                        if self.erased_projection.is_some() {
+                            return Ty::error(self.gcx);
+                        }
+                        let erased = folded_args
+                            .first()
+                            .and_then(|arg| arg.ty())
+                            .is_some_and(|ty| matches!(ty.kind(), TyKind::BoxedExistential { .. }));
+                        // Known existential bindings still normalize normally.
                         if let Some(resolved) = self.resolve_projection(def_id, folded_args) {
-                            // Recursively normalize the result
-                            resolved.fold_with(self)
+                            let result = resolved.fold_with(self);
+                            if erased && super::erased_self::has_free_self(result) {
+                                self.erased_projection = Some(UnboundErasedProjection {
+                                    projection: ty,
+                                    associated_type: def_id,
+                                });
+                                Ty::error(self.gcx)
+                            } else {
+                                result
+                            }
+                        } else if erased {
+                            self.erased_projection = Some(UnboundErasedProjection {
+                                projection: ty,
+                                associated_type: def_id,
+                            });
+                            Ty::error(self.gcx)
                         } else {
                             // This is an ICE - should never happen in monomorphized code
                             panic!(
@@ -177,23 +236,92 @@ impl<'ctx> PostMonoNormalizeFolder<'ctx> {
             bindings: &[],
         };
 
+        // An existential has no concrete conformance witness of its own. Its
+        // explicitly stored bindings nevertheless give projections a known ABI,
+        // including bindings supplied by an inherited interface. Keep hidden
+        // Self markers intact: substituting the container for them would turn
+        // a payload-dependent result into unrelated container storage.
+        if let TyKind::BoxedExistential { interfaces } = self_ty.kind() {
+            use crate::sema::impl_engine::ref_ops::{
+                InterfaceRefMatch, collect_interface_with_superfaces, interface_ref_matches,
+            };
+            let name = gcx.definition_ident(assoc_id).symbol;
+            for root in interfaces {
+                for candidate in collect_interface_with_superfaces(gcx, *root) {
+                    if interface_ref_matches(interface, candidate, InterfaceRefMatch::Header)
+                        && let Some(binding) = candidate.bindings.iter().find(|b| b.name == name)
+                    {
+                        return Some(binding.ty);
+                    }
+                }
+            }
+            return None;
+        }
+
         // Resolve the witness and get the associated type
         let witness = resolve_conformance_witness(gcx, interface)?;
         let witness_ty = witness.type_witnesses.get(&assoc_id)?;
 
-        // The witness type may contain impl-block generic parameters
-        // (e.g., FilterIterator[Item, Inner, F] from a generic impl block).
-        // We need to deduce the concrete impl args from the concrete Self type
-        // and use those for substitution, not just the projection args.
-        if let Some(extension_id) = witness.extension_id {
-            if let Some(deduced_args) =
-                crate::sema::impl_engine::deduce_impl_subst(gcx, extension_id, *self_ty, &[])
-            {
-                return Some(instantiate_ty_with_args(gcx, *witness_ty, deduced_args));
-            }
-        }
+        // The selected witness is already in the projection receiver's
+        // coordinates. Interface arguments are not a second impl substitution.
+        Some(*witness_ty)
+    }
+}
 
-        // Fallback: instantiate with the projection's args (works for simple cases)
-        Some(instantiate_ty_with_args(gcx, *witness_ty, args))
+#[cfg(test)]
+mod erased_projection_tests {
+    use super::*;
+    #[test]
+    fn missing_erased_associated_type_is_recoverable_and_explicit_binding_resolves() {
+        crate::test_support::analyze_script(
+            "interface P { type Output; func produce() -> Self::Output; }\nfunc main() {}",
+            |package, gcx| {
+                let id = package.root.declarations[0].id;
+                let requirements = gcx.get_interface_requirements(id).unwrap();
+                let associated = requirements.types[0].id;
+                let arguments = gcx
+                    .store
+                    .interners
+                    .intern_generic_args(vec![GenericArgument::Type(gcx.types.existential_self)]);
+                let make = |bindings| {
+                    let interfaces =
+                        gcx.store
+                            .arenas
+                            .global
+                            .alloc_slice_clone(&[InterfaceReference {
+                                id,
+                                arguments,
+                                bindings,
+                            }]);
+                    Ty::new(TyKind::BoxedExistential { interfaces }, gcx)
+                };
+                let project = |receiver| {
+                    let args = gcx
+                        .store
+                        .interners
+                        .intern_generic_args(vec![GenericArgument::Type(receiver)]);
+                    Ty::new(
+                        TyKind::Alias {
+                            kind: AliasKind::Projection,
+                            def_id: associated,
+                            args,
+                        },
+                        gcx,
+                    )
+                };
+                let unbound = project(make(&[]));
+                assert!(try_normalize_post_monomorphization(gcx, unbound).is_err());
+                let bindings = gcx.store.arenas.global.alloc_slice_clone(&[
+                    crate::sema::models::AssociatedTypeBinding {
+                        name: gcx.definition_ident(associated).symbol,
+                        ty: gcx.types.int32,
+                    },
+                ]);
+                assert_eq!(
+                    try_normalize_post_monomorphization(gcx, project(make(bindings))).unwrap(),
+                    gcx.types.int32
+                );
+            },
+        );
     }
 }

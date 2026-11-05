@@ -331,6 +331,8 @@ fn lookup_address(family: u8, address: *const u8) -> Result<Vec<Vec<u8>>, Resolv
 }
 
 #[unsafe(no_mangle)]
+// Compiler ABI contract: input bytes and output slots are observed only during
+// this synchronous call. The returned snapshot owns copies, not wire pointers.
 pub extern "C" fn __rt__net_lookup_host(
     host: RtString,
     len_out: *mut usize,
@@ -354,6 +356,8 @@ pub extern "C" fn __rt__net_lookup_host(
 }
 
 #[unsafe(no_mangle)]
+// As above: lookup_address copies the selected address into a native sockaddr
+// before calling libc; no caller-provided pointer is saved in the snapshot.
 pub extern "C" fn __rt__net_lookup_address(
     family: u8,
     address: *const u8,
@@ -378,6 +382,7 @@ pub extern "C" fn __rt__net_lookup_address(
 }
 
 #[unsafe(no_mangle)]
+// Copies scalar/address bytes to the caller, without retaining its output slots.
 pub extern "C" fn __rt__net_ip_snapshot_at(
     handle: usize,
     index: usize,
@@ -441,6 +446,38 @@ mod tests {
             ptr: bytes.as_ptr(),
             len: bytes.len(),
         }
+    }
+
+    #[test]
+    fn exported_lookup_snapshot_outlives_the_caller_input_storage() {
+        let mut length = 0;
+        let mut kind = 0;
+        let mut resolver = 0;
+        let mut system = 0;
+        let mut host = b"127.0.0.1".to_vec();
+        let handle = __rt__net_lookup_host(
+            rt_bytes(&host),
+            &mut length,
+            &mut kind,
+            &mut resolver,
+            &mut system,
+        );
+        assert_ne!(handle, 0);
+        assert!(length > 0);
+        assert_eq!((kind, resolver, system), (0, 0, 0));
+        // Neither mutation nor destruction of the source wire buffer may
+        // affect the independent snapshot held behind the opaque handle.
+        host.fill(b'x');
+        drop(host);
+        let mut family = 0;
+        let mut octets = [0; 16];
+        assert_eq!(
+            __rt__net_ip_snapshot_at(handle, 0, &mut family, octets.as_mut_ptr()),
+            0
+        );
+        assert_eq!(family, ADDRESS_FAMILY_IPV4);
+        assert_eq!(&octets[..4], &[127, 0, 0, 1]);
+        __rt__net_snapshot_close(handle);
     }
 
     #[test]

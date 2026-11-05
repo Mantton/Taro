@@ -1,0 +1,64 @@
+// Native ownership regression.
+interface Read { func read() -> int32; }
+struct Value { value: int32 }
+conform Value to Read {
+    func read() -> int32 { self.value }
+}
+func boxed() -> any Read {
+    var value: Value = Value { value: 7 }
+    value
+}
+func callback() -> any Fn() -> int32 {
+    var value: int32 = 11
+    read := () => value
+    read
+}
+func optional() -> int32? {
+    var value: int32 = 13
+    value
+}
+func conditional(_ flag: bool) -> int32? {
+    var value: int32 = 17
+    if flag { value } else { nil }
+}
+func matched(_ flag: bool) -> int32? {
+    var value: int32 = 29
+    match flag {
+        case true => value
+        case false => nil
+    }
+}
+struct Other { value: int32 }
+conform Other to Read {
+    func read() -> int32 { self.value }
+}
+func selected(_ flag: bool) -> any Read {
+    var first: Value = Value { value: 31 }
+    var second: Other = Other { value: 37 }
+    if flag { first } else { second }
+}
+func opaque() -> some Read {
+    var value: Value = Value { value: 19 }
+    value
+}
+func explicitOpaque() -> some Read {
+    var value: Value = Value { value: 23 }
+    return value
+}
+func main() {
+    var value: any Read = boxed()
+    assert(value.read() == 7, "block tail packs a concrete value")
+    var read: any Fn() -> int32 = callback()
+    assert(read() == 11 && read() == 11, "block tail packs a concrete closure")
+    assert(optional().unwrap() == 13, "block tail wraps an optional")
+    assert(conditional(true).unwrap() == 17, "tail expectation reaches conditional arms")
+    assert(conditional(false).isNone(), "nil branch retains optional result")
+    assert(matched(true).unwrap() == 29 && matched(false).isNone(), "return context coerces match arms")
+    var first: any Read = selected(true)
+    var second: any Read = selected(false)
+    assert(first.read() == 31 && second.read() == 37, "different concrete branch values pack into one interface")
+    hidden := opaque()
+    assert(hidden.read() == 19, "opaque tail inference retains concrete candidate")
+    explicit := explicitOpaque()
+    assert(explicit.read() == 23, "explicit opaque return is not registered twice")
+}

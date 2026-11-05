@@ -1,0 +1,8 @@
+error: automatic equality requires Rhs = Self; provide an explicit cross-type conformance
+ -> language_tests/source_files/invalid/derived_equality_rhs.tr:4:19
+	struct Generic[T]: PartialEq[T] { value: int32 }
+	                   ^^^^^^^^^^^^
+error: automatic equality requires Rhs = Self; provide an explicit cross-type conformance
+ -> language_tests/source_files/invalid/derived_equality_rhs.tr:3:17
+	struct Concrete: PartialEq[Other] { value: int32 }
+	                 ^^^^^^^^^^^^^^^^

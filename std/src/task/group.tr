@@ -1,12 +1,16 @@
-import std.ops.AsyncFnOnce
-import std.iter.{AsyncIterator, AsyncIterable}
-import std.intrinsic.__intrinsic_task_group_cancel
-import std.intrinsic.__intrinsic_task_group_close
-import std.intrinsic.__intrinsic_task_group_create
-import std.intrinsic.__intrinsic_task_group_destroy
-import std.intrinsic.__intrinsic_task_group_destroy_and_rethrow
-import std.intrinsic.__intrinsic_task_group_next
-import std.intrinsic.__intrinsic_task_group_spawn
+import std::ops::AsyncFn
+import std::iter::{AsyncIterator, AsyncIterable}
+import std::intrinsic::__intrinsic_task_group_cancel
+import std::intrinsic::__intrinsic_task_group_close
+import std::intrinsic::__intrinsic_task_group_create
+import std::intrinsic::__intrinsic_task_group_destroy
+import std::intrinsic::__intrinsic_task_group_destroy_and_rethrow
+import std::intrinsic::__intrinsic_task_group_next
+import std::intrinsic::__intrinsic_task_group_spawn
+
+extern "taro_rt" {
+    unsafe func __rt__task_group_discard_results(_ groupId: usize)
+}
 
 public enum TaskGroupPolicy {
     case cancelOnPanic
@@ -14,41 +18,50 @@ public enum TaskGroupPolicy {
 }
 
 public struct TaskGroup[T] {
-    id: usize
+    // Only scope() constructs the typed owner. Exposing the numeric ID would
+    // allow a safe caller to retype the group's result storage or duplicate it.
+    private id: usize
 }
 
 public struct TaskGroupAsyncIterator[T] {
-    group: &mut TaskGroup[T]
+    group: &TaskGroup[T]
 }
 
-impl[T] TaskGroup[T] {
-    public func spawn[F: AsyncFnOnce() -> T](&mut self, _ thunk: F) {
-        __intrinsic_task_group_spawn[T, F](self.id, thunk)
+extend[T] TaskGroup[T] {
+    public func spawn[F: AsyncFn() -> T](_ thunk: F) {
+        unsafe { __intrinsic_task_group_spawn[T, F](self.id, thunk) }
     }
 
-    public func next(&mut self) async -> T? {
-        return await __intrinsic_task_group_next[T](self.id)
+    public func next() async -> T? {
+        return unsafe { await __intrinsic_task_group_next[T](self.id) }
+    }
+
+    // From now on children's results are dropped as they finish, so a long-lived
+    // group needn't call `next` to reclaim them. `next` then only waits for the
+    // last child to finish, returning `.none`. Call before spawning.
+    internal func discardResults() {
+        unsafe { __rt__task_group_discard_results(self.id) }
     }
 }
 
-impl[T] AsyncIterator for TaskGroupAsyncIterator[T] {
+conform[T] TaskGroupAsyncIterator[T] to AsyncIterator {
     type Element = T
 
-    public func next(&mut self) async -> T? {
+    public func next() async -> T? {
         return await self.group.next()
     }
 }
 
-impl[T] AsyncIterable for &mut TaskGroup[T] {
+conform[T] &TaskGroup[T] to AsyncIterable {
     type Iterator = TaskGroupAsyncIterator[T]
     type Element = T
 
-    public func iter(self) -> Self.Iterator {
+    public func iter() -> Self::Iterator {
         return TaskGroupAsyncIterator[T] { group: self }
     }
 }
 
-func drainTaskGroup[T](_ group: &mut TaskGroup[T]) async {
+func drainTaskGroup[T](_ group: &TaskGroup[T]) async {
     var draining = true
     while draining {
         match await group.next() {
@@ -58,32 +71,50 @@ func drainTaskGroup[T](_ group: &mut TaskGroup[T]) async {
     }
 }
 
-public func withTaskGroup[T, R, F: AsyncFnOnce(&mut TaskGroup[T]) -> R](
+/// Run a task-group scope; the group itself is only lent to the callback.
+/// Its raw identity is owned and retired by the type's scoped runner.
+/// Children are drained before a normal return. If the scope ends early because
+/// its task is cancelled or panics, the remaining children are cancelled and the
+/// task's outcome is published only after they finish. Using a group reference
+/// that escaped its scope panics.
+public func withTaskGroup[T, R, F: AsyncFn(&TaskGroup[T]) -> R](
     policy: TaskGroupPolicy = .cancelOnPanic,
     _ body: F,
 ) async -> R {
-    let cancelOnPanic = match policy {
-        case .cancelOnPanic => true
-        case .independent => false
-    }
+    return await TaskGroup[T]::scope[R, F](policy: policy, body)
+}
 
-    let groupId = __intrinsic_task_group_create[T](cancelOnPanic)
-    var group = TaskGroup[T] { id: groupId }
-    var cleanupPending = true
-
-    defer {
-        if cleanupPending {
-            __intrinsic_task_group_close(groupId)
-            __intrinsic_task_group_cancel(groupId)
-            __intrinsic_task_group_destroy(groupId)
+extend[T] TaskGroup[T] {
+    /// Construct and retire a group without exposing its raw ID. This static
+    /// form is equivalent to withTaskGroup; both lend the group only while the
+    /// callback is active and drain or cancel children before releasing it.
+    public static func scope[R, F: AsyncFn(&TaskGroup[T]) -> R](
+        policy: TaskGroupPolicy = .cancelOnPanic,
+        _ body: F,
+    ) async -> R {
+        cancelOnPanic := match policy {
+            case .cancelOnPanic => true
+            case .independent => false
         }
-    }
 
-    let result = await body(&mut group)
-    __intrinsic_task_group_close(groupId)
-    __intrinsic_task_group_cancel(groupId)
-    await drainTaskGroup(&mut group)
-    cleanupPending = false
-    __intrinsic_task_group_destroy_and_rethrow(groupId)
-    return result
+        groupId := unsafe { __intrinsic_task_group_create[T](cancelOnPanic) }
+        var group = TaskGroup[T] { id: groupId }
+        var cleanupPending = true
+
+        defer {
+            if cleanupPending {
+                unsafe { __intrinsic_task_group_close(groupId) }
+                unsafe { __intrinsic_task_group_cancel(groupId) }
+                unsafe { __intrinsic_task_group_destroy(groupId) }
+            }
+        }
+
+        result := await body(&group)
+        unsafe { __intrinsic_task_group_close(groupId) }
+        unsafe { __intrinsic_task_group_cancel(groupId) }
+        await drainTaskGroup(&group)
+        cleanupPending = false
+        unsafe { __intrinsic_task_group_destroy_and_rethrow(groupId) }
+        return result
+    }
 }

@@ -1,0 +1,11 @@
+interface Value[T] {
+    var value: T { get };
+}
+struct Wrapper[T] { value: T }
+conform[T] Wrapper[T] to Value[T] {}
+func read[T, V: Value[T]](_ value: &V) -> T { value.value }
+func main() {
+    var value: Wrapper[int32] = Wrapper[int32] { value: 7 }
+    var observed: int32 = read(&value)
+    assert(observed == 7, "generic stored Copy field witnesses getter")
+}

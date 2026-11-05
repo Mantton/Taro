@@ -1,0 +1,4 @@
+error: `await` can only be used inside an `async` function
+ -> language_tests/source_files/invalid/s36_async_initializer.tr:2:26
+	static var value: int32 = await initialize() // Error: initialization is synchronous.
+	                          ^^^^^^^^^^^^^^^^^^

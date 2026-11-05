@@ -1,0 +1,49 @@
+// ENV: TARO_WORKERS=4
+// Borrowed witness receivers must retain their full carrier across dynamic
+// dispatch, shared implementations of mutable requirements, and Self erasure.
+interface Read {
+    func value() -> int64
+}
+interface MutableRead {
+    func value() -> int64
+}
+interface Duplicate {
+    func value() -> int64
+    func duplicate() -> Self
+}
+struct Counter { count: int64 }
+struct Wide { a: int64; b: int64; c: int64; d: int64; e: int64 }
+conform Counter to Read {
+    @noinline
+    func value() -> int64 {
+        self.count
+    }
+}
+conform Counter to MutableRead {
+    @noinline
+    func value() -> int64 { self.count }
+}
+conform Wide to Duplicate {
+    @noinline
+    func value() -> int64 { self.a + self.b + self.c + self.d + self.e }
+    @noinline
+    func duplicate() -> Self {
+        Wide { a: self.a, b: self.b, c: self.c, d: self.d, e: self.e }
+    }
+}
+@noinline
+func read(_ object: &any Read) -> int64 { object.value() }
+@noinline
+func readMutable(_ object: &any MutableRead) -> int64 { object.value() }
+@noinline
+func duplicate(_ object: &any Duplicate) -> any Duplicate { object.duplicate() }
+func main() {
+    var counter: any Read = Counter { count: 17 }
+    assert(read(&counter) == 17, "borrowed receiver through an interface")
+    var mutable: any MutableRead = Counter { count: 23 }
+    assert(readMutable(&mutable) == 23, "shared implementation of mutable requirement")
+    var original: any Duplicate = Wide { a: 1, b: 2, c: 3, d: 4, e: 5 }
+    var copied: any Duplicate = duplicate(&original)
+    assert(copied.value() == 15, "wide Self result re-erases with the same table")
+    assert(original.value() == 15, "shared source remains usable")
+}

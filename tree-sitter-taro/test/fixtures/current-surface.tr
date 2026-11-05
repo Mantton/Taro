@@ -1,0 +1,26 @@
+@NoCopy
+struct Cell { value: int32 }
+
+extend &Cell {
+    public subscript(index: usize) -> int32 {
+        address { &self.value }
+    }
+    public var current: int32 {
+        get { self.value }
+    }
+    func add(_ amount: int32) { self.value += amount }
+}
+
+func first(_ values: [int32; ..]) -> int32 { values[0] }
+
+func asyncValue() async -> int32 { 7 }
+
+func main() async {
+    assert((await asyncValue()) == 7, "async function")
+    cell := Cell { value: 3 }
+    var values: [int32; 2] = [1, 2]
+    var slice: [int32; ..] = values.asSpan()
+    defer cell.add(1)
+    cell[0] += first(slice)
+    assert(cell.current == 4, "native property and subscript")
+}

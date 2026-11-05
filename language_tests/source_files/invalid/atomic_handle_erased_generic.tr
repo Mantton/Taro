@@ -1,0 +1,4 @@
+import std::sync::atomic::Handle
+interface Config: std::marker::AnyObject {}
+func make[T: std::marker::AnyObject]() -> Handle[T] { Handle[T]::new() }
+func main() { var slot = make[any Config]() }

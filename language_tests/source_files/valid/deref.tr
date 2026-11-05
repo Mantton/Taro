@@ -7,33 +7,34 @@ struct Boxed {
 func use[V](value: V) -> V { expose(value) }
 func expose[T](_ value: T) -> T { value }
 
-func increment[T](_ value: T) -> &T {
-    value |> use(value:_) |> make
+func increment[T](_ value: T) -> T {
+    value |> use(value:_)
 }
 
 func testDerefPipe() {
-    let x = "One\n"
-    let y = make("Two\n")
-    let z = increment("Three\n")
+    x := "One\n"
+    two := "Two\n"
+    y := &two
+    z := increment("Three\n")
 
-    let _ = y
-    let _ = z
+    var _ = y
+    var _ = z
     assert(x == "One\n", "x value check")
 }
 
-func poke(_ b: &mut Boxed) {
+func poke(_ b: &Boxed) {
     var r = b
-    unsafe { (&mut (*r).value as *mut int32).write(7) }
+    unsafe { (&(*r).value as *mut int32).write(7) }
 }
 
 func testBorrowMemberViaDerefMutRef() {
     var b = Boxed { value: 1 }
-    poke(&mut b)
+    poke(&b)
     assert(b.value == 7, "mut member write through deref")
 }
 
 func main() {
     testDerefPipe()
     testBorrowMemberViaDerefMutRef()
-    std.print("PASS: Deref checks\n")
+    std::print("PASS: Deref checks\n")
 }

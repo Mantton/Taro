@@ -17,6 +17,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         expr_id: ExprId,
     ) -> BlockAnd<Rvalue<'ctx>> {
         let expr = &self.thir.exprs[expr_id];
+        if let Some(operand) = self.prepared_argument_operand(block, expr_id) {
+            return block.and(Rvalue::Use(operand));
+        }
 
         match &expr.kind {
             ExprKind::Assign { .. } | ExprKind::AssignOp { .. } => {
@@ -27,7 +30,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 })))
             }
             ExprKind::Unary { op, operand } => {
-                let operand_ty = self.thir.exprs[*operand].ty;
+                let operand_ty = crate::sema::tycheck::utils::normalize_aliases(
+                    self.gcx,
+                    self.thir.exprs[*operand].ty,
+                );
                 let operand = unpack!(block = self.as_operand(block, *operand));
                 // Signed negation overflows for the minimum value; route it
                 // through the checked intrinsic like binary arithmetic.
@@ -46,35 +52,78 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 }
                 block.and(Rvalue::UnaryOp { op: *op, operand })
             }
-            ExprKind::Cast { value } => {
+            ExprKind::ClassSelfResult { value } => {
                 let operand = unpack!(block = self.as_operand(block, *value));
+                block.and(Rvalue::Cast {
+                    operand,
+                    ty: expr.ty,
+                    kind: CastKind::ClassSelfResult,
+                })
+            }
+            ExprKind::ClassUpcast { value } => {
+                let operand = unpack!(block = self.as_operand(block, *value));
+                block.and(Rvalue::Cast {
+                    operand,
+                    ty: expr.ty,
+                    kind: CastKind::ClassUpcast,
+                })
+            }
+            ExprKind::Cast { value } => {
+                // An immediate, type-preserving reference/raw/reference round
+                // trip still has its original controller. Lower it as a
+                // checked reborrow instead of discarding and inventing
+                // provenance. Unrelated raw casts remain unsafe/unknown.
+                if let TyKind::Reference(result) =
+                    crate::sema::tycheck::utils::normalize_aliases(self.gcx, expr.ty).kind()
+                    && let ExprKind::Cast { value: original } = self.thir.exprs[*value].kind
+                    && let TyKind::Pointer(raw, _) = crate::sema::tycheck::utils::normalize_aliases(
+                        self.gcx,
+                        self.thir.exprs[*value].ty,
+                    )
+                    .kind()
+                    && let TyKind::Reference(source) =
+                        crate::sema::tycheck::utils::normalize_aliases(
+                            self.gcx,
+                            self.thir.exprs[original].ty,
+                        )
+                        .kind()
+                    && source == result
+                    && raw == result
+                {
+                    let mut place = unpack!(block = self.as_place(block, original));
+                    place.projection.push(crate::mir::PlaceElem::Deref);
+                    return block.and(Rvalue::Ref { place });
+                }
+                let reference_to_raw =
+                    matches!(self.thir.exprs[*value].ty.kind(), TyKind::Reference(..))
+                        && matches!(expr.ty.kind(), TyKind::Pointer(..));
+                // Reading a reference's address does not transfer its exclusive
+                // token. The raw result has no checked dependency and using it
+                // remains subject to the language's unsafe pointer contract.
+                let operand = if reference_to_raw {
+                    Operand::Copy(unpack!(block = self.as_place(block, *value)))
+                } else {
+                    unpack!(block = self.as_operand(block, *value))
+                };
                 if self.thir.exprs[*value].ty == expr.ty {
                     return block.and(Rvalue::Use(operand));
                 }
                 block.and(Rvalue::Cast {
                     operand,
                     ty: expr.ty,
-                    kind: CastKind::Numeric,
+                    kind: if self.gcx.is_class_subtype(self.thir.exprs[*value].ty, expr.ty)
+                        || matches!((self.thir.exprs[*value].ty.kind(),expr.ty.kind()),
+                            (TyKind::Reference(from),TyKind::Reference(to)) if self.gcx.is_class_subtype(from,to)) {
+                        CastKind::ClassUpcast
+                    } else if reference_to_raw {
+                        CastKind::Pointer
+                    } else {
+                        CastKind::Numeric
+                    },
                 })
             }
             ExprKind::ExistentialTryCast { value, target } => {
-                let value_ty = self.thir.exprs[*value].ty;
-                let consuming_existential_downcast =
-                    matches!(value_ty.kind(), TyKind::BoxedExistential { .. })
-                        && !matches!(target.kind(), TyKind::BoxedExistential { .. });
-                let operand = if consuming_existential_downcast {
-                    // `existential as? Concrete` is consuming.
-                    unpack!(block = self.as_operand(block, *value))
-                } else {
-                    // Other assertions remain non-consuming reads.
-                    let place = unpack!(block = self.as_place(block, *value));
-                    Operand::Copy(place)
-                };
-                block.and(Rvalue::Cast {
-                    operand,
-                    ty: expr.ty,
-                    kind: CastKind::ExistentialTryCast { target: *target },
-                })
+                self.checked_cast_rvalue(block, *value, *target, expr.ty, expr.span)
             }
             ExprKind::ExistentialTypeIs { value, target } => {
                 // Type assertions are non-consuming reads; always copy the source place.
@@ -97,7 +146,39 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     kind: CastKind::ClosureToFnPointer,
                 })
             }
-            ExprKind::Make { .. } => unreachable!("make should be handled in into_dest"),
+            ExprKind::ClassIdentity { lhs, rhs, equal } => {
+                // Snapshot left before evaluating right: callbacks on the
+                // RHS may replace the original handle slot and release it.
+                let left = unpack!(block = self.as_temp(block, *lhs));
+                let right = unpack!(block = self.as_temp(block, *rhs));
+                let pointer_ty = crate::sema::models::Ty::new(
+                    TyKind::Pointer(self.gcx.types.uint8, crate::hir::Mutability::Immutable),
+                    self.gcx,
+                );
+                let left_pointer = self.new_temp_with_ty(pointer_ty, expr.span);
+                let right_pointer = self.new_temp_with_ty(pointer_ty, expr.span);
+                for (destination, source) in [(left_pointer, left), (right_pointer, right)] {
+                    self.push_assign(
+                        block,
+                        crate::mir::Place::from_local(destination),
+                        Rvalue::Cast {
+                            operand: Operand::Copy(crate::mir::Place::from_local(source)),
+                            ty: pointer_ty,
+                            kind: CastKind::ClassObjectOwner,
+                        },
+                        expr.span,
+                    );
+                }
+                return block.and(Rvalue::BinaryOp {
+                    op: if *equal {
+                        BinaryOperator::Eql
+                    } else {
+                        BinaryOperator::Neq
+                    },
+                    lhs: Operand::Copy(crate::mir::Place::from_local(left_pointer)),
+                    rhs: Operand::Copy(crate::mir::Place::from_local(right_pointer)),
+                });
+            }
             ExprKind::Binary { op, lhs, rhs } => {
                 let operand_ty = self.thir.exprs[*lhs].ty;
                 let lhs = unpack!(block = self.as_operand(block, *lhs));
@@ -148,14 +229,33 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                         expr.ty
                     }
                 };
+                if *count == 0 {
+                    // Evaluate once, but keep ownership in its registered
+                    // temporary: there is no array element to receive it.
+                    // Normal statement cleanup must still destroy the value.
+                    let _ = unpack!(block = self.as_temp(block, *element));
+                    return block.and(Rvalue::Aggregate {
+                        kind: AggregateKind::Array {
+                            len: 0,
+                            element: element_ty,
+                        },
+                        fields: index_vec::IndexVec::new(),
+                    });
+                }
                 let op = unpack!(block = self.as_operand(block, *element));
-
-                // Store once then copy for each slot to avoid multiple moves.
-                let tmp = self.new_temp_with_ty(element_ty, expr.span);
-                self.push_assign(block, Place::from_local(tmp), Rvalue::Use(op), expr.span);
-                let tmp_op = Operand::Copy(Place::from_local(tmp));
+                if *count == 1 {
+                    // A singleton initializes by ordinary copy/move. In
+                    // particular, it must not duplicate a NoCopy owner.
+                    return block.and(Rvalue::Aggregate {
+                        kind: AggregateKind::Array {
+                            len: 1,
+                            element: element_ty,
+                        },
+                        fields: index_vec::IndexVec::from_vec(vec![op]),
+                    });
+                }
                 block.and(Rvalue::Repeat {
-                    operand: tmp_op,
+                    operand: op,
                     count: *count,
                     element: element_ty,
                 })
@@ -205,6 +305,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         lhs: Operand<'ctx>,
         rhs: Operand<'ctx>,
     ) -> BlockAnd<Rvalue<'ctx>> {
+        let operand_ty = crate::sema::tycheck::utils::normalize_aliases(self.gcx, operand_ty);
         if self.should_check_overflow(op, operand_ty) {
             return self.build_overflow_checked_op(block, op, operand_ty, span, lhs, rhs);
         }
@@ -213,7 +314,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
     /// Whether `op` on `operand_ty` must be lowered through a checked
     /// arithmetic intrinsic instead of a plain `BinaryOp`.
-    fn should_check_overflow(&self, op: BinaryOperator, operand_ty: Ty<'ctx>) -> bool {
+    pub(super) fn should_check_overflow(&self, op: BinaryOperator, operand_ty: Ty<'ctx>) -> bool {
         self.gcx.config.overflow_checks
             && matches!(
                 op,
@@ -288,7 +389,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     value: ConstantKind::Function(intrinsic_id, generic_args, intrinsic_ty),
                 }),
                 args,
-                devirt_hint: None,
                 destination: Place::from_local(dest),
                 target,
                 unwind,

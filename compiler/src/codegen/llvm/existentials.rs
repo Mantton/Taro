@@ -12,23 +12,64 @@ use inkwell::{
 };
 
 impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
-    pub(super) fn lower_existential_pack(
+    /// Return the traced payload address under the exact-type check.
+    pub(super) fn emit_erased_payload_reference(
         &mut self,
-        concrete: Ty<'gcx>,
-        to_ty: Ty<'gcx>,
-        data_ptr: PointerValue<'llvm>,
-    ) -> CompileResult<BasicValueEnum<'llvm>> {
-        let concrete = self.mono_ty_if_resolved(concrete);
-        let to_ty = self.mono_ty_if_resolved(to_ty);
-        let TyKind::BoxedExistential { interfaces } = to_ty.kind() else {
-            return Ok(data_ptr.as_basic_value_enum());
-        };
-        let metadata_ptr = self.type_metadata_ptr(concrete);
-        let mut table_ptrs = Vec::with_capacity(interfaces.len());
-        for interface in interfaces.iter().cloned() {
-            table_ptrs.push(self.witness_table_ptr(concrete, interface));
+        instance: crate::specialize::Instance<'gcx>,
+    ) -> CompileResult<()> {
+        let (function, abi) = self.instance_function_with_abi(instance);
+        assert!(
+            function.count_params() == 1
+                && matches!(abi.args[0].mode, super::abi::PassMode::Direct)
+                && matches!(abi.ret.mode, super::abi::PassMode::Direct),
+            "exact-payload reference ABI"
+        );
+        let builder = self.context.create_builder();
+        builder.position_at_end(self.context.append_basic_block(function, "erased_payload"));
+        let input = function.get_nth_param(0).unwrap();
+        let address = input.into_pointer_value();
+        {
+            // A traced payload is ordinary value storage of its erased header.
+            // Its interior address keeps the payload allocation alive.
+            let pointer = self.context.ptr_type(AddressSpace::default());
+            let data = builder
+                .build_load(pointer, address, "payload_address")
+                .unwrap();
+            builder.build_return(Some(&data)).unwrap();
+            return Ok(());
         }
-        Ok(self.build_existential_value(to_ty, data_ptr, metadata_ptr, &table_ptrs))
+    }
+
+    /// Box a concrete value in traced storage with its immutable metadata.
+    fn box_value(
+        &mut self,
+        ty: Ty<'gcx>,
+        value: BasicValueEnum<'llvm>,
+    ) -> (PointerValue<'llvm>, PointerValue<'llvm>) {
+        let ty = self.mono_ty_if_resolved(ty);
+        let metadata = self.type_metadata_ptr(ty);
+        {
+            let data = self.box_gc_value(ty, value, metadata, true);
+            return (data, metadata);
+        }
+    }
+
+    /// A GC Self result has the receiver's exact concrete type, so it reuses
+    /// that immutable metadata rather than a per-value owner record.
+    pub(super) fn existential_from_gc_payload(
+        &mut self,
+        ty: Ty<'gcx>,
+        data: PointerValue<'llvm>,
+        metadata: PointerValue<'llvm>,
+    ) -> BasicValueEnum<'llvm> {
+        let TyKind::BoxedExistential { interfaces } = ty.kind() else {
+            panic!("erased Self output must be an existential")
+        };
+        let tables: Vec<_> = interfaces
+            .iter()
+            .map(|interface| self.lookup_witness_table_from_metadata(metadata, *interface))
+            .collect();
+        self.build_existential_value(ty, data, metadata, &tables)
     }
 
     pub(super) fn lower_boxed_existential(
@@ -51,8 +92,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return self.lower_existential_upcast(from_ty, to_ty, value);
         }
 
-        let data_ptr = self.box_value(from_ty, value)?;
-        let metadata_ptr = self.type_metadata_ptr(from_ty);
+        let (data_ptr, metadata_ptr) = self.box_value(from_ty, value);
         let mut table_ptrs = Vec::with_capacity(interfaces.len());
         for iface in interfaces.iter().cloned() {
             let ptr = self.witness_table_ptr(from_ty, iface);
@@ -213,7 +253,22 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .unwrap()
     }
 
-    fn lookup_witness_table_from_metadata(
+    fn metadata_identity(&self, metadata: PointerValue<'llvm>) -> PointerValue<'llvm> {
+        let slot = self
+            .builder
+            .build_struct_gep(self.rt_type_metadata_ty, metadata, 2, "type_identity_slot")
+            .unwrap();
+        self.builder
+            .build_load(
+                self.context.ptr_type(AddressSpace::default()),
+                slot,
+                "type_identity",
+            )
+            .unwrap()
+            .into_pointer_value()
+    }
+
+    pub(super) fn lookup_witness_table_from_metadata(
         &mut self,
         metadata_ptr: PointerValue<'llvm>,
         target: InterfaceReference<'gcx>,
@@ -291,7 +346,32 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         target_ty: Ty<'gcx>,
         value: BasicValueEnum<'llvm>,
     ) -> CompileResult<BasicValueEnum<'llvm>> {
+        // Runtime identities describe concrete specializations, never the
+        // declaration's generic parameter coordinates.
+        let target_ty = self.mono_ty(target_ty);
         let (from_ty, value) = self.normalize_cast_source_existential_ref(from_ty, value)?;
+        if self.gcx.is_class_type(from_ty) && self.gcx.is_class_type(target_ty) {
+            let owner = self
+                .builder
+                .build_extract_value(value.into_struct_value(), 0, "class_cast_owner")
+                .unwrap();
+            let ptr = self.context.ptr_type(AddressSpace::default());
+            let check = self.get_or_add_external_function(
+                "__gc__class_is_a",
+                self.context
+                    .bool_type()
+                    .fn_type(&[ptr.into(), ptr.into()], false),
+            );
+            let call = self
+                .builder
+                .build_call(
+                    check,
+                    &[owner.into(), self.class_identity(target_ty).into()],
+                    "class_is_a",
+                )
+                .unwrap();
+            return Ok(call.try_as_basic_value().basic().unwrap());
+        }
         let success = match (from_ty.kind(), target_ty.kind()) {
             (
                 TyKind::BoxedExistential {
@@ -318,7 +398,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .unwrap()
                     .into_pointer_value();
                 let to_meta = self.type_metadata_ptr(target_ty);
-                self.pointer_eq(from_meta, to_meta, "exist_type_is_concrete")
+                self.pointer_eq(
+                    self.metadata_identity(from_meta),
+                    self.metadata_identity(to_meta),
+                    "exist_type_is_concrete",
+                )
             }
             (
                 _,
@@ -346,23 +430,19 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         Ok(success.as_basic_value_enum())
     }
 
-    fn normalize_cast_source_existential_ref(
+    pub(super) fn normalize_cast_source_existential_ref(
         &mut self,
         from_ty: Ty<'gcx>,
         value: BasicValueEnum<'llvm>,
     ) -> CompileResult<(Ty<'gcx>, BasicValueEnum<'llvm>)> {
-        let TyKind::Reference(inner, _) = from_ty.kind() else {
+        let TyKind::Reference(inner) = from_ty.kind() else {
             return Ok((from_ty, value));
         };
         let TyKind::BoxedExistential { .. } = inner.kind() else {
             return Ok((from_ty, value));
         };
 
-        let BasicValueEnum::PointerValue(ptr) = value else {
-            // Some MIR paths already evaluate the operand to the underlying existential
-            // value even though the static source type here is `&any ...`.
-            return Ok((inner, value));
-        };
+        let ptr = self.reference_data(value);
         let Some(inner_llvm_ty) = self.lower_ty(inner) else {
             return Ok((from_ty, value));
         };
@@ -373,7 +453,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         Ok((inner, loaded))
     }
 
-    fn optional_variant_indices(
+    pub(super) fn optional_variant_indices(
         &self,
         optional_ty: Ty<'gcx>,
     ) -> Option<(
@@ -407,7 +487,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         Some((some_index, none_index, def, args))
     }
 
-    fn build_optional_variant_value(
+    pub(super) fn build_optional_variant_value(
         &mut self,
         optional_ty: Ty<'gcx>,
         variant_index: usize,
@@ -509,6 +589,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         result_ty: Ty<'gcx>,
         value: BasicValueEnum<'llvm>,
     ) -> CompileResult<BasicValueEnum<'llvm>> {
+        let target_ty = self.mono_ty(target_ty);
+        let result_ty = self.mono_ty(result_ty);
         let (from_ty, value) = self.normalize_cast_source_existential_ref(from_ty, value)?;
         let Some((some_index, none_index, _, _)) = self.optional_variant_indices(result_ty) else {
             panic!(
@@ -517,6 +599,17 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             );
         };
 
+        if self.gcx.is_class_type(from_ty) && self.gcx.is_class_type(target_ty) {
+            let success = self
+                .lower_existential_type_is(from_ty, target_ty, value)?
+                .into_int_value();
+            let some = self.build_optional_variant_value(result_ty, some_index, Some(value))?;
+            let none = self.build_optional_variant_value(result_ty, none_index, None)?;
+            return Ok(self
+                .builder
+                .build_select(success, some, none, "class_checked_cast")
+                .unwrap());
+        }
         match (from_ty.kind(), target_ty.kind()) {
             (
                 TyKind::BoxedExistential {
@@ -558,8 +651,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     table_ptrs.push(ptr);
                 }
 
-                let data_ptr = self.box_value(from_ty, value)?;
-                let metadata_ptr = self.type_metadata_ptr(from_ty);
+                let (data_ptr, metadata_ptr) = self.box_value(from_ty, value);
                 let projected =
                     self.build_existential_value(target_ty, data_ptr, metadata_ptr, &table_ptrs);
                 self.build_optional_variant_value(result_ty, some_index, Some(projected))
@@ -572,7 +664,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .unwrap()
                     .into_pointer_value();
                 let to_meta = self.type_metadata_ptr(target_ty);
-                let success = self.pointer_eq(from_meta, to_meta, "exist_try_cast_concrete_eq");
+                let success = self.pointer_eq(
+                    self.metadata_identity(from_meta),
+                    self.metadata_identity(to_meta),
+                    "exist_try_cast_concrete_eq",
+                );
 
                 let Some(result_llvm_ty) = self.lower_ty(result_ty) else {
                     panic!(
@@ -600,16 +696,22 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .unwrap();
 
                 self.builder.position_at_end(then_bb);
-                let data_ptr = self
-                    .builder
-                    .build_extract_value(src, 0, "exist_data")
-                    .unwrap()
-                    .into_pointer_value();
+                let data_ptr = {
+                    self.builder
+                        .build_extract_value(src, 0, "exist_data")
+                        .unwrap()
+                        .into_pointer_value()
+                };
                 let payload_ty = self.lower_ty(target_ty).expect("downcast target type");
-                let payload = self
+                let mut payload = self
                     .builder
                     .build_load(payload_ty, data_ptr, "exist_downcast_load")
                     .unwrap();
+                // The source header keeps its payload; the result is an
+                // ordinary copy with independent nested erased storage.
+                {
+                    payload = self.copy_gc_value(target_ty, payload);
+                }
                 let some_value =
                     self.build_optional_variant_value(result_ty, some_index, Some(payload))?;
                 let _ = self.builder.build_store(tmp_ptr, some_value).unwrap();

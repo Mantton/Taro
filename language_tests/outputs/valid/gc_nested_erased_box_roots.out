@@ -1,0 +1,1 @@
+PASS: nested erased payloads keep their fresh outer box live

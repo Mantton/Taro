@@ -1,0 +1,39 @@
+import std::ops::{Fn, AsyncFn}
+import std::result::Result
+
+/// Routers and middleware implement the same async request-to-response contract.
+/// Request metadata can be retained through GC. Its body is a consumable stream
+/// and is closed after the response exchange, including errors and cancellation.
+public interface Handler {
+    public func handle(_ request: &Request) async -> Result[Response, Error]
+}
+
+public struct AsyncHandler[F: AsyncFn(&Request) -> Result[Response, Error]] { callback: F }
+conform[F: AsyncFn(&Request) -> Result[Response, Error]] AsyncHandler[F] to Handler {
+    public func handle(_ request: &Request) async -> Result[Response, Error] {
+        callback := self.callback
+        return await callback(request)
+    }
+}
+public struct SyncHandler[F: Fn(&Request) -> Result[Response, Error]] { callback: F }
+conform[F: Fn(&Request) -> Result[Response, Error]] SyncHandler[F] to Handler {
+    public func handle(_ request: &Request) async -> Result[Response, Error] {
+        return self.callback(request)
+    }
+}
+/// Adapt an async function to a Handler for storage or middleware composition.
+public func handler[F: AsyncFn(&Request) -> Result[Response, Error]](_ callback: F) -> AsyncHandler[F] {
+    AsyncHandler[F] { callback }
+}
+/// Adapt an ordinary function. It runs on the executor; blocking work belongs
+/// in task.blocking, and CPU-heavy work should be scheduled deliberately.
+public func syncHandler[F: Fn(&Request) -> Result[Response, Error]](_ callback: F) -> SyncHandler[F] {
+    SyncHandler[F] { callback }
+}
+
+/// One client exchange. Wrappers can implement authentication, recording or
+/// test transports independently of the default HTTP/TLS backend. Request bodies
+/// are consumed once; retries require a newly constructed body.
+public interface Transport {
+    public func roundTrip(_ request: &Request) async -> Result[Response, Error]
+}

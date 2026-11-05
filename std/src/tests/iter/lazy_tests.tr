@@ -1,0 +1,164 @@
+import std::collections::{List, Dictionary, Set, Counter}
+import std::iter::{Iterator, fromIterator}
+
+@test
+func eagerTransformsRunBeforeReturning() {
+    var calls: int32 = 0
+    var source: List[int32] = [1, 2, 3]
+    mapped := source.map((value: int32) => { calls += 1; value * 2 })
+    std::testing::assertTrue(calls == 3 && mapped[2] == 6, "map runs now")
+    filtered := mapped.filter((value: int32) => { calls += 1; value > 2 })
+    std::testing::assertTrue(calls == 6 && filtered.len() == 2 && filtered[0] == 4, "filter runs now")
+    source[0] = 99
+    std::testing::assertTrue(mapped[0] == 2, "eager output stores its own values")
+    var freeCalls: int32 = 0
+    free := std::iter::map(source, (value: int32) => { freeCalls += 1; value })
+    selected := std::iter::filter(free, (value: int32) => { freeCalls += 1; value > 2 })
+    std::testing::assertTrue(freeCalls == 6 && selected.len() == 2, "free helpers are also eager")
+}
+
+@test
+func lazyTraversalRestartsWithoutCaching() {
+    var calls: int32 = 0
+    var values: List[int32] = [1, 2, 3]
+    pipeline := values.lazy().filter((value: int32) => value > 1).map((value: int32) => {
+        calls += 1
+        value * 2
+    })
+    std::testing::assertTrue(calls == 0, "pipeline construction defers callbacks")
+    first := pipeline.collect()
+    second := pipeline.collect()
+    std::testing::assertTrue(calls == 4 && first[0] == 4 && second[1] == 6, "collect traverses again")
+    first[0] = 99
+    std::testing::assertTrue(second[0] == 4, "each collect allocates independent outer storage")
+    std::testing::assertTrue(pipeline.reduce((a: int32, b: int32) => a + b).unwrap() == 10, "terminals traverse")
+    std::testing::assertTrue(calls == 6, "reduce reruns callbacks")
+}
+
+@test
+func lazySourceKeepsSelectedHandleAndReadsCurrentCaptures() {
+    var source: List[int32] = [1, 2]
+    alias := source
+    var amount: int32 = 1
+    pipeline := source.lazy().map((value: int32) => value + amount)
+    alias[0] = 10
+    alias.append(3)
+    source = [90]
+    amount = 5
+    result := pipeline.collect()
+    std::testing::assertTrue(result.len() == 3 && result[0] == 15 && result[2] == 8, "selected handle, late callback captures")
+    amount = 6
+    std::testing::assertTrue(pipeline.collect()[0] == 16, "captures are read on every traversal")
+}
+
+@test
+func copiedLazySourceHasIndependentOuterStorage() {
+    var source: List[int32] = [1, 2]
+    pipeline := source.copy().lazy()
+    source[0] = 9
+    source.append(3)
+    result := pipeline.collect()
+    std::testing::assertTrue(result.len() == 2 && result[0] == 1, "copy explicitly snapshots outer storage")
+}
+
+@test
+func lazyArrayCopiesAndSpanShares() {
+    var array: [int32; 2] = [1, 2]
+    copied := array.lazy()
+    shared := array.asSpan().lazy()
+    array[0] = 7
+    std::testing::assertTrue(copied.collect()[0] == 1, "inline array copied when pipeline is created")
+    std::testing::assertTrue(shared.collect()[0] == 7, "explicit span shares array storage")
+}
+
+func pipelineFromCursor[I: Iterator](_ cursor: I) -> std::iter::Lazy[I::Element, std::iter::IteratorSequence[I]] {
+    fromIterator(cursor).lazy()
+}
+
+@test
+func iteratorPipelinesKeepSharedSinglePassProgress() {
+    var source: List[int32] = [1, 2, 3]
+    cursor := source.iter()
+    pipeline := pipelineFromCursor(cursor).map((value: int32) => value * 2)
+    std::testing::assertTrue(cursor.next().unwrap() == 1, "cursor aliases share progress")
+    result := pipeline.collect()
+    std::testing::assertTrue(result.len() == 2 && result[0] == 4 && result[1] == 6, "pipeline continues existing cursor")
+    std::testing::assertTrue(pipeline.collect().isEmpty(), "iterator source is not made restartable")
+    source.append(4)
+    std::testing::assertTrue(pipeline.collect().isEmpty(), "exhaustion remains permanent")
+}
+
+@test
+func collectionPipelineCreatesIndependentCursors() {
+    var values: List[int32] = [1, 2]
+    pipeline := values.lazy().map((value: int32) => value)
+    a := pipeline.iter()
+    b := pipeline.iter()
+    alias := a
+    std::testing::assertTrue(a.next().unwrap() == 1 && b.next().unwrap() == 1, "independent traversals")
+    values[1] = 8
+    std::testing::assertTrue(alias.next().unwrap() == 8, "adapter aliases share progress and upcoming reads see replacements")
+    std::testing::assertTrue(a.next().isNone() && b.next().unwrap() == 8, "cursor progress remains independent")
+}
+
+@test
+@expectPanic
+func lazyListCursorRejectsStructuralMutation() {
+    var values: List[int32] = [1, 2]
+    cursor := values.lazy().map((value: int32) => value).iter()
+    var _ = cursor.next()
+    values.append(3)
+    var _ = cursor.next()
+}
+
+struct FilterValue { value: int32 }
+final class FilterHandle { value: int32 }
+extend FilterHandle { init(_ value: int32) { self.value = value } }
+
+@test
+func filterPredicatesReceiveOrdinaryValues() {
+    var values: List[FilterValue] = [FilterValue { value: 1 }]
+    selected := values.filter((value: FilterValue) => { var copy = value; copy.value = 9; true })
+    std::testing::assertTrue(values[0].value == 1 && selected[0].value == 1, "inline predicate edits are local copies")
+    var handles: List[FilterHandle] = [FilterHandle(1)]
+    shared := handles.lazy().filter((value: FilterHandle) => { value.value += 1; true }).collect()
+    std::testing::assertTrue(handles[0].value == 2 && shared[0].value == 2, "class predicate edits reach shared object")
+}
+
+@test
+func transformsRetainReferenceResults() {
+    var value: int32 = 3
+    var source: List[int32] = [1]
+    result := source.lazy().map((item: int32) => &value).collect()
+    value = 7
+    std::testing::assertTrue(*result[0] == 7, "reference result follows ordinary GC reference semantics")
+}
+
+@test
+func standardCursorTransformsAreUniform() {
+    var list: List[int32] = [1, 2]
+    var array: [int32; 2] = [1, 2]
+    std::testing::assertTrue(list.iter().map((x: int32) => x + 1)[0] == 2, "list cursor")
+    std::testing::assertTrue(array.iter().filter((x: int32) => x > 1)[0] == 2, "array cursor")
+    std::testing::assertTrue(list.asSpan().iter().map((x: int32) => x + 1)[0] == 2, "span cursor")
+    std::testing::assertTrue((1_i32..3_i32).iter().map((x: int32) => x)[1] == 2, "range cursor")
+    std::testing::assertTrue((1_i32..=2_i32).iter().map((x: int32) => x)[1] == 2, "closed range cursor")
+    var dictionary = Dictionary[int32, int32]::new()
+    dictionary[1] = 2
+    std::testing::assertTrue(dictionary.values().map((x: int32) => x + 1)[0] == 3, "dictionary cursor")
+    var set = Set[int32]::new()
+    var _ = set.insert(1)
+    std::testing::assertTrue(set.iter().map((x: int32) => x + 1)[0] == 2, "set cursor")
+    var counter = Counter[int32]::new()
+    counter.set(key: 1, count: 2)
+    std::testing::assertTrue(counter.iter().map((pair: (int32, int32)) => { var (_, count) = pair; count })[0] == 2, "counter cursor")
+}
+
+@test
+func emptyPipelinesNeverInvokeCallbacks() {
+    var source = List[int32]::new()
+    var calls: int32 = 0
+    pipeline := source.lazy().map((value: int32) => { calls += 1; value })
+    std::testing::assertTrue(pipeline.collect().isEmpty() && pipeline.count() == 0 && calls == 0, "empty traversals")
+    std::testing::assertTrue(source.map((value: int32) => { calls += 1; value }).isEmpty() && calls == 0, "empty eager map")
+}

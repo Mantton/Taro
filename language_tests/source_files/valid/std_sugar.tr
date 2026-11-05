@@ -1,6 +1,6 @@
 // CHECK_ONLY
 
-import std.collections.List
+import std::collections::List
 
 struct Inner {
     value: int32
@@ -12,23 +12,23 @@ struct Outer {
 
 func stdSugarCompileCoverage() {
     // Optional type + chaining + default
-    let outer = Outer { inner: Inner { value: 7 } }
-    let maybe_outer: Outer? = .some(outer)
-    let maybe_value = maybe_outer?.inner.value
-    let value = maybe_value ?? 0
+    outer := Outer { inner: Inner { value: 7 } }
+    var maybe_outer: Outer? = .some(outer)
+    maybe_value := maybe_outer?.inner.value
+    value := maybe_value ?? 0
 
     // Ternary
-    let selected = value > 0 ? value : 1
-    let _ = selected
+    selected := value > 0 ? value : 1
+    var _ = selected
 
-    // Optional pattern binding (`if let`)
-    let maybe_number: int32? = .some(3)
-    if let n = maybe_number {
-        let _ = n
+    // Optional pattern binding (`if var`)
+    var maybe_number: int32? = .some(3)
+    if var n = maybe_number {
+        var _ = n
     }
 
     // List type sugar + for-loop + range/closed-range sugar
-    var numbers: [int32] = List()
+    var numbers: [int32] = List::new()
     for i in 1_i32..=3_i32 {
         numbers.append(i)
     }
@@ -37,20 +37,20 @@ func stdSugarCompileCoverage() {
     for n in numbers {
         sum += n
     }
-    let _ = sum
+    var _ = sum
 
     // Dictionary type sugar + literal sugar
-    let seeded: [int32: string] = [1: "one", 2: "two"]
+    var seeded: [int32: string] = [1: "one", 2: "two"]
     var empty: [int32: string] = [:]
-    let _ = empty.insert(key: 3, value: "three")
-    let _ = seeded.contains(&1)
+    var _ = empty.insert(key: 3, value: "three")
+    var _ = seeded.contains(&1)
 
     // Half-open range sugar
     var count: int32 = 0
     for _ in 0_i32..3_i32 {
         count += 1
     }
-    let _ = count
+    var _ = count
 }
 
 func main() {

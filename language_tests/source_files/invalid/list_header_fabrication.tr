@@ -1,0 +1,8 @@
+import std::collections::List
+
+func forge(_ pointer: *mut uint8) {
+    var values: List[int32] = List[int32] { storage: pointer }
+    var value: int32 = *values.at(0)
+}
+
+func main() {}

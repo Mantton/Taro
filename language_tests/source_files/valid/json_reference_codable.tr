@@ -1,0 +1,44 @@
+// TEST
+import std::encoding::Codable
+
+struct ReferencedRecord: Codable {
+    name: string
+    count: &int32
+}
+
+struct ReferencePair: Codable {
+    left: &ReferencedRecord
+    right: &ReferencedRecord
+    absent: (&ReferencedRecord)?
+}
+
+@test
+func referencesEncodePointeesAndDecodeFreshGcStorage() {
+    var count: int32 = 7
+    var record = ReferencedRecord { name: "Ada", count: &count }
+    pair := ReferencePair { left: &record, right: &record, absent: .none }
+    text := std::json::encode(&pair).unwrap()
+    assert(text == "{\"left\":{\"name\":\"Ada\",\"count\":7},\"right\":{\"name\":\"Ada\",\"count\":7},\"absent\":null}", "references have no address markers")
+    decoded := std::json::decode[ReferencePair](text).unwrap()
+    std::runtime::collect()
+    assert(decoded.left.name == "Ada" && *decoded.left.count == 7, "escaping decoded references survive GC")
+    *decoded.left.count = 9
+    decoded.left.name = "changed"
+    assert(*decoded.right.count == 7 && decoded.right.name == "Ada", "decoding does not recreate shared identity")
+    assert(count == 7 && record.name == "Ada", "decoded references do not point back to input values")
+    assert(decoded.absent.isNone(), "optional reference handles null")
+}
+
+@test
+func nestedReferencesAndOptionalPointees() {
+    var value: int32 = 42
+    var inner: &int32 = &value
+    var outer: &&int32 = &inner
+    assert(std::json::encode(&outer).unwrap() == "42", "nested references encode their final pointee")
+    decoded := std::json::decode[&&int32]("42").unwrap()
+    std::runtime::collect()
+    assert(**decoded == 42, "each decoded reference owns escaping storage")
+    optional := std::json::decode[&(int32?)]("null").unwrap()
+    assert((*optional).isNone(), "a reference may contain an optional none")
+    assert(std::json::decode[&int32]("null").isErr(), "nonoptional scalar references reject null")
+}

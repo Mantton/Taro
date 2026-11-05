@@ -1,0 +1,4 @@
+error: cannot add inherent methods to type from another package without interface conformance
+ -> language_tests/source_files/invalid/foreign_initializer_extension.tr:1:7
+	extend List[int32] {
+	       ^^^^^^^^^^^

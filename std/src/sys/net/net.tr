@@ -1,50 +1,49 @@
-import std.io.Error
-import std.libc
-import std.marker.Copy
-import std.mem.sizeOf
-import std.ops.PartialEq
-import std.panic.todo
-import std.result.Result
+import std::io::Error
+import std::libc
+import std::mem::sizeOf
+import std::ops::PartialEq
+import std::panic::todo
+import std::result::Result
 
-public struct RawSocket: Copy {
-    fd: int32
+public struct RawSocket {
+    internal fd: int32
 }
 
-public enum IpAddress: Copy, PartialEq {
+public enum IpAddress: PartialEq {
     case ipv4([uint8; 4])
     case ipv6([uint8; 16])
 }
 
-public struct SocketAddress: Copy, PartialEq {
+public struct SocketAddress: PartialEq {
     ip: IpAddress
     port: uint16
 }
 
-public enum SocketDomain: Copy {
+public enum SocketDomain {
     case ipv4
     case ipv6
 }
 
-public enum SocketType: Copy {
+public enum SocketType {
     case stream
     case datagram
 }
 
 const SOCKET_ADDRESS_STORAGE_LEN: usize = 28
-const SOCKADDR_V4_LEN: std.libc.socklen_t = 16_u32
-const SOCKADDR_V6_LEN: std.libc.socklen_t = 28_u32
+const SOCKADDR_V4_LEN: std::libc::socklen_t = 16_u32
+const SOCKADDR_V6_LEN: std::libc::socklen_t = 28_u32
 
-impl SocketAddress {
-    public func localhost(_ port: uint16) -> SocketAddress {
-        SocketAddress { ip: IpAddress.ipv4([127_u8, 0_u8, 0_u8, 1_u8]), port }
+extend SocketAddress {
+    public static func localhost(_ port: uint16) -> SocketAddress {
+        SocketAddress { ip: IpAddress::ipv4([127_u8, 0_u8, 0_u8, 1_u8]), port }
     }
 
-    public func unspecified(_ port: uint16) -> SocketAddress {
-        SocketAddress { ip: IpAddress.ipv4([0_u8, 0_u8, 0_u8, 0_u8]), port }
+    public static func unspecified(_ port: uint16) -> SocketAddress {
+        SocketAddress { ip: IpAddress::ipv4([0_u8, 0_u8, 0_u8, 0_u8]), port }
     }
 
-    public func ipv4(_ a: uint8, _ b: uint8, _ c: uint8, _ d: uint8, _ port: uint16) -> SocketAddress {
-        SocketAddress { ip: IpAddress.ipv4([a, b, c, d]), port }
+    public static func ipv4(_ a: uint8, _ b: uint8, _ c: uint8, _ d: uint8, _ port: uint16) -> SocketAddress {
+        SocketAddress { ip: IpAddress::ipv4([a, b, c, d]), port }
     }
 }
 
@@ -57,17 +56,17 @@ public func domainForAddress(_ address: SocketAddress) -> SocketDomain {
 
 @cfg(family("unix"))
 public func socket(_ domain: SocketDomain, _ type_: SocketType) -> Result[RawSocket, Error] {
-    let fd = std.libc.socket(socketDomainValue(domain), socketTypeValue(type_), 0)
+    fd := std::libc::socket(socketDomainValue(domain), socketTypeValue(type_), 0)
     if fd < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("create socket"))
+        return .err(std::sys::io::unix::lastError().withOperation("create socket"))
     }
 
-    let socket = RawSocket { fd }
-    let cloexecRes = setCloseOnExecFd(fd)
+    socket := RawSocket { fd }
+    cloexecRes := setCloseOnExecFd(fd)
     match cloexecRes {
         case .ok(_) => return .ok(socket)
         case .err(err) => {
-            let _ = std.libc.close(fd)
+            var _ = std::libc::close(fd)
             return .err(err)
         }
     }
@@ -80,11 +79,11 @@ public func socket(_ domain: SocketDomain, _ type_: SocketType) -> Result[RawSoc
 
 @cfg(family("unix"))
 public func bind(_ socket: &RawSocket, _ address: SocketAddress) -> Result[(), Error] {
-    let (storage, len) = encodeSocketAddress(address)
-    let ptr = unsafe { (&storage as *const [uint8; SOCKET_ADDRESS_STORAGE_LEN]) as *const uint8 }
-    let res = std.libc.bind(socket.fd, ptr, len)
+    var (storage, len) = encodeSocketAddress(address)
+    ptr := unsafe { (&storage as *const [uint8; SOCKET_ADDRESS_STORAGE_LEN]) as *const uint8 }
+    res := unsafe { std::libc::bind(socket.fd, ptr, len) }
     if res < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("bind"))
+        return .err(std::sys::io::unix::lastError().withOperation("bind"))
     }
     return .ok(())
 }
@@ -96,9 +95,9 @@ public func bind(_ socket: &RawSocket, _ address: SocketAddress) -> Result[(), E
 
 @cfg(family("unix"))
 public func listen(_ socket: &RawSocket, _ backlog: int32) -> Result[(), Error] {
-    let res = std.libc.listen(socket.fd, backlog)
+    res := std::libc::listen(socket.fd, backlog)
     if res < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("listen"))
+        return .err(std::sys::io::unix::lastError().withOperation("listen"))
     }
     return .ok(())
 }
@@ -110,11 +109,11 @@ public func listen(_ socket: &RawSocket, _ backlog: int32) -> Result[(), Error] 
 
 @cfg(family("unix"))
 public func connect(_ socket: &RawSocket, _ address: SocketAddress) -> Result[(), Error] {
-    let (storage, len) = encodeSocketAddress(address)
-    let ptr = unsafe { (&storage as *const [uint8; SOCKET_ADDRESS_STORAGE_LEN]) as *const uint8 }
-    let res = std.libc.connect(socket.fd, ptr, len)
+    var (storage, len) = encodeSocketAddress(address)
+    ptr := unsafe { (&storage as *const [uint8; SOCKET_ADDRESS_STORAGE_LEN]) as *const uint8 }
+    res := unsafe { std::libc::connect(socket.fd, ptr, len) }
     if res < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("connect"))
+        return .err(std::sys::io::unix::lastError().withOperation("connect"))
     }
     return .ok(())
 }
@@ -127,28 +126,28 @@ public func connect(_ socket: &RawSocket, _ address: SocketAddress) -> Result[()
 @cfg(family("unix"))
 public func accept(_ socket: &RawSocket) -> Result[(RawSocket, SocketAddress), Error] {
     var storage: [uint8; SOCKET_ADDRESS_STORAGE_LEN] = [0; SOCKET_ADDRESS_STORAGE_LEN]
-    var len: std.libc.socklen_t = SOCKET_ADDRESS_STORAGE_LEN as std.libc.socklen_t
-    let ptr = unsafe { (&mut storage as *mut [uint8; SOCKET_ADDRESS_STORAGE_LEN]) as *mut uint8 }
-    let lenPtr = unsafe { (&mut len as *mut std.libc.socklen_t) }
-    let childFd = std.libc.accept(socket.fd, ptr, lenPtr)
+    var len: std::libc::socklen_t = SOCKET_ADDRESS_STORAGE_LEN as std::libc::socklen_t
+    ptr := unsafe { (&storage as *mut [uint8; SOCKET_ADDRESS_STORAGE_LEN]) as *mut uint8 }
+    lenPtr := unsafe { (&len as *mut std::libc::socklen_t) }
+    childFd := unsafe { std::libc::accept(socket.fd, ptr, lenPtr) }
     if childFd < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("accept"))
+        return .err(std::sys::io::unix::lastError().withOperation("accept"))
     }
 
-    let cloexecRes = setCloseOnExecFd(childFd)
+    cloexecRes := setCloseOnExecFd(childFd)
     match cloexecRes {
         case .ok(_) => {}
         case .err(err) => {
-            let _ = std.libc.close(childFd)
+            var _ = std::libc::close(childFd)
             return .err(err)
         }
     }
 
-    let addressRes = decodeSocketAddress(storage, len)
-    let address = match addressRes {
+    addressRes := decodeSocketAddress(storage, len)
+    address := match addressRes {
         case .ok(value) => value
         case .err(err) => {
-            let _ = std.libc.close(childFd)
+            var _ = std::libc::close(childFd)
             return .err(err)
         }
     }
@@ -162,29 +161,29 @@ public func accept(_ socket: &RawSocket) -> Result[(RawSocket, SocketAddress), E
 }
 
 @cfg(family("unix"))
-public func close(_ socket: &mut RawSocket) -> Result[(), Error] {
+public func close(_ socket: &RawSocket) -> Result[(), Error] {
     if socket.fd < 0 {
         return .ok(())
     }
 
-    let res = std.libc.close(socket.fd)
+    res := std::libc::close(socket.fd)
     if res < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("close socket"))
+        return .err(std::sys::io::unix::lastError().withOperation("close socket"))
     }
     socket.fd = -1
     return .ok(())
 }
 
 @cfg(family("windows"))
-public func close(_ socket: &mut RawSocket) -> Result[(), Error] {
+public func close(_ socket: &RawSocket) -> Result[(), Error] {
     todo("std.sys.net.close not implemented on windows yet")
 }
 
 @cfg(family("unix"))
 public func read(_ socket: &RawSocket, _ buf: *mut uint8, _ len: usize) -> Result[usize, Error] {
-    let res = std.libc.read(socket.fd, buf, len)
+    res := unsafe { std::libc::read(socket.fd, buf, len) }
     if res < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("read socket"))
+        return .err(std::sys::io::unix::lastError().withOperation("read socket"))
     }
     return .ok(res as usize)
 }
@@ -196,9 +195,9 @@ public func read(_ socket: &RawSocket, _ buf: *mut uint8, _ len: usize) -> Resul
 
 @cfg(family("unix"))
 public func write(_ socket: &RawSocket, _ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
-    let res = std.libc.write(socket.fd, buf, len)
+    res := unsafe { std::libc::write(socket.fd, buf, len) }
     if res < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("write socket"))
+        return .err(std::sys::io::unix::lastError().withOperation("write socket"))
     }
     return .ok(res as usize)
 }
@@ -211,12 +210,12 @@ public func write(_ socket: &RawSocket, _ buf: *const uint8, _ len: usize) -> Re
 @cfg(family("unix"))
 public func localAddress(_ socket: &RawSocket) -> Result[SocketAddress, Error] {
     var storage: [uint8; SOCKET_ADDRESS_STORAGE_LEN] = [0; SOCKET_ADDRESS_STORAGE_LEN]
-    var len: std.libc.socklen_t = SOCKET_ADDRESS_STORAGE_LEN as std.libc.socklen_t
-    let ptr = unsafe { (&mut storage as *mut [uint8; SOCKET_ADDRESS_STORAGE_LEN]) as *mut uint8 }
-    let lenPtr = unsafe { (&mut len as *mut std.libc.socklen_t) }
-    let res = std.libc.getsockname(socket.fd, ptr, lenPtr)
+    var len: std::libc::socklen_t = SOCKET_ADDRESS_STORAGE_LEN as std::libc::socklen_t
+    ptr := unsafe { (&storage as *mut [uint8; SOCKET_ADDRESS_STORAGE_LEN]) as *mut uint8 }
+    lenPtr := unsafe { (&len as *mut std::libc::socklen_t) }
+    res := unsafe { std::libc::getsockname(socket.fd, ptr, lenPtr) }
     if res < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("get local address"))
+        return .err(std::sys::io::unix::lastError().withOperation("get local address"))
     }
     return decodeSocketAddress(storage, len)
 }
@@ -229,12 +228,12 @@ public func localAddress(_ socket: &RawSocket) -> Result[SocketAddress, Error] {
 @cfg(family("unix"))
 public func peerAddress(_ socket: &RawSocket) -> Result[SocketAddress, Error] {
     var storage: [uint8; SOCKET_ADDRESS_STORAGE_LEN] = [0; SOCKET_ADDRESS_STORAGE_LEN]
-    var len: std.libc.socklen_t = SOCKET_ADDRESS_STORAGE_LEN as std.libc.socklen_t
-    let ptr = unsafe { (&mut storage as *mut [uint8; SOCKET_ADDRESS_STORAGE_LEN]) as *mut uint8 }
-    let lenPtr = unsafe { (&mut len as *mut std.libc.socklen_t) }
-    let res = std.libc.getpeername(socket.fd, ptr, lenPtr)
+    var len: std::libc::socklen_t = SOCKET_ADDRESS_STORAGE_LEN as std::libc::socklen_t
+    ptr := unsafe { (&storage as *mut [uint8; SOCKET_ADDRESS_STORAGE_LEN]) as *mut uint8 }
+    lenPtr := unsafe { (&len as *mut std::libc::socklen_t) }
+    res := unsafe { std::libc::getpeername(socket.fd, ptr, lenPtr) }
     if res < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("get peer address"))
+        return .err(std::sys::io::unix::lastError().withOperation("get peer address"))
     }
     return decodeSocketAddress(storage, len)
 }
@@ -251,11 +250,11 @@ public func sendTo(
     _ len: usize,
     _ address: SocketAddress,
 ) -> Result[usize, Error] {
-    let (storage, addrLen) = encodeSocketAddress(address)
-    let addrPtr = unsafe { (&storage as *const [uint8; SOCKET_ADDRESS_STORAGE_LEN]) as *const uint8 }
-    let res = std.libc.sendto(socket.fd, buf, len, 0, addrPtr, addrLen)
+    var (storage, addrLen) = encodeSocketAddress(address)
+    addrPtr := unsafe { (&storage as *const [uint8; SOCKET_ADDRESS_STORAGE_LEN]) as *const uint8 }
+    res := unsafe { std::libc::sendto(socket.fd, buf, len, 0, addrPtr, addrLen) }
     if res < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("send datagram"))
+        return .err(std::sys::io::unix::lastError().withOperation("send datagram"))
     }
     return .ok(res as usize)
 }
@@ -277,15 +276,15 @@ public func recvFrom(
     _ len: usize,
 ) -> Result[(usize, SocketAddress), Error] {
     var storage: [uint8; SOCKET_ADDRESS_STORAGE_LEN] = [0; SOCKET_ADDRESS_STORAGE_LEN]
-    var addrLen: std.libc.socklen_t = SOCKET_ADDRESS_STORAGE_LEN as std.libc.socklen_t
-    let addrPtr = unsafe { (&mut storage as *mut [uint8; SOCKET_ADDRESS_STORAGE_LEN]) as *mut uint8 }
-    let lenPtr = unsafe { (&mut addrLen as *mut std.libc.socklen_t) }
-    let res = std.libc.recvfrom(socket.fd, buf, len, 0, addrPtr, lenPtr)
+    var addrLen: std::libc::socklen_t = SOCKET_ADDRESS_STORAGE_LEN as std::libc::socklen_t
+    addrPtr := unsafe { (&storage as *mut [uint8; SOCKET_ADDRESS_STORAGE_LEN]) as *mut uint8 }
+    lenPtr := unsafe { (&addrLen as *mut std::libc::socklen_t) }
+    res := unsafe { std::libc::recvfrom(socket.fd, buf, len, 0, addrPtr, lenPtr) }
     if res < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("receive datagram"))
+        return .err(std::sys::io::unix::lastError().withOperation("receive datagram"))
     }
 
-    let addressRes = decodeSocketAddress(storage, addrLen)
+    addressRes := decodeSocketAddress(storage, addrLen)
     match addressRes {
         case .ok(address) => return .ok((res as usize, address))
         case .err(err) => return .err(err)
@@ -304,17 +303,17 @@ public func recvFrom(
 @cfg(family("unix"))
 public func setReuseAddr(_ socket: &RawSocket, _ enabled: bool) -> Result[(), Error] {
     var value: int32 = if enabled { 1 } else { 0 }
-    let valuePtr = unsafe { (&value as *const int32) as *const uint8 }
-    let valueLen = sizeOf[int32]() as std.libc.socklen_t
-    let res = std.libc.setsockopt(
+    valuePtr := unsafe { (&value as *const int32) as *const uint8 }
+    valueLen := sizeOf[int32]() as std::libc::socklen_t
+    res := unsafe { std::libc::setsockopt(
         socket.fd,
-        std.libc.SOL_SOCKET,
-        std.libc.SO_REUSEADDR,
+        std::libc::SOL_SOCKET,
+        std::libc::SO_REUSEADDR,
         valuePtr,
         valueLen,
-    )
+    ) }
     if res < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("set reuse address"))
+        return .err(std::sys::io::unix::lastError().withOperation("set reuse address"))
     }
     return .ok(())
 }
@@ -337,18 +336,18 @@ public func setCloseOnExec(_ socket: &RawSocket) -> Result[(), Error] {
 @cfg(family("unix"))
 public func socketError(_ socket: &RawSocket) -> Result[int32, Error] {
     var value: int32 = 0
-    var len: std.libc.socklen_t = sizeOf[int32]() as std.libc.socklen_t
-    let valuePtr = unsafe { (&mut value as *mut int32) as *mut uint8 }
-    let lenPtr = unsafe { (&mut len as *mut std.libc.socklen_t) }
-    let res = std.libc.getsockopt(
+    var len: std::libc::socklen_t = sizeOf[int32]() as std::libc::socklen_t
+    valuePtr := unsafe { (&value as *mut int32) as *mut uint8 }
+    lenPtr := unsafe { (&len as *mut std::libc::socklen_t) }
+    res := unsafe { std::libc::getsockopt(
         socket.fd,
-        std.libc.SOL_SOCKET,
-        std.libc.SO_ERROR,
+        std::libc::SOL_SOCKET,
+        std::libc::SO_ERROR,
         valuePtr,
         lenPtr,
-    )
+    ) }
     if res < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("get socket error"))
+        return .err(std::sys::io::unix::lastError().withOperation("get socket error"))
     }
     return .ok(value)
 }
@@ -362,8 +361,8 @@ public func fd(_ socket: &RawSocket) -> int32 {
     socket.fd
 }
 
-public func takeFd(_ socket: &mut RawSocket) -> int32 {
-    let fd = socket.fd
+public func takeFd(_ socket: &RawSocket) -> int32 {
+    fd := socket.fd
     socket.fd = -1
     return fd
 }
@@ -375,30 +374,30 @@ public func fromFd(_ fd: int32) -> RawSocket {
 @cfg(family("unix"))
 func socketDomainValue(_ domain: SocketDomain) -> int32 {
     match domain {
-        case .ipv4 => return std.libc.AF_INET
-        case .ipv6 => return std.libc.AF_INET6
+        case .ipv4 => return std::libc::AF_INET
+        case .ipv6 => return std::libc::AF_INET6
     }
 }
 
 @cfg(family("unix"))
 func socketTypeValue(_ type_: SocketType) -> int32 {
     match type_ {
-        case .stream => return std.libc.SOCK_STREAM
-        case .datagram => return std.libc.SOCK_DGRAM
+        case .stream => return std::libc::SOCK_STREAM
+        case .datagram => return std::libc::SOCK_DGRAM
     }
 }
 
 @cfg(family("unix"))
 func setCloseOnExecFd(_ fd: int32) -> Result[(), Error] {
-    let current = std.libc.fcntl(fd, std.libc.F_GETFD, 0)
+    current := std::libc::fcntl(fd, std::libc::F_GETFD, 0)
     if current < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("get close-on-exec"))
+        return .err(std::sys::io::unix::lastError().withOperation("get close-on-exec"))
     }
 
-    let updated = current | std.libc.FD_CLOEXEC
-    let res = std.libc.fcntl(fd, std.libc.F_SETFD, updated)
+    updated := current | std::libc::FD_CLOEXEC
+    res := std::libc::fcntl(fd, std::libc::F_SETFD, updated)
     if res < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("set close-on-exec"))
+        return .err(std::sys::io::unix::lastError().withOperation("set close-on-exec"))
     }
     return .ok(())
 }
@@ -419,7 +418,7 @@ func decodePort(_ high: uint8, _ low: uint8) -> uint16 {
 }
 
 @cfg(family("unix"))
-func encodeSocketAddress(_ address: SocketAddress) -> ([uint8; SOCKET_ADDRESS_STORAGE_LEN], std.libc.socklen_t) {
+func encodeSocketAddress(_ address: SocketAddress) -> ([uint8; SOCKET_ADDRESS_STORAGE_LEN], std::libc::socklen_t) {
     match address.ip {
         case .ipv4(octets) => return encodeIpv4Address(octets, address.port)
         case .ipv6(octets) => return encodeIpv6Address(octets, address.port)
@@ -430,9 +429,9 @@ func encodeSocketAddress(_ address: SocketAddress) -> ([uint8; SOCKET_ADDRESS_ST
 func encodeIpv4Address(
     _ octets: [uint8; 4],
     _ port: uint16,
-) -> ([uint8; SOCKET_ADDRESS_STORAGE_LEN], std.libc.socklen_t) {
+) -> ([uint8; SOCKET_ADDRESS_STORAGE_LEN], std::libc::socklen_t) {
     var storage: [uint8; SOCKET_ADDRESS_STORAGE_LEN] = [0; SOCKET_ADDRESS_STORAGE_LEN]
-    *storage.at(0) = std.libc.AF_INET as uint8
+    *storage.at(0) = std::libc::AF_INET as uint8
     *storage.at(1) = 0_u8
     *storage.at(2) = portHighByte(port)
     *storage.at(3) = portLowByte(port)
@@ -447,10 +446,10 @@ func encodeIpv4Address(
 func encodeIpv4Address(
     _ octets: [uint8; 4],
     _ port: uint16,
-) -> ([uint8; SOCKET_ADDRESS_STORAGE_LEN], std.libc.socklen_t) {
+) -> ([uint8; SOCKET_ADDRESS_STORAGE_LEN], std::libc::socklen_t) {
     var storage: [uint8; SOCKET_ADDRESS_STORAGE_LEN] = [0; SOCKET_ADDRESS_STORAGE_LEN]
     *storage.at(0) = SOCKADDR_V4_LEN as uint8
-    *storage.at(1) = std.libc.AF_INET as uint8
+    *storage.at(1) = std::libc::AF_INET as uint8
     *storage.at(2) = portHighByte(port)
     *storage.at(3) = portLowByte(port)
     *storage.at(4) = *octets.at(0)
@@ -464,9 +463,9 @@ func encodeIpv4Address(
 func encodeIpv6Address(
     _ octets: [uint8; 16],
     _ port: uint16,
-) -> ([uint8; SOCKET_ADDRESS_STORAGE_LEN], std.libc.socklen_t) {
+) -> ([uint8; SOCKET_ADDRESS_STORAGE_LEN], std::libc::socklen_t) {
     var storage: [uint8; SOCKET_ADDRESS_STORAGE_LEN] = [0; SOCKET_ADDRESS_STORAGE_LEN]
-    *storage.at(0) = std.libc.AF_INET6 as uint8
+    *storage.at(0) = std::libc::AF_INET6 as uint8
     *storage.at(1) = 0_u8
     *storage.at(2) = portHighByte(port)
     *storage.at(3) = portLowByte(port)
@@ -484,10 +483,10 @@ func encodeIpv6Address(
 func encodeIpv6Address(
     _ octets: [uint8; 16],
     _ port: uint16,
-) -> ([uint8; SOCKET_ADDRESS_STORAGE_LEN], std.libc.socklen_t) {
+) -> ([uint8; SOCKET_ADDRESS_STORAGE_LEN], std::libc::socklen_t) {
     var storage: [uint8; SOCKET_ADDRESS_STORAGE_LEN] = [0; SOCKET_ADDRESS_STORAGE_LEN]
     *storage.at(0) = SOCKADDR_V6_LEN as uint8
-    *storage.at(1) = std.libc.AF_INET6 as uint8
+    *storage.at(1) = std::libc::AF_INET6 as uint8
     *storage.at(2) = portHighByte(port)
     *storage.at(3) = portLowByte(port)
 
@@ -513,33 +512,33 @@ func storageFamily(_ storage: [uint8; SOCKET_ADDRESS_STORAGE_LEN]) -> int32 {
 @cfg(family("unix"))
 func decodeSocketAddress(
     _ storage: [uint8; SOCKET_ADDRESS_STORAGE_LEN],
-    _ len: std.libc.socklen_t,
+    _ len: std::libc::socklen_t,
 ) -> Result[SocketAddress, Error] {
-    let family = storageFamily(storage)
-    if family == std.libc.AF_INET {
+    family := storageFamily(storage)
+    if family == std::libc::AF_INET {
         if len < SOCKADDR_V4_LEN {
-            return .err(Error(.invalidInput).withOperation("decode socket address"))
+            return .err(Error::new(.invalidInput).withOperation("decode socket address"))
         }
 
-        let ip: [uint8; 4] = [
+        var ip: [uint8; 4] = [
             *storage.at(4),
             *storage.at(5),
             *storage.at(6),
             *storage.at(7),
         ]
-        let addressIp: IpAddress = .ipv4(ip)
+        var addressIp: IpAddress = .ipv4(ip)
         return .ok(SocketAddress {
             ip: addressIp,
             port: decodePort(*storage.at(2), *storage.at(3)),
         })
     }
 
-    if family == std.libc.AF_INET6 {
+    if family == std::libc::AF_INET6 {
         if len < SOCKADDR_V6_LEN {
-            return .err(Error(.invalidInput).withOperation("decode socket address"))
+            return .err(Error::new(.invalidInput).withOperation("decode socket address"))
         }
 
-        let ip: [uint8; 16] = [
+        var ip: [uint8; 16] = [
             *storage.at(8),
             *storage.at(9),
             *storage.at(10),
@@ -557,12 +556,12 @@ func decodeSocketAddress(
             *storage.at(22),
             *storage.at(23),
         ]
-        let addressIp: IpAddress = .ipv6(ip)
+        var addressIp: IpAddress = .ipv6(ip)
         return .ok(SocketAddress {
             ip: addressIp,
             port: decodePort(*storage.at(2), *storage.at(3)),
         })
     }
 
-    return .err(Error(.unsupported).withOperation("decode socket address"))
+    return .err(Error::new(.unsupported).withOperation("decode socket address"))
 }

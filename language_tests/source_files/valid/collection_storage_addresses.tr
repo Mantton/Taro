@@ -1,0 +1,42 @@
+final class Payload { value: int32 }
+extend Payload { init(_ value: int32) { self.value = value } }
+enum Slot { case empty; case payload(Payload) }
+func grownList() -> &Payload {
+    var values: List[Payload] = [Payload(31), Payload(37)]
+    old := &values[0]
+    values.reserve(64)
+    values[0] = Payload(41)
+    values.clear()
+    old
+}
+func removedList() -> &Slot {
+    var values: List[Slot] = [Slot::payload(Payload(43))]
+    old := &values[0]
+    var _ = values.pop()
+    std::runtime::collect()
+    old
+}
+func shiftedList() -> &Payload {
+    var values: List[Payload] = [Payload(47), Payload(53)]
+    slot := &values[0]
+    var _ = values.removeAt(0)
+    assert(slot.value == 53, "a reference denotes a physical slot after shifting")
+    values.clear()
+    slot
+}
+func localArray() -> &Payload {
+    var values: [Payload; 2] = [Payload(59), Payload(61)]
+    &values[1]
+}
+func main() {
+    grown := grownList()
+    removed := removedList()
+    shifted := shiftedList()
+    array := localArray()
+    std::runtime::collect()
+    assert(grown.value == 31 && shifted.value == 53 && array.value == 61, "escaped native addresses retain original storage")
+    match *removed {
+        case .payload(value) => assert(value.value == 43, "removed slots remain valid initialized enums")
+        case .empty => panic("logical removal cleared an escaped enum slot")
+    }
+}

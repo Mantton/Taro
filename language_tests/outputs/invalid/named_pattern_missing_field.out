@@ -1,0 +1,4 @@
+error: named pattern is missing field 'y'; add `..` to ignore remaining fields
+ -> language_tests/source_files/invalid/named_pattern_missing_field.tr:4:23
+	    match point { case Point { x } => {}; }
+	                       ^^^^^^^^^^^

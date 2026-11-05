@@ -1,0 +1,4 @@
+error: an inheritable Decodable class needs a required init(from:)
+ -> language_tests/source_files/invalid/class_decoder_nonrequired.tr:3:11
+	    public init[D: std::encoding::Decoder](from decoder: D) -> Result[Self, D::Error] {
+	           ^^^^

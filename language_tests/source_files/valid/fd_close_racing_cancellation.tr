@@ -1,0 +1,51 @@
+// G24b: closing a shared async stream while a task blocked reading it is being
+// cancelled settles both sides: the reader ends cancelled or observes `closed`,
+// close succeeds exactly once, and no descriptor outlives the round.
+// ENV: TARO_WORKERS=4
+func openDescriptors() -> int64 {
+    var count = 0_i64
+    for entry in std::fs::readDir("/dev/fd").unwrap() {
+        var _ = entry.unwrap()
+        count += 1
+    }
+    return count
+}
+
+func main() async {
+    var (started, running) = std::sync::bounded[int32](4).unwrap()
+    var (go, gate) = std::sync::bounded[int32](4).unwrap()
+    before := openDescriptors()
+    var settled = 0
+    var closeFailures = 0
+    var round = 0
+    while round < 300 {
+        var (readEnd, writeEnd) = std::io::task::pipe().unwrap()
+        reader := std::task::spawn(() async => {
+            var storage: [uint8; 8] = [0; 8]
+            base := unsafe { (&storage as *mut [uint8; 8]) as *mut uint8 }
+            started.trySend(1).unwrap()
+            match await readEnd.read(unsafe { std::mem::Span[uint8]::from(base, 8) }) {
+                case .err(err) if err.isKind(.closed) => return 1_i32
+                case _ => return 0_i32
+            }
+        })
+        closer := std::task::spawn(() async => {
+            var _ = await gate.recv()
+            return readEnd.close().isOk()
+        })
+        var _ = await running.recv()
+        go.trySend(1).unwrap()
+        reader.cancel()
+        match await reader.result() {
+            case .ok(1_i32) => settled += 1
+            case .err(.cancelled) => settled += 1
+            case _ => {}
+        }
+        if !(await closer.result()).unwrap() {
+            closeFailures += 1
+        }
+        writeEnd.close().unwrap()
+        round += 1
+    }
+    std::printf("settled: %d, close failures: %d, leaked descriptors: %d\n", settled, closeFailures, openDescriptors() - before)
+}

@@ -1,1 +1,1 @@
-PASS: GC static roots
+PASS: statics root managed values

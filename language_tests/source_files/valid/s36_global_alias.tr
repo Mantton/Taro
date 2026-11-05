@@ -1,0 +1,8 @@
+static var value: int32 = 7
+func change() { value = 9 }
+func main() {
+    var saved: &int32 = &value // References to statics alias the storage.
+    change()
+    assert(*saved == 9, "a static reference observes later writes")
+    print("PASS: static references alias global storage\n")
+}

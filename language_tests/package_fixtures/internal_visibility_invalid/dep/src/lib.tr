@@ -1,0 +1,7 @@
+import internalowner::support
+public struct Cell { internal value: int32 }
+internal func internalValue() -> int32 { 37_i32 }
+internal struct Hidden { value: int32 }
+public func create() -> Cell { support::create() }
+public func read(_ cell: &Cell) -> int32 { support::read(cell) }
+public func update(_ cell: &Cell) { support::update(cell) }

@@ -1,0 +1,39 @@
+// G45: panic reports name the panicking call site and the caller chain with
+// correct source lines in both debug and release builds. Release builds used
+// to inline std's `panic` before codegen could lower the call at its caller's
+// location, so the report lost its `at` line and led with std frames.
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: panic: deep failure
+// EXPECT_STDERR_COUNT: 2 valid/panic_backtrace_source_lines.tr:23:9
+// EXPECT_STDERR_CONTAINS: 0: inner at
+// EXPECT_STDERR_CONTAINS: 1: middle at
+// EXPECT_STDERR_CONTAINS: valid/panic_backtrace_source_lines.tr:30:12
+// EXPECT_STDERR_CONTAINS: 2: outer at
+// EXPECT_STDERR_CONTAINS: valid/panic_backtrace_source_lines.tr:34:12
+// EXPECT_STDERR_NOT_CONTAINS: panicUnwind
+final class Node {
+    value: int32
+}
+extend Node { init(_ value: int32) { self.value = value } }
+
+func inner(_ node: Node) -> int32 {
+    var labels = std::collections::List[string]::new()
+    labels.append(std::sprintf("n%d", node.value))
+    if node.value > 2 {
+        panic("deep failure")
+    }
+    return node.value
+}
+
+func middle(_ depth: int32) -> int32 {
+    node := Node(depth)
+    return inner(node) + 1
+}
+
+func outer() -> int32 {
+    return middle(3) * 2
+}
+
+func main() {
+    std::printf("%d\n", outer())
+}

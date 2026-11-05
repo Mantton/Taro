@@ -1,0 +1,7 @@
+struct Holder { readonly link: &int32 }
+func main() {
+    var value: int32 = 1
+    holder := Holder { link: &value }
+    *holder.link = 2
+    assert(value == 2, "readonly fixes the reference slot without freezing its referent")
+}

@@ -1,5 +1,5 @@
-error: ambiguous conformance: multiple impls satisfy 'CycleA' for 'CycleLeaf[int32]'
-error: type 'CycleLeaf[int32]' does not conform to interface 'CycleA'
- -> language_tests/source_files/invalid/recursive_conformance_cycle.tr:15:4
-	    requireCycleA(value)
-	    ^^^^^^^^^^^^^
+error: ambiguous conformance: multiple impls satisfy 'CycleA' for 'CycleLeaf[T]'
+error: type 'CycleLeaf[T]' does not conform to interface 'CycleA'
+ -> language_tests/source_files/invalid/recursive_conformance_cycle.tr:8:27
+	conform[T] CycleLeaf[T] to CycleA where CycleLeaf[T]: CycleB {}
+	                           ^^^^^^

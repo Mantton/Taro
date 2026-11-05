@@ -1,0 +1,17 @@
+struct Counter { value: int32 }
+extend Counter {
+    func inspect() -> int32 { self.value }
+    func increment() { self.value += 1 }
+}
+func explicit(_ pointer: *const int32) -> int32 { *pointer }
+func field(_ pointer: *const Counter) -> int32 { pointer.value }
+func method(_ pointer: *mut Counter) { pointer.increment() }
+func bound(_ pointer: *const Counter) -> int32 {
+    inspect := pointer.inspect
+    inspect()
+}
+func borrow(_ pointer: *const int32) {
+    var value: &int32 = &*pointer
+    var observed: int32 = *value
+}
+func main() {}

@@ -1,0 +1,2 @@
+class Document { revision: int32 }
+func main() { var document: Document = Document { revision: 1 } }

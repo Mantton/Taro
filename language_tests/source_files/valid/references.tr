@@ -1,34 +1,34 @@
 func testBasicRefPattern() {
-    let x = 42
-    let r = &x
+    x := 42
+    r := &x
 
-    match r {
-        case &y => {
+    match *r {
+        case y => {
             assert(y == 42, "basic ref pattern match")
         }
     }
 }
 
-func testMutRefPattern() {
+func testReferenceWrites() {
     var x = 42
-    let r = &mut x
+    r := &x
 
-    match r {
-        case &mut y => {
+    match *r {
+        case y => {
             assert(y == 42, "mut ref pattern match")
-            y = 40
+            *r = 40
         }
     }
     assert(x == 40, "mut ref update should propagate")
 }
 
 func testNestedRefPattern() {
-    let x = 42
-    let r1 = &x
-    let r2 = &r1
+    x := 42
+    r1 := &x
+    r2 := &r1
 
-    match r2 {
-        case & &y => {
+    match **r2 {
+        case y => {
             assert(y == 42, "nested ref pattern match")
         }
     }
@@ -36,19 +36,19 @@ func testNestedRefPattern() {
 
 func testReferenceEdgeCases() {
     var x = 1
-    let r = &mut x
-    match r {
-        case &mut y => {
-            y = y + 2
+    r := &x
+    match *r {
+        case y => {
+            *r = y + 2
         }
     }
     assert(x == 3, "mut ref edge update")
 
-    let a = 10
-    let r1 = &a
-    let r2 = &r1
-    match r2 {
-        case & &z => {
+    a := 10
+    r1 := &a
+    r2 := &r1
+    match **r2 {
+        case z => {
             assert(z == 10, "double ref match")
         }
     }
@@ -56,10 +56,10 @@ func testReferenceEdgeCases() {
 
 func main() {
     testBasicRefPattern()
-    testMutRefPattern()
+    testReferenceWrites()
     testNestedRefPattern()
-    std.print("PASS: Reference patterns match\n")
+    std::print("PASS: Explicit reference reads match\n")
 
     testReferenceEdgeCases()
-    std.print("PASS: Reference pattern edge cases\n")
+    std::print("PASS: Reference value edge cases\n")
 }

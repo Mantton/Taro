@@ -3,5 +3,5 @@ func valuePathGenericArg[T](_ value: T) -> T {
 }
 
 func main() {
-    let _ = valuePathGenericArg[Item = int32](1)
+    var _ = valuePathGenericArg[Item = int32](1)
 }

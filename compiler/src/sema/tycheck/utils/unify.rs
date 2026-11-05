@@ -162,10 +162,7 @@ impl<'ctx, 'env> TypeUnifier<'ctx, 'env> {
                 }
                 return self.unify(a_ty, b_ty);
             }
-            (Reference(a_ty, a_mut), Reference(b_ty, b_mut)) => {
-                if a_mut != b_mut {
-                    return Err(TypeError::Mutability(ExpectedFound::new(a_ty, b_ty)));
-                }
+            (Reference(a_ty), Reference(b_ty)) => {
                 return self.unify(a_ty, b_ty);
             }
             (Tuple(a_items), Tuple(b_items)) => {
@@ -184,6 +181,29 @@ impl<'ctx, 'env> TypeUnifier<'ctx, 'env> {
                 return Ok(());
             }
             (
+                FnPointer {
+                    effects: a_effects,
+                    inputs: a_inputs,
+                    output: a_output,
+                },
+                FnPointer {
+                    effects: b_effects,
+                    inputs: b_inputs,
+                    output: b_output,
+                },
+            ) => {
+                // Function values are structurally equal when their complete
+                // signatures unify; inference variables inside them are not
+                // a nominal mismatch. This introduces no variance conversion.
+                if a_effects != b_effects || a_inputs.len() != b_inputs.len() {
+                    return Err(TypeError::TyMismatch(ExpectedFound::new(a, b)));
+                }
+                for (&a_input, &b_input) in a_inputs.iter().zip(b_inputs.iter()) {
+                    self.unify(a_input, b_input)?;
+                }
+                return self.unify(a_output, b_output);
+            }
+            (
                 BoxedExistential {
                     interfaces: a_ifaces,
                 },
@@ -200,6 +220,18 @@ impl<'ctx, 'env> TypeUnifier<'ctx, 'env> {
                         return Err(TypeError::TyMismatch(ExpectedFound::new(a, b)));
                     }
                     self.unify_generic_args(a_iface.arguments, b_iface.arguments)?;
+                    // Existential associated bindings are part of storage's
+                    // concrete type, including when equality is checked in a
+                    // generic declaration environment.
+                    if a_iface.bindings.len() != b_iface.bindings.len() {
+                        return Err(TypeError::TyMismatch(ExpectedFound::new(a, b)));
+                    }
+                    for (a_binding, b_binding) in a_iface.bindings.iter().zip(b_iface.bindings) {
+                        if a_binding.name != b_binding.name {
+                            return Err(TypeError::TyMismatch(ExpectedFound::new(a, b)));
+                        }
+                        self.unify(a_binding.ty, b_binding.ty)?;
+                    }
                 }
 
                 return Ok(());
@@ -250,6 +282,24 @@ impl<'ctx, 'env> TypeUnifier<'ctx, 'env> {
         }
         if self.unify(a.ty, b.ty).is_err() {
             return Err(());
+        }
+
+        if let Some(env) = self.env {
+            // Const equalities are represented by equality of fixed arrays in
+            // the declaration constraint model. Honor the same relation when
+            // those constants occur inside a nominal type's arguments.
+            let array = |len| {
+                Ty::new(
+                    TyKind::Array {
+                        element: self.icx.gcx.types.bool,
+                        len,
+                    },
+                    self.icx.gcx,
+                )
+            };
+            if env.equivalent_types(array(a)).contains(&array(b)) {
+                return Ok(());
+            }
         }
 
         match (a.kind, b.kind) {
@@ -319,5 +369,98 @@ impl<'ctx, 'env> TypeUnifier<'ctx, 'env> {
             | (ConstKind::Param(_), ConstKind::Value(_))
             | (ConstKind::Value(_), ConstKind::Param(_)) => Err(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod const_idempotence_tests {
+    use super::*;
+    use crate::{
+        mir::test_support::with_test_gcx,
+        sema::tycheck::infer::keys::ConstVariableOrigin,
+        span::{FileID, Span},
+    };
+
+    #[test]
+    fn repeated_equal_const_bindings_and_merges_are_idempotent_but_conflicts_reject() {
+        with_test_gcx(|gcx| {
+            let icx = Rc::new(InferCtx::new(gcx));
+            let origin = || ConstVariableOrigin {
+                location: Span::empty(FileID::from_usize(0)),
+                param_name: None,
+            };
+            let first = icx.new_const_var(gcx.types.uint, origin());
+            let second = icx.new_const_var(gcx.types.uint, origin());
+            let value = |n| Const {
+                ty: gcx.types.uint,
+                kind: ConstKind::Value(crate::sema::models::ConstValue::Integer(n)),
+            };
+            let unifier = TypeUnifier::new(icx.clone());
+            icx.probe(|_| {
+                assert!(unifier.unify_const(first, value(3)).is_ok());
+                assert!(unifier.unify_const(first, value(3)).is_ok());
+            });
+            assert!(
+                matches!(
+                    icx.resolve_const_if_possible(first).kind,
+                    ConstKind::Infer(_)
+                ),
+                "candidate probing must roll back its binding"
+            );
+            assert!(unifier.unify_const(first, value(3)).is_ok());
+            assert!(unifier.unify_const(first, value(3)).is_ok());
+            assert!(unifier.unify_const(second, value(3)).is_ok());
+            assert!(unifier.unify_const(first, second).is_ok());
+            assert!(unifier.unify_const(first, value(4)).is_err());
+            assert_eq!(icx.resolve_const_if_possible(first), value(3));
+        });
+    }
+}
+
+#[cfg(test)]
+mod storage_equality_tests {
+    #[test]
+    fn declared_const_equalities_apply_inside_nominal_storage_arguments() {
+        crate::test_support::analyze_script(
+            "struct Storage[const N: usize] { count: usize }\nfunc inspect[const A: usize, const B: usize](_ first: Storage[A], _ second: Storage[B], _ a: [bool; A], _ b: [bool; B]) {}\nfunc main() {}",
+            |package, gcx| {
+                let signature = gcx.get_signature(package.root.declarations[1].id);
+                let icx = std::rc::Rc::new(super::InferCtx::new(gcx));
+                let empty = super::ParamEnv::default();
+                assert!(
+                    super::TypeUnifier::with_env(icx.clone(), &empty)
+                        .unify(signature.inputs[0].ty, signature.inputs[1].ty)
+                        .is_err()
+                );
+                let env =
+                    super::ParamEnv::new(vec![crate::sema::models::Constraint::TypeEquality(
+                        signature.inputs[2].ty,
+                        signature.inputs[3].ty,
+                    )]);
+                assert!(
+                    super::TypeUnifier::with_env(icx, &env)
+                        .unify(signature.inputs[0].ty, signature.inputs[1].ty)
+                        .is_ok()
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn declaration_equalities_do_not_erase_existential_associated_bindings() {
+        crate::test_support::analyze_script(
+            "interface Produce { type Output; }\nfunc inspect[T](_ first: any Produce[Output = int32], _ second: any Produce[Output = bool]) {}\nfunc main() {}",
+            |package, gcx| {
+                let signature = gcx.get_signature(package.root.declarations[1].id);
+                let env = super::ParamEnv::new(vec![]);
+                let unifier =
+                    super::TypeUnifier::with_env(std::rc::Rc::new(super::InferCtx::new(gcx)), &env);
+                assert!(
+                    unifier
+                        .unify(signature.inputs[0].ty, signature.inputs[1].ty)
+                        .is_err()
+                );
+            },
+        );
     }
 }

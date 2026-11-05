@@ -1,0 +1,56 @@
+
+interface Root {}
+interface Other[Rhs = Self] { func marker() -> int32; }
+interface Nested[Storage = any Other[Self]] { func nested() -> int32; }
+interface Parent[Storage = any Other[Self]] { func inherited() -> int32; }
+interface Child: Parent[any Other[Self]] {}
+struct Counter { count: int32 }
+conform Counter to Root {}
+conform Counter to Other {
+    func marker() -> int32 { self.count }
+}
+conform Counter to Nested {
+    func nested() -> int32 { self.count + 1 }
+}
+conform Counter to Parent {
+    func inherited() -> int32 { self.count + 2 }
+}
+conform Counter to Child {}
+struct Foreign {}
+conform Foreign to Root {}
+conform Foreign to Other[bool] {
+    func marker() -> int32 { 99 }
+}
+
+func inspect[T](_ source: &any Other) -> int32 { source.marker() }
+func inspectExplicit[T](_ source: &any Other[T]) -> int32 { source.marker() }
+func inspectNested[T](_ source: &any Nested) -> int32 { source.nested() }
+
+func main() {
+    var boxed: any Other = Counter { count: 7 } // any Other[hidden Self]
+    assert(inspect[bool](&boxed) == 7, "outer generic parameters do not replace default Self")
+    var explicit: any Other[Counter] = Counter { count: 8 } // any Other[Counter]
+    assert(inspectExplicit[Counter](&explicit) == 8, "explicit type arguments still substitute")
+    var nested: any Nested = Counter { count: 9 } // any Nested[any Other[hidden Self]]
+    assert(inspectNested[bool](&nested) == 10, "nested erased binders preserve outer Self")
+
+    var erased: any Root = Counter { count: 11 } // any Root, owns Counter
+    assert(erased is any Other, "runtime lookup recognizes receiver-relative defaults")
+    assert(erased is any Nested, "runtime lookup recognizes nested Self defaults")
+    var recovered: any Other = (erased as? any Other).unwrap() // moves erased
+    assert(recovered.marker() == 11, "relative metadata key preserves the concrete witness")
+
+    var child: any Child = Counter { count: 13 } // any Child
+    var parent: any Parent = child // moves child; projects inherited witness
+    assert(parent.inherited() == 15, "superinterface substitution preserves the outer payload Self")
+    var root: any Root = Counter { count: 17 } // any Root
+    assert(root is any Parent, "runtime metadata includes inherited receiver-relative keys")
+    var inherited: any Parent = (root as? any Parent).unwrap()
+    assert(inherited.inherited() == 19, "inherited relative lookup selects its original witness")
+
+    var foreign: any Root = Foreign {} // any Root, owns Foreign
+    assert(!(foreign is any Other), "an explicit different Rhs does not satisfy default Self")
+    assert(foreign is any Other[bool], "explicit generic conformance remains available")
+    var actual: any Other[bool] = (foreign as? any Other[bool]).unwrap()
+    assert(actual.marker() == 99, "explicit runtime lookup preserves its witness")
+}

@@ -93,8 +93,12 @@ impl<'ctx> MirPass<'ctx> for TempCoalescing {
                         &mut use_counts,
                         &mut place_used,
                     ),
+                    StatementKind::StorageLive(local) | StatementKind::StorageDead(local) => {
+                        // A copied temporary is independent of a source whose
+                        // lifetime ends before the temporary's later use.
+                        address_taken[local.index()] = true;
+                    }
                     StatementKind::SourceScope(_)
-                    | StatementKind::StorageLive(_)
                     | StatementKind::SetInitialized(_)
                     | StatementKind::GcSafepoint(_)
                     | StatementKind::Nop => {}
@@ -207,7 +211,7 @@ impl<'ctx> MirPass<'ctx> for CallDestinationCoalescing {
             for stmt in &block.statements {
                 match &stmt.kind {
                     StatementKind::Assign(_, rv) => {
-                        if let Rvalue::Ref { place, .. } = rv {
+                        if let Rvalue::Ref { place, .. } | Rvalue::CleanupAddress { place } = rv {
                             address_taken[place.local.index()] = true;
                         }
                         record_rvalue_use_counts(rv, &mut use_counts);
@@ -222,6 +226,7 @@ impl<'ctx> MirPass<'ctx> for CallDestinationCoalescing {
                     }
                     StatementKind::SourceScope(_)
                     | StatementKind::StorageLive(_)
+                    | StatementKind::StorageDead(_)
                     | StatementKind::SetInitialized(_)
                     | StatementKind::GcSafepoint(_)
                     | StatementKind::Nop => {}
@@ -278,9 +283,7 @@ impl<'ctx> MirPass<'ctx> for CallDestinationCoalescing {
             }
 
             let local_from_operand = match op {
-                Operand::Copy(place) | Operand::Move(place) if place.projection.is_empty() => {
-                    Some(place.local)
-                }
+                Operand::Copy(place) if place.projection.is_empty() => Some(place.local),
                 _ => None,
             };
             if local_from_operand != Some(tmp_local) {
@@ -357,7 +360,7 @@ impl<'ctx> MirPass<'ctx> for RepeatFieldForwarding {
                             }
                         }
 
-                        if let Rvalue::Ref { place, .. } = rv {
+                        if let Rvalue::Ref { place, .. } | Rvalue::CleanupAddress { place } = rv {
                             address_taken[place.local.index()] = true;
                         }
                         record_rvalue_use_counts(rv, &mut use_counts);
@@ -372,6 +375,7 @@ impl<'ctx> MirPass<'ctx> for RepeatFieldForwarding {
                     }
                     StatementKind::SourceScope(_)
                     | StatementKind::StorageLive(_)
+                    | StatementKind::StorageDead(_)
                     | StatementKind::SetInitialized(_)
                     | StatementKind::GcSafepoint(_)
                     | StatementKind::Nop => {}
@@ -510,10 +514,11 @@ fn gap_is_safe_source(
             }
             StatementKind::SourceScope(_)
             | StatementKind::StorageLive(_)
+            | StatementKind::StorageDead(_)
             | StatementKind::SetInitialized(_)
-            | StatementKind::GcSafepoint(_)
             | StatementKind::KeepAlive(_)
             | StatementKind::SetDiscriminant { .. }
+            | StatementKind::GcSafepoint(_)
             | StatementKind::Nop => {
                 return false;
             }
@@ -524,9 +529,7 @@ fn gap_is_safe_source(
 
 fn replacement_from_operand<'ctx>(op: &Operand<'ctx>) -> Option<Replacement<'ctx>> {
     match op {
-        Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _)
-            if place.projection.is_empty() =>
-        {
+        Operand::Copy(place) | Operand::CopyWith(place, _) if place.projection.is_empty() => {
             Some(Replacement::Copy(place.local))
         }
         Operand::Constant(c) => Some(Replacement::Constant(c.clone())),
@@ -555,7 +558,7 @@ fn record_operand_use(
     place_used: &mut [bool],
 ) {
     match op {
-        Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
+        Operand::Copy(place) | Operand::CopyWith(place, _) => {
             record_place_use(place, block, stmt_index, use_sites, use_counts, place_used)
         }
         Operand::Constant(_) => {}
@@ -564,12 +567,10 @@ fn record_operand_use(
 
 fn record_operand_use_count(op: &Operand<'_>, use_counts: &mut [usize]) {
     match op {
-        Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _)
-            if place.projection.is_empty() =>
-        {
+        Operand::Copy(place) | Operand::CopyWith(place, _) if place.projection.is_empty() => {
             use_counts[place.local.index()] += 1;
         }
-        Operand::Copy(_) | Operand::Move(_) | Operand::CopyWith(_, _) | Operand::Constant(_) => {}
+        Operand::Copy(_) | Operand::CopyWith(_, _) | Operand::Constant(_) => {}
     }
 }
 
@@ -589,6 +590,7 @@ fn record_terminator_use_counts(term: &TerminatorKind<'_>, use_counts: &mut [usi
                 record_operand_use_count(arg, use_counts);
             }
         }
+
         TerminatorKind::SwitchInt { discr, .. } => record_operand_use_count(discr, use_counts),
         TerminatorKind::Yield { value, .. } => record_operand_use_count(value, use_counts),
         TerminatorKind::Return
@@ -631,7 +633,12 @@ fn record_rvalue_uses(
         record_operand_use(op, block, stmt_index, use_sites, use_counts, place_used)
     });
     match rv {
-        Rvalue::Ref { place, .. } => {
+        // This is a protected source place, not an operand that substitution
+        // may erase while leaving the acquisition pointed at its old slot.
+        Rvalue::CopyValue { source } => {
+            place_used[source.local.index()] = true;
+        }
+        Rvalue::Ref { place, .. } | Rvalue::CleanupAddress { place } => {
             address_taken[place.local.index()] = true;
             place_used[place.local.index()] = true;
         }
@@ -677,7 +684,9 @@ fn replace_stmt_operands<'ctx>(
     match &mut stmt.kind {
         StatementKind::SourceScope(_)
         | StatementKind::StorageLive(_)
+        | StatementKind::StorageDead(_)
         | StatementKind::SetInitialized(_) => {}
+
         StatementKind::Assign(_, rv) => replace_rvalue_operands(rv, replace_map),
         StatementKind::SetDiscriminant { .. } => {}
         StatementKind::KeepAlive(operand) => replace_operand(operand, replace_map),
@@ -712,7 +721,7 @@ fn replace_operand<'ctx>(op: &mut Operand<'ctx>, replace_map: &[Option<Replaceme
     let mut steps = 0usize;
     while steps < replace_map.len() {
         let place = match op {
-            Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
+            Operand::Copy(place) | Operand::CopyWith(place, _) => {
                 if place.projection.is_empty() {
                     Some(place.local)
                 } else {
@@ -734,7 +743,7 @@ fn replace_operand<'ctx>(op: &mut Operand<'ctx>, replace_map: &[Option<Replaceme
                 Operand::CopyWith(_, modifiers) => {
                     Operand::copy_with(Place::from_local(*src), *modifiers)
                 }
-                Operand::Move(_) => Operand::move_(Place::from_local(*src)),
+
                 Operand::Copy(_) | Operand::Constant(_) => Operand::copy(Place::from_local(*src)),
             },
             Replacement::Constant(c) => Operand::Constant(c.clone()),
@@ -754,7 +763,10 @@ fn rvalue_mentions_local(rv: &Rvalue<'_>, local: LocalId) -> bool {
         Rvalue::BinaryOp { lhs, rhs, .. } => {
             operand_mentions_local(lhs, local) || operand_mentions_local(rhs, local)
         }
-        Rvalue::Ref { place, .. } | Rvalue::Discriminant { place } => place.local == local,
+        Rvalue::CopyValue { source: place }
+        | Rvalue::Ref { place, .. }
+        | Rvalue::CleanupAddress { place }
+        | Rvalue::Discriminant { place } => place.local == local,
         Rvalue::Aggregate { fields, .. } => fields
             .iter()
             .any(|field| operand_mentions_local(field, local)),
@@ -764,9 +776,7 @@ fn rvalue_mentions_local(rv: &Rvalue<'_>, local: LocalId) -> bool {
 
 fn operand_mentions_local(op: &Operand<'_>, local: LocalId) -> bool {
     match op {
-        Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
-            place.local == local
-        }
+        Operand::Copy(place) | Operand::CopyWith(place, _) => place.local == local,
         Operand::Constant(_) => false,
     }
 }
@@ -783,6 +793,76 @@ mod tests {
         },
         sema::models::{Ty, TyKind},
     };
+
+    #[test]
+    fn value_forwarding_never_redirects_a_saved_copy_into_dead_storage() {
+        for coalesce in [false, true] {
+            with_test_gcx(|gcx| {
+                let mut body = minimal_body(gcx);
+                let source = push_temp(&mut body, gcx.types.int32);
+                let snapshot = push_temp(&mut body, gcx.types.int32);
+                let span = body.locals[source].span;
+                let successor = body.basic_blocks.push(crate::mir::BasicBlockData {
+                    note: None,
+                    statements: vec![Statement {
+                        kind: StatementKind::KeepAlive(Operand::Copy(Place::from_local(snapshot))),
+                        span,
+                    }],
+                    terminator: Some(crate::mir::Terminator {
+                        kind: crate::mir::TerminatorKind::Return,
+                        span,
+                    }),
+                });
+                body.basic_blocks[body.start_block].statements = vec![
+                    Statement {
+                        kind: StatementKind::Assign(
+                            Place::from_local(source),
+                            Rvalue::Zeroed {
+                                ty: gcx.types.int32,
+                            },
+                        ),
+                        span,
+                    },
+                    Statement {
+                        kind: StatementKind::Assign(
+                            Place::from_local(snapshot),
+                            Rvalue::Use(Operand::Copy(Place::from_local(source))),
+                        ),
+                        span,
+                    },
+                    Statement {
+                        kind: StatementKind::StorageDead(source),
+                        span,
+                    },
+                ];
+                body.basic_blocks[body.start_block].terminator = Some(crate::mir::Terminator {
+                    kind: crate::mir::TerminatorKind::Goto { target: successor },
+                    span,
+                });
+                if coalesce {
+                    assert!(TempCoalescing.run(gcx, &mut body).is_ok());
+                } else {
+                    assert!(
+                        super::super::propagate::CopyPropagation
+                            .run(gcx, &mut body)
+                            .is_ok()
+                    );
+                }
+                assert!(
+                    super::super::dse::DeadStoreElimination
+                        .run(gcx, &mut body)
+                        .is_ok()
+                );
+                assert!(
+                    matches!(&body.basic_blocks[successor].statements[0].kind,
+                    StatementKind::KeepAlive(Operand::Copy(place)) if place.local == snapshot),
+                    "saved values must not be forwarded across source storage endings"
+                );
+                assert!(body.basic_blocks[body.start_block].statements.iter().any(|statement|
+                    matches!(&statement.kind, StatementKind::Assign(destination, _) if destination.local == snapshot)));
+            });
+        }
+    }
 
     #[test]
     fn temp_coalescing_keeps_the_original_value_live_after_source_reassignment() {

@@ -1,0 +1,27 @@
+interface Readable { func read() -> int32; func increment(); func valueRef() -> &int32; }
+struct Counter { value: int32; label: string }
+conform Counter to Readable {
+    func read() -> int32 { assert(self.label == "owned-payload", "owned string remains rooted"); self.value }
+    func increment() { self.value += 1 }
+    func valueRef() -> &int32 { &self.value }
+}
+func inspect[T: Readable](_ value: &T, bytes: usize = std::mem::sizeOf[T]()) async -> int32 {
+    assert(bytes == std::mem::sizeOf[T](), "async default provider uses concrete layout before construction")
+    await std::testing::yieldNow()
+    value.read()
+}
+func project[T: Readable](_ value: &T) async -> &int32 { await std::testing::yieldNow(); value.valueRef() }
+func edit[T: Readable](_ value: &T) async { await std::testing::yieldNow(); value.increment() }
+func consume[T: Readable](_ value: T) async -> int32 {
+    await std::testing::yieldNow()
+    value.read()
+}
+func main() async {
+    var boxed: any Readable = Counter { value: 7, label: "owned-" + "payload" } // any Readable; NoCopy payload.
+    assert((await inspect(&boxed)) == 7, "implicit shared async opening")
+    var saved: &int32 = await project(&boxed) // &int32; known borrowed output keeps the caller container borrowed.
+    assert(*saved == 7, "borrowed output through an opened async constructor")
+    await edit(&boxed)
+    assert((await inspect(&boxed)) == 7, "implicit mutable async opening preserves exact type")
+    assert((await consume(boxed)) == 7, "implicit owned async opening transfers the true payload into a stable frame")
+}

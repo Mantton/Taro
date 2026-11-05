@@ -1,6 +1,6 @@
 // `x = f(x)` keeps the argument live until the call writes its destination.
 
-struct SmallPair: Copy {
+struct SmallPair {
     a: int64
     b: int64
 }

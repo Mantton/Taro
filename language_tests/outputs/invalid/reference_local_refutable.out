@@ -1,8 +1,8 @@
-error: local binding requires an irrefutable pattern
+error: reference patterns were removed; bind values in matches or dereference local initializers
  -> language_tests/source_files/invalid/reference_local_refutable.tr:2:8
-	    let &0 = &1
+	    var &0 = &1
+	        ^
+error: disallowed local binding pattern
+ -> language_tests/source_files/invalid/reference_local_refutable.tr:2:8
+	    var &0 = &1
 	        ^^
-error: local binding requires an irrefutable pattern
- -> language_tests/source_files/invalid/reference_local_refutable.tr:3:8
-	    let (0, value) = (1, 2)
-	        ^^^^^^^^^^

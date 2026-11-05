@@ -1,0 +1,4 @@
+func main() {
+    var maybe: int32? = .none
+    if var value = maybe || true { print(value) }
+}

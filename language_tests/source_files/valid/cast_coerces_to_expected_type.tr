@@ -1,0 +1,26 @@
+// A cast's result coerces at its use site like any other expression's.
+func describe(_ value: any std::fmt::Display) -> string {
+    return std::sprintf("%v", value)
+}
+
+func widen(_ value: uint64?) -> uint64 {
+    return value.unwrap()
+}
+
+func main() {
+    var small: usize = 41
+    println(describe(small as uint64))
+    println(std::sprintf("%d", (small + 1) as uint64))
+    println(describe(widen(small as uint64)))
+    var kept: uint64? = small as uint64
+    println(describe(kept.unwrap()))
+    var exact: int32 = small as int32
+    println(describe(exact))
+
+    var shown: any std::fmt::Display = small as uint64
+    println(describe(shown is uint64))
+    var checked: bool? = shown is uint64
+    println(describe(checked.unwrap()))
+    var maybe: uint64? = shown as? uint64
+    println(describe(maybe.unwrap()))
+}

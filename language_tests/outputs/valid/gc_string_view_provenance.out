@@ -1,0 +1,1 @@
+PASS: string views retain their backing storage

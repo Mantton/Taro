@@ -1,0 +1,9 @@
+// CHECK_ONLY
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_CONTAINS: expected int32, found any Source.Output
+// EXPECT_STDERR_CONTAINS: type 'any Source.Output' does not conform to interface 'Source'
+// EXPECT_STDERR_NOT_CONTAINS: panicked
+interface Source { type Output = Self; func read() -> Self::Output; }
+func integer(_ value: any Source) -> int32 { value.read() }
+func erased(_ value: any Source) -> any Source { value.read() }
+func main() {}

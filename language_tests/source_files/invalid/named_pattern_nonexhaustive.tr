@@ -1,0 +1,8 @@
+enum State { case flags { ready: bool }; case empty {} }
+func main() {
+    var state: State = .flags { ready: true }
+    match state {
+        case .flags { ready: true } => {}
+        case .empty {} => {}
+    }
+}

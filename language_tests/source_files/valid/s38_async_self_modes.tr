@@ -1,0 +1,29 @@
+interface Transform {
+    func change( bytes count: usize = std::mem::sizeOf[Self]()) async -> Self;
+    func read() -> int32
+}
+interface Echo { func echo() async -> Self; func read() -> int32; }
+struct Counter { value: int32; label: string }
+extend Counter { func read() -> int32 { assert(self.label == "payload", "owned string survives"); self.value }; }
+conform Counter to Transform {
+    func read() -> int32 { self.value }
+    func change( bytes count: usize = std::mem::sizeOf[Counter]()) async -> Self {
+        assert(count == std::mem::sizeOf[Counter](), "default uses concrete Self layout")
+        await std::testing::yieldNow()
+        self.value += 1
+        Counter { value: self.value, label: self.label }
+    }
+}
+conform Counter to Echo {
+    func read() -> int32 { self.value }
+    func echo() async -> Self { await std::testing::yieldNow(); self }
+}
+func main() async {
+    var original: any Transform = Counter { value: 7, label: "pay" + "load" }
+    var changed: any Transform = await original.change()
+    assert(original.read() == 7 && changed.read() == 8, "mutable Self receiver and owned result remain independent")
+    var owned: any Echo = Counter { value: 11, label: "pay" + "load" }
+    callback := owned.echo // FnOnce; consumes owned immediately.
+    var returned: any Echo = await callback()
+    assert(returned.read() == 11, "owned bound receiver and ready Self transfer once")
+}

@@ -1,0 +1,4 @@
+error: safe references use `&`; `&mut` has been removed
+ -> language_tests/source_files/invalid/mutable_reference_removed.tr:1:20
+	func edit(_ value: &mut int32) {}
+	                    ^^^

@@ -1,0 +1,41 @@
+// ENV: TARO_GC_STRESS=1
+// This inline array exceeds the layout walker's small visited set. Repeated
+// collection must preserve every active target and observe changed enum tags.
+enum StackRoot {
+    case empty
+    case live(&int32)
+}
+
+@noinline
+func target(_ value: int32) -> &int32 {
+    var stored = value
+    &stored
+}
+
+func main() {
+    var roots: [StackRoot; 40] = [.empty; 40]
+    var index: usize = 0
+    while index < 40 {
+        roots[index] = .live(target(index as int32))
+        index += 1
+    }
+    std::runtime::collect()
+    index = 0
+    while index < 40 {
+        match roots[index] {
+            case .live(value) => assert(*value == index as int32, "large root layouts retain every target")
+            case .empty => panic("live root disappeared")
+        }
+        roots[index] = if index % 2 == 0 { .empty } else { .live(target((index as int32) + 100)) }
+        index += 1
+    }
+    std::runtime::collect()
+    index = 0
+    while index < 40 {
+        match roots[index] {
+            case .empty => assert(index % 2 == 0, "collection observes the current empty variant")
+            case .live(value) => assert(index % 2 == 1 && *value == (index as int32) + 100, "collection observes the current target")
+        }
+        index += 1
+    }
+}

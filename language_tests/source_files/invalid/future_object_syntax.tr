@@ -1,0 +1,13 @@
+class Document { revision: int32 }
+namespace Models {
+    class Base {}
+    final class Draft: Base {}
+}
+struct Storage {
+    readonly version: int32 = 1
+}
+extend Storage {
+    override func reset() {}
+    init() {}
+}
+func main() {}

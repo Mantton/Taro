@@ -1,0 +1,5 @@
+struct CopyOnly { value: int32 }
+func main() {
+    var original: (CopyOnly, int32) = (CopyOnly { value: 1 }, 2)
+    cloned := original.clone()
+}

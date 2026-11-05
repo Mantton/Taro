@@ -1,7 +1,7 @@
 func wrap(_ opt: int32?) -> int32? {
     match opt {
         case .some(value) => {
-            let out = value;
+            out := value;
             .some(out)
         }
         case .none => .none
@@ -30,43 +30,43 @@ enum Holder {
 }
 
 func testMatchReference() {
-    let a = &Holder.value("hello, world")
-    match a {
-        case .value(value) => assert(*value == "hello, world", "matched value")
+    a := &Holder::value("hello, world")
+    match *a {
+        case .value(value) => assert(value == "hello, world", "matched value")
         case .none => assert(false, "should not be none")
     }
-    std.print("PASS: Match reference working\n")
+    std::print("PASS: Match reference working\n")
 }
 
 func testMatchReferenceGuard() {
-    let x = 41
-    let r = &x
+    x := 41
+    r := &x
 
-    match r {
-        case &y if y == 41 => assert(true, "guard matched")
-        case &y => {
-            let _ = y
+    match *r {
+        case y if y == 41 => assert(true, "guard matched")
+        case y => {
+            var _ = y
             assert(false, "guard fallback")
         }
     }
 
     var m = 5
-    let mr = &mut m
+    mr := &m
 
-    match mr {
-        case &mut y if y == 5 => {
-            y = 7
+    match *mr {
+        case y if y == 5 => {
+            *mr = 7
             assert(m == 7, "mut guard update")
         }
-        case &mut _ => assert(false, "mut guard fallback")
+        case _ => assert(false, "mut guard fallback")
     }
 
-    std.print("PASS: Match reference guards\n")
+    std::print("PASS: Match reference guards\n")
 }
 
 func testMatchStringLiteral() {
-    let greeting = "hello"
-    let code = match greeting {
+    greeting := "hello"
+    code := match greeting {
         case "hello" => 1
         case "world" => 2
         case _ => 3
@@ -75,13 +75,13 @@ func testMatchStringLiteral() {
 }
 
 func main() {
-    let wrapped = wrap(.some(1))
+    wrapped := wrap(.some(1))
     match wrapped {
         case .some(value) => assert(value == 1, "wrap should preserve some")
         case .none => assert(false, "wrap should preserve some")
     }
 
-    let state = spinUntilDone()
+    state := spinUntilDone()
     assert(state == 1, "spinUntilDone should break at state 1")
 
     testMatchReference()

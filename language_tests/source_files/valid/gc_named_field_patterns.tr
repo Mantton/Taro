@@ -1,0 +1,31 @@
+// ENV: TARO_GC_STRESS=1
+interface Label { func label() -> string; }
+struct Text { text: string }
+conform Text to Label {
+    func label() -> string { self.text }
+}
+struct Pair { left: string; right: string }
+enum Payload[T] {
+    case data { readonly value: T; label: any Label; pair: Pair }
+    case empty {}
+}
+
+func main() {
+    var payload: Payload[List[string]] = .data {
+        value: ["first " + "value"],
+        label: Text { text: "erased " + "label" },
+        pair: Pair { left: "left " + "text", right: "right " + "text" },
+    }
+    std::runtime::collect()
+    match &payload {
+        case .data { pair: Pair { right, left }, value: items, label } => {
+            payload = .empty {}
+            std::runtime::collect()
+            assert(right == "right text" && left == "left text", "nested copied fields survive source replacement")
+            assert(label.label() == "erased label", "erased payload keeps its box alive")
+            items.append("second " + "value")
+            assert(items.len() == 2 as usize && items[0] == "first value", "readonly payload binds a writable shared handle")
+        }
+        case .empty {} => panic("expected data")
+    }
+}

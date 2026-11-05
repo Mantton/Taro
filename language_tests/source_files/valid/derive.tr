@@ -1,6 +1,6 @@
 // Test: derived Hashable/PartialEq for structs and enums.
-import std.hash.{DefaultHasher, Hashable, Hasher}
-import std.ops.PartialEq
+import std::hash::{DefaultHasher, Hashable, Hasher}
+import std::ops::PartialEq
 
 struct PointEqHash: Hashable, PartialEq {
     x: int32
@@ -14,15 +14,15 @@ enum MaybeIntEqHash: Hashable, PartialEq {
 }
 
 func digestEqHash[T: Hashable](_ value: T) -> uint64 {
-    var hasher = DefaultHasher.new()
-    value.hash(into: &mut hasher)
+    var hasher = DefaultHasher::new()
+    value.hash(into: &hasher)
     hasher.finish()
 }
 
 func testDerivedHashableAndPartialEq() {
-    let a = PointEqHash { x: 1, y: 2 }
-    let b = PointEqHash { x: 1, y: 2 }
-    let c = PointEqHash { x: 1, y: 3 }
+    a := PointEqHash { x: 1, y: 2 }
+    b := PointEqHash { x: 1, y: 2 }
+    c := PointEqHash { x: 1, y: 3 }
 
     assert(a == b, "derived PartialEq for struct")
     assert(a != c, "derived PartialEq should detect struct field mismatch")
@@ -31,10 +31,10 @@ func testDerivedHashableAndPartialEq() {
         "equal struct values should hash equally under derived Hashable",
     )
 
-    let e1 = MaybeIntEqHash.Some(7)
-    let e2 = MaybeIntEqHash.Some(7)
-    let e3 = MaybeIntEqHash.Pair(7, 0)
-    let e4 = MaybeIntEqHash.None
+    e1 := MaybeIntEqHash::Some(7)
+    e2 := MaybeIntEqHash::Some(7)
+    e3 := MaybeIntEqHash::Pair(7, 0)
+    e4 := MaybeIntEqHash::None
 
     assert(e1 == e2, "derived PartialEq for enum payload")
     assert(e1 != e3, "derived PartialEq should include enum variant")

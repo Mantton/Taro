@@ -1,0 +1,3 @@
+func main() {
+    assert(std::mem::sizeOf[std::mem::Span[int32]]() == 2 * std::mem::sizeOf[usize](), "slice must be two words")
+}

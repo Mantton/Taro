@@ -1,11 +1,11 @@
 pub mod abi;
 pub mod artifact;
+pub(crate) mod gc_pc_metadata;
+pub(crate) mod gc_stack_maps;
 pub mod link;
 pub mod llvm;
 pub mod lto;
 pub mod mangle;
-pub(crate) mod pc_metadata;
-pub mod stack_maps;
 pub mod target;
 
 use std::{ffi::CString, ptr, sync::Once};

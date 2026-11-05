@@ -1,0 +1,4 @@
+error: `&const T` is removed; write `&T`
+ -> language_tests/source_files/invalid/const_borrow_spelling.tr:1:23
+	func inspect(_ value: &const int32) {}
+	                       ^^^^^

@@ -5,12 +5,12 @@ struct CycleLeaf[T] {
     value: T
 }
 
-impl[T] CycleA for CycleLeaf[T] where CycleLeaf[T]: CycleB {}
-impl[T] CycleB for CycleLeaf[T] where CycleLeaf[T]: CycleA {}
+conform[T] CycleLeaf[T] to CycleA where CycleLeaf[T]: CycleB {}
+conform[T] CycleLeaf[T] to CycleB where CycleLeaf[T]: CycleA {}
 
 func requireCycleA[T: CycleA](_ value: T) {}
 
 func main() {
-    let value = CycleLeaf[int32] { value: 1 }
+    value := CycleLeaf[int32] { value: 1 }
     requireCycleA(value)
 }

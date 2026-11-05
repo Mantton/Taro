@@ -1,0 +1,6 @@
+[package]
+name = "github.com/example/async-borrow-carrier-app"
+kind = "executable"
+
+[require]
+"github.com/example/async-borrow-carrier-dep" = { path = "../dep", alias = "dep" }

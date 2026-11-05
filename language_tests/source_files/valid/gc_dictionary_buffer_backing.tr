@@ -1,0 +1,48 @@
+// ENV: TARO_GC_STRESS=1
+// Private dictionary buffers retain typed keys and erased payloads through
+// construction, copying and rehashing, including collections between slots.
+interface Payload {
+    func read() -> int32
+}
+struct InlinePayload { target: &int32 }
+conform InlinePayload to Payload {
+    func read() -> int32 { *self.target }
+}
+
+@noinline
+func payload(_ number: int32) -> any Payload {
+    var target = number
+    InlinePayload { target: &target }
+}
+
+func main() {
+    var values: [string: any Payload] = [:]
+    var index: int32 = 0
+    while index < 24 {
+        values.set(key: sprintf("key-%v", index), value: payload(index))
+        std::runtime::collect()
+        index += 1
+    }
+    copied := values.copy()
+    alias := values
+    index = 0
+    while index < 12 {
+        key := sprintf("key-%v", index)
+        var _ = alias.remove(&key)
+        index += 1
+    }
+    while index < 80 {
+        alias.set(key: sprintf("key-%v", index), value: payload(index + 100))
+        index += 1
+    }
+    assert(values.len() == 68, "aliases retain shared dictionary identity during growth")
+    alias.clear()
+    std::runtime::collect()
+    assert(values.isEmpty() && copied.len() == 24, "copy retains independent buffers after clear")
+    index = 0
+    while index < 24 {
+        key := sprintf("key-%v", index)
+        assert(copied.get(&key).unwrap().read() == index, "copied keys and erased values survive collection")
+        index += 1
+    }
+}

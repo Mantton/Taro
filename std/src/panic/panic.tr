@@ -1,4 +1,8 @@
-import std.runtime
+import std::runtime
+
+// The entry points below are never inlined: codegen lowers each call to a
+// panic at the caller's source location, which an inlined body would hide
+// behind std frames.
 
 /// Terminate the program immediately with an error message.
 ///
@@ -11,8 +15,9 @@ import std.runtime
 ///     panic("index out of bounds")
 /// }
 /// ```
+@noinline
 public func panic(_ message: string) -> ! {
-    runtime.panicUnwind(message)
+    runtime::panicUnwind(message)
 }
 
 /// Indicates that this code path should never be reached.
@@ -27,6 +32,7 @@ public func panic(_ message: string) -> ! {
 ///     case .err(_) => unreachable()
 /// }
 /// ```
+@noinline
 public func unreachable() -> ! {
     panic("entered unreachable code")
 }
@@ -41,6 +47,7 @@ public func unreachable() -> ! {
 ///     todo("implement the actual algorithm")
 /// }
 /// ```
+@noinline
 public func todo(_ message: string) -> ! {
-    runtime.panicUnwind(message)
+    runtime::panicUnwind(message)
 }

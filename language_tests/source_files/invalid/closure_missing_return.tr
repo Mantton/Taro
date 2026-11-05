@@ -1,0 +1,11 @@
+// `while true` can exit as far as flow analysis is concerned. A closure body must
+// report the missing return rather than reach the MIR return-slot validator.
+func main() {
+    var _ = (limit: int64) -> int64 => {
+        var total: int64 = 0
+        while true {
+            if total > limit { return total }
+            total += 1
+        }
+    }
+}

@@ -1,0 +1,8 @@
+import std::encoding::Codable
+
+struct NotCodable {}
+struct InvalidRecord: Codable {
+    value: NotCodable
+}
+
+func main() {}

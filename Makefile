@@ -13,16 +13,21 @@ CODEGEN_BENCHMARK := $(ROOT)/development/scripts/codegen_benchmarks.py
 JSON_VERIFIER := $(ROOT)/development/verifiers/json/verify.py
 JSON_BENCHMARK_PACKAGE := $(ROOT)/development/benchmarks/json
 RUNTIME_STRESS := $(ROOT)/development/scripts/runtime_stress.py
+DISK_GUARD := $(ROOT)/development/scripts/disk_guard.py
 CODEGEN_MATRIX := $(ROOT)/language_tests/codegen_matrix.txt
 
 DIST_DIR := $(ROOT)/dist
 TARO := $(DIST_DIR)/bin/taro
 STD_PATH := $(ROOT)/std
 
-.PHONY: help compiler compiler-release dist run check cargo-test test language-tests codegen-matrix std-tests runtime-stress all-tests verify-json-prepare verify-json bench json-benchmark benchmark codegen-benchmark
+.PHONY: help disk-guard disk-usage compiler compiler-release dist run check cargo-test test language-tests codegen-matrix std-tests runtime-stress gc-stress all-tests verify-json-prepare verify-json bench json-benchmark benchmark codegen-benchmark
 
 help:
 	@echo "Taro development shortcuts"
+	@echo ""
+	@echo "Disk (budget: 15 GiB for the repo and Taro temp caches):"
+	@echo "  make disk-usage               Show usage and the largest entries"
+	@echo "  make disk-guard               Prune build caches back under budget"
 	@echo ""
 	@echo "Build:"
 	@echo "  make compiler                 Build taro-bin (debug)"
@@ -43,6 +48,7 @@ help:
 	@echo "  make codegen-matrix OPT_LEVEL=2"
 	@echo "  make std-tests                Run std package test files"
 	@echo "  make runtime-stress           Run runtime-tagged std stress tests across worker counts"
+	@echo "  make gc-stress                Run periodic GC fixtures and Monkey at O0/O3 with the installed SDK"
 	@echo "  make all-tests                Run full test_all.py pipeline"
 	@echo "  make all-tests JOBS=4"
 	@echo ""
@@ -59,10 +65,16 @@ help:
 	@echo "  make codegen-benchmark        Compare release baseline and O2 code generation"
 	@echo "  make codegen-benchmark RUNS=10"
 
-compiler:
+disk-guard:
+	@$(PYTHON) $(DISK_GUARD)
+
+disk-usage:
+	@$(PYTHON) $(DISK_GUARD) --report
+
+compiler: disk-guard
 	$(CARGO) build -p taro-bin
 
-compiler-release:
+compiler-release: disk-guard
 	$(CARGO) build -p taro-bin --release
 
 dist:
@@ -82,7 +94,7 @@ check: dist
 	fi
 	TARO_HOME=$(DIST_DIR) $(TARO) check $(FILE) --std-path $(STD_PATH)
 
-cargo-test:
+cargo-test: disk-guard
 	$(CARGO) test --workspace
 
 test: cargo-test
@@ -96,7 +108,10 @@ codegen-matrix:
 std-tests: dist
 	$(PYTHON) $(TEST_ALL) --skip-cargo-tests --skip-build-dist --skip-language-tests
 
-runtime-stress:
+gc-stress: disk-guard
+	$(PYTHON) development/scripts/test_gc_stress.py --dist $(DIST_DIR)
+
+runtime-stress: disk-guard
 	$(PYTHON) $(RUNTIME_STRESS)
 
 all-tests:

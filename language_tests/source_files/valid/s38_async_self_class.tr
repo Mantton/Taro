@@ -1,0 +1,21 @@
+import std::collections::List
+interface Duplicate { func duplicate() async -> Self; }
+class Document { value: int32; undo: List[int32] }
+extend Document {
+    public required init(_ value: int32) { self.value = value; self.undo = List[int32]::new(); self.undo.append(value) }
+}
+conform Document to Duplicate {
+    func duplicate() async -> Self { await std::testing::yieldNow(); Self(self.value + 1) }
+}
+class Draft: Document { revision: int32 = 9 }
+conform Draft to Duplicate {
+    override func duplicate() async -> Self { await std::testing::yieldNow(); Self(self.value + 2) }
+}
+func main() async {
+    var original: Document = Draft(7) // Document; handle to a Draft object holding a NoCopy collection.
+    var erased: any Duplicate = original // any Duplicate; stored type is Document, dynamic object type Draft.
+    var copied: any Duplicate = await erased.duplicate()
+    var value: Document = *copied.asRef[Document]().unwrap() // Document; copy the strong handle from its exact stored slot.
+    assert(value !== original && value.value == 9 && value.undo.len() == 1, "async Self constructs an independent owned object")
+    assert((value as? Draft).unwrap().revision == 9, "async erasure preserves the dynamic subclass")
+}

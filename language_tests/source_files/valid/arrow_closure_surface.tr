@@ -1,0 +1,18 @@
+func apply[F: Fn(int32) -> int32](_ operation: F, _ value: int32) -> int32 {
+    return operation(value)
+}
+func move(_ value: int32) -> int32 { return value }
+func main() {
+    var add: (int32) -> int32 = (value: int32) => value + 1
+    assert(add(2) == 3, "typed arrow closure")
+    assert(apply((value) => value * 2, 4) == 8, "contextual parameter type")
+    var offset: int32 = 5
+    shifted := (value: int32) -> int32 => value + offset
+    assert(shifted(2) == 7, "explicit move arrow closure")
+    answer := () => 42
+    assert(answer() == 42, "zero parameter closure")
+    pair := (1, 2)
+    assert(pair.0 == 1 && pair.1 == 2, "tuple fallback")
+    assert(move(3) == 3, "move remains a contextual identifier")
+    print("arrow closures\n")
+}

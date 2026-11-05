@@ -1,0 +1,6 @@
+[package]
+name = "github.com/example/internalapp"
+kind = "executable"
+
+[require]
+"github.com/example/internalowner" = { path = "../dep", alias = "dep" }

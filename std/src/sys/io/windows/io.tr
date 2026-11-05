@@ -1,9 +1,9 @@
-import std.io.Error
-import std.panic.todo
-import std.result.Result
+import std::io::Error
+import std::panic::todo
+import std::result::Result
 
 public struct PlatformAsyncStream {
-    source_id: usize
+    internal source_id: usize
 }
 
 public func mapErrno(_ code: int32) -> Error {

@@ -1,0 +1,42 @@
+// ENV: TARO_WORKERS=4
+import std::marker::Clone
+static var defaults: int32 = 0
+static var initializers: int32 = 0
+static var trace: int32 = 0
+func nextDefault(_ marker: int32) -> int32 {
+    defaults += 1
+    trace = trace * 10 + marker
+    marker
+}
+struct Literal { first: int32 = nextDefault(1); second: int32 = nextDefault(2) }
+struct Constructed: Clone {
+    readonly first: int32 = nextDefault(1)
+    second: int32 = nextDefault(2)
+}
+extend Constructed {
+    init(_ second: int32) {
+        initializers += 1
+        self.second = second
+    }
+}
+struct Generic[T] { readonly size: usize = std::mem::sizeOf[T]() }
+extend[T] Generic[T] { init() {} }
+struct Callback { compute: (int32) -> int32 = (value: int32) => value + 1 }
+extend Callback { init() {} }
+func main() {
+    var literal: Literal = Literal { first: 9 }
+    assert(literal.first == 9 && literal.second == 2, "a literal fills only omitted fields")
+    assert(defaults == 1 && trace == 2, "explicit literal fields skip their defaults")
+    defaults = 0
+    trace = 0
+    var value: Constructed = Constructed(8)
+    assert(value.first == 1 && value.second == 8, "init may overwrite mutable defaults")
+    assert(defaults == 2 && trace == 12 && initializers == 1, "constructor defaults run once in field order")
+    var copied: Constructed = value.clone()
+    assert(copied.first == 1 && copied.second == 8, "clone duplicates fields")
+    assert(defaults == 2 && initializers == 1, "clone does not rerun defaults or init")
+    var generic: Generic[int32] = Generic()
+    assert(generic.size == std::mem::sizeOf[int32](), "generic provider receives nominal type arguments")
+    var callback: Callback = Callback()
+    assert((callback.compute)(7) == 8, "closure-valued defaults use their defining scope")
+}

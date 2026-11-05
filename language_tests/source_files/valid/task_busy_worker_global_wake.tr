@@ -1,0 +1,20 @@
+// ENV: TARO_WORKERS=2
+// ENV: TARO_GC_STRESS=0
+// A busy worker must not consume the only notification for a global timer wake.
+// Forced stress intentionally keeps GC_NEEDED set after every collection.
+// A busy mutator may win the next collection before a notified peer resumes;
+// the condvar promises notification, not FIFO mutator scheduling. Normal pacing
+// clears GC_NEEDED and requires fresh allocation pressure (including percent=0).
+// This test isolates timer wake latency; separate stress fixtures cover roots.
+func main() async {
+    var _ = std::task::spawn(() async => {
+        await std::task::sleep(std::time::Duration::fromSeconds(3_u64))
+    })
+    var _ = std::task::spawn(() async => {
+        var count: uint64 = 0
+        while true { count += 1 }
+    })
+    started := std::time::Instant::now()
+    await std::task::sleep(std::time::Duration::fromMillis(20_u64))
+    assert(started.elapsed().seconds() < 2_u64, "timer wake stranded behind a busy worker")
+}

@@ -1,0 +1,4 @@
+error: cannot implement 'PartialEq[List[int32]]' for 'List[int32]': neither the interface nor a qualifying input type is defined in this package
+ -> language_tests/source_files/invalid/foreign_conformance_ownership.tr:1:23
+	conform List[int32] to std::ops::PartialEq[List[int32]] {
+	                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -1,8 +1,9 @@
-import std.mem.{MutableSpan, growBuffer, maxBufferCapacity}
-import std.panic.panic
-import std.rune.{runeEncode, runeLenUtf8}
+import std::mem::{Span, NativeBytes, maxBufferCapacity}
+import std::panic::panic
+import std::rune::{runeEncode, runeLenUtf8}
 
 const BUILDER_INITIAL_CAPACITY: usize = 32
+const TAKEN_SLACK_LIMIT: usize = 512
 
 func builderCapacityOverflow() {
     panic("string builder capacity overflow")
@@ -19,7 +20,7 @@ func checkedBuilderLen(_ len: usize, _ additional: usize) -> usize {
 }
 
 func nextBuilderCapacity(_ current: usize, _ required: usize) -> usize {
-    let maxCapacity = maxBufferCapacity[uint8]()
+    maxCapacity := maxBufferCapacity[uint8]()
     if required > maxCapacity {
         builderCapacityOverflow()
     }
@@ -45,71 +46,75 @@ func nextBuilderCapacity(_ current: usize, _ required: usize) -> usize {
     return next
 }
 
-/// An efficient, growable UTF-8 string accumulator.
-///
-/// `Builder` owns GC-managed byte storage. `intoString` consumes the builder
-/// and transfers that storage directly into the returned string without a
-/// final full-buffer copy.
-public struct Builder {
-    buffer: *mut uint8
+// All aliases share both the byte allocation and its logical length.
+final class BuilderState {
+    storage: NativeBytes
     length: usize
     capacity: usize
 }
 
-impl Builder {
-    /// Creates an empty builder without allocating.
-    public func new() -> Self {
-        Builder {
-            buffer: unsafe { 0 as *mut uint8 },
-            length: 0,
-            capacity: 0,
-        }
+extend BuilderState {
+    init() {
+        self.storage = NativeBytes::new(0)
+        self.length = 0
+        self.capacity = 0
     }
+}
+
+/// A shared growable UTF-8 accumulator. Copying a Builder shares its state.
+/// `toString()` copies an immutable snapshot and leaves the builder intact.
+public struct Builder {
+    private state: BuilderState
+}
+
+extend Builder {
+    /// Creates an empty shared builder.
+    public static func new() -> Self { Builder { state: BuilderState() } }
 
     /// Returns the number of bytes written so far.
-    public func len(&self) -> usize {
-        self.length
+    public func len() -> usize {
+        self.state.length
     }
 
     /// Ensures storage for at least `minCapacity` total bytes.
-    public func reserve(&mut self, _ minCapacity: usize) {
-        if minCapacity <= self.capacity {
+    public func reserve(_ minCapacity: usize) {
+        if minCapacity <= self.state.capacity {
             return
         }
 
-        let nextCapacity = nextBuilderCapacity(self.capacity, minCapacity)
-        self.buffer = growBuffer[uint8](self.buffer, self.length, nextCapacity)
-        self.capacity = nextCapacity
+        nextCapacity := nextBuilderCapacity(self.state.capacity, minCapacity)
+        unsafe { self.state.storage.reserve(self.state.length, nextCapacity) }
+        self.state.capacity = nextCapacity
     }
 
     /// Appends one byte. The byte is not required to be valid UTF-8.
-    public func writeByte(&mut self, _ value: uint8) {
-        let nextLen = checkedBuilderLen(self.length, 1 as usize)
+    public func writeByte(_ value: uint8) {
+        nextLen := checkedBuilderLen(self.state.length, 1 as usize)
         self.reserve(nextLen)
-        self.buffer.add(self.length).write(value)
-        self.length = nextLen
+        unsafe { self.state.storage.data().add(self.state.length).write(value) }
+        self.state.length = nextLen
     }
 
     /// Appends one Unicode scalar encoded as UTF-8.
-    public func writeRune(&mut self, _ value: rune) {
-        let width = runeLenUtf8(value)
-        let nextLen = checkedBuilderLen(self.length, width)
+    public func writeRune(_ value: rune) {
+        width := runeLenUtf8(value)
+        nextLen := checkedBuilderLen(self.state.length, width)
         self.reserve(nextLen)
 
-        var destination = MutableSpan[uint8].from(self.buffer.add(self.length), width)
-        let _ = runeEncode(value, &mut destination)
-        self.length = nextLen
+        var destination = unsafe { Span[uint8]::from(self.state.storage.data().add(self.state.length), width) }
+        var _ = runeEncode(value, &destination)
+        self.state.length = nextLen
     }
 
     /// Appends all bytes from `value`.
-    public func writeString(&mut self, _ value: string) {
+    public func writeString(_ value: string) {
         self.writeStringRange(value, 0, stringLen(value))
     }
 
     // Shared by std.string operations so replacement and formatting can copy
     // ranges in bulk without allocating intermediate strings.
-    func writeStringRange(&mut self, _ value: string, _ start: usize, _ count: usize) {
-        let valueLen = stringLen(value)
+    internal func writeStringRange(_ value: string, _ start: usize, _ count: usize) {
+        valueLen := stringLen(value)
         if start > valueLen || count > (valueLen - start) {
             panic("string builder source range out of bounds")
         }
@@ -117,22 +122,69 @@ impl Builder {
             return
         }
 
-        let nextLen = checkedBuilderLen(self.length, count)
+        nextLen := checkedBuilderLen(self.state.length, count)
         self.reserve(nextLen)
-        stringData(value).add(start).readBytes(self.buffer.add(self.length), count)
-        self.length = nextLen
+        // Most callers here are appending separators.
+        source := unsafe { stringData(value).add(start) }
+        destination := unsafe { self.state.storage.data().add(self.state.length) }
+        if count <= 2 {
+            unsafe {
+                destination.write(source.read())
+                if count == 2 { destination.add(1).write(source.add(1).read()) }
+            }
+        } else {
+            unsafe { source.readBytes(destination, count) }
+        }
+        self.state.length = nextLen
+    }
+
+    // The accumulated bytes in place, valid until this builder next changes.
+    internal func bytes() -> Span[uint8] {
+        return unsafe { Span[uint8]::from(self.state.storage.data() as *const uint8, self.state.length) }
+    }
+
+    // Room for `count` more bytes, for a caller to fill and then `commitSpare`. Any
+    // other use of this builder before that invalidates the span.
+    internal func spare(_ count: usize) -> Span[uint8] {
+        self.reserve(checkedBuilderLen(self.state.length, count))
+        return unsafe { Span[uint8]::from(self.state.storage.data().add(self.state.length), count) }
+    }
+
+    internal func commitSpare(_ count: usize) {
+        self.state.length = checkedBuilderLen(self.state.length, count)
+        if self.state.length > self.state.capacity { panic("string builder commit exceeds capacity") }
+    }
+
+    // Empties the builder and gives up its allocation, unlike `clear`.
+    internal func releaseStorage() {
+        self.state.storage.detach()
+        self.state.length = 0
+        self.state.capacity = 0
+    }
+
+    // The bytes as a string, leaving this builder empty. The string takes over the
+    // allocation, unless that would pin much more memory than it uses.
+    internal func takeString() -> string {
+        if self.state.length == 0 { return "" }
+        if self.state.capacity > TAKEN_SLACK_LIMIT && self.state.capacity / 2 > self.state.length {
+            return self.toString()
+        }
+        unsafe { self.state.storage.publish(self.state.length) }
+        result := unsafe { stringFromParts(self.state.storage.data() as *const uint8, self.state.length) }
+        self.releaseStorage()
+        return result
     }
 
     /// Removes all content while retaining allocated capacity for reuse.
-    public func clear(&mut self) {
-        self.length = 0
+    public func clear() {
+        self.state.length = 0
     }
 
-    /// Consumes the builder and returns its accumulated bytes as a string.
-    public func intoString(self) -> string {
-        if self.length == 0 {
+    /// Returns an immutable copy of the accumulated bytes without clearing them.
+    public func toString() -> string {
+        if self.state.length == 0 {
             return ""
         }
-        return stringFromParts(self.buffer, self.length)
+        return unsafe { self.state.storage.toString(self.state.length) }
     }
 }

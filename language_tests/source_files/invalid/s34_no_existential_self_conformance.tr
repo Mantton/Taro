@@ -1,0 +1,9 @@
+interface Readable { func read() -> int32; }
+struct Counter { value: int32 }
+conform Counter to Readable { func read() -> int32 { self.value }; }
+func inspect[T: Readable](_ value: &T) -> int32 { value.read() }
+func main() {
+    var boxed: any Readable = Counter { value: 7 } // any Readable.
+    var read: int32 = inspect[any Readable](&boxed) // Error: explicitly chosen any Readable does not conform to Readable.
+    assert(read == 7, "must not reach this statement")
+}

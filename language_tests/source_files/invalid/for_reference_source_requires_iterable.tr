@@ -1,0 +1,27 @@
+// No lending protocol: a borrowed source must itself conform to Iterable (D9).
+struct Owned { value: int32 }
+struct Cursor { value: int32; done: bool }
+conform Cursor to Iterator {
+    type Element = int32
+    func next() -> Optional[int32] {
+        if self.done { return .none }
+        self.done = true
+        return .some(self.value)
+    }
+}
+conform Owned to Iterable {
+    type Element = int32
+    type Iterator = Cursor
+    func iter() -> Cursor { Cursor { value: self.value, done: false } }
+}
+func main() {
+    var source: Owned = Owned { value: 7 }
+    for value in &source {}
+}
+
+func rejectArrayReference(_ values: &[int32; 2]) {
+    for value in values {}
+}
+func rejectListReference(_ values: &std::collections::List[int32]) {
+    for value in values {}
+}

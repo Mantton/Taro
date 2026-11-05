@@ -1,0 +1,9 @@
+interface Readable { func read() -> int32; }
+struct Counter { value: int32 }
+conform Counter to Readable { func read() -> int32 { self.value }; }
+func same[T: Readable, U](_ left: &T, _ right: &U) -> bool where T == U { true }
+func main() {
+    var left: any Readable = Counter { value: 1 } // any Readable.
+    var right: any Readable = Counter { value: 2 } // any Readable.
+    var result: bool = same(&left, &right) // Error: a where equality cannot join separately erased identities.
+}

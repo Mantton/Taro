@@ -1,0 +1,5 @@
+import std::marker::Clone
+
+struct CopyOnly { value: int32 }
+struct Container: Clone { component: CopyOnly }
+func main() {}

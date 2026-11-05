@@ -1,0 +1,4 @@
+error: atomic.Handle requires a concrete class type; erased interface values carry additional metadata
+ -> language_tests/source_files/invalid/atomic_handle_erased.tr:3:5
+	func inspect(_ value: Handle[any Config]) {}
+	     ^^^^^^^

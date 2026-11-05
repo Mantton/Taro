@@ -1,0 +1,65 @@
+// ENV: TARO_GC_STRESS=1 TARO_WORKERS=4
+// Large inline roots include padding and arrays. Their scanner clear must
+// finish before a collecting field initializer, without touching neighboring
+// values when a returned aggregate replaces an existing field.
+struct Padded {
+    ready: bool
+    first: &int32
+    marker: uint8
+    second: &int32
+}
+struct Surrounded {
+    before: uint8
+    value: Padded
+    after: uint8
+}
+
+@noinline
+func fresh(_ number: int32) -> &int32 {
+    var value = number
+    std::runtime::collect()
+    return &value
+}
+
+@noinline
+func packet(_ number: int32) -> Padded {
+    return Padded {
+        ready: true,
+        first: fresh(number),
+        marker: 9,
+        second: fresh(number + 8),
+    }
+}
+
+@noinline
+func references(_ number: int32) -> [&int32; 5] {
+    return [fresh(number); 5]
+}
+
+func main() {
+    var iteration: int32 = 0
+    while iteration < 8 {
+        var surrounded = Surrounded { before: 13, value: packet(17), after: 29 }
+        std::runtime::collect()
+        assert(*surrounded.value.first + *surrounded.value.second == 42,
+            "references survive padded aggregate construction and return")
+        surrounded.value = packet(31)
+        std::runtime::collect()
+        assert(surrounded.before == 13 && surrounded.after == 29,
+            "return storage does not overwrite neighboring fields")
+        assert(surrounded.value.ready && surrounded.value.marker == 9,
+            "scalar fields survive reference-bearing aggregate replacement")
+        assert(*surrounded.value.first + *surrounded.value.second == 70,
+            "replacement publishes its new references")
+
+        var values = references(42)
+        std::runtime::collect()
+        var index: usize = 0
+        while index < values.len() {
+            assert(*values[index] == 42, "array return storage retains all references")
+            index += 1
+        }
+        iteration += 1
+    }
+    print("PASS: bulk scanner initialization preserves aggregate roots\n")
+}

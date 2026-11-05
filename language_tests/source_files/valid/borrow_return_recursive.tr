@@ -1,0 +1,18 @@
+func left(_ value: &int32, _ finish: bool) -> &int32 {
+    if finish { return value }
+    right(value, true)
+}
+
+func right(_ value: &int32, _ finish: bool) -> &int32 {
+    if finish { return value }
+    left(value, true)
+}
+
+func main() {
+    var value: int32 = 7
+    var saved: &int32 = left(&value, false)
+    assert(*saved == 7, "recursive helpers preserve the input dependency")
+    value = 9
+    assert(*right(&value, false) == 9, "loan ends after the last dependent use")
+    print("recursive checked returns ok\n")
+}

@@ -1,0 +1,8 @@
+class Base[T] { value: T }
+extend Base[int32] {
+    init() { self.value = 7 }
+}
+final class Child[T]: Base[T] {}
+func main() {
+    var child: Child[bool] = Child[bool]() // Error: the inherited entry requires Base[int32].
+}

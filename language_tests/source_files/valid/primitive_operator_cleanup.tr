@@ -1,0 +1,12 @@
+// EXPECT_EXIT: 101
+// OVERFLOW_CHECKS
+// EXPECT_STDERR_CONTAINS: panic: attempt to add with overflow
+// EXPECT_STDOUT_CONTAINS: primitive witness cleanup reached
+import std::ops::Add
+func sum[T: Add[Output = T]](_ a: &T, _ b: &T) -> T { *a + *b }
+func main() {
+    var a: uint8 = 255
+    var b: uint8 = 1
+    defer { print("primitive witness cleanup reached\n") }
+    var _ = sum(&a, &b)
+}

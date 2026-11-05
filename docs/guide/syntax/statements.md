@@ -8,8 +8,8 @@ Blocks group statements and define scopes.
 
 ```taro
 {
-    let x = 1
-    let y = 2
+    x := 1
+    y := 2
     printf("%d", x + y)
 }
 ```
@@ -21,9 +21,9 @@ Blocks group statements and define scopes.
 ### Let (Immutable)
 
 ```taro
-let x = 42              // Type inferred
-let y: int32 = 42       // Explicit type
-let (a, b) = (1, 2)     // Pattern destructuring
+x := 42              // Type inferred
+var y: int32 = 42       // Explicit type
+var (a, b) = (1, 2)     // Pattern destructuring
 ```
 
 ### Var (Mutable)
@@ -58,11 +58,11 @@ Supported format specifiers:
 - `%%` literal percent sign
 - `%d` integer arguments only
 - `%s` string arguments only
-- `%v` any type conforming to `std.fmt.Formattable`
+- `%v` any type conforming to `std::fmt::Formattable`
 
 Formatting interfaces:
-- `std.fmt.Display` writes a user-facing representation into `std.fmt.Formatter`.
-- `std.fmt.Formattable` extends `Display` with verb-aware formatting using `FormatState`.
+- `std::fmt::Display` writes a user-facing representation into `std::fmt::Formatter`.
+- `std::fmt::Formattable` extends `Display` with verb-aware formatting using `FormatState`.
 
 Validation behavior:
 - Literal format strings are validated at compile time (specifier grammar, argument count, and `%d`/`%s` argument types).
@@ -71,7 +71,7 @@ Validation behavior:
 ```taro
 func main() {
     printf("x=%d y=%s z=%v\n", 7, "ok", true)
-    let line = sprintf("x=%d", 7)
+    line := sprintf("x=%d", 7)
     printf("100%%\n")
 }
 ```
@@ -80,16 +80,16 @@ F-strings provide a shorthand for `%v`-style formatting:
 
 ```taro
 func main() {
-    let name = "Ada"
-    let score = 7
-    let line = f"Hello, {name} (score={score})"
+    name := "Ada"
+    score := 7
+    line := f"Hello, {name} (score={score})"
 }
 ```
 
 Notes:
 - Interpolations use `{expr}` and support full expressions.
 - Literal braces use `{{` and `}}`.
-- `%` in literal segments is preserved (compiler escapes it when lowering to `std.sprintf`).
+- `%` in literal segments is preserved (compiler escapes it when lowering to `std::sprintf`).
 
 ---
 
@@ -273,12 +273,17 @@ outer: for row in grid {
 
 ## Defer Statement
 
-Execute code when leaving the current scope.
+Execute code when leaving the current scope, in reverse registration order.
+`defer expression` is shorthand for `defer { expression }`: its callable,
+receiver, arguments and assignment target are evaluated during cleanup, not
+when the defer is registered. Both forms observe later changes to captured
+variables. Copy a value into a fresh local to retain a particular value or
+resource handle, following ordinary value semantics.
 
 ```taro
 func process() {
-    let file = openFile()
-    defer { file.close() }
+    file := openFile()
+    defer file.close()
     
     // Use file...
     // file.close() called automatically when function exits
@@ -286,25 +291,32 @@ func process() {
 
 // Multiple defers (LIFO order)
 func example() {
-    defer { print("3") }
-    defer { print("2") }
-    defer { print("1") }
+    defer print("3")
+    defer print("2")
+    defer print("1")
     // Prints: 1, 2, 3
 }
 ```
+
+Only reached defer statements register cleanup. Registered actions run on normal
+and early exits, ordinary panic unwinding and observed task cancellation. Deferred
+code remains synchronous; `await`, `return`, `break` and `continue` keep the same
+restrictions as in a defer block. Inline expressions use the existing scope and
+unwind machinery, including nested blocks.
+
 
 ---
 
 ## Guard Statement
 
 Early exit if a `bool` condition fails. An optional is not a condition by
-itself; use `guard let` to unwrap it. The `else` block must exit the current
+itself; use `guard var` to unwrap it. The `else` block must exit the current
 control-flow path, for example with `return`, `break`, `continue`, or a
 never-returning call.
 
 ```taro
 func process(value: int32?) {
-    guard let v = value else { return }
+    guard var v = value else { return }
     // 'v' is non-optional int32
     
     printf("%d\n", v)
@@ -351,3 +363,32 @@ outer: loop {
     }
 }
 ```
+
+### Eager transforms and lazy traversal
+
+`Iterable::map` and `Iterable::filter` return a new `List` and run their callbacks
+before returning. Filter predicates receive ordinary element values: inline
+values are copied and class/reference targets remain shared.
+
+```taro
+var items: List[int32] = [1, 2, 3]
+results := items.filter((item: int32) => item > 1).map((item: int32) => item * 2)
+pipeline := items.lazy().filter((item: int32) => item > 1).map((item: int32) => item * 2)
+collected := pipeline.collect()
+```
+
+A lazy pipeline retains its source and defers callbacks until traversal. Each
+`collect()`, terminal operation, or `for` loop starts a fresh traversal of a
+collection source and reruns callbacks; results are not cached. A List pipeline
+keeps the selected handle, sees changes made before traversal, and is not
+retargeted by assigning a different List to the original variable. Callback
+captures read their current bindings. `items.copy().lazy()` explicitly copies
+outer storage. Inline arrays are copied; `array.asSpan().lazy()` shares storage.
+
+Standard cursors also implement `Iterable`. For generic `I: Iterator` code,
+`std::iter::fromIterator(cursor).lazy()` exposes the same pipeline operations.
+An explicit cursor remains single pass: its copies share progress and repeated
+traversal continues from that cursor rather than restarting. Structural changes
+to a collection invalidate active cursors; replacement of an existing element
+is allowed and subsequent reads see the new value. An exhausted cursor stays
+exhausted. These checks diagnose mutation and do not synchronize concurrent code.

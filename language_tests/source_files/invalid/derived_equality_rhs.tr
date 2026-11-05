@@ -1,0 +1,5 @@
+import std::ops::PartialEq
+struct Other { flag: bool }
+struct Concrete: PartialEq[Other] { value: int32 }
+struct Generic[T]: PartialEq[T] { value: int32 }
+func main() {}

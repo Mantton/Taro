@@ -1,0 +1,15 @@
+// EXPECT_EXIT: 101
+// OVERFLOW_CHECKS
+// EXPECT_STDERR_CONTAINS: panic: attempt to divide with overflow
+// EXPECT_STDOUT_CONTAINS: cleanup observed -128
+// MIN / -1 depends on the stored value, so it is detected under the access
+// and keeps the old value.
+class Gauge { level: int8 = -128 }
+extend Gauge {
+    init() {}
+}
+func main() {
+    var gauge: Gauge = Gauge()
+    defer { std::printf("cleanup observed %v\n", gauge.level) }
+    gauge.level /= -1
+}

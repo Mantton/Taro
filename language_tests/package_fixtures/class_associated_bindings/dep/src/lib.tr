@@ -1,0 +1,16 @@
+public interface Reader[Tag] { type Output; func item() -> &Self::Output; func marker() -> int32; func same() -> Self; }
+public interface Identity { type Fixed = Self; func fixed() -> Self::Fixed; func same() -> Self; }
+public class Base[A, B] { value: A }
+extend[A, B] Base[A, B] { public init(_ value: A) { self.value = value }; }
+conform[B, A] Base[A, B] to Reader[B] {
+    type Output = A
+    public func item() -> &A { &self.value }
+    public func marker() -> int32 { 1 }
+    public func same() -> Self { self }
+}
+public class Object {}
+extend Object { public init() {} }
+conform Object to Identity {
+    public func fixed() -> Object { Object() }
+    public func same() -> Self { self }
+}

@@ -5,16 +5,16 @@ func identityGeneric[T](_ value: T) -> T {
 }
 
 func passPointerThroughGenericCaller[Marker](_ marker: Marker, _ ptr: *mut int32) -> *mut int32 {
-    let _ = marker
+    var _ = marker
     return identityGeneric(ptr)
 }
 
 func main() {
     var value: int32 = 7
-    let ptr = unsafe { &mut value as *mut int32 }
+    ptr := unsafe { &value as *mut int32 }
 
-    let returned = passPointerThroughGenericCaller(123_i64, ptr)
-    returned.write(99)
+    returned := passPointerThroughGenericCaller(123_i64, ptr)
+    unsafe { returned.write(99) }
 
     assert(value == 99, "generic caller should pass pointer value without loading through it")
 

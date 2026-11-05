@@ -1,0 +1,4 @@
+error: field 'value' of MaybeUninit[Task[string]] is not visible here
+ -> language_tests/source_files/invalid/maybe_uninit_private_storage.tr:5:11
+	    return storage.value
+	           ^^^^^^^^^^^^^

@@ -121,7 +121,10 @@ impl<'r, 'a> Actor<'r, 'a> {
 
         let Some((holder, ns)) = resolved_holder else {
             if finalize {
-                let message = format!("unknown symbol '{}' in module", binding.source.symbol);
+                let message = super::models::removed_marker_message(binding.source.symbol.as_str())
+                    .unwrap_or_else(|| {
+                        format!("unknown symbol '{}' in module", binding.source.symbol)
+                    });
                 self.resolver
                     .dcx()
                     .emit_error(message, Some(binding.source.span));
@@ -165,12 +168,12 @@ mod tests {
     #[test]
     fn chained_reexports_resolve_to_a_fixed_point() {
         let diagnostics = analyze_package_diagnostics(&[
-            ("a/reexport.tr", "export package.b.Value\n"),
-            ("b/reexport.tr", "export package.c.Value\n"),
+            ("a/reexport.tr", "export package::b::Value\n"),
+            ("b/reexport.tr", "export package::c::Value\n"),
             ("c/value.tr", "public struct Value {}\n"),
             (
                 "main.tr",
-                "import package.a.Value\nfunc consume(_ value: Value) {}\n",
+                "import package::a::Value\nfunc consume(_ value: Value) {}\n",
             ),
         ]);
 
@@ -180,8 +183,8 @@ mod tests {
     #[test]
     fn unresolved_reexport_cycle_terminates_and_reports_each_usage_once() {
         let diagnostics = analyze_package_diagnostics(&[
-            ("a/reexport.tr", "export package.b.MissingFromB\n"),
-            ("b/reexport.tr", "export package.a.MissingFromA\n"),
+            ("a/reexport.tr", "export package::b::MissingFromB\n"),
+            ("b/reexport.tr", "export package::a::MissingFromA\n"),
             ("main.tr", "func main() {}\n"),
         ]);
 
@@ -213,7 +216,7 @@ mod tests {
             ("b/value.tr", "public func value(_ x: bool) -> bool { x }\n"),
             (
                 "main.tr",
-                "import package.a.*\nimport package.b.*\nfunc exercise() { let _: int32 = value(1); let _: bool = value(true) }\n",
+                "import package::a::*\nimport package::b::*\nfunc exercise() { var _: int32 = value(1); var _: bool = value(true) }\n",
             ),
         ]);
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
@@ -226,7 +229,7 @@ mod tests {
             ("b/value.tr", "public const VALUE: int32 = 2\n"),
             (
                 "main.tr",
-                "import package.a.*\nimport package.b.*\nfunc exercise() -> int32 { VALUE }\n",
+                "import package::a::*\nimport package::b::*\nfunc exercise() -> int32 { VALUE }\n",
             ),
         ]);
         assert!(
@@ -239,9 +242,9 @@ mod tests {
     #[test]
     fn cyclic_glob_reexports_report_missing_symbols_once() {
         let diagnostics = analyze_package_diagnostics(&[
-            ("a/reexport.tr", "export package.b.*\n"),
-            ("b/reexport.tr", "export package.a.*\n"),
-            ("main.tr", "import package.a.Missing\nfunc main() {}\n"),
+            ("a/reexport.tr", "export package::b::*\n"),
+            ("b/reexport.tr", "export package::a::*\n"),
+            ("main.tr", "import package::a::Missing\nfunc main() {}\n"),
         ]);
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert_eq!(diagnostics[0].message, "unknown symbol 'Missing' in module");
@@ -250,12 +253,15 @@ mod tests {
     #[test]
     fn cyclic_glob_reexports_still_find_reachable_symbols() {
         let diagnostics = analyze_package_diagnostics(&[
-            ("a/reexport.tr", "export package.b.*\n"),
-            ("b/reexport.tr", "export package.a.*\nexport package.c.*\n"),
+            ("a/reexport.tr", "export package::b::*\n"),
+            (
+                "b/reexport.tr",
+                "export package::a::*\nexport package::c::*\n",
+            ),
             ("c/value.tr", "public struct Value {}\n"),
             (
                 "main.tr",
-                "import package.a.Value\nfunc consume(_ value: Value) {}\n",
+                "import package::a::Value\nfunc consume(_ value: Value) {}\n",
             ),
         ]);
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
@@ -264,15 +270,15 @@ mod tests {
     #[test]
     fn glob_diamond_paths_preserve_overload_ambiguity() {
         let diagnostics = analyze_package_diagnostics(&[
-            ("a/reexport.tr", "export package.c.*\n"),
-            ("b/reexport.tr", "export package.c.*\n"),
+            ("a/reexport.tr", "export package::c::*\n"),
+            ("b/reexport.tr", "export package::c::*\n"),
             (
                 "c/value.tr",
                 "public func value(_ x: int32) -> int32 { x }\n",
             ),
             (
                 "main.tr",
-                "import package.a.*\nimport package.b.*\nfunc exercise() -> int32 { value(1) }\n",
+                "import package::a::*\nimport package::b::*\nfunc exercise() -> int32 { value(1) }\n",
             ),
         ]);
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");

@@ -1,21 +1,28 @@
 // CHECK_ONLY
 
-struct CountingAsyncIterator {
+final class CountingAsyncIterator {
     current: int32
     end: int32
 }
 
-impl AsyncIterator for CountingAsyncIterator {
+extend CountingAsyncIterator {
+    init(current: int32, end: int32) {
+        self.current = current
+        self.end = end
+    }
+}
+
+conform CountingAsyncIterator to AsyncIterator {
     type Element = int32
 
-    func next(&mut self) async -> Optional[int32] {
+    func next() async -> Optional[int32] {
         if self.current >= self.end {
             return .none
         }
 
-        let value = self.current
+        value := self.current
         self.current += 1
-        await std.testing.yieldNow()
+        await std::testing::yieldNow()
         return .some(value)
     }
 }
@@ -25,20 +32,20 @@ struct CountingAsyncRange {
     end: int32
 }
 
-impl AsyncIterable for CountingAsyncRange {
+conform CountingAsyncRange to AsyncIterable {
     type Iterator = CountingAsyncIterator
     type Element = int32
 
-    func iter(self) -> Self.Iterator {
-        return CountingAsyncIterator {
+    func iter() -> Self::Iterator {
+        return CountingAsyncIterator (
             current: self.start,
             end: self.end,
-        }
+        )
     }
 }
 
 func main() async {
-    let source = CountingAsyncRange { start: 0, end: 6 }
+    source := CountingAsyncRange { start: 0, end: 6 }
     var evenSum = 0 as int32
 
     for await value in source where value % 2 == 0 {
@@ -47,12 +54,12 @@ func main() async {
 
     assert(evenSum == 6, "for await + where should iterate async iterables")
 
-    let grouped: int32 = await std.task.withTaskGroup(|group: &mut std.task.TaskGroup[int32]| async {
-        group.spawn(|| async {
-            await std.testing.yieldNow()
+    var grouped: int32 = await std::task::withTaskGroup((group: &std::task::TaskGroup[int32]) async => {
+        group.spawn(() async => {
+            await std::testing::yieldNow()
             return 11 as int32
         })
-        group.spawn(|| async {
+        group.spawn(() async => {
             return 31 as int32
         })
 

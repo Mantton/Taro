@@ -1,5 +1,5 @@
-import std.panic.todo
-import std.sys.time.{MonotonicTime, RealtimeTime}
+import std::panic::todo
+import std::sys::time::{MonotonicTime, RealtimeTime}
 
 public func monotonicNow() -> MonotonicTime {
     todo("std.sys.time.monotonicNow not implemented on windows yet")

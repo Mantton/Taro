@@ -1,11 +1,11 @@
 @cfg(family("unix"))
-import std.sys.process.unix.*
+import std::sys::process::unix::*
 
 @cfg(family("unix"))
-export std.sys.process.unix.*
+export std::sys::process::unix::*
 
 @cfg(family("windows"))
-import std.sys.process.windows.*
+import std::sys::process::windows::*
 
 @cfg(family("windows"))
-export std.sys.process.windows.*
+export std::sys::process::windows::*

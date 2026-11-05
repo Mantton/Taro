@@ -1,0 +1,39 @@
+import dep::{duplicate, narrow, wide, wrap, read, componentPair, componentSum, componentArray, arraySum}
+import dep::{comparable, equivalent, fingerprint, clonedCallback, projectedCallback}
+struct Owned { value: int32 }
+func main() {
+    projected := projectedCallback(53_i32)
+    assert(projected() + projected() == 106, "imported field capture metadata")
+    assert(clonedCallback(43) == 86, "imported generated closure Clone")
+    var value: int32 = 47
+    callback := () => value
+    callbackClone := duplicate(&callback)
+    assert(callback() == callbackClone(), "imported generic Clone of downstream environment")
+    a := comparable(41_i32)
+    b := comparable(41_i32)
+    assert(equivalent(&a, &b), "imported conditional equality through generic-only use")
+    assert(fingerprint(&a) == fingerprint(&b), "imported conditional hashing")
+    first := narrow()
+    second := wide()
+    assert(first.0 + first.1 == 16, "imported narrow tuple Clone")
+    assert(second.0 == 11, "imported wide tuple first field")
+    assert(second.1 == "hello", "imported wide tuple second field")
+    var third: (string, int32) = ("different", 13)
+    cloned := duplicate(&third)
+    assert(cloned.0 == "different", "downstream tuple layout")
+    assert(cloned.1 == 13, "downstream tuple tail")
+    conditional := wrap(17_i32)
+    copy := conditional
+    clonedConditional := duplicate(&conditional)
+    assert(read(&conditional) + read(&copy) + read(&clonedConditional) == 51, "imported conditional Copy/Clone")
+    components := componentPair()
+    componentsClone := duplicate(&components)
+    assert(componentSum(&components) == 52, "imported NoCopy tuple source")
+    assert(componentSum(&componentsClone) == 52, "imported component Clone body")
+    array := componentArray()
+    arrayClone := duplicate(&array)
+    assert(arraySum(&array) == 68, "imported NoCopy array source")
+    assert(arraySum(&arrayClone) == 68, "imported ArrayClone body")
+    owned := wrap(Owned { value: 19 })
+    moved := owned // Imported generic type remains valid without Copy/Clone.
+}

@@ -1,6 +1,6 @@
 // Test: deref of non-reference should fail.
 
 func main() {
-    let value = 1
-    let _ = *value
+    value := 1
+    var _ = *value
 }

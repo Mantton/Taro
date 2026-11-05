@@ -1,0 +1,63 @@
+struct Counter {
+    value: int32
+}
+
+
+
+func edit(_ value: &Counter) { value.bump() }
+func relay(_ value: &Counter) -> &Counter { value }
+func inspect(_ value: &Counter) -> int32 { value.value }
+func shared(_ value: &Counter) -> &Counter { value }
+func rawReadonly(_ value: *mut Counter) -> *Counter { value }
+
+struct HeapPayload { values: [string] }
+
+func testUniqueCaptureRoots() {
+    var payload = HeapPayload { values: [std::sprintf("value %v", 0)] }
+    var pointer: &HeapPayload = &payload
+    var next: int32 = 1
+    var callback = () => {
+        pointer.values.append(std::sprintf("value %v", next))
+        next += 1
+    }
+    callback()
+    callback()
+    assert(pointer.values.len() == 3, "unique captured token keeps its allocation roots")
+    assert(*pointer.values.at(2) == "value 2", "the captured token still addresses its original payload")
+}
+
+func main() {
+    var counter: Counter = Counter { value: 0 }
+    var pointer: &Counter = &counter
+    edit(pointer)
+    edit(pointer)
+
+    var reader: &Counter = shared(pointer)
+    assert(inspect(reader) == 2, "shared reborrow reads the same storage")
+
+    // This captures the reference token exclusively, without replacing the binding.
+    var callback = () => { edit(pointer) }
+    callback()
+    callback()
+
+    var child: &Counter = relay(pointer)
+    edit(child)
+    edit(pointer)
+
+    // Owning a mutable-reference token does not make a reusable body FnOnce.
+    var owned = () => { edit(pointer) }
+    owned()
+    owned()
+
+    unsafe {
+        var raw: *mut Counter = &counter as *mut Counter
+        var rawReader: *Counter = rawReadonly(raw)
+        assert((*rawReader).value == 8, "raw permission weakening preserves the address")
+    }
+    testUniqueCaptureRoots()
+}
+
+
+extend &Counter {
+    func bump() { self.value += 1 }
+}

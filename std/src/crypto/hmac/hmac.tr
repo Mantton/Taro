@@ -1,0 +1,26 @@
+import std::crypto::{__rt__crypto_hmac, __rt__crypto_hmac_verify}
+import std::mem::Span
+
+/// Full-length HMAC-SHA-256 tag. Keys are bytes, never passwords implicitly.
+public func sha256(_ key: Span[uint8], _ data: Span[uint8]) -> [uint8; 32] {
+    var output: [uint8; 32] = [0_u8; 32]
+    valid := unsafe { __rt__crypto_hmac(0_u8, key.asPtr(), key.len(), data.asPtr(), data.len(), (&output as *mut [uint8; 32]) as *mut uint8) }
+    std::assert(valid, "invalid HMAC backend algorithm")
+    return output
+}
+/// Verifies the complete tag through the maintained constant-time backend.
+public func verifySha256(_ key: Span[uint8], _ data: Span[uint8], _ tag: Span[uint8]) -> bool {
+    unsafe { __rt__crypto_hmac_verify(0_u8, key.asPtr(), key.len(), data.asPtr(), data.len(), tag.asPtr(), tag.len()) }
+}
+
+/// Full-length HMAC-SHA-512 tag. Keys are bytes, never passwords implicitly.
+public func sha512(_ key: Span[uint8], _ data: Span[uint8]) -> [uint8; 64] {
+    var output: [uint8; 64] = [0_u8; 64]
+    valid := unsafe { __rt__crypto_hmac(1_u8, key.asPtr(), key.len(), data.asPtr(), data.len(), (&output as *mut [uint8; 64]) as *mut uint8) }
+    std::assert(valid, "invalid HMAC backend algorithm")
+    return output
+}
+/// Verifies the complete tag through the maintained constant-time backend.
+public func verifySha512(_ key: Span[uint8], _ data: Span[uint8], _ tag: Span[uint8]) -> bool {
+    unsafe { __rt__crypto_hmac_verify(1_u8, key.asPtr(), key.len(), data.asPtr(), data.len(), tag.asPtr(), tag.len()) }
+}

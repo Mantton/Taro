@@ -20,16 +20,16 @@ pub fn run(package: &hir::Package, context: GlobalContext) -> CompileResult<()> 
 
 struct Actor<'ctx> {
     context: GlobalContext<'ctx>,
-    tuple_bounds: TupleBounds,
+    header_bounds: HeaderBounds,
 }
 
 impl<'ctx> Actor<'ctx> {
     fn run(package: &hir::Package, context: GlobalContext<'ctx>) -> CompileResult<()> {
-        let mut tuple_bounds = TupleBounds::default();
-        hir::walk_package(&mut tuple_bounds, package);
+        let mut header_bounds = HeaderBounds::default();
+        hir::walk_package(&mut header_bounds, package);
         let mut actor = Actor {
             context,
-            tuple_bounds,
+            header_bounds,
         };
         hir::walk_package(&mut actor, package);
         context.dcx().ok()
@@ -62,7 +62,8 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
 
         match &node.kind {
             AssociatedDeclarationKind::Type(node) => self.collect(id, &node.generics),
-            AssociatedDeclarationKind::Function(node) => self.collect(id, &node.generics),
+            AssociatedDeclarationKind::Function(node)
+            | AssociatedDeclarationKind::Initializer(node) => self.collect(id, &node.generics),
             _ => {}
         }
 
@@ -102,7 +103,7 @@ impl<'ctx> Actor<'ctx> {
 
         for param in &params {
             match &param.kind {
-                GenericParameterDefinitionKind::Type { default } => {
+                GenericParameterDefinitionKind::Type { default, .. } => {
                     let Some(default) = default.as_ref() else {
                         continue;
                     };
@@ -143,13 +144,13 @@ impl<'ctx> Actor<'ctx> {
         };
         let mut constraints = Vec::new();
         let mut add = |ty: Ty<'ctx>, bounds: &hir::GenericBounds| {
-            for bound in bounds {
-                let Some(id) = TupleBounds::target(&bound.path.path) else {
+            for bound in bounds.iter() {
+                let Some(id) = HeaderBounds::target(&bound.path.path) else {
                     continue;
                 };
                 if !self
-                    .tuple_bounds
-                    .implies_tuple(gcx, id, tuple_id, &mut FxHashSet::default())
+                    .header_bounds
+                    .implies_marker(gcx, id, tuple_id, &mut FxHashSet::default())
                 {
                     continue;
                 }
@@ -199,6 +200,33 @@ impl<'ctx> Actor<'ctx> {
 
     fn collect(&mut self, id: DefinitionID, generics: &hir::Generics) {
         let gcx = self.context;
+        if let Some(parameters) = &generics.type_parameters {
+            for parameter in &parameters.parameters {
+                if let Some(bounds) = &parameter.bounds {
+                    gcx.store
+                        .source_generic_bounds
+                        .borrow_mut()
+                        .insert((id, parameter.id), bounds.clone());
+                }
+            }
+        }
+        if let Some(clause) = &generics.where_clause {
+            for requirement in &clause.requirements {
+                if let hir::GenericRequirement::ConformanceRequirement(requirement) = requirement
+                    && let hir::TypeKind::Nominal(hir::ResolvedPath::Resolved(path)) =
+                        &requirement.bounded_type.kind
+                    && let hir::Resolution::Definition(parameter, DefinitionKind::TypeParameter) =
+                        path.resolution
+                {
+                    gcx.store
+                        .source_generic_bounds
+                        .borrow_mut()
+                        .entry((id, parameter))
+                        .or_default()
+                        .extend(requirement.bounds.clone());
+                }
+            }
+        }
 
         // Interfaces have implicit self type parameter
         let interface_self_type = if matches!(gcx.definition_kind(id), DefinitionKind::Interface) {
@@ -224,8 +252,8 @@ impl<'ctx> Actor<'ctx> {
         let mut parent_has_self = false;
         let def_kind = gcx.definition_kind(id);
         let parent_def_id = if let DefinitionKind::AssociatedFunction
-        | DefinitionKind::AssociatedOperator
         | DefinitionKind::AssociatedConstant
+        | DefinitionKind::AssociatedType
         | DefinitionKind::VariantConstructor(..) = def_kind
         {
             Some(gcx.definition_parent(id).expect("Parent of Definition"))
@@ -300,9 +328,11 @@ impl<'ctx> Actor<'ctx> {
 /// declaration order. Generic arguments do not affect marker implication. The
 /// normal interface collector remains responsible for lowering and validation.
 #[derive(Default)]
-struct TupleBounds(FxHashMap<DefinitionID, Vec<DefinitionID>>);
+struct HeaderBounds {
+    parents: FxHashMap<DefinitionID, Vec<DefinitionID>>,
+}
 
-impl TupleBounds {
+impl HeaderBounds {
     fn target(path: &hir::ResolvedPath) -> Option<DefinitionID> {
         let hir::ResolvedPath::Resolved(path) = path else {
             return None;
@@ -316,7 +346,7 @@ impl TupleBounds {
         }
     }
 
-    fn implies_tuple(
+    fn implies_marker(
         &self,
         gcx: GlobalContext<'_>,
         id: DefinitionID,
@@ -329,37 +359,41 @@ impl TupleBounds {
         if !visited.insert(id) {
             return false;
         }
-        if let Some(parents) = self.0.get(&id) {
+        if let Some(parents) = self.parents.get(&id) {
             return parents
                 .iter()
-                .any(|&parent| self.implies_tuple(gcx, parent, tuple_id, visited));
+                .any(|&parent| self.implies_marker(gcx, parent, tuple_id, visited));
         }
         if let Some(alias) = gcx.try_get_interface_alias(id) {
             return alias
                 .iter()
-                .any(|parent| self.implies_tuple(gcx, parent.id, tuple_id, visited));
+                .any(|parent| self.implies_marker(gcx, parent.id, tuple_id, visited));
         }
         gcx.get_interface_definition(id).is_some_and(|definition| {
             definition
                 .superfaces
                 .iter()
-                .any(|parent| self.implies_tuple(gcx, parent.value.id, tuple_id, visited))
+                .any(|parent| self.implies_marker(gcx, parent.value.id, tuple_id, visited))
         })
     }
 }
 
-impl HirVisitor for TupleBounds {
+impl HirVisitor for HeaderBounds {
     fn visit_declaration(&mut self, node: &hir::Declaration) -> Self::Result {
         let parents = match &node.kind {
-            DeclarationKind::Interface(interface) => {
-                interface.conformances.as_ref().map(|conformances| {
-                    conformances
-                        .bounds
-                        .iter()
-                        .filter_map(|bound| Self::target(&bound.path))
-                        .collect()
-                })
-            }
+            DeclarationKind::Interface(interface) => Some(
+                interface
+                    .conformances
+                    .as_ref()
+                    .map(|conformances| {
+                        conformances
+                            .bounds
+                            .iter()
+                            .filter_map(|bound| Self::target(&bound.path))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            ),
             DeclarationKind::TypeAlias(alias) => {
                 if let Some(bounds) = &alias.interface_set {
                     Some(
@@ -379,7 +413,7 @@ impl HirVisitor for TupleBounds {
             _ => None,
         };
         if let Some(parents) = parents {
-            self.0.insert(node.id, parents);
+            self.parents.insert(node.id, parents);
         }
         hir::walk_declaration(self, node)
     }

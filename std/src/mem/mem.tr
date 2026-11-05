@@ -1,308 +1,171 @@
-import std.default.Default
-import std.optional.Optional
-import std.panic.panic
-import std.iter.{Iterator, Iterable}
-import std.marker.Copy
+import std::optional::Optional
+import std::panic::panic
+import std::iter::{Iterator, Iterable}
+import std::range::{Range, ClosedRange}
 
 @lang("MaybeUninit")
 public struct MaybeUninit[T] {
-    value: T
+    private value: T
 }
 
-impl[T] MaybeUninit[T] {
-    public func new(_ value: T) -> Self {
+extend[T] MaybeUninit[T] {
+    public static func new(_ value: T) -> Self {
         return MaybeUninit[T] { value }
     }
 
-    public func uninit() -> Self {
-        return std.intrinsic.__intrinsic_maybe_uninit[T]()
+    /// Creates scanner-safe storage. Its zero bytes need not be a valid T;
+    /// initialize the slot before any assumeInit operation.
+    public static func uninit() -> Self {
+        return std::intrinsic::__intrinsic_maybe_uninit[T]()
     }
 
-    public func zeroed() -> Self {
-        return std.intrinsic.__intrinsic_maybe_uninit[T]()
+    /// Zeroes storage without establishing that the bytes form a valid T.
+    public static func zeroed() -> Self {
+        return std::intrinsic::__intrinsic_maybe_uninit[T]()
     }
 
-    public func asPtr(&self) -> *const T {
-        return unsafe { (&self.value as *const T) }
-    }
-
-    public func asMutPtr(&mut self) -> *mut T {
-        return unsafe { (&mut self.value as *mut T) }
-    }
-
-    public func write(&mut self, _ value: T) -> &mut T {
-        self.value = value
-        return unsafe { self.assumeInitMut() }
-    }
-
-    public unsafe func assumeInit(self) -> T {
+    public unsafe func assumeInit() -> T {
         return self.value
     }
-
-    public unsafe func assumeInitRead(&self) -> T {
-        return self.asPtr().read()
-    }
-
-    public unsafe func assumeInitRef(&self) -> &T {
-        return unsafe { self.asPtr() as &T }
-    }
-
-    public unsafe func assumeInitMut(&mut self) -> &mut T {
-        return unsafe { self.asMutPtr() as &mut T }
-    }
 }
 
+/// A writable slice, also spelled `[Element; ..]`. Copies share the elements
+/// but carry independent pointer/length headers. Subranges never copy elements.
+/// A pointer into GC storage keeps that allocation alive, including after a
+/// list/builder grows; the slice continues to address the old storage.
 @lang("Span")
-public struct Span[Element]: Copy {
-    ptr: *const Element
-    len: usize
+public struct Span[Element] {
+    private ptr: *const Element
+    private len: usize
 }
 
-public struct MutableSpan[Element]: Copy {
-    ptr: *mut Element
-    len: usize
-}
+extend[Element] Span[Element] {
+    public func asPtr() -> *const Element { self.ptr }
+    public func asMutPtr() -> *mut Element { unsafe { self.ptr as *mut Element } }
 
-impl[Element] Span[Element] {
-    public func from(_ ptr: *const Element, _ len: usize) -> Self {
-        return Span[Element] { ptr, len }
+    /// Safety: the range must contain len initialized, aligned, writable
+    /// elements. GC storage is retained by the pointer; native storage must
+    /// stay valid for every use. A zero-length slice may have a null pointer.
+    public static unsafe func from(_ ptr: *const Element, _ len: usize) -> Self {
+        Self { ptr, len }
     }
 
-    public func len(&self) -> usize {
-        return self.len
+    /// Safety: the same initialized-range requirements as the raw constructor.
+    public static unsafe func from(_ ptr: *mut Element, _ len: usize) -> Self {
+        Self { ptr: unsafe { ptr as *const Element }, len }
     }
 
-    public func isEmpty(&self) -> bool {
-        return self.len == 0
+    public func len() -> usize { self.len }
+    public func isEmpty() -> bool { self.len == 0 }
+
+    public func at(_ index: usize) -> &Element {
+        if index >= self.len { panic("span index out of range") }
+        // The reference's provenance is the span's element pointer. Projecting
+        // from a local copy would heap-allocate that copy on every escaping call.
+        ptr := self.asMutPtr().add(index)
+        return unsafe { &*ptr }
     }
 
-    public func at(&self, _ index: usize) -> &Element {
-        if index >= self.len {
-            panic("span index out of range")
-        }
-        return unsafe { self.ptr.add(index) as &Element }
-    }
-
-    public func get(&self, _ index: usize) -> Optional[&Element] {
-        if index >= self.len {
-            return .none
-        }
+    public func get(_ index: usize) -> Optional[&Element] {
+        if index >= self.len { return .none }
         return .some(self.at(index))
     }
 
-    public func slice(&self, _ start: usize, _ count: usize) -> Self {
-        if start > self.len || count > (self.len - start) {
+    public func slice(_ start: usize, _ count: usize) -> Self {
+        if start > self.len || count > self.len - start {
             panic("span slice out of range")
         }
-        return Span[Element] {
-            ptr: self.ptr.add(start),
-            len: count,
+        Self { ptr: self.ptr.add(start), len: count }
+    }
+
+    /// Safety: writes to this byte view must leave valid initialized elements,
+    /// including valid managed pointers. This is a memory reinterpretation.
+    public unsafe func asBytes() -> Span[uint8] {
+        count := match checkedBufferByteCount[Element](self.len) {
+            case .some(count) => count
+            case .none => panic("span byte count overflow")
+        }
+        unsafe { Span[uint8]::from(self.ptr as *const uint8, count) }
+    }
+}
+
+extend Span[uint8] {
+    /// Copies immutable string bytes into independent writable GC storage.
+    /// Mutating the result never changes the source string.
+    public static func fromString(_ source: &string) -> Self {
+        len := std::intrinsic::__intrinsic_string_len(source)
+        bytes := NativeBytes::new(len)
+        if len > 0 {
+            unsafe {
+                std::intrinsic::__intrinsic_memcpy(bytes.data(), std::intrinsic::__intrinsic_string_data(source), len)
+                bytes.publish(len)
+            }
+        }
+        unsafe { Self::from(bytes.data(), len) }
+    }
+}
+
+extend[Element] Span[Element] {
+    public subscript(index: usize) -> Element { address { self.at(index) } }
+
+    /// A subrange shares storage and copies only the pointer/length header.
+    public subscript(range: Range[usize]) -> Self {
+        get {
+            if range.start > range.end { panic("span range out of range") }
+            self.slice(range.start, range.end - range.start)
         }
     }
 
-    public func asBytes(&self) -> Span[uint8] {
-        return Span[uint8] {
-            ptr: unsafe { self.ptr as *const uint8 },
-            len: self.len * sizeOf[Element](),
+    public subscript(range: ClosedRange[usize]) -> Self {
+        get {
+            if range.start > range.end || range.end >= self.len { panic("span range out of range") }
+            self.slice(range.start, range.end - range.start + (1 as usize))
         }
     }
 }
 
-impl[Element] MutableSpan[Element] {
-    public func from(_ ptr: *mut Element, _ len: usize) -> Self {
-        return MutableSpan[Element] { ptr, len }
-    }
+// Iterator aliases share a cursor, as for the other GC collection views.
+final class SpanCursor[Element] {
+    span: Span[Element]
+    index: usize
+}
 
-    public func len(&self) -> usize {
-        return self.len
-    }
+extend[Element] SpanCursor[Element] {
+    init(_ span: Span[Element]) { self.span = span; self.index = 0 }
 
-    public func isEmpty(&self) -> bool {
-        return self.len == 0
-    }
-
-    public func at(&self, _ index: usize) -> &Element {
-        if index >= self.len {
-            panic("mutable span index out of range")
-        }
-        return unsafe { self.ptr.add(index) as &Element }
-    }
-
-    public func at(&mut self, _ index: usize) -> &mut Element {
-        if index >= self.len {
-            panic("mutable span index out of range")
-        }
-        return unsafe { self.ptr.add(index) as &mut Element }
-    }
-
-    public func get(&self, _ index: usize) -> Optional[&Element] {
-        if index >= self.len {
-            return .none
-        }
-        return .some(self.at(index))
-    }
-
-    public func get(&mut self, _ index: usize) -> Optional[&mut Element] {
-        if index >= self.len {
-            return .none
-        }
-        return .some(self.at(index))
-    }
-
-    public func slice(&self, _ start: usize, _ count: usize) -> Span[Element] {
-        if start > self.len || count > (self.len - start) {
-            panic("mutable span slice out of range")
-        }
-        return Span[Element] {
-            ptr: unsafe { self.ptr.add(start) as *const Element },
-            len: count,
-        }
-    }
-
-    public func slice(&mut self, _ start: usize, _ count: usize) -> MutableSpan[Element] {
-        if start > self.len || count > (self.len - start) {
-            panic("mutable span slice out of range")
-        }
-        return MutableSpan[Element] {
-            ptr: self.ptr.add(start),
-            len: count,
-        }
-    }
-
-    public func asConst(&self) -> Span[Element] {
-        return Span[Element] {
-            ptr: unsafe { self.ptr as *const Element },
-            len: self.len,
-        }
-    }
-
-    public func asBytes(&self) -> Span[uint8] {
-        return Span[uint8] {
-            ptr: unsafe { self.ptr as *const uint8 },
-            len: self.len * sizeOf[Element](),
-        }
-    }
-
-    public func asBytes(&mut self) -> MutableSpan[uint8] {
-        return MutableSpan[uint8] {
-            ptr: unsafe { self.ptr as *mut uint8 },
-            len: self.len * sizeOf[Element](),
-        }
+    func next() -> Optional[Element] {
+        if self.index >= self.span.len() { return .none }
+        value := *self.span.at(self.index)
+        self.index += 1
+        return .some(value)
     }
 }
 
 public struct SpanIterator[Element] {
-    ptr: *const Element
-    len: usize
-    idx: usize
+    private cursor: SpanCursor[Element]
 }
 
-impl[Element] Iterator for SpanIterator[Element] {
-    type Element = &Element
-
-    public func next(&mut self) -> Optional[Self.Element] {
-        if self.idx >= self.len {
-            return .none
-        }
-
-        let value = unsafe { self.ptr.add(self.idx) as &Element }
-        self.idx += 1
-        return .some(value)
-    }
+extend[Element] SpanIterator[Element] {
+    static func from(_ span: Span[Element]) -> Self { Self { cursor: SpanCursor(span) } }
 }
 
-impl[Element] Iterable for Span[Element] {
+conform[Element] SpanIterator[Element] to Iterator {
+    type Element = Element
+    public func next() -> Optional[Element] { self.cursor.next() }
+}
+
+conform[Element] Span[Element] to Iterable {
     type Iterator = SpanIterator[Element]
-    type Element = &Element
-
-    public func iter(self) -> Self.Iterator {
-        return SpanIterator[Element] {
-            ptr: self.ptr,
-            len: self.len,
-            idx: 0,
-        }
-    }
-}
-
-public struct MutableSpanMutIterator[Element] {
-    ptr: *mut Element
-    len: usize
-    idx: usize
-}
-
-impl[Element] Iterator for MutableSpanMutIterator[Element] {
-    type Element = &mut Element
-
-    public func next(&mut self) -> Optional[Self.Element] {
-        if self.idx >= self.len {
-            return .none
-        }
-
-        let value = unsafe { self.ptr.add(self.idx) as &mut Element }
-        self.idx += 1
-        return .some(value)
-    }
-}
-
-impl[Element] Iterable for MutableSpan[Element] {
-    type Iterator = MutableSpanMutIterator[Element]
-    type Element = &mut Element
-
-    public func iter(self) -> Self.Iterator {
-        return MutableSpanMutIterator[Element] {
-            ptr: self.ptr,
-            len: self.len,
-            idx: 0,
-        }
-    }
-}
-
-public struct GcDesc {
-    size: usize
-    align: usize
-    nodes: *const uint8
-    nodeCount: usize
-}
-
-extern "taro_rt" {
-    func __gc__makebuf(_ desc: *const GcDesc, _ len: usize, _ cap: usize) -> *mut uint8
-    func __gc__grow_buf(_ old_ptr: *mut uint8, _ desc: *const GcDesc, _ old_len: usize, _ new_cap: usize) -> *mut uint8
-    func __gc__set_buf_len(_ ptr: *mut uint8, _ desc: *const GcDesc, _ len: usize)
-}
-
-// Raw runtime hooks stay here because the compiler currently resolves them by name.
-public func makeBuffer[T](_ len: usize, _ cap: usize) -> *mut uint8 {
-    assertBufferCapacity[T](cap, "buffer capacity overflow")
-    __gc__makebuf(std.intrinsic.__intrinsic_gc_desc[T](), len, cap)
-}
-
-public func growBuffer[T](_ oldPtr: *mut uint8, _ oldLen: usize, _ newCap: usize) -> *mut uint8 {
-    assertBufferCapacity[T](newCap, "buffer capacity overflow")
-    __gc__grow_buf(oldPtr, std.intrinsic.__intrinsic_gc_desc[T](), oldLen, newCap)
-}
-
-public func setBufferLen[T](_ ptr: *mut uint8, _ len: usize) {
-    __gc__set_buf_len(ptr, std.intrinsic.__intrinsic_gc_desc[T](), len)
-}
-
-public func gcDescSize[T]() -> usize {
-    std.intrinsic.__intrinsic_gc_desc[T]().read().size
-}
-
-public func gcDescAlign[T]() -> usize {
-    std.intrinsic.__intrinsic_gc_desc[T]().read().align
-}
-
-public func allocBytes(_ len: usize) -> *mut uint8 {
-    makeBuffer[uint8](len, len)
+    type Element = Element
+    public func iter() -> Self::Iterator { SpanIterator[Element]::from(self) }
 }
 
 public func sizeOf[T]() -> usize {
-    std.intrinsic.__intrinsic_size_of[T]()
+    std::intrinsic::__intrinsic_size_of[T]()
 }
 
 public func alignOf[T]() -> usize {
-    std.intrinsic.__intrinsic_align_of[T]()
+    std::intrinsic::__intrinsic_align_of[T]()
 }
 
 public func maxBufferBytes() -> usize {
@@ -310,7 +173,7 @@ public func maxBufferBytes() -> usize {
 }
 
 public func maxBufferCapacity[T]() -> usize {
-    let elemSize = sizeOf[T]()
+    elemSize := sizeOf[T]()
     if elemSize == 0 {
         return 0xffffffffffffffff_u64 as usize
     }
@@ -318,7 +181,7 @@ public func maxBufferCapacity[T]() -> usize {
 }
 
 public func checkedBufferByteCount[T](_ capacity: usize) -> usize? {
-    let elemSize = sizeOf[T]()
+    elemSize := sizeOf[T]()
     if elemSize == 0 {
         return .some(0 as usize)
     }
@@ -334,26 +197,44 @@ public func assertBufferCapacity[T](_ capacity: usize, _ message: string) {
     }
 }
 
-public func replace[T](_ dest: &mut T, _ src: T) -> T {
-    var old: T
-    unsafe {
-        let ptr = dest as *mut T
-        old = ptr.read()
-        ptr.write(src)
-    }
-    return old
+/// Exchanges two initialized values. Aliased references are allowed.
+public func swap[T](_ x: &T, _ y: &T) {
+    previous := *x
+    *x = *y
+    *y = previous
 }
 
-public func swap[T](_ x: &mut T, _ y: &mut T) {
-    unsafe {
-        let ptr_x = x as *mut T
-        let ptr_y = y as *mut T
-        let temp = ptr_x.read()
-        ptr_x.write(ptr_y.read())
-        ptr_y.write(temp)
+extend[T] &MaybeUninit[T] {
+    public func asPtr() -> *const T {
+        return unsafe { (&self.value as *const T) }
+    }
+
+    public func asMutPtr() -> *mut T {
+        return unsafe { (&self.value as *mut T) }
+    }
+
+    /// Initializes the slot without reading its previous bytes. Until this
+    /// write, assumeInit operations remain unsafe even though GC scanner bytes
+    /// are zeroed by the compiler. Values and their managed pointers copy normally.
+    public func write(_ value: T) -> &T {
+        return unsafe {
+            self.asMutPtr().write(value)
+            self.assumeInitRef()
+        }
+    }
+
+    public unsafe func assumeInitRead() -> T {
+        return unsafe { self.asPtr().read() }
+    }
+
+    public unsafe func assumeInitRef() -> &T {
+        ptr := self.asPtr()
+        return unsafe { std::intrinsic::__intrinsic_ref_project(self, ptr) }
     }
 }
 
-public func take[T: Default](_ dest: &mut T) -> T {
-    replace(dest, T.default())
+conform[Element] SpanIterator[Element] to Iterable {
+    type Element = Element
+    type Iterator = SpanIterator[Element]
+    public func iter() -> Self::Iterator { self }
 }

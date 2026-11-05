@@ -1,0 +1,21 @@
+// ENV: TARO_GC_STRESS=1
+// A list element is traced only once its slot is published. Appending a list
+// whose only other root has ended must publish before any safepoint, or the
+// inner list is reclaimed while the outer list still refers to it.
+func main() {
+    var rows: [[int64]] = []
+    var round: int64 = 0
+    while round < 6 {
+        var row: [int64] = []
+        row.append(round + 40)
+        rows.append(row)
+        round += 1
+    }
+    var index: usize = 0
+    while index < rows.len() {
+        row := *rows.at(index)
+        assert(*row.at(0) == index as int64 + 40, "published nested rows survive collection")
+        index += 1
+    }
+    print("PASS: nested list elements stay rooted\n")
+}

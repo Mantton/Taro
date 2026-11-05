@@ -1,0 +1,46 @@
+// G29/G30: implicit self has exactly the declared target's value semantics.
+interface Increment { func increment(); }
+struct Counter { value: int32 }
+extend Counter {
+    func changeCopy() -> int32 { self.value += 10; self.value }
+}
+conform &Counter to Increment {
+    func increment() { self.value += 1 }
+}
+func increment[T: Increment](_ counter: T) { counter.increment() }
+
+final class Item { value: int32 }
+extend Item {
+    init(_ value: int32) { self.value = value }
+    func read() -> int32 { self.value }
+    func replaceCopy(_ other: Item) { self = other }
+}
+extend &Item {
+    func replace(_ other: Item) { *self = other }
+}
+
+func main() {
+    var counter = Counter { value: 1 }
+    assert(counter.changeCopy() == 11 && counter.value == 1, "value receiver edits its copy")
+    counter.increment()
+    increment(&counter)
+    update := counter.increment
+    update()
+    assert(counter.value == 4, "automatic references and bound methods retain storage")
+    reference := (&counter).clone()
+    copyReference := (&counter).clone
+    copiedReference := copyReference()
+    counter.value = 5
+    assert(reference.value == 5 && copiedReference.value == 5, "reference copying is explicit and retains the selected storage")
+
+    var item = Item(1)
+    original := item
+    read := item.read
+    replace := item.replace
+    other := Item(7)
+    item.replaceCopy(other)
+    assert(item.read() == 1, "class receiver copies the object handle")
+    item = Item(3)
+    replace(other)
+    assert(item.read() == 7 && read() == 1 && original.read() == 1, "class and handle-slot method values bind different storage")
+}

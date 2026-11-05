@@ -3,7 +3,7 @@
 // EXPECT_STDERR_CONTAINS: flow.tr:79
 // EXPECT_STDERR_CONTAINS: flow.tr:86
 // EXPECT_STDERR_CONTAINS: flow.tr:92
-
+// NO_INCREMENTAL
 func diverge() -> ! {
     loop {}
 }
@@ -46,50 +46,50 @@ func coerceString(_ flag: bool) -> string {
     "ok"
 }
 
-func helperWrite(_ dst: *mut string, _ value: string) {
-    dst.write(value)
+unsafe func helperWrite(_ dst: *mut string, _ value: string) {
+    unsafe { dst.write(value) }
 }
 
 func maybeUninitInt() -> int32 {
-    var slot = std.mem.MaybeUninit[int32].uninit()
-    let _ = slot.write(12)
+    var slot = std::mem::MaybeUninit[int32]::uninit()
+    var _ = slot.write(12)
     unsafe { slot.assumeInit() }
 }
 
 func maybeUninitString() -> string {
-    var slot = std.mem.MaybeUninit[string].zeroed()
-    let _ = slot.write("hello")
+    var slot = std::mem::MaybeUninit[string]::zeroed()
+    var _ = slot.write("hello")
     unsafe { slot.assumeInit() }
 }
 
 func maybeUninitThroughPtr() -> string {
-    var slot = std.mem.MaybeUninit[string].uninit()
-    helperWrite(slot.asMutPtr(), "world")
+    var slot = std::mem::MaybeUninit[string]::uninit()
+    unsafe { helperWrite(slot.asMutPtr(), "world") }
     unsafe { slot.assumeInit() }
 }
 
 func afterReturn() {
     return
-    let unreachable = 1
+    unreachable := 1
 }
 
 func afterBreak() {
     loop {
         break
-        let unreachable = 1
+        unreachable := 1
     }
 }
 
 func afterContinue() {
     loop {
         continue
-        let unreachable = 1
+        unreachable := 1
     }
 }
 
 func afterNeverCall() {
     diverge()
-    let unreachable = 1
+    unreachable := 1
 }
 
 func returnOrContinueInWhile(_ values: &List[string]) -> Result[usize, string] {
@@ -105,26 +105,26 @@ func returnOrContinueInWhile(_ values: &List[string]) -> Result[usize, string] {
 }
 
 func main() {
-    let _ = implicitReturn(true)
-    let _ = exhaustiveWithNever(true)
-    let _ = loopBreakInitializes()
-    let _ = coerceInt(false)
-    let _ = coerceString(false)
-    let _ = maybeUninitInt()
-    let _ = maybeUninitString()
-    let _ = maybeUninitThroughPtr()
+    var _ = implicitReturn(true)
+    var _ = exhaustiveWithNever(true)
+    var _ = loopBreakInitializes()
+    var _ = coerceInt(false)
+    var _ = coerceString(false)
+    var _ = maybeUninitInt()
+    var _ = maybeUninitString()
+    var _ = maybeUninitThroughPtr()
     afterReturn()
     afterBreak()
     afterContinue()
-    var values = List[string]()
+    var values = List[string]::new()
     values.append("skip")
-    let _ = returnOrContinueInWhile(&values)
+    var _ = returnOrContinueInWhile(&values)
 }
 
 func deferReadsLaterInit() -> string {
     var value: string
     {
-        defer { let _ = value }
+        defer { var _ = value }
         value = "later"
     }
     value
@@ -133,7 +133,7 @@ func deferReadsLaterInit() -> string {
 func nestedDeferLifo() -> string {
     var value: string
     {
-        defer { let _ = value }
+        defer { var _ = value }
         defer { value = "from cleanup" }
     }
     value
@@ -152,7 +152,7 @@ func deferInitializesOnBreak() -> int32 {
 
 func deferOnReturnSeesLaterInit() -> string {
     var value: string
-    defer { let _ = value }
+    defer { var _ = value }
     value = "ready"
     return value
 }

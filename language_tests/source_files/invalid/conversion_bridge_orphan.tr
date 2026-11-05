@@ -1,0 +1,4 @@
+conform int32 to Into[bool] {
+    func into() -> bool { self != 0 }
+}
+func main() {}

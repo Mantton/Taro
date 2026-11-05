@@ -1,0 +1,36 @@
+// Fixed-key, allocation-free hashing loop for before/after implementation runs.
+// Compare checksums with the reference C SipHash compiled with rounds 1 and 3.
+import std::hash::{DefaultHasher, Hasher}
+import std::mem::Span
+
+@noinline
+func hashBytes(_ bytes: Span[uint8]) -> uint64 {
+    var hasher = DefaultHasher::new(0x0706050403020100, 0x0f0e0d0c0b0a0908)
+    hasher.write(std::hint::blackBox(bytes))
+    hasher.finish()
+}
+
+func main() {
+    args := std::env::args()
+    if args.len() != 3 { panic("usage: siphash13 <byte-length: 0..1024> <iterations>") }
+    length := usize::parse(args.at(1)).unwrap()
+    count := uint64::parse(args.at(2)).unwrap()
+    if length > (1024 as usize) || count == 0_u64 { panic("invalid benchmark size") }
+    var data: [uint8] = [99]
+    var index: usize = 0
+    while index < length {
+        data.append((index & (255 as usize)) as uint8)
+        index += 1
+    }
+    bytes := data.asSpan().slice(1, length)
+    var checksum: uint64 = 0
+    var iteration: uint64 = 0
+    start := std::time::Instant::now()
+    while iteration < count {
+        checksum += hashBytes(bytes)
+        iteration += 1
+    }
+    elapsed := start.elapsed()
+    nanos := elapsed.seconds() * 1000000000_u64 + (elapsed.subsecNanos() as uint64)
+    println(sprintf("elapsed_ns=%v checksum=%v", nanos, checksum))
+}

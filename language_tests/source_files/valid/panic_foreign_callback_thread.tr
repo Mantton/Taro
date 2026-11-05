@@ -1,0 +1,18 @@
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: panic cannot cross a foreign callback boundary
+// EXPECT_STDERR_CONTAINS: callback-thread-boundary
+extern "C" {
+    unsafe func pthread_create(_ thread: *mut uint64, _ attr: *const uint8, _ start: (*mut uint8) -> *mut uint8, _ arg: *mut uint8) -> int32
+}
+extern "blocking" {
+    unsafe func pthread_join(_ thread: uint64, _ result: *mut *mut uint8) -> int32
+}
+func entry(_ context: *mut uint8) -> *mut uint8 {
+    defer { print("callback cleanup\n") }
+    panic("callback-thread-boundary")
+}
+func main() {
+    var thread: uint64 = 0
+    assert(unsafe { pthread_create(&thread as *mut uint64, 0 as *const uint8, entry, 0 as *mut uint8) } == 0, "create callback thread")
+    var _ = unsafe { pthread_join(thread, 0 as *mut *mut uint8) }
+}

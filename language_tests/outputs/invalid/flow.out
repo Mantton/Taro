@@ -27,22 +27,22 @@ error: `return` without a value is only allowed in functions returning `()`
 	    return
 	    ^^^^^^
 error: use of uninitialized local 'value'
- -> language_tests/source_files/invalid/flow.tr:27:15
-	    let copy = value
-	               ^^^^^
+ -> language_tests/source_files/invalid/flow.tr:27:12
+	    copy := value
+	            ^^^^^
 error: use of uninitialized local 'value'
- -> language_tests/source_files/invalid/flow.tr:32:19
-	    let ptr = &mut value
-	                   ^^^^^
+ -> language_tests/source_files/invalid/flow.tr:32:12
+	    ptr := &value
+	            ^^^^^
 error: use of uninitialized local 'value'
  -> language_tests/source_files/invalid/flow.tr:47:24
-	        defer { let _ = value }
+	        defer { var _ = value }
 	                        ^^^^^
 error: use of uninitialized local 'value'
  -> language_tests/source_files/invalid/flow.tr:56:20
-	    defer { let _ = value }
+	    defer { var _ = value }
 	                    ^^^^^
 error: use of uninitialized local 'value'
  -> language_tests/source_files/invalid/flow.tr:67:28
-	            defer { let _ = value }
+	            defer { var _ = value }
 	                            ^^^^^

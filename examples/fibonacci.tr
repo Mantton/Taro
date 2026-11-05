@@ -9,5 +9,5 @@ func fibonacci(n: int32) -> int32 {
 }
 
 func main() {
-    let result = fibonacci(n: 10)
+    result := fibonacci(n: 10)
 }

@@ -1,0 +1,4 @@
+error: instance access to `value` requires `.`
+ -> language_tests/source_files/invalid/qualified_instance_separator.tr:7:17
+	    print(counter::value)
+	                 ^^

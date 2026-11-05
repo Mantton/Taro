@@ -1,0 +1,22 @@
+struct Token { id: int32 }
+struct Pair { left: Token; right: Token }
+struct Outer { pair: Pair; tag: int32 }
+
+func inspectOwned(_ value: Outer) {
+    assert(value.pair.left.id == 1, "restored left")
+    assert(value.pair.right.id == 4, "restored right")
+    assert(value.tag == 3, "untouched outer sibling")
+}
+
+func main() {
+    var outer = Outer {
+        pair: Pair { left: Token { id: 1 }, right: Token { id: 2 } },
+        tag: 3,
+    }
+    left := outer.pair.left
+    right := outer.pair.right
+    assert(right.id == 2, "nested sibling survives moving left")
+    outer.pair.left = left
+    outer.pair.right = Token { id: 4 }
+    inspectOwned(outer)
+}

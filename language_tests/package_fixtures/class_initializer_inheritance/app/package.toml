@@ -1,0 +1,5 @@
+[package]
+name = "github.com/taro-story/s31-inherited-client"
+kind = "executable"
+[require]
+"github.com/taro-story/s31-inherited-library" = { path = "../library", alias = "models" }

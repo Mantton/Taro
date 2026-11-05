@@ -1,15 +1,15 @@
 interface Value {
     var value: int32 {
-        get(&self) {
+        get {
             1
         }
 
-        set(&mut self, value: int32)
+        set(value)
     };
 }
 
 struct Incomplete {}
 
-impl Value for Incomplete {}
+conform Incomplete to Value {}
 
 func main() {}

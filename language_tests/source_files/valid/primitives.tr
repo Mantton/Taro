@@ -2,7 +2,7 @@
 
 func use() -> rune { 'A' }
 func raise(value: rune) -> rune { value }
-func raise(value: rune) -> int32 { 0 }
+func raise(number: rune) -> int32 { 0 }
 
 func take() -> uint8 { 0 }
 func take(value: uint8) -> uint8 { value }
@@ -12,70 +12,70 @@ func isGreaterThanZero(value: int32) -> bool {
 }
 
 func usePlain() {
-    let a = 10
+    a := 10
     assert(a == 10, "int literal")
 
-    let b: int32 = 10
+    var b: int32 = 10
     assert(b == 10, "explicit int32")
 
-    let c = true
+    c := true
     assert(c, "bool literal")
 
-    let d = 'A'
+    d := 'A'
     assert(d == 'A', "rune literal")
 
-    let _ = 1.0
-    let _e: double = 1.0
+    var _ = 1.0
+    var _e: double = 1.0
 }
 
 func useLocalIdentifier() {
-    let a = true
-    let b = a
+    a := true
+    b := a
     assert(b == true, "local identifier assignment")
 }
 
 func useNonOverloadCall() {
-    let a = use()
+    a := use()
     assert(a == 'A', "simple call")
 
-    let b: int32 = raise(value: a)
+    var b: int32 = raise(number: a)
     assert(b == 0, "call with param -> int32")
 
-    let c: rune = raise(value: a)
+    var c: rune = raise(value: a)
     assert(c == 'A', "call with param -> rune")
 }
 
 func useOverloadCall() {
-    let x: uint8 = 10
-    let a = take(value: x)
+    var x: uint8 = 10
+    a := take(value: x)
     assert(a == 10, "overload by param")
 
-    let b = take()
+    b := take()
     assert(b == 0, "overload no-arg")
 }
 
 func useUnaryOperator() {
-    let a = true
-    let b = !a
+    a := true
+    b := !a
     assert(b == false, "unary !")
 
-    let n = 10
-    let neg = -10
-    let pos = -neg
+    n := 10
+    neg := -10
+    pos := -neg
     assert(pos == n, "unary -")
 }
 
 func useBinaryOperator() {
-    let a: usize = 1 + 1
+    var a: usize = 1 + 1
     assert(a == 2, "binary +")
 }
 
 func useIfElse() {
-    let a = 10
-    let b = isGreaterThanZero(value: a)
+    a := 10
+    b := isGreaterThanZero(value: a)
     assert(b == true, "params check")
 
-    let c = if b {
+    c := if b {
         'A'
     } else if a == 0 {
         'B'
@@ -84,37 +84,37 @@ func useIfElse() {
     }
     assert(c == 'A', "if-else taken branch")
 
-    let d = if false { 'A' } else { 'B' }
+    d := if false { 'A' } else { 'B' }
     assert(d == 'B', "if-else else branch")
 }
 
 func testNonDecimalIntegerLiterals() {
-    let hex: uint64 = 0xDEADBEEF
+    var hex: uint64 = 0xDEADBEEF
     assert(hex == 3735928559, "hex literal")
 
-    let hex_sep: uint64 = 0xFF_FF
+    var hex_sep: uint64 = 0xFF_FF
     assert(hex_sep == 65535, "hex literal separators")
 
-    let max_u64_hex: uint64 = 0xffff_ffff_ffff_ffff
+    var max_u64_hex: uint64 = 0xffff_ffff_ffff_ffff
     assert(max_u64_hex == 18446744073709551615, "max uint64 hex")
 
-    let bin: uint32 = 0b10101010
+    var bin: uint32 = 0b10101010
     assert(bin == 170, "binary literal")
 
-    let bin_sep: uint32 = 0b1010_0101
+    var bin_sep: uint32 = 0b1010_0101
     assert(bin_sep == 165, "binary literal separators")
 
-    let oct: uint32 = 0o755
+    var oct: uint32 = 0o755
     assert(oct == 493, "octal literal")
 
-    let oct_sep: uint32 = 0o7_5_5
+    var oct_sep: uint32 = 0o7_5_5
     assert(oct_sep == 493, "octal literal separators")
 }
 
 func testFloatCastToFloat() {
-    let a: float = (-0.0) as float
-    let b: float = (1.25) as float
-    let c: float = ((1.0 as double) / (2.0 as double)) as float
+    var a: float = (-0.0) as float
+    var b: float = (1.25) as float
+    var c: float = ((1.0 as double) / (2.0 as double)) as float
 
     assert(a == (0.0 as float), "-0.0 cast to float")
     assert(b == (1.25 as float), "double literal cast to float")
@@ -122,27 +122,27 @@ func testFloatCastToFloat() {
 }
 
 func testLargeIntegerLiteralCasts() {
-    let a: uint64 = 3931806377309739662 as uint64
+    var a: uint64 = 3931806377309739662 as uint64
     assert(a == 3931806377309739662, "large uint64 cast")
 
-    let b: uint64 = 18446744073709551615 as uint64
+    var b: uint64 = 18446744073709551615 as uint64
     assert(b == 18446744073709551615, "max uint64 cast")
 }
 
 func testMixedSignednessCasts() {
     // Widening extends based on the source signedness: unsigned sources
     // zero-extend, even into signed targets.
-    let a: uint8 = 200
+    var a: uint8 = 200
     assert((a as int16) == 200, "uint8 zero-extends to int16")
     assert((a as int64) == 200, "uint8 zero-extends to int64")
     assert((a as uint64) == 200, "uint8 zero-extends to uint64")
 
     // Signed sources sign-extend, even into unsigned targets.
-    let b: int8 = -1
+    var b: int8 = -1
     assert((b as int64) == -1, "int8 sign-extends to int64")
     assert((b as uint64) == 18446744073709551615, "int8 sign-extends to uint64")
 
-    let c: int8 = -56
+    var c: int8 = -56
     assert((c as int64) == 0 - 56, "negative int8 sign-extends to int64")
     assert((c as uint16) == 65480, "negative int8 sign-extends to uint16")
 
@@ -151,43 +151,43 @@ func testMixedSignednessCasts() {
     assert((c as uint8) == a, "int8 to uint8 reinterprets bits")
 
     // Truncation drops high bits regardless of signedness.
-    let d: uint16 = 511
+    var d: uint16 = 511
     assert((d as uint8) == 255, "uint16 truncates to uint8")
 
-    let e: int64 = -1
+    var e: int64 = -1
     assert((e as uint8) == 255, "int64 truncates to uint8")
 
-    let r = 'A'
+    r := 'A'
     assert((r as uint32) == 65, "rune widens to uint32")
     assert((r as int64) == 65, "rune widens to int64")
     assert((r as uint64) == 65, "rune widens to uint64")
 
-    let byte: uint8 = 255
-    let codepoint = byte as rune
+    var byte: uint8 = 255
+    codepoint := byte as rune
     assert(codepoint == '\u{00FF}', "uint8 converts to the same rune value")
 }
 
 func testNegativeLiteralInference() {
     // Unary minus on a literal infers from the annotation instead of
     // defaulting to int32.
-    let a: int8 = -56
+    var a: int8 = -56
     assert((a as uint8) == 200, "int8 annotation on negated literal")
 
-    let b: int16 = -32767
+    var b: int16 = -32767
     assert((b as uint16) == 32769, "int16 annotation on negated literal")
 
-    let c: int64 = -1
+    var c: int64 = -1
     assert((c as uint64) == 18446744073709551615, "int64 annotation on negated literal")
 
-    let f: float = -1.5
-    let zero: float = 0.0
+    var f: float = -1.5
+    var zero: float = 0.0
     assert(zero - f == (1.5 as float), "float annotation on negated literal")
 
     // A literal-only arithmetic expression unifies against a concrete side
     // of a comparison instead of being rejected as unresolved.
     assert(c == 0 - 1, "literal expression compares against int64")
 
-    let n = -5
+    n := -5
     assert(n + 5 == 0, "default-typed negated literal arithmetic")
 }
 

@@ -1,0 +1,25 @@
+interface Echo[A] {
+    func echo[T](_ value: T, _ count: int32 = 7) -> T { value }
+    func echoArray[const N: usize](_ value: [int32; N]) -> [int32; N] { value }
+    func read(_ input: &A) -> int32 { 7 }
+}
+class Box[U, V, W] {}
+extend[U, V, W] Box[U, V, W] { init() {} }
+conform[W, V, U] Box[U, V, W] to Echo[int32] {}
+class Derived[U, V, W]: Box[U, V, W] {}
+conform[U, V, W] Derived[U, V, W] to Echo[int32] {
+    override func echo[T](_ value: T, _ count: int32 = 7) -> T { super.echo(value, count) }
+}
+func generic[T: Echo[int32], U](_ object: &T, _ value: U) -> U { object.echo(value) }
+func main() {
+    var child: Derived[bool, int64, int32] = Derived[bool, int64, int32]() // Derived[bool, int64, int32].
+    var base: Box[bool, int64, int32] = child // Box[bool, int64, int32]; same object.
+    var first: List[int32] = [1, 2] // List[int32]; NoCopy.
+    var result: List[int32] = generic(&base, first) // List[int32]; moves through reordered extension/method coordinates.
+    assert(result.len() == 2 && result[1] == 2, "generic virtual default maps parent and own parameters separately")
+    var array: [int32; 2] = [3, 4] // [int32; 2].
+    var copied: [int32; 2] = base.echoArray(array) // [int32; 2]; const-own generic default body.
+    assert(copied[0] == 3 && copied[1] == 4, "const arguments use the source default's coordinate system")
+    var input: int32 = 1 // int32; interface argument independent of class arguments.
+    assert(base.read(&input) == 7 && child.read(&input) == 7, "explicit interface type argument remains int32")
+}

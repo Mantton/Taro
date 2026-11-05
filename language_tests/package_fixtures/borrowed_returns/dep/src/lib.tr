@@ -1,0 +1,9 @@
+public struct Record { public value: int32 }
+
+extend Record {
+    public func get() -> &int32 { &self.value }
+}
+
+public func relay(_ record: &Record) -> &int32 { record.get() }
+
+public func forwardReference[T](_ value: &T) -> &T { value }

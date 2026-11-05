@@ -1,0 +1,21 @@
+// Override matching uses the extension's target, not abstract Child[T, V].
+struct Box[T] { value: T }
+class Base[T] { value: T; tags: usize }
+extend[U] Base[Box[U]] {
+    init[Tag, const M: usize](_ value: Box[U], tag: [Tag; M]) {
+        self.value = value
+        self.tags = M
+    }
+}
+final class Child[T, V]: Base[T] { extra: V? = .none; marker: int32 = 5 }
+extend[U, V] Child[Box[U], V] {
+    override init[Tag, const M: usize](_ value: Box[U], tag: [Tag; M]) {
+        super.init(value, tag: tag)
+        self.marker += 1
+    }
+}
+func main() {
+    var child: Child[Box[List[string]], bool] = Child[Box[List[string]], bool](Box[List[string]] { value: ["kept", "payload"] }, tag: [true, false])
+    assert(child.value.value[1] == "payload", "NoCopy payload in shaped override")
+    assert(child.extra.isNone() && child.tags == 2 && child.marker == 6, "base and subclass generic/default coordinates")
+}

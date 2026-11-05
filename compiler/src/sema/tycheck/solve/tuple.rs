@@ -11,7 +11,18 @@ use crate::{
 
 impl<'ctx> ConstraintSolver<'ctx> {
     pub fn solve_tuple_access(&mut self, data: TupleAccessGoalData<'ctx>) -> SolverResult<'ctx> {
+        self.solve_tuple_access_at(data, Vec::new(), Vec::new())
+    }
+
+    fn solve_tuple_access_at(
+        &mut self,
+        data: TupleAccessGoalData<'ctx>,
+        prefix: Vec<Adjustment<'ctx>>,
+        mut visited: Vec<Ty<'ctx>>,
+    ) -> SolverResult<'ctx> {
+        let original = data.clone();
         let TupleAccessGoalData {
+            receiver_addressable,
             node_id,
             receiver_node_id,
             receiver,
@@ -29,7 +40,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return SolverResult::Solved(vec![obligation]);
         }
 
-        let mut adjustment = Vec::new();
+        let mut adjustment = prefix.clone();
         let mut prev: Option<Ty<'ctx>> = None;
 
         for ty in self.autoderef(receiver) {
@@ -71,6 +82,27 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     continue;
                 }
             }
+        }
+
+        match self.custom_deref_fallback(
+            receiver,
+            receiver_addressable,
+            span,
+            &prefix,
+            &mut visited,
+        ) {
+            Ok(Some((target, prefix, proof))) => {
+                let mut data = original;
+                data.receiver = target;
+                data.receiver_addressable = true;
+                let mut result = self.solve_tuple_access_at(data, prefix, visited);
+                if let SolverResult::Solved(obligations) = &mut result {
+                    obligations.extend(proof);
+                }
+                return result;
+            }
+            Err(result) => return result,
+            Ok(None) => {}
         }
 
         let final_ty = prev.unwrap_or_else(|| self.structurally_resolve(receiver));

@@ -1,0 +1,9 @@
+// VET
+@NoCopy
+struct State { value: int32 }
+func main() {
+    var values: List[State] = [State { value: 1 }]
+    copied := values[0]
+    var _ = &copied
+    for value in values { var _ = &value }
+}

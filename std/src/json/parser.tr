@@ -1,14 +1,13 @@
-import std.collections.List
-import std.io.Reader
-import std.marker.Copy
-import std.mem.MutableSpan
-import std.result.Result
-import std.string.Builder
+import std::collections::List
+import std::io::Reader
+import std::mem::Span
+import std::result::Result
+import std::string::Builder
 
 const INPUT_BUFFER_SIZE: usize = 4096
 const ROOT_PATH: string = "$"
 
-struct Position: Copy {
+struct Position {
     offset: usize
     line: usize
     column: usize
@@ -18,50 +17,33 @@ struct PositionTracker {
     value: Position
 }
 
-impl PositionTracker {
-    func new() -> Self {
+extend PositionTracker {
+    static func new() -> Self {
         PositionTracker {
             value: Position { offset: 0, line: 1, column: 1 },
         }
     }
-
-    func advance(&mut self, _ byte: uint8) {
-        // A named mutable borrow keeps all tracker updates on an assignable
-        // place; nested field projections are values in Taro today.
-        let position = &mut self.value
-        position.offset += 1
-        if byte == ('\n' as uint8) {
-            position.line += 1
-            position.column = 1
-        } else {
-            position.column += 1
-        }
-    }
-
-    func advanceAscii(&mut self, _ count: usize) {
-        let position = &mut self.value
-        position.offset += count
-        position.column += count
-    }
 }
 
-struct ParseState: Copy {
+struct ParseState {
     options: Options
     valueStart: usize
 }
 
-impl ParseState {
-    func new(_ options: Options, _ valueStart: usize) -> Self {
+extend ParseState {
+    static func new(_ options: Options, _ valueStart: usize) -> Self {
         ParseState { options, valueStart }
     }
 }
 
 interface JsonInput {
-    func peek(&mut self) -> Result[uint8?, std.io.Error]
-    func advance(&mut self, _ byte: uint8)
-    func position(&self) -> Position
+    // A buffered byte needs no I/O error payload. Refill only at a boundary.
+    func bufferedByte() -> uint8?
+    func refill() -> Result[uint8?, std::io::Error]
+    func advance(_ byte: uint8)
+    func position() -> Position
     func takeUnescapedAsciiString(
-        &mut self,
+
         _ state: ParseState,
         _ path: string,
     ) -> Result[string?, Error]
@@ -73,42 +55,47 @@ struct StringInput {
     tracker: PositionTracker
 }
 
-impl StringInput {
-    func new(_ source: string) -> Self {
-        StringInput { source, index: 0, tracker: PositionTracker() }
+extend StringInput {
+    static func new(_ source: string) -> Self {
+        StringInput { source, index: 0, tracker: PositionTracker::new() }
     }
 }
 
-impl JsonInput for StringInput {
-    func peek(&mut self) -> Result[uint8?, std.io.Error] {
-        if self.index >= self.source.byteLen() {
-            return .ok(.none)
-        }
-        return .ok(.some(self.source.byteAt(self.index)))
+conform &StringInput to JsonInput {
+    @inline
+    func bufferedByte() -> uint8? {
+        if self.index >= self.source.byteLen() { return .none }
+        return .some(self.source.byteAt(self.index))
     }
 
-    func advance(&mut self, _ byte: uint8) {
+    func refill() -> Result[uint8?, std::io::Error] {
+        // The complete string is already available; a boundary means EOF.
+        return .ok(.none)
+    }
+
+    @inline
+    func advance(_ byte: uint8) {
         self.index += 1
         self.tracker.advance(byte)
     }
 
-    func position(&self) -> Position {
+    func position() -> Position {
         self.tracker.value
     }
 
     func takeUnescapedAsciiString(
-        &mut self,
+
         _ state: ParseState,
         _ path: string,
     ) -> Result[string?, Error] {
-        let start = self.index
-        let startPosition = self.tracker.value
-        let sourceLength = self.source.byteLen()
-        let sourceData = std.string.stringData(self.source)
+        start := self.index
+        startPosition := self.tracker.value
+        sourceLength := self.source.byteLen()
+        sourceData := std::string::stringData(self.source)
         var index = start
         while index < sourceLength {
-            let distance = index - start
-            let position = Position {
+            distance := index - start
+            position := Position {
                 offset: startPosition.offset + distance,
                 line: startPosition.line,
                 column: startPosition.column + distance,
@@ -124,9 +111,9 @@ impl JsonInput for StringInput {
 
             // Bounds are proven by the loop, so reading the contiguous byte
             // pointer avoids repeating `byteAt`'s length check for every byte.
-            let byte = sourceData.add(index).read()
+            byte := unsafe { sourceData.add(index).read() }
             if byte == ('\"' as uint8) {
-                let value = self.source.substring(start, distance)
+                value := self.source.substring(start, distance)
                 self.index = index + 1
                 self.tracker.advanceAscii(distance + 1)
                 return .ok(.some(value))
@@ -139,7 +126,7 @@ impl JsonInput for StringInput {
 
         // Advancing a safe prefix preserves the exact EOF diagnostic while
         // avoiding a second bytewise pass over a malformed unterminated string.
-        let distance = index - start
+        distance := index - start
         self.index = index
         self.tracker.advanceAscii(distance)
         return .ok(.none)
@@ -155,21 +142,27 @@ struct ReaderInput[Source: Reader] {
     tracker: PositionTracker
 }
 
-impl[Source: Reader] ReaderInput[Source] {
-    func new(_ source: Source) -> Self {
+extend[Source: Reader] ReaderInput[Source] {
+    static func new(_ source: Source) -> Self {
         ReaderInput[Source] {
             source,
             storage: [0_u8; INPUT_BUFFER_SIZE],
             start: 0,
             end: 0,
             reachedEof: false,
-            tracker: PositionTracker(),
+            tracker: PositionTracker::new(),
         }
     }
 }
 
-impl[Source: Reader] JsonInput for ReaderInput[Source] {
-    func peek(&mut self) -> Result[uint8?, std.io.Error] {
+conform[Source: Reader] &ReaderInput[Source] to JsonInput {
+    @inline
+    func bufferedByte() -> uint8? {
+        if self.start < self.end { return .some(*self.storage.at(self.start)) }
+        return .none
+    }
+
+    func refill() -> Result[uint8?, std::io::Error] {
         if self.start < self.end {
             return .ok(.some(*self.storage.at(self.start)))
         }
@@ -177,17 +170,17 @@ impl[Source: Reader] JsonInput for ReaderInput[Source] {
             return .ok(.none)
         }
 
-        let storagePtr = unsafe {
-            (&mut self.storage as *mut [uint8; INPUT_BUFFER_SIZE]) as *mut uint8
+        storagePtr := unsafe {
+            (&self.storage as *mut [uint8; INPUT_BUFFER_SIZE]) as *mut uint8
         }
-        let writable = MutableSpan[uint8].from(storagePtr, INPUT_BUFFER_SIZE)
-        let count = match self.source.read(writable) {
+        writable := unsafe { Span[uint8]::from(storagePtr, INPUT_BUFFER_SIZE) }
+        count := match self.source.read(writable) {
             case .ok(value) => value
             case .err(error) => return .err(error)
         }
 
         if count > INPUT_BUFFER_SIZE {
-            return .err(std.io.Error(.invalidData).withOperation("read JSON input"))
+            return .err(std::io::Error::new(.invalidData).withOperation("read JSON input"))
         }
         self.start = 0
         self.end = count
@@ -198,17 +191,17 @@ impl[Source: Reader] JsonInput for ReaderInput[Source] {
         return .ok(.some(*self.storage.at(0)))
     }
 
-    func advance(&mut self, _ byte: uint8) {
+    func advance(_ byte: uint8) {
         self.start += 1
         self.tracker.advance(byte)
     }
 
-    func position(&self) -> Position {
+    func position() -> Position {
         self.tracker.value
     }
 
     func takeUnescapedAsciiString(
-        &mut self,
+
         _ state: ParseState,
         _ path: string,
     ) -> Result[string?, Error] {
@@ -219,25 +212,28 @@ impl[Source: Reader] JsonInput for ReaderInput[Source] {
 }
 
 func errorAt(_ kind: ErrorKind, _ message: string, _ position: Position, _ path: string) -> Error {
-    Error.at(kind, message, position.offset, position.line, position.column, path)
+    Error::at(kind, message, position.offset, position.line, position.column, path)
 }
 
 func peekByte[Input: JsonInput](
-    _ input: &mut Input,
+    _ input: Input,
     _ state: ParseState,
     _ path: string,
 ) -> Result[uint8?, Error] {
-    let next = match input.peek() {
-        case .ok(value) => value
-        case .err(cause) => {
-            let position = input.position()
-            return .err(Error.fromIo(cause, position.offset, position.line, position.column, path))
+    var next = input.bufferedByte()
+    if next.isNone() {
+        next = match input.refill() {
+            case .ok(value) => value
+            case .err(cause) => {
+                position := input.position()
+                return .err(Error::fromIo(cause, position.offset, position.line, position.column, path))
+            }
         }
     }
 
     match next {
         case .some(_) => {
-            let position = input.position()
+            position := input.position()
             if position.offset - state.valueStart >= state.options.maxInputBytes() {
                 return .err(errorAt(
                     .inputLimit,
@@ -253,7 +249,7 @@ func peekByte[Input: JsonInput](
 }
 
 func takeByte[Input: JsonInput](
-    _ input: &mut Input,
+    _ input: Input,
     _ state: ParseState,
     _ path: string,
 ) -> Result[uint8?, Error] {
@@ -268,7 +264,7 @@ func takeByte[Input: JsonInput](
 }
 
 func requiredByte[Input: JsonInput](
-    _ input: &mut Input,
+    _ input: Input,
     _ state: ParseState,
     _ path: string,
     _ message: string,
@@ -282,6 +278,7 @@ func requiredByte[Input: JsonInput](
     }
 }
 
+@inline
 func isWhitespace(_ byte: uint8) -> bool {
     byte == (' ' as uint8)
         || byte == ('\t' as uint8)
@@ -290,7 +287,7 @@ func isWhitespace(_ byte: uint8) -> bool {
 }
 
 func skipWhitespace[Input: JsonInput](
-    _ input: &mut Input,
+    _ input: Input,
     _ state: ParseState,
     _ path: string,
 ) -> Result[(), Error] {
@@ -321,8 +318,8 @@ func hexDigit(_ byte: uint8) -> uint32? {
     return .none
 }
 
-func appendHexByte(_ into: &mut Builder, _ byte: uint8) {
-    let digits = "0123456789ABCDEF"
+func appendHexByte(_ into: &Builder, _ byte: uint8) {
+    digits := "0123456789ABCDEF"
     into.writeByte(digits.byteAt((byte >> 4) as usize))
     into.writeByte(digits.byteAt((byte & 0x0f_u8) as usize))
 }
@@ -331,35 +328,35 @@ func appendHexByte(_ into: &mut Builder, _ byte: uint8) {
 /// `\xNN`, keeping the diagnostic path valid even when an encoder is reporting
 /// malformed UTF-8 in a caller-created object key.
 func childPathForKey(_ parent: string, _ key: string) -> string {
-    var result = Builder()
+    var result = Builder::new()
     result.writeString(parent)
     result.writeString("[\"")
     var index: usize = 0
     while index < key.byteLen() {
-        let byte = key.byteAt(index)
+        byte := key.byteAt(index)
         if byte == ('\"' as uint8) {
             result.writeString("\\\"")
         } else if byte == ('\\' as uint8) {
             result.writeString("\\\\")
         } else if byte < 0x20_u8 || byte >= 0x7f_u8 {
             result.writeString("\\x")
-            appendHexByte(&mut result, byte)
+            appendHexByte(&result, byte)
         } else {
             result.writeByte(byte)
         }
         index += 1
     }
     result.writeString("\"]")
-    return result.intoString()
+    return result.toString()
 }
 
 func childPathForIndex(_ parent: string, _ index: usize) -> string {
-    var result = Builder()
+    var result = Builder::new()
     result.writeString(parent)
     result.writeByte('[' as uint8)
-    result.writeString(std.sprintf("%d", index))
+    std::fmt::appendUnsignedDecimal(&result, index as uint64)
     result.writeByte(']' as uint8)
-    return result.intoString()
+    return result.toString()
 }
 
 func errorAtChildKey(_ error: Error, _ parent: string, _ key: string) -> Error {
@@ -371,15 +368,15 @@ func errorAtChildIndex(_ error: Error, _ parent: string, _ index: usize) -> Erro
 }
 
 func parseHexQuad[Input: JsonInput](
-    _ input: &mut Input,
+    _ input: Input,
     _ state: ParseState,
     _ path: string,
 ) -> Result[uint32, Error] {
     var value: uint32 = 0
     var count: usize = 0
     while count < 4 {
-        let position = input.position()
-        let byte = match requiredByte(
+        position := input.position()
+        byte := match requiredByte(
             input,
             state,
             path,
@@ -388,7 +385,7 @@ func parseHexQuad[Input: JsonInput](
             case .ok(value) => value
             case .err(error) => return .err(error)
         }
-        let digit = match hexDigit(byte) {
+        digit := match hexDigit(byte) {
             case .some(value) => value
             case .none => {
                 return .err(errorAt(
@@ -406,21 +403,21 @@ func parseHexQuad[Input: JsonInput](
 }
 
 func writeEscapedUnicode[Input: JsonInput](
-    _ input: &mut Input,
+    _ input: Input,
     _ state: ParseState,
     _ path: string,
     _ escapePosition: Position,
-    _ into: &mut Builder,
+    _ into: &Builder,
 ) -> Result[(), Error] {
-    let first = match parseHexQuad(input, state, path) {
+    first := match parseHexQuad(input, state, path) {
         case .ok(value) => value
         case .err(error) => return .err(error)
     }
 
     var scalar = first
     if first >= 0xD800_u32 && first <= 0xDBFF_u32 {
-        let slashPosition = input.position()
-        let slash = match requiredByte(
+        slashPosition := input.position()
+        slash := match requiredByte(
             input,
             state,
             path,
@@ -438,8 +435,8 @@ func writeEscapedUnicode[Input: JsonInput](
             ))
         }
 
-        let markerPosition = input.position()
-        let marker = match requiredByte(
+        markerPosition := input.position()
+        marker := match requiredByte(
             input,
             state,
             path,
@@ -457,7 +454,7 @@ func writeEscapedUnicode[Input: JsonInput](
             ))
         }
 
-        let second = match parseHexQuad(input, state, path) {
+        second := match parseHexQuad(input, state, path) {
             case .ok(value) => value
             case .err(error) => return .err(error)
         }
@@ -479,7 +476,7 @@ func writeEscapedUnicode[Input: JsonInput](
         ))
     }
 
-    match std.rune.fromU32(scalar) {
+    match std::rune::fromU32(scalar) {
         case .some(value) => {
             into.writeRune(value)
             return .ok(())
@@ -496,12 +493,12 @@ func writeEscapedUnicode[Input: JsonInput](
 }
 
 func writeUnescapedUtf8[Input: JsonInput](
-    _ input: &mut Input,
+    _ input: Input,
     _ state: ParseState,
     _ path: string,
     _ lead: uint8,
     _ leadPosition: Position,
-    _ into: &mut Builder,
+    _ into: &Builder,
 ) -> Result[(), Error] {
     var continuationCount: usize = 0
     if lead >= 0xC2_u8 && lead <= 0xDF_u8 {
@@ -522,8 +519,8 @@ func writeUnescapedUtf8[Input: JsonInput](
     into.writeByte(lead)
     var index: usize = 0
     while index < continuationCount {
-        let position = input.position()
-        let byte = match takeByte(input, state, path) {
+        position := input.position()
+        byte := match takeByte(input, state, path) {
             case .err(error) => return .err(error)
             case .ok(.none) => {
                 return .err(errorAt(
@@ -565,12 +562,12 @@ func writeUnescapedUtf8[Input: JsonInput](
 }
 
 func parseStringValue[Input: JsonInput](
-    _ input: &mut Input,
+    _ input: Input,
     _ state: ParseState,
     _ path: string,
 ) -> Result[string, Error] {
-    let openingPosition = input.position()
-    let opening = match requiredByte(input, state, path, "expected a JSON string") {
+    openingPosition := input.position()
+    opening := match requiredByte(input, state, path, "expected a JSON string") {
         case .ok(value) => value
         case .err(error) => return .err(error)
     }
@@ -584,20 +581,20 @@ func parseStringValue[Input: JsonInput](
         case .err(error) => return .err(error)
     }
 
-    var result = Builder()
+    var result = Builder::new()
     loop {
-        let position = input.position()
-        let byte = match requiredByte(input, state, path, "unterminated JSON string") {
+        position := input.position()
+        byte := match requiredByte(input, state, path, "unterminated JSON string") {
             case .ok(value) => value
             case .err(error) => return .err(error)
         }
 
         if byte == ('\"' as uint8) {
-            return .ok(result.intoString())
+            return .ok(result.toString())
         }
         if byte == ('\\' as uint8) {
-            let escapePosition = input.position()
-            let escaped = match requiredByte(input, state, path, "unterminated JSON escape") {
+            escapePosition := input.position()
+            escaped := match requiredByte(input, state, path, "unterminated JSON escape") {
                 case .ok(value) => value
                 case .err(error) => return .err(error)
             }
@@ -611,7 +608,7 @@ func parseStringValue[Input: JsonInput](
                 case 0x72 => result.writeByte(0x0d_u8)
                 case 0x74 => result.writeByte(0x09_u8)
                 case 0x75 => {
-                    match writeEscapedUnicode(input, state, path, escapePosition, &mut result) {
+                    match writeEscapedUnicode(input, state, path, escapePosition, &result) {
                         case .ok(_) => {}
                         case .err(error) => return .err(error)
                     }
@@ -639,7 +636,7 @@ func parseStringValue[Input: JsonInput](
             result.writeByte(byte)
             continue
         }
-        match writeUnescapedUtf8(input, state, path, byte, position, &mut result) {
+        match writeUnescapedUtf8(input, state, path, byte, position, &result) {
             case .ok(_) => {}
             case .err(error) => return .err(error)
         }
@@ -647,15 +644,15 @@ func parseStringValue[Input: JsonInput](
 }
 
 func parseLiteral[Input: JsonInput](
-    _ input: &mut Input,
+    _ input: Input,
     _ state: ParseState,
     _ path: string,
     _ expected: string,
 ) -> Result[(), Error] {
     var index: usize = 0
     while index < expected.byteLen() {
-        let position = input.position()
-        let byte = match requiredByte(input, state, path, "incomplete JSON literal") {
+        position := input.position()
+        byte := match requiredByte(input, state, path, "incomplete JSON literal") {
             case .ok(value) => value
             case .err(error) => return .err(error)
         }
@@ -675,10 +672,10 @@ func isNumberTerminator(_ byte: uint8) -> bool {
 }
 
 func consumeDigits[Input: JsonInput](
-    _ input: &mut Input,
+    _ input: Input,
     _ state: ParseState,
     _ path: string,
-    _ into: &mut Builder,
+    _ into: &Builder,
 ) -> Result[(), Error] {
     loop {
         match peekByte(input, state, path) {
@@ -696,12 +693,12 @@ func consumeDigits[Input: JsonInput](
 }
 
 func requireDigit[Input: JsonInput](
-    _ input: &mut Input,
+    _ input: Input,
     _ state: ParseState,
     _ path: string,
-    _ into: &mut Builder,
+    _ into: &Builder,
 ) -> Result[(), Error] {
-    let position = input.position()
+    position := input.position()
     match takeByte(input, state, path) {
         case .err(error) => return .err(error)
         case .ok(.some(byte)) => {
@@ -718,11 +715,11 @@ func requireDigit[Input: JsonInput](
 }
 
 func parseNumberValue[Input: JsonInput](
-    _ input: &mut Input,
+    _ input: Input,
     _ state: ParseState,
     _ path: string,
 ) -> Result[Number, Error] {
-    var result = Builder()
+    var result = Builder::new()
 
     var next = match peekByte(input, state, path) {
         case .ok(value) => value
@@ -738,8 +735,8 @@ func parseNumberValue[Input: JsonInput](
         case .none => {}
     }
 
-    let integerPosition = input.position()
-    let first = match requiredByte(input, state, path, "incomplete JSON number") {
+    integerPosition := input.position()
+    first := match requiredByte(input, state, path, "incomplete JSON number") {
         case .ok(value) => value
         case .err(error) => return .err(error)
     }
@@ -761,7 +758,7 @@ func parseNumberValue[Input: JsonInput](
         }
     } else if first >= ('1' as uint8) && first <= ('9' as uint8) {
         result.writeByte(first)
-        match consumeDigits(input, state, path, &mut result) {
+        match consumeDigits(input, state, path, &result) {
             case .ok(_) => {}
             case .err(error) => return .err(error)
         }
@@ -778,11 +775,11 @@ func parseNumberValue[Input: JsonInput](
             if byte == ('.' as uint8) {
                 input.advance(byte)
                 result.writeByte(byte)
-                match requireDigit(input, state, path, &mut result) {
+                match requireDigit(input, state, path, &result) {
                     case .ok(_) => {}
                     case .err(error) => return .err(error)
                 }
-                match consumeDigits(input, state, path, &mut result) {
+                match consumeDigits(input, state, path, &result) {
                     case .ok(_) => {}
                     case .err(error) => return .err(error)
                 }
@@ -810,11 +807,11 @@ func parseNumberValue[Input: JsonInput](
                     }
                     case .ok(.none) => {}
                 }
-                match requireDigit(input, state, path, &mut result) {
+                match requireDigit(input, state, path, &result) {
                     case .ok(_) => {}
                     case .err(error) => return .err(error)
                 }
-                match consumeDigits(input, state, path, &mut result) {
+                match consumeDigits(input, state, path, &result) {
                     case .ok(_) => {}
                     case .err(error) => return .err(error)
                 }
@@ -838,12 +835,12 @@ func parseNumberValue[Input: JsonInput](
         case .ok(.none) => {}
     }
 
-    let text = result.intoString()
-    return .ok(Number.fromValidated(text))
+    text := result.toString()
+    return .ok(Number::fromValidated(text))
 }
 
 func parseArray[Input: JsonInput](
-    _ input: &mut Input,
+    _ input: Input,
     _ state: ParseState,
     _ depth: usize,
     _ path: string,
@@ -867,7 +864,7 @@ func parseArray[Input: JsonInput](
         case .ok(.some(byte)) => {
             if byte == (']' as uint8) {
                 input.advance(byte)
-                return .ok(.array(List[Value]()))
+                return .ok(.array(List[Value]::new()))
             }
         }
         case .ok(.none) => {
@@ -875,10 +872,10 @@ func parseArray[Input: JsonInput](
         }
     }
 
-    var values = List[Value]()
+    var values = List[Value]::new()
     var index: usize = 0
     loop {
-        let value = match parseValue(input, state, depth + 1, ROOT_PATH) {
+        value := match parseValue(input, state, depth + 1, ROOT_PATH) {
             case .ok(value) => value
             case .err(error) => return .err(errorAtChildIndex(error, path, index))
         }
@@ -889,8 +886,8 @@ func parseArray[Input: JsonInput](
             case .ok(_) => {}
             case .err(error) => return .err(error)
         }
-        let position = input.position()
-        let delimiter = match requiredByte(input, state, path, "unterminated JSON array") {
+        position := input.position()
+        delimiter := match requiredByte(input, state, path, "unterminated JSON array") {
             case .ok(value) => value
             case .err(error) => return .err(error)
         }
@@ -913,7 +910,7 @@ func parseArray[Input: JsonInput](
 }
 
 func parseObject[Input: JsonInput](
-    _ input: &mut Input,
+    _ input: Input,
     _ state: ParseState,
     _ depth: usize,
     _ path: string,
@@ -937,7 +934,7 @@ func parseObject[Input: JsonInput](
         case .ok(.some(byte)) => {
             if byte == ('}' as uint8) {
                 input.advance(byte)
-                return .ok(.object(Object()))
+                return .ok(.object(Object::new()))
             }
         }
         case .ok(.none) => {
@@ -945,14 +942,15 @@ func parseObject[Input: JsonInput](
         }
     }
 
-    var object = Object()
+    var object = Object::new()
     loop {
-        let keyPosition = input.position()
-        let key = match parseStringValue(input, state, path) {
+        if object.len() == OBJECT_INDEX_THRESHOLD { object = object.indexedForParsing() }
+        keyPosition := input.position()
+        key := match parseStringValue(input, state, path) {
             case .ok(value) => value
             case .err(error) => return .err(error)
         }
-        let existingIndex = object.indexOf(key)
+        existingIndex := object.indexOf(key)
         if existingIndex.isSome() {
             match state.options.duplicateKeys() {
                 case .reject => {
@@ -971,8 +969,8 @@ func parseObject[Input: JsonInput](
             case .ok(_) => {}
             case .err(error) => return .err(errorAtChildKey(error, path, key))
         }
-        let colonPosition = input.position()
-        let colon = match requiredByte(input, state, ROOT_PATH, "expected ':' after object key") {
+        colonPosition := input.position()
+        colon := match requiredByte(input, state, ROOT_PATH, "expected ':' after object key") {
             case .ok(value) => value
             case .err(error) => return .err(errorAtChildKey(error, path, key))
         }
@@ -988,7 +986,7 @@ func parseObject[Input: JsonInput](
             case .ok(_) => {}
             case .err(error) => return .err(errorAtChildKey(error, path, key))
         }
-        let value = match parseValue(input, state, depth + 1, ROOT_PATH) {
+        value := match parseValue(input, state, depth + 1, ROOT_PATH) {
             case .ok(value) => value
             case .err(error) => return .err(errorAtChildKey(error, path, key))
         }
@@ -1007,8 +1005,8 @@ func parseObject[Input: JsonInput](
             case .ok(_) => {}
             case .err(error) => return .err(error)
         }
-        let delimiterPosition = input.position()
-        let delimiter = match requiredByte(input, state, path, "unterminated JSON object") {
+        delimiterPosition := input.position()
+        delimiter := match requiredByte(input, state, path, "unterminated JSON object") {
             case .ok(value) => value
             case .err(error) => return .err(error)
         }
@@ -1031,12 +1029,12 @@ func parseObject[Input: JsonInput](
 }
 
 func parseValue[Input: JsonInput](
-    _ input: &mut Input,
+    _ input: Input,
     _ state: ParseState,
     _ depth: usize,
     _ path: string,
 ) -> Result[Value, Error] {
-    let byte = match peekByte(input, state, path) {
+    byte := match peekByte(input, state, path) {
         case .err(error) => return .err(error)
         case .ok(.some(value)) => value
         case .ok(.none) => {
@@ -1094,53 +1092,25 @@ public struct Parser {
     options: Options
 }
 
-impl Parser {
-    public func new(_ input: string) -> Self {
-        Parser { input: StringInput(input), options: Options() }
+extend Parser {
+    public static func new(_ input: string) -> Self {
+        Parser { input: StringInput::new(input), options: Options::new() }
     }
 
-    public func withOptions(_ input: string, _ options: Options) -> Self {
-        Parser { input: StringInput(input), options }
-    }
-
-    public func parse(&mut self) -> Result[Value, Error] {
-        let state = ParseState(self.options, 0)
-        match skipWhitespace(&mut self.input, state, ROOT_PATH) {
-            case .ok(_) => {}
-            case .err(error) => return .err(error)
-        }
-        let value = match parseValue(&mut self.input, state, 0, ROOT_PATH) {
-            case .ok(value) => value
-            case .err(error) => return .err(error)
-        }
-        match skipWhitespace(&mut self.input, state, ROOT_PATH) {
-            case .ok(_) => {}
-            case .err(error) => return .err(error)
-        }
-        match peekByte(&mut self.input, state, ROOT_PATH) {
-            case .err(error) => return .err(error)
-            case .ok(.none) => return .ok(value)
-            case .ok(.some(_)) => {
-                return .err(errorAt(
-                    .trailingData,
-                    "JSON text contains data after its root value",
-                    self.input.position(),
-                    ROOT_PATH,
-                ))
-            }
-        }
+    public static func withOptions(_ input: string, _ options: Options) -> Self {
+        Parser { input: StringInput::new(input), options }
     }
 }
 
 /// Parse one complete JSON text using safe defaults.
 public func parse(_ input: string) -> Result[Value, Error] {
-    var parser = Parser(input)
+    var parser = Parser::new(input)
     parser.parse()
 }
 
 /// Parse one complete JSON text using explicit resource and duplicate controls.
 public func parseWithOptions(_ input: string, _ options: Options) -> Result[Value, Error] {
-    var parser = Parser.withOptions(input, options)
+    var parser = Parser::withOptions(input, options)
     parser.parse()
 }
 
@@ -1153,36 +1123,80 @@ public struct Decoder[Source: Reader] {
     options: Options
 }
 
-impl[Source: Reader] Decoder[Source] {
-    public func new(_ source: Source) -> Self {
-        Decoder[Source] { input: ReaderInput(source), options: Options() }
+extend[Source: Reader] Decoder[Source] {
+    public static func new(_ source: Source) -> Self {
+        Decoder[Source] { input: ReaderInput::new(source), options: Options::new() }
     }
 
-    public func withOptions(_ source: Source, _ options: Options) -> Self {
-        Decoder[Source] { input: ReaderInput(source), options }
+    public static func withOptions(_ source: Source, _ options: Options) -> Self {
+        Decoder[Source] { input: ReaderInput::new(source), options }
+    }
+}
+
+extend &PositionTracker {
+    @inline
+    func advance(_ byte: uint8) {
+        // Update the inline position through its field reference.
+        position := &self.value
+        position.offset += 1
+        if byte == ('\n' as uint8) {
+            position.line += 1
+            position.column = 1
+        } else {
+            position.column += 1
+        }
     }
 
+    @inline
+    func advanceAscii(_ count: usize) {
+        position := &self.value
+        position.offset += count
+        position.column += count
+    }
+}
+
+extend &Parser {
+    public func parse() -> Result[Value, Error] {
+        var decoder = TokenDecoder::new(self.input.source, self.options)
+        decoder.input = self.input
+        var result: Result[Value, JsonDecodeError] = match decodeTarget[Value, &TokenDecoder](&decoder) {
+            case .ok(value) => match (&decoder).finish() {
+                case .ok(_) => Result[Value, JsonDecodeError]::ok(value)
+                case .err(error) => Result[Value, JsonDecodeError]::err((&decoder).failure(error))
+            }
+            case .err(error) => Result[Value, JsonDecodeError]::err((&decoder).failure(error))
+        }
+        self.input = decoder.input
+        match result {
+            case .ok(value) => return .ok(value)
+            case .err(.syntax(error)) => return .err(error)
+            case .err(.codec(error)) => return .err(errorAt(.unexpectedToken, error.message(), self.input.position(), error.path()))
+        }
+    }
+}
+
+extend[Source: Reader] &Decoder[Source] {
     /// Decode the next value, returning `.none` at clean end of input.
-    public func nextValue(&mut self) -> Result[Value?, Error] {
-        let start = self.input.position().offset
-        let state = ParseState(self.options, start)
-        match skipWhitespace(&mut self.input, state, ROOT_PATH) {
+    public func nextValue() -> Result[Value?, Error] {
+        start := self.input.position().offset
+        state := ParseState::new(self.options, start)
+        match skipWhitespace(&self.input, state, ROOT_PATH) {
             case .ok(_) => {}
             case .err(error) => return .err(error)
         }
-        match peekByte(&mut self.input, state, ROOT_PATH) {
+        match peekByte(&self.input, state, ROOT_PATH) {
             case .err(error) => return .err(error)
             case .ok(.none) => return .ok(.none)
             case .ok(.some(_)) => {}
         }
-        match parseValue(&mut self.input, state, 0, ROOT_PATH) {
+        match parseValue(&self.input, state, 0, ROOT_PATH) {
             case .ok(value) => return .ok(.some(value))
             case .err(error) => return .err(error)
         }
     }
 
     /// Decode one required value. Empty input is a typed unexpected-EOF error.
-    public func decodeValue(&mut self) -> Result[Value, Error] {
+    public func decodeValue() -> Result[Value, Error] {
         match self.nextValue() {
             case .ok(.some(value)) => return .ok(value)
             case .err(error) => return .err(error)

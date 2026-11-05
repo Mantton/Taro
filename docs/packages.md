@@ -22,7 +22,7 @@ Package kinds are:
 ## Manifest
 
 `[package].name` must use exactly `<host>/<author>/<project>`. `kind` defaults
-to `executable`. `no_std_prelude = true` disables the automatic `std.prelude`
+to `executable`. `no_std_prelude = true` disables the automatic `std::prelude`
 scope for bootstrap packages such as std.
 
 ```toml

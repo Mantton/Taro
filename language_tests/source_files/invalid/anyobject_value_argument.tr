@@ -1,0 +1,9 @@
+import std::marker::AnyObject
+
+struct Counter { value: int32 }
+func useObject[T: AnyObject](_ value: T) {}
+
+func main() {
+    var counter: Counter = Counter { value: 1 }
+    useObject(counter)
+}

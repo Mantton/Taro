@@ -1,0 +1,22 @@
+import std::collections::{List, __list_from_raw_parts}
+import std::crypto::{Error, __rt__crypto_random}
+import std::mem::{Span, NativeBytes}
+import std::result::Result
+
+/// Fill writable bytes from the OS cryptographic random source. A failure may
+/// leave partially written bytes; use bytes() for atomic result publication.
+public func fill(_ into: Span[uint8]) -> Result[(), Error] {
+    if !unsafe { __rt__crypto_random(into.asMutPtr(), into.len()) } { return .err(.entropy) }
+    return .ok(())
+}
+/// Fresh random bytes. Storage is published only after the native fill succeeds.
+public func bytes(_ count: usize) -> Result[List[uint8], Error] {
+    storage := NativeBytes::new(count)
+    if !unsafe { __rt__crypto_random(storage.data(), count) } { return .err(.entropy) }
+    unsafe {
+        storage.publish(count)
+        // NativeBytes uses the same managed uint8 sequence descriptor as List;
+        // the initialized prefix is now complete and can transfer without copy.
+        return .ok(__list_from_raw_parts[uint8](storage.data(), count, count))
+    }
+}

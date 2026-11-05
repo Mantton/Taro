@@ -1,0 +1,4 @@
+error: computed getters use `get { ... }` with implicit self; receiver parameters, async and result annotations are not supported
+ -> language_tests/source_files/invalid/property_async_access.tr:2:34
+	extend Record { var item: int32 { get async { self.value } }; }
+	                                  ^^^

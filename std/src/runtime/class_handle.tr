@@ -1,0 +1,13 @@
+
+// Compiler-private one-word class representation. The GC class factory emits
+// the object's traced allocation and dynamic metadata directly.
+@lang("ClassHandle")
+internal struct ClassHandle {
+    private owner: *const uint8
+}
+
+// Constructor synthesis names this hook; GC codegen replaces the whole body
+// before emission because only the compiler knows the concrete class metadata.
+internal func __classAllocatePayload[Payload](_ value: Payload) -> ClassHandle {
+    std::panic::panic("class allocation must be lowered by the compiler")
+}

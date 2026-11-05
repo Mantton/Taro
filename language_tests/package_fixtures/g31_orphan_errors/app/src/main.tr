@@ -1,0 +1,8 @@
+import remote::{Marker, Tag, EnvelopeAlias}
+struct Local {}
+conform[T] T to Marker[Local, T] {}
+conform[T] &T to Marker[Local, T] {}
+conform[T] int32 to Marker[T, Local] {}
+conform EnvelopeAlias[Local] to Tag { func tag() -> int32 { 1 }; }
+conform *const Local to Tag { func tag() -> int32 { 2 }; }
+func main() {}

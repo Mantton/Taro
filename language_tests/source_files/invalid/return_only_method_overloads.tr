@@ -1,0 +1,10 @@
+struct Value {}
+extend Value {
+    func pick() -> int32 { 1 }
+    func pick() -> bool { true }
+    static func build() -> int32 { 1 }
+    static func build() -> bool { true }
+    func generic[T](_ value: T) -> int32 { 1 }
+    func generic[U](_ value: U) -> bool { true }
+}
+func main() {}

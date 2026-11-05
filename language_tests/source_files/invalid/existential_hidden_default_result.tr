@@ -1,0 +1,10 @@
+interface Factory[Rhs = Self] { func make() -> Rhs; }
+struct Counter {}
+conform Counter to Factory {
+    func make() -> Counter { Counter {} }
+}
+func main() {
+    var boxed: any Factory = Counter {}
+    hidden := boxed.make() // Rhs is hidden, not an independently known type.
+    var _ = hidden
+}

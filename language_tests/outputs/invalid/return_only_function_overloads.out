@@ -1,0 +1,16 @@
+error: invalid redeclaration of 'pick'; return type alone cannot distinguish overloads
+ -> language_tests/source_files/invalid/return_only_function_overloads.tr:2:5
+	func pick() -> bool { true }
+	     ^^^^
+info: previous declaration is here
+ -> language_tests/source_files/invalid/return_only_function_overloads.tr:1:5
+	func pick() -> int32 { 1 }
+	     ^^^^
+error: invalid redeclaration of 'pick'; return type alone cannot distinguish overloads
+ -> language_tests/source_files/invalid/return_only_function_overloads.tr:5:9
+	    func pick() -> bool
+	         ^^^^
+info: previous declaration is here
+ -> language_tests/source_files/invalid/return_only_function_overloads.tr:4:9
+	    func pick() -> int32
+	         ^^^^

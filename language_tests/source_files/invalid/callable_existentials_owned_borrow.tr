@@ -1,6 +1,0 @@
-func invoke(_ f: &any FnOnce() -> int32) -> int32 {
-    f()
-}
-
-func main() {
-}

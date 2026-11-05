@@ -1,0 +1,32 @@
+struct Record {
+    left: int32
+    right: int32
+}
+
+extend &Record {
+    func select[F: Fn[&Record, &int32]](_ project: F) -> &int32 {
+        project(self)
+    }
+
+    func edit[F: Fn[&Record, &int32]]( _ project: F) -> &int32 {
+        project(self)
+    }
+}
+
+func main() {
+    var record: Record = Record { left: 7, right: 9 }
+    var left: &int32 = record.select((input: &Record) => &input.left)
+    assert(*left == 7, "generic projection returns a borrow of self")
+
+    var selectLeft: bool = true
+    project := (input: &Record) => {
+        if selectLeft { &input.left } else { &input.right }
+    }
+    var selected: &int32 = project(&record)
+    selectLeft = false // the result depends on record, not the completed callback
+    assert(*selected == 7, "a capture may choose the input projection")
+
+    var right: &int32 = record.edit((input: &Record) => &input.right)
+    *right = 11
+    assert(record.right == 11, "exclusive projection ends at last use")
+}

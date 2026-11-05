@@ -1,0 +1,4 @@
+error: overriding init must preserve the base initializer's Result error type
+ -> language_tests/source_files/invalid/fallible_initializer_override.tr:4:40
+	extend Child { public required override init() -> Result[Self, int32] { return .err(1) } }
+	                                        ^^^^

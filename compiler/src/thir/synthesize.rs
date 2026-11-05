@@ -8,31 +8,71 @@ use crate::{
     hir::{DefinitionID, StdItem},
     sema::{
         models::{
-            GenericArgument, GenericArguments, GenericParameter, InterfaceReference,
-            SyntheticMethodKind, Ty, TyKind, callable_args_ty,
+            GenericArgument, GenericArguments, GenericParameter, SyntheticMethodKind, Ty, TyKind,
+            callable_args_ty,
         },
         resolve::models::TypeHead,
         tycheck::derive::SyntheticMethodInfo,
     },
     span::{FileID, Span},
     thir::{
-        AdtExpression, Arm, ArmId, BindingMode, Block, BlockId, Constant, ConstantKind, Expr,
-        ExprId, ExprKind, FieldExpression, FieldIndex, FieldPattern, Param, Pattern, PatternKind,
-        Stmt, StmtId, StmtKind, ThirFunction, VariantIndex,
+        AdtExpression, Arm, ArmId, Block, BlockId, Constant, ConstantKind, Expr, ExprId, ExprKind,
+        FieldExpression, FieldIndex, FieldPattern, Param, Pattern, PatternKind, Stmt, StmtId,
+        StmtKind, ThirFunction, VariantIndex,
     },
 };
 use index_vec::IndexVec;
 use rustc_hash::FxHashMap;
+
+mod codable;
 
 /// Generate THIR functions for all registered synthetic methods.
 pub fn synthesize_all<'ctx>(gcx: GlobalContext<'ctx>) -> Vec<ThirFunction<'ctx>> {
     let synthetic_methods = gcx.get_synthetic_methods();
     let mut functions = Vec::new();
 
+    let adapters: Vec<_> = gcx.store.synthetic_definitions.borrow().iter()
+        .filter_map(|(id, definition)| (id.package() == gcx.package_index()
+            && matches!(definition.kind, crate::sema::models::SyntheticDefinitionKind::AdoptedClassDefault { .. }
+                | crate::sema::models::SyntheticDefinitionKind::AdoptedClassDefaultArgument { .. }))
+            .then_some((*id, definition.kind))).collect();
+    for (id, kind) in adapters {
+        functions.push(synthesize_class_default(gcx, id, kind));
+    }
+
+    let erased: Vec<_> = gcx
+        .store
+        .synthetic_definitions
+        .borrow()
+        .iter()
+        .filter_map(|(id, definition)| {
+            (id.package() == gcx.package_index()
+                && matches!(
+                    definition.kind,
+                    crate::sema::models::SyntheticDefinitionKind::ErasedTakeAs { .. }
+                        | crate::sema::models::SyntheticDefinitionKind::ErasedAsRef { .. }
+                ))
+            .then_some(*id)
+        })
+        .collect();
+    for id in erased {
+        let kind = gcx.store.synthetic_definitions.borrow()[&id].kind;
+        if let crate::sema::models::SyntheticDefinitionKind::ErasedAsRef { .. } = kind {
+            functions.push(synthesize_erased_reference(gcx, id));
+        } else {
+            functions.push(synthesize_erased_take(gcx, id));
+        }
+    }
+
     // We collect them first to avoid borrow conflicts
     let methods: Vec<_> = synthetic_methods.into_iter().collect();
 
     for ((type_head, method_id), mut info) in methods {
+        // Intrinsic Clone uses a generic declaration whose implementation is
+        // materialized per complete type, not this nominal/head cache.
+        if info.syn_id.is_some_and(|id| gcx.is_instance_generated(id)) {
+            continue;
+        }
         // Allocate a stable synthetic ID for this synthesized method.
         let syn_id = info
             .syn_id
@@ -50,6 +90,10 @@ pub fn synthesize_all<'ctx>(gcx: GlobalContext<'ctx>) -> Vec<ThirFunction<'ctx>>
         // 2. Register Definition (Generics, Signature)
         register_definition(gcx, syn_id, type_head, info);
 
+        if gcx.is_class_type(info.self_ty) && info.kind == SyntheticMethodKind::MemberwiseDecode {
+            functions.extend(codable::synthesize_class(gcx, info, syn_id));
+            continue;
+        }
         // 3. Synthesize Body
         if let Some(func) = synthesize_method(gcx, type_head, method_id, info, syn_id) {
             functions.push(func);
@@ -66,34 +110,455 @@ pub fn synthesize_all<'ctx>(gcx: GlobalContext<'ctx>) -> Vec<ThirFunction<'ctx>>
     functions
 }
 
-fn register_definition<'ctx>(
+/// Defaults run in their concrete generic environment while the caller keeps
+/// its already evaluated argument alive. These are ordinary Native-checked
+/// functions, so panic cleanup and owning results use the common MIR path.
+pub(crate) fn synthesize_opened_defaults<'ctx>(
+    gcx: GlobalContext<'ctx>,
+) -> Vec<ThirFunction<'ctx>> {
+    let definitions: Vec<_> =
+        gcx.store
+            .synthetic_definitions
+            .borrow()
+            .iter()
+            .filter_map(|(id, definition)| match definition.kind {
+                crate::sema::models::SyntheticDefinitionKind::ErasedDefault {
+                    provider, ..
+                } if id.package() == gcx.package_index() => Some((*id, provider)),
+                _ => None,
+            })
+            .collect();
+    definitions
+        .into_iter()
+        .map(|(id, provider)| {
+            let signature = gcx.get_signature(id);
+            let span = gcx.definition_ident(id).span;
+            let arguments =
+                crate::sema::tycheck::utils::generics::GenericsBuilder::identity_for_item(gcx, id);
+            let provider_signature =
+                crate::sema::tycheck::utils::instantiate::instantiate_signature_with_args(
+                    gcx,
+                    gcx.get_signature(provider),
+                    arguments,
+                );
+            let mut builder = ThirBuilder::new(gcx, span);
+            let parameter = Param {
+                id: synthetic_node_id(id, 0),
+                name: signature.inputs[0].name,
+                ty: signature.inputs[0].ty,
+                span,
+            };
+            let callee = builder.push_expr(
+                ExprKind::Zst {
+                    id: provider,
+                    generic_args: Some(arguments),
+                },
+                Ty::from_labeled_signature(gcx, &provider_signature),
+            );
+            let result = builder.push_expr(
+                ExprKind::Call {
+                    callee,
+                    args: vec![],
+                    is_async: false,
+                    argument_evaluation_order: None,
+                },
+                signature.output,
+            );
+            let body = builder.push_block(vec![], Some(result));
+            ThirFunction {
+                id,
+                span,
+                body: Some(body),
+                constructor_self: None,
+                params: vec![parameter],
+                stmts: builder.stmts,
+                blocks: builder.blocks,
+                exprs: builder.exprs,
+                arms: builder.arms,
+                match_reports: FxHashMap::default(),
+                is_async: false,
+            }
+        })
+        .collect()
+}
+
+/// These are ordinary managed functions. Borrow forwarding, panic cleanup and
+/// suspension use the same source-MIR/Native pipeline as handwritten methods.
+fn synthesize_class_default<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    id: DefinitionID,
+    kind: crate::sema::models::SyntheticDefinitionKind,
+) -> ThirFunction<'ctx> {
+    use crate::sema::{
+        models::SyntheticDefinitionKind,
+        tycheck::utils::{generics::GenericsBuilder, instantiate::instantiate_signature_with_args},
+    };
+    let span = gcx.definition_ident(id).span;
+    let signature = gcx.get_signature(id);
+    let identity = GenericsBuilder::identity_for_item(gcx, id);
+    let (target, arguments) = match kind {
+        SyntheticDefinitionKind::AdoptedClassDefault { .. } => {
+            let (source, arguments) = gcx
+                .adopted_default_target(id, identity)
+                .expect("adopted method environment");
+            (
+                gcx.class_default_body(source)
+                    .expect("checked exact source"),
+                arguments,
+            )
+        }
+        SyntheticDefinitionKind::AdoptedClassDefaultArgument { method, provider } => {
+            let (_, arguments) = gcx
+                .adopted_default_target(method, identity)
+                .expect("adopted argument environment");
+            (provider, arguments)
+        }
+        _ => unreachable!(),
+    };
+    let target_signature =
+        instantiate_signature_with_args(gcx, gcx.get_signature(target), arguments);
+    let mut builder = ThirBuilder::new(gcx, span);
+    let params: Vec<_> = signature
+        .inputs
+        .iter()
+        .enumerate()
+        .map(|(index, input)| Param {
+            id: synthetic_node_id(id, index as u32),
+            name: input.name,
+            ty: input.ty,
+            span,
+        })
+        .collect();
+    let args = params
+        .iter()
+        .map(|parameter| {
+            let value = builder.push_expr(ExprKind::Local(parameter.id), parameter.ty);
+            // Forward the referent without duplicating a mutable-reference token.
+            if let TyKind::Reference(inner) = parameter.ty.kind() {
+                let place = builder.push_expr(ExprKind::Deref(value), inner);
+                builder.push_expr(ExprKind::Reference { expr: place }, parameter.ty)
+            } else {
+                value
+            }
+        })
+        .collect();
+    let callee = builder.push_expr(
+        ExprKind::Zst {
+            id: target,
+            generic_args: Some(arguments),
+        },
+        Ty::from_labeled_signature(gcx, &target_signature),
+    );
+    let is_async = gcx.definition_is_async(id);
+    let call = builder.push_expr(
+        ExprKind::Call {
+            callee,
+            args,
+            is_async,
+            argument_evaluation_order: None,
+        },
+        target_signature.output,
+    );
+    let value = if is_async {
+        builder.push_expr(
+            ExprKind::Await { future: call },
+            gcx.function_body_output(id),
+        )
+    } else {
+        call
+    };
+    let body = builder.push_block(vec![], Some(value));
+    ThirFunction {
+        id,
+        body: Some(body),
+        constructor_self: None,
+        span,
+        params,
+        stmts: builder.stmts,
+        blocks: builder.blocks,
+        exprs: builder.exprs,
+        arms: builder.arms,
+        match_reports: FxHashMap::default(),
+        is_async,
+    }
+}
+
+/// Test the stored concrete type before consuming the container. The failure
+/// arm returns that exact owner; it never clones or destroys a mismatched value.
+/// Both branches then use the normal move/drop and panic-cleanup machinery.
+fn synthesize_erased_take<'ctx>(gcx: GlobalContext<'ctx>, id: DefinitionID) -> ThirFunction<'ctx> {
+    use crate::sema::tycheck::utils::{
+        generics::GenericsBuilder,
+        instantiate::{instantiate_signature_with_args, instantiate_ty_with_args},
+    };
+    let signature = gcx.get_signature(id);
+    let span = gcx.definition_ident(id).span;
+    let identity = GenericsBuilder::identity_for_item(gcx, id);
+    let target = identity[gcx.generics_of(id).parent_count]
+        .ty()
+        .expect("extraction target");
+    let erased = signature.inputs[0].ty;
+    let parameter = Param {
+        id: synthetic_node_id(id, 0),
+        name: gcx.intern_symbol("self"),
+        ty: erased,
+        span,
+    };
+    let mut builder = ThirBuilder::new(gcx, span);
+    let local = builder.push_expr(ExprKind::Local(parameter.id), erased);
+    let borrow_ty = Ty::new(TyKind::Reference(erased), gcx);
+    let borrow = builder.push_expr(ExprKind::Reference { expr: local }, borrow_ty);
+    let condition = builder.push_expr(
+        ExprKind::ExistentialTypeIs {
+            value: borrow,
+            target,
+        },
+        gcx.types.bool,
+    );
+    let optional = gcx
+        .std_item_def(StdItem::Optional)
+        .expect("takeAs requires Optional");
+    let target_arguments = gcx
+        .store
+        .interners
+        .intern_generic_args(vec![GenericArgument::Type(target)]);
+    let optional_ty = instantiate_ty_with_args(gcx, gcx.get_type(optional), target_arguments);
+    let moved = builder.push_expr(ExprKind::Local(parameter.id), erased);
+    let cast = builder.push_expr(
+        ExprKind::ExistentialTryCast {
+            value: moved,
+            target,
+        },
+        optional_ty,
+    );
+    let head =
+        crate::sema::tycheck::utils::type_head_from_value_ty(optional_ty).expect("Optional head");
+    let unwrap_name = gcx.intern_symbol("unwrap");
+    let unwrap = gcx.collect_from_databases(|database| {
+        database
+            .type_head_to_members
+            .get(&head)
+            .and_then(|members| members.inherent_instance.get(&unwrap_name))
+            .map(|methods| methods.members.iter().copied().collect())
+            .unwrap_or_default()
+    })[0];
+    let unwrap_args = crate::sema::impl_engine::deduce_impl_subst(
+        gcx,
+        gcx.definition_parent(unwrap).unwrap(),
+        optional_ty,
+        &[],
+    )
+    .expect("Optional unwrap arguments");
+    let unwrap_sig = instantiate_signature_with_args(gcx, gcx.get_signature(unwrap), unwrap_args);
+    let callee = builder.push_expr(
+        ExprKind::Zst {
+            id: unwrap,
+            generic_args: Some(unwrap_args),
+        },
+        Ty::from_labeled_signature(gcx, &unwrap_sig),
+    );
+    let extracted = builder.push_expr(
+        ExprKind::Call {
+            callee,
+            args: vec![cast],
+            is_async: false,
+            argument_evaluation_order: None,
+        },
+        target,
+    );
+    let result_ty = signature.output;
+    let TyKind::Adt(definition, arguments) = result_ty.kind() else {
+        unreachable!("Result type");
+    };
+    let variants = gcx.get_enum_definition(definition.id);
+    let result = |builder: &mut ThirBuilder<'ctx>, item: StdItem, payload| {
+        let variant = gcx.std_item_def(item).expect("Result variant");
+        let index = variants
+            .variants
+            .iter()
+            .position(|entry| entry.def_id == variant)
+            .expect("Result variant belongs to Result");
+        builder.push_expr(
+            ExprKind::Adt(AdtExpression {
+                base: None,
+                definition,
+                variant_index: Some(VariantIndex::from_usize(index)),
+                generic_args: arguments,
+                fields: vec![FieldExpression {
+                    index: FieldIndex::from_usize(0),
+                    expression: payload,
+                }],
+            }),
+            result_ty,
+        )
+    };
+    let success = result(&mut builder, StdItem::ResultOkVariant, extracted);
+    let original = builder.push_expr(ExprKind::Local(parameter.id), erased);
+    let failure = result(&mut builder, StdItem::ResultErrVariant, original);
+    let value = builder.push_expr(
+        ExprKind::If {
+            cond: condition,
+            then_expr: success,
+            else_expr: Some(failure),
+        },
+        result_ty,
+    );
+    let body = builder.push_block(vec![], Some(value));
+    ThirFunction {
+        id,
+        body: Some(body),
+        constructor_self: None,
+        span,
+        params: vec![parameter],
+        stmts: builder.stmts,
+        blocks: builder.blocks,
+        exprs: builder.exprs,
+        arms: builder.arms,
+        match_reports: FxHashMap::default(),
+        is_async: false,
+    }
+}
+
+/// Borrow the container for the complete checked view. Exact stored-type
+/// comparison happens before projecting its payload. A mutable class result is
+/// a borrow of the stored handle slot, never a dynamic-subclass reinterpretation.
+fn synthesize_erased_reference<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    id: DefinitionID,
+) -> ThirFunction<'ctx> {
+    use crate::sema::tycheck::utils::{
+        generics::GenericsBuilder, instantiate::instantiate_signature_with_args,
+    };
+    let signature = gcx.get_signature(id);
+    let span = gcx.definition_ident(id).span;
+    let identity = GenericsBuilder::identity_for_item(gcx, id);
+    let target = identity[gcx.generics_of(id).parent_count]
+        .ty()
+        .expect("inspection target");
+    let input_ty = signature.inputs[0].ty;
+    let TyKind::Reference(erased) = input_ty.kind() else {
+        unreachable!()
+    };
+    let parameter = Param {
+        id: synthetic_node_id(id, 0),
+        name: gcx.intern_symbol("self"),
+        ty: input_ty,
+        span,
+    };
+    let mut builder = ThirBuilder::new(gcx, span);
+    let local = builder.push_expr(ExprKind::Local(parameter.id), input_ty);
+    let place = builder.push_expr(ExprKind::Deref(local), erased);
+    let shared = Ty::new(TyKind::Reference(erased), gcx);
+    let read = builder.push_expr(ExprKind::Reference { expr: place }, shared);
+    let condition = builder.push_expr(
+        ExprKind::ExistentialTypeIs {
+            value: read,
+            target,
+        },
+        gcx.types.bool,
+    );
+    let local = builder.push_expr(ExprKind::Local(parameter.id), input_ty);
+    let place = builder.push_expr(ExprKind::Deref(local), erased);
+    let input = builder.push_expr(ExprKind::Reference { expr: place }, input_ty);
+    let helper = gcx.erased_payload_reference(id);
+    let helper_sig = instantiate_signature_with_args(gcx, gcx.get_signature(helper), identity);
+    let callee = builder.push_expr(
+        ExprKind::Zst {
+            id: helper,
+            generic_args: Some(identity),
+        },
+        Ty::from_labeled_signature(gcx, &helper_sig),
+    );
+    let reference_ty = Ty::new(TyKind::Reference(target), gcx);
+    let reference = builder.push_expr(
+        ExprKind::Call {
+            callee,
+            args: vec![input],
+            is_async: false,
+            argument_evaluation_order: None,
+        },
+        reference_ty,
+    );
+    let TyKind::Adt(definition, arguments) = signature.output.kind() else {
+        unreachable!()
+    };
+    let variants = gcx.get_enum_definition(definition.id);
+    let mut variant = |item: StdItem, payload: Option<ExprId>| {
+        let variant = gcx.std_item_def(item).expect("Optional variant");
+        let index = variants
+            .variants
+            .iter()
+            .position(|entry| entry.def_id == variant)
+            .expect("Optional variant belongs to Optional");
+        builder.push_expr(
+            ExprKind::Adt(AdtExpression {
+                base: None,
+                definition,
+                variant_index: Some(VariantIndex::from_usize(index)),
+                generic_args: arguments,
+                fields: payload
+                    .map(|expression| {
+                        vec![FieldExpression {
+                            index: FieldIndex::from_usize(0),
+                            expression,
+                        }]
+                    })
+                    .unwrap_or_default(),
+            }),
+            signature.output,
+        )
+    };
+    let success = variant(StdItem::OptionalSomeVariant, Some(reference));
+    let failure = variant(StdItem::OptionalNoneVariant, None);
+    let value = builder.push_expr(
+        ExprKind::If {
+            cond: condition,
+            then_expr: success,
+            else_expr: Some(failure),
+        },
+        signature.output,
+    );
+    let body = builder.push_block(vec![], Some(value));
+    ThirFunction {
+        id,
+        body: Some(body),
+        constructor_self: None,
+        span,
+        params: vec![parameter],
+        stmts: builder.stmts,
+        blocks: builder.blocks,
+        exprs: builder.exprs,
+        arms: builder.arms,
+        match_reports: FxHashMap::default(),
+        is_async: false,
+    }
+}
+
+pub(crate) fn register_definition<'ctx>(
     gcx: GlobalContext<'ctx>,
     syn_id: DefinitionID,
     _type_head: TypeHead,
     info: SyntheticMethodInfo<'ctx>,
 ) {
+    if matches!(
+        gcx.store
+            .synthetic_definitions
+            .borrow()
+            .get(&syn_id)
+            .map(|value| value.kind),
+        Some(crate::sema::models::SyntheticDefinitionKind::ClassDecoder { .. })
+    ) {
+        return;
+    }
     let (generics, signature, async_output) = match info.kind {
-        SyntheticMethodKind::ClosureCall
-        | SyntheticMethodKind::ClosureCallMut
-        | SyntheticMethodKind::ClosureCallOnce => {
+        SyntheticMethodKind::ClosureCall => {
             let TyKind::Closure { inputs, output, .. } = info.self_ty.kind() else {
                 return;
             };
             let args_ty = callable_args_ty(gcx, inputs);
-            let is_async = gcx.std_item_def(StdItem::AsyncFn) == Some(info.interface_id)
-                || gcx.std_item_def(StdItem::AsyncFnMut) == Some(info.interface_id)
-                || gcx.std_item_def(StdItem::AsyncFnOnce) == Some(info.interface_id);
+            let is_async = gcx.std_item_def(StdItem::AsyncFn) == Some(info.interface_id);
 
-            let self_ty = match info.kind {
-                SyntheticMethodKind::ClosureCall => gcx.store.interners.intern_ty(
-                    TyKind::Reference(info.self_ty, crate::hir::Mutability::Immutable),
-                ),
-                SyntheticMethodKind::ClosureCallMut => gcx.store.interners.intern_ty(
-                    TyKind::Reference(info.self_ty, crate::hir::Mutability::Mutable),
-                ),
-                SyntheticMethodKind::ClosureCallOnce => info.self_ty,
-                _ => unreachable!(),
-            };
+            let self_ty = info.self_ty;
 
             let signature = crate::sema::models::LabeledFunctionSignature {
                 inputs: vec![
@@ -123,10 +588,7 @@ fn register_definition<'ctx>(
         }
         SyntheticMethodKind::CopyClone | SyntheticMethodKind::MemberwiseClone => {
             let generics = self_type_generics(gcx, info.self_ty);
-            let self_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
-                info.self_ty,
-                crate::hir::Mutability::Immutable,
-            ));
+            let self_ref_ty = info.self_ty;
             let signature = crate::sema::models::LabeledFunctionSignature {
                 inputs: vec![crate::sema::models::LabeledFunctionParameter {
                     name: gcx.intern_symbol("self"),
@@ -141,19 +603,16 @@ fn register_definition<'ctx>(
             (generics, signature, None)
         }
         SyntheticMethodKind::MemberwiseEquality => {
-            let rhs_ty = match partial_eq_rhs_ty(info.interface_args, info.self_ty) {
+            let rhs_ty = match crate::sema::tycheck::derive::equality_rhs(
+                gcx,
+                info.interface_args,
+                info.self_ty,
+            ) {
                 Some(rhs) => rhs,
                 None => return,
             };
             let generics = self_type_generics(gcx, info.self_ty);
-            let self_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
-                info.self_ty,
-                crate::hir::Mutability::Immutable,
-            ));
-            let rhs_ref_ty = gcx
-                .store
-                .interners
-                .intern_ty(TyKind::Reference(rhs_ty, crate::hir::Mutability::Immutable));
+            let self_ref_ty = info.self_ty;
             let signature = crate::sema::models::LabeledFunctionSignature {
                 inputs: vec![
                     crate::sema::models::LabeledFunctionParameter {
@@ -164,7 +623,7 @@ fn register_definition<'ctx>(
                     },
                     crate::sema::models::LabeledFunctionParameter {
                         name: gcx.intern_symbol("other"),
-                        ty: rhs_ref_ty,
+                        ty: rhs_ty,
                         label: None,
                         default_provider: None,
                     },
@@ -197,14 +656,8 @@ fn register_definition<'ctx>(
 
             let hasher_param = hasher_param.expect("hash synthesis requires method generic");
             let hasher_ty = Ty::new(TyKind::Parameter(hasher_param), gcx);
-            let self_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
-                info.self_ty,
-                crate::hir::Mutability::Immutable,
-            ));
-            let hasher_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
-                hasher_ty,
-                crate::hir::Mutability::Mutable,
-            ));
+            let self_ref_ty = info.self_ty;
+            let hasher_ref_ty = hasher_ty;
             let signature = crate::sema::models::LabeledFunctionSignature {
                 inputs: vec![
                     crate::sema::models::LabeledFunctionParameter {
@@ -226,8 +679,11 @@ fn register_definition<'ctx>(
             };
             (generics, signature, None)
         }
-        SyntheticMethodKind::PropertyFieldGetter(_)
-        | SyntheticMethodKind::PropertyFieldSetter(_) => {
+        SyntheticMethodKind::MemberwiseEncode | SyntheticMethodKind::MemberwiseDecode => {
+            let (generics, signature) = codable::register_signature(gcx, info);
+            (generics, signature, None)
+        }
+        SyntheticMethodKind::PropertyFieldGetter(_) => {
             let generics = self_type_generics(gcx, info.self_ty);
             let requirement = gcx.get_signature(info.method_id);
             let inputs = requirement
@@ -263,6 +719,16 @@ fn register_definition<'ctx>(
     let generics = gcx.store.arenas.generics.alloc(generics);
 
     let def = crate::sema::models::SyntheticDefinition {
+        kind: if gcx.is_class_type(info.self_ty)
+            && info.kind == SyntheticMethodKind::MemberwiseEncode
+        {
+            let TypeHead::Nominal(class) = _type_head else {
+                unreachable!()
+            };
+            crate::sema::models::SyntheticDefinitionKind::ClassEncoder { class }
+        } else {
+            crate::sema::models::SyntheticDefinitionKind::Ordinary
+        },
         name: info.method_name,
         generics,
         signature: labeled_sig,
@@ -270,6 +736,46 @@ fn register_definition<'ctx>(
     };
 
     gcx.register_synthetic_definition(syn_id, def);
+    if gcx.is_class_type(info.self_ty)
+        && matches!(
+            info.kind,
+            SyntheticMethodKind::MemberwiseEncode | SyntheticMethodKind::MemberwiseDecode
+        )
+    {
+        gcx.cache_type(syn_id, Ty::from_labeled_signature(gcx, labeled_sig));
+        let arguments = gcx.store.interners.intern_generic_args(
+            std::iter::once(GenericArgument::Type(info.self_ty))
+                .chain(generics.parameters.iter().map(|parameter| {
+                    GenericArgument::Type(Ty::new(
+                        TyKind::Parameter(GenericParameter {
+                            index: parameter.index,
+                            name: parameter.name,
+                        }),
+                        gcx,
+                    ))
+                }))
+                .collect(),
+        );
+        gcx.update_constraints(
+            syn_id,
+            gcx.constraints_of(info.method_id)
+                .into_iter()
+                .map(|constraint| {
+                    crate::span::Spanned::new(
+                        crate::sema::tycheck::utils::instantiate::instantiate_constraint_with_args(
+                            gcx,
+                            constraint.value,
+                            arguments,
+                        ),
+                        constraint.span,
+                    )
+                })
+                .collect(),
+        );
+    }
+    if gcx.is_class_type(info.self_ty) && info.kind == SyntheticMethodKind::MemberwiseDecode {
+        crate::sema::lowering::class_codable::register(gcx, info, syn_id);
+    }
     if let Some(output) = async_output {
         gcx.cache_async_body_output(syn_id, output);
     }
@@ -296,14 +802,12 @@ fn synthesize_method<'ctx>(
         SyntheticMethodKind::MemberwiseEquality => {
             synthesize_memberwise_equality(gcx, type_head, method_id, info, syn_id)
         }
-        SyntheticMethodKind::ClosureCall
-        | SyntheticMethodKind::ClosureCallMut
-        | SyntheticMethodKind::ClosureCallOnce => synthesize_closure_call(gcx, info, syn_id),
+        SyntheticMethodKind::ClosureCall => synthesize_closure_call(gcx, info, syn_id),
+        SyntheticMethodKind::MemberwiseEncode | SyntheticMethodKind::MemberwiseDecode => {
+            codable::synthesize(gcx, info, syn_id)
+        }
         SyntheticMethodKind::PropertyFieldGetter(field_index) => {
             synthesize_property_field_getter(gcx, info, syn_id, field_index)
-        }
-        SyntheticMethodKind::PropertyFieldSetter(field_index) => {
-            synthesize_property_field_setter(gcx, info, syn_id, field_index)
         }
     }
 }
@@ -326,22 +830,28 @@ fn synthesize_property_field_getter<'ctx>(
     };
     let mut builder = ThirBuilder::new(gcx, span);
     let receiver = builder.push_expr(ExprKind::Local(self_node_id), receiver_ty);
-    let receiver = if matches!(receiver_ty.kind(), TyKind::Reference(..)) {
-        builder.push_expr(ExprKind::Deref(receiver), info.self_ty)
-    } else {
-        receiver
+    let TyKind::Adt(definition, arguments) = info.self_ty.kind() else {
+        return None;
     };
+    let stored = gcx
+        .get_struct_definition(definition.id)
+        .fields
+        .get(field_index)?;
+    let storage_ty = crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args(
+        gcx, stored.ty, arguments,
+    );
     let field = builder.push_expr(
         ExprKind::Field {
             lhs: receiver,
             index: FieldIndex::from_usize(field_index),
         },
-        signature.output,
+        storage_ty,
     );
     let body = builder.push_block(vec![], Some(field));
     Some(ThirFunction {
         id: syn_id,
         body: Some(body),
+        constructor_self: None,
         span,
         params: vec![self_param],
         stmts: builder.stmts,
@@ -353,60 +863,6 @@ fn synthesize_property_field_getter<'ctx>(
     })
 }
 
-fn synthesize_property_field_setter<'ctx>(
-    gcx: GlobalContext<'ctx>,
-    info: SyntheticMethodInfo<'ctx>,
-    syn_id: DefinitionID,
-    field_index: usize,
-) -> Option<ThirFunction<'ctx>> {
-    let span = synthetic_span();
-    let signature = gcx.get_signature(syn_id);
-    let receiver_ty = signature.inputs.first()?.ty;
-    let value_ty = signature.inputs.get(1)?.ty;
-    let self_node_id = synthetic_node_id(syn_id, 0);
-    let value_node_id = synthetic_node_id(syn_id, 1);
-    let params = vec![
-        Param {
-            id: self_node_id,
-            name: gcx.intern_symbol("self"),
-            ty: receiver_ty,
-            span,
-        },
-        Param {
-            id: value_node_id,
-            name: gcx.intern_symbol("value"),
-            ty: value_ty,
-            span,
-        },
-    ];
-    let mut builder = ThirBuilder::new(gcx, span);
-    let receiver = builder.push_expr(ExprKind::Local(self_node_id), receiver_ty);
-    let receiver = builder.push_expr(ExprKind::Deref(receiver), info.self_ty);
-    let target = builder.push_expr(
-        ExprKind::Field {
-            lhs: receiver,
-            index: FieldIndex::from_usize(field_index),
-        },
-        value_ty,
-    );
-    let value = builder.push_expr(ExprKind::Local(value_node_id), value_ty);
-    let assign = builder.push_expr(ExprKind::Assign { target, value }, gcx.types.void);
-    let body = builder.push_block(vec![], Some(assign));
-    Some(ThirFunction {
-        id: syn_id,
-        body: Some(body),
-        span,
-        params,
-        stmts: builder.stmts,
-        blocks: builder.blocks,
-        exprs: builder.exprs,
-        arms: IndexVec::new(),
-        match_reports: FxHashMap::default(),
-        is_async: false,
-    })
-}
-
-/// Create a synthetic span for generated code.
 fn synthetic_span() -> Span {
     // Use FileID 0 as a synthetic/builtin file
     Span::empty(FileID::from_raw(0))
@@ -490,20 +946,6 @@ fn self_type_generics<'ctx>(
     }
 }
 
-fn partial_eq_rhs_ty<'ctx>(
-    interface_args: GenericArguments<'ctx>,
-    self_ty: Ty<'ctx>,
-) -> Option<Ty<'ctx>> {
-    match interface_args.get(1) {
-        Some(GenericArgument::Type(ty)) => match ty.kind() {
-            TyKind::Infer(_) | TyKind::Parameter(_) => Some(self_ty),
-            _ => Some(*ty),
-        },
-        Some(GenericArgument::Const(_)) => None,
-        None => Some(self_ty),
-    }
-}
-
 fn bool_literal<'ctx>(
     gcx: GlobalContext<'ctx>,
     builder: &mut ThirBuilder<'ctx>,
@@ -528,6 +970,7 @@ fn make_zst_callee<'ctx>(
     let inputs: Vec<_> = sig.inputs.iter().map(|p| p.ty).collect();
     let inputs = gcx.store.interners.intern_ty_list(inputs);
     let callee_ty = gcx.store.interners.intern_ty(TyKind::FnPointer {
+        effects: Default::default(),
         inputs,
         output: sig.output,
     });
@@ -550,18 +993,8 @@ fn emit_hash_call<'ctx>(
     hasher_ref_ty: Ty<'ctx>,
     hasher_ty: Ty<'ctx>,
 ) -> ExprId {
-    let value_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
-        value_ty,
-        crate::hir::Mutability::Immutable,
-    ));
-    let value_ref = builder.push_expr(
-        ExprKind::Reference {
-            mutable: false,
-            expr: value_expr,
-        },
-        value_ref_ty,
-    );
     let hasher_local = builder.push_expr(ExprKind::Local(hasher_param_id), hasher_ref_ty);
+    let hasher_argument = hasher_local;
 
     let generic_args = gcx.store.interners.intern_generic_args(vec![
         GenericArgument::Type(value_ty),
@@ -571,8 +1004,9 @@ fn emit_hash_call<'ctx>(
 
     builder.push_expr(
         ExprKind::Call {
+            argument_evaluation_order: None,
             callee,
-            args: vec![value_ref, hasher_local],
+            args: vec![value_expr, hasher_argument],
             is_async: false,
         },
         gcx.types.void,
@@ -587,25 +1021,6 @@ fn emit_eq_call<'ctx>(
     rhs_expr: ExprId,
     value_ty: Ty<'ctx>,
 ) -> ExprId {
-    let value_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
-        value_ty,
-        crate::hir::Mutability::Immutable,
-    ));
-    let lhs_ref = builder.push_expr(
-        ExprKind::Reference {
-            mutable: false,
-            expr: lhs_expr,
-        },
-        value_ref_ty,
-    );
-    let rhs_ref = builder.push_expr(
-        ExprKind::Reference {
-            mutable: false,
-            expr: rhs_expr,
-        },
-        value_ref_ty,
-    );
-
     let generic_args = gcx.store.interners.intern_generic_args(vec![
         GenericArgument::Type(value_ty),
         GenericArgument::Type(value_ty),
@@ -613,15 +1028,16 @@ fn emit_eq_call<'ctx>(
     let callee = make_zst_callee(gcx, builder, eq_method_id, generic_args);
     builder.push_expr(
         ExprKind::Call {
+            argument_evaluation_order: None,
             callee,
-            args: vec![lhs_ref, rhs_ref],
+            args: vec![lhs_expr, rhs_expr],
             is_async: false,
         },
         gcx.types.bool,
     )
 }
 
-/// Synthesize `clone` for Copy types: just dereference self.
+/// Synthesize scalar Clone by returning the copied receiver.
 fn synthesize_copy_clone<'ctx>(
     gcx: GlobalContext<'ctx>,
     _type_head: TypeHead,
@@ -633,10 +1049,7 @@ fn synthesize_copy_clone<'ctx>(
     let mut builder = ThirBuilder::new(gcx, span);
 
     let self_node_id = synthetic_node_id(syn_id, 0);
-    let self_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
-        info.self_ty,
-        crate::hir::Mutability::Immutable,
-    ));
+    let self_ref_ty = info.self_ty;
 
     let self_param = Param {
         id: self_node_id,
@@ -646,12 +1059,13 @@ fn synthesize_copy_clone<'ctx>(
     };
 
     let self_local = builder.push_expr(ExprKind::Local(self_node_id), self_ref_ty);
-    let deref_self = builder.push_expr(ExprKind::Deref(self_local), info.self_ty);
+    let deref_self = self_local;
     let body_block = builder.push_block(vec![], Some(deref_self));
 
     Some(ThirFunction {
         id: syn_id,
         body: Some(body_block),
+        constructor_self: None,
         span,
         params: vec![self_param],
         stmts: builder.stmts,
@@ -663,7 +1077,7 @@ fn synthesize_copy_clone<'ctx>(
     })
 }
 
-/// Synthesize `clone` for non-Copy types: memberwise clone each field.
+/// Synthesize nominal Clone by calling every component's Clone, even for Copy fields.
 fn synthesize_memberwise_clone<'ctx>(
     gcx: GlobalContext<'ctx>,
     type_head: TypeHead,
@@ -679,10 +1093,7 @@ fn synthesize_memberwise_clone<'ctx>(
     let mut builder = ThirBuilder::new(gcx, span);
 
     let self_node_id = synthetic_node_id(syn_id, 0);
-    let self_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
-        info.self_ty,
-        crate::hir::Mutability::Immutable,
-    ));
+    let self_ref_ty = info.self_ty;
 
     let self_param = Param {
         id: self_node_id,
@@ -703,7 +1114,7 @@ fn synthesize_memberwise_clone<'ctx>(
 
         for (idx, field) in struct_def.fields.iter().enumerate() {
             let self_local = builder.push_expr(ExprKind::Local(self_node_id), self_ref_ty);
-            let deref_self = builder.push_expr(ExprKind::Deref(self_local), info.self_ty);
+            let deref_self = self_local;
             let field_access = builder.push_expr(
                 ExprKind::Field {
                     lhs: deref_self,
@@ -712,16 +1123,7 @@ fn synthesize_memberwise_clone<'ctx>(
                 field.ty,
             );
 
-            let cloned_field = if gcx.is_type_copyable(field.ty) {
-                field_access
-            } else {
-                match field.ty.kind() {
-                    TyKind::Adt(_, _) => {
-                        clone_adt_field(gcx, &mut builder, field_access, field.ty, clone_def)
-                    }
-                    _ => field_access,
-                }
-            };
+            let cloned_field = clone_field(gcx, &mut builder, field_access, field.ty, clone_def)?;
 
             field_exprs.push(FieldExpression {
                 index: FieldIndex::from_usize(idx),
@@ -729,20 +1131,37 @@ fn synthesize_memberwise_clone<'ctx>(
             });
         }
 
-        let adt_expr = builder.push_expr(
-            ExprKind::Adt(AdtExpression {
-                definition: adt_def,
-                variant_index: None,
-                generic_args,
-                fields: field_exprs,
-            }),
-            info.self_ty,
-        );
+        let adt_expr = if gcx.is_class_type(info.self_ty) {
+            // Clone constructs a new object from cloned storage, bypassing
+            // initializers/default expressions. A class handle itself must
+            // never be constructed as an inline source-field aggregate.
+            let payload = gcx.ensure_class_payload(info.self_ty)?;
+            let fields: Vec<_> = field_exprs
+                .into_iter()
+                .map(|field| field.expression)
+                .collect();
+            let mut next = 0;
+            let initialized = cloned_class_payload(gcx, &mut builder, payload, &fields, &mut next)?;
+            debug_assert_eq!(next, fields.len());
+            publish_cloned_class(gcx, &mut builder, payload, initialized, info.self_ty)?
+        } else {
+            builder.push_expr(
+                ExprKind::Adt(AdtExpression {
+                    base: None,
+                    definition: adt_def,
+                    variant_index: None,
+                    generic_args,
+                    fields: field_exprs,
+                }),
+                info.self_ty,
+            )
+        };
 
         let body_block = builder.push_block(vec![], Some(adt_expr));
         return Some(ThirFunction {
             id: syn_id,
             body: Some(body_block),
+            constructor_self: None,
             span,
             params: vec![self_param],
             stmts: builder.stmts,
@@ -766,6 +1185,107 @@ fn synthesize_memberwise_clone<'ctx>(
         enum_def,
         clone_def,
     )
+}
+
+/// Rebuild the physical base-prefix layout from source fields in base-first
+/// declaration order. Normal aggregate lowering owns every completed clone,
+/// so a later component panic destroys just that initialized prefix in reverse.
+fn cloned_class_payload<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    builder: &mut ThirBuilder<'ctx>,
+    payload: Ty<'ctx>,
+    clones: &[ExprId],
+    next: &mut usize,
+) -> Option<ExprId> {
+    let TyKind::Adt(definition, generic_args) = payload.kind() else {
+        return None;
+    };
+    let layout = gcx.get_struct_definition(definition.id);
+    let class = gcx.class_for_payload(payload)?;
+    let mut fields = Vec::new();
+    for (index, field) in layout.fields.iter().enumerate() {
+        let expression = if index == 0 && gcx.class_base(class).is_some() {
+            let base_payload = crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args(
+                gcx,
+                field.ty,
+                generic_args,
+            );
+            cloned_class_payload(gcx, builder, base_payload, clones, next)?
+        } else {
+            let expression = *clones.get(*next)?;
+            *next += 1;
+            expression
+        };
+        fields.push(FieldExpression {
+            index: FieldIndex::from_usize(index),
+            expression,
+        });
+    }
+    Some(builder.push_expr(
+        ExprKind::Adt(AdtExpression {
+            base: None,
+            definition,
+            generic_args,
+            variant_index: None,
+            fields,
+        }),
+        payload,
+    ))
+}
+
+/// Use the same unique payload allocation and dynamic-class publication path
+/// as construction, without invoking init or repeating stored-field defaults.
+fn publish_cloned_class<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    builder: &mut ThirBuilder<'ctx>,
+    payload: Ty<'ctx>,
+    initialized: ExprId,
+    class: Ty<'ctx>,
+) -> Option<ExprId> {
+    let span = builder.span;
+    let allocate = crate::mir::optimize::async_transform::find_std_function(
+        gcx,
+        "runtime",
+        "__classAllocatePayload",
+        span,
+    )
+    .ok()?;
+    let arguments = gcx
+        .store
+        .interners
+        .intern_generic_args(vec![GenericArgument::Type(payload)]);
+    let callee = make_zst_callee(gcx, builder, allocate, arguments);
+    let handle_ty = gcx.get_type(gcx.std_item_def(StdItem::ClassHandle)?);
+    let handle = builder.push_expr(
+        ExprKind::Call {
+            callee,
+            args: vec![initialized],
+            is_async: false,
+            argument_evaluation_order: None,
+        },
+        handle_ty,
+    );
+    let transfer = crate::mir::optimize::async_transform::find_std_function(
+        gcx,
+        "intrinsic",
+        "__intrinsic_class_from_handle",
+        span,
+    )
+    .ok()?;
+    let arguments = gcx
+        .store
+        .interners
+        .intern_generic_args(vec![GenericArgument::Type(class)]);
+    let callee = make_zst_callee(gcx, builder, transfer, arguments);
+    Some(builder.push_expr(
+        ExprKind::Call {
+            callee,
+            args: vec![handle],
+            is_async: false,
+            argument_evaluation_order: None,
+        },
+        class,
+    ))
 }
 
 fn synthesize_memberwise_hash<'ctx>(
@@ -802,14 +1322,8 @@ fn synthesize_memberwise_hash<'ctx>(
     let self_node_id = synthetic_node_id(syn_id, 0);
     let hasher_node_id = synthetic_node_id(syn_id, 1);
 
-    let self_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
-        info.self_ty,
-        crate::hir::Mutability::Immutable,
-    ));
-    let hasher_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
-        hasher_ty,
-        crate::hir::Mutability::Mutable,
-    ));
+    let self_ref_ty = info.self_ty;
+    let hasher_ref_ty = hasher_ty;
 
     let self_param = Param {
         id: self_node_id,
@@ -828,7 +1342,7 @@ fn synthesize_memberwise_hash<'ctx>(
         let mut stmts = Vec::new();
         for (idx, field) in struct_def.fields.iter().enumerate() {
             let self_local = builder.push_expr(ExprKind::Local(self_node_id), self_ref_ty);
-            let deref_self = builder.push_expr(ExprKind::Deref(self_local), info.self_ty);
+            let deref_self = self_local;
             let field_value = builder.push_expr(
                 ExprKind::Field {
                     lhs: deref_self,
@@ -853,6 +1367,7 @@ fn synthesize_memberwise_hash<'ctx>(
         return Some(ThirFunction {
             id: syn_id,
             body: Some(body_block),
+            constructor_self: None,
             span,
             params: vec![self_param, hasher_param],
             stmts: builder.stmts,
@@ -892,7 +1407,8 @@ fn synthesize_memberwise_equality<'ctx>(
     let TypeHead::Nominal(def_id) = type_head else {
         return None;
     };
-    let rhs_ty = partial_eq_rhs_ty(info.interface_args, info.self_ty)?;
+    let rhs_ty =
+        crate::sema::tycheck::derive::equality_rhs(gcx, info.interface_args, info.self_ty)?;
     if rhs_ty != info.self_ty {
         return None;
     }
@@ -903,14 +1419,8 @@ fn synthesize_memberwise_equality<'ctx>(
     let self_node_id = synthetic_node_id(syn_id, 0);
     let other_node_id = synthetic_node_id(syn_id, 1);
 
-    let self_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
-        info.self_ty,
-        crate::hir::Mutability::Immutable,
-    ));
-    let other_ref_ty = gcx
-        .store
-        .interners
-        .intern_ty(TyKind::Reference(rhs_ty, crate::hir::Mutability::Immutable));
+    let self_ref_ty = info.self_ty;
+    let other_ref_ty = rhs_ty;
 
     let self_param = Param {
         id: self_node_id,
@@ -929,7 +1439,7 @@ fn synthesize_memberwise_equality<'ctx>(
         let mut result = bool_literal(gcx, &mut builder, true);
         for (idx, field) in struct_def.fields.iter().enumerate() {
             let self_local = builder.push_expr(ExprKind::Local(self_node_id), self_ref_ty);
-            let self_deref = builder.push_expr(ExprKind::Deref(self_local), info.self_ty);
+            let self_deref = self_local;
             let lhs = builder.push_expr(
                 ExprKind::Field {
                     lhs: self_deref,
@@ -939,10 +1449,9 @@ fn synthesize_memberwise_equality<'ctx>(
             );
 
             let other_local = builder.push_expr(ExprKind::Local(other_node_id), other_ref_ty);
-            let other_deref = builder.push_expr(ExprKind::Deref(other_local), rhs_ty);
             let rhs = builder.push_expr(
                 ExprKind::Field {
-                    lhs: other_deref,
+                    lhs: other_local,
                     index: FieldIndex::from_usize(idx),
                 },
                 field.ty,
@@ -963,6 +1472,7 @@ fn synthesize_memberwise_equality<'ctx>(
         return Some(ThirFunction {
             id: syn_id,
             body: Some(body_block),
+            constructor_self: None,
             span,
             params: vec![self_param, other_param],
             stmts: builder.stmts,
@@ -1011,7 +1521,7 @@ fn synthesize_enum_hash<'ctx>(
     let span = synthetic_span();
     let adt_def = enum_def.adt_def;
     let self_local = builder.push_expr(ExprKind::Local(self_node_id), self_ref_ty);
-    let scrutinee = builder.push_expr(ExprKind::Deref(self_local), info.self_ty);
+    let scrutinee = self_local;
 
     let mut node_offset = 2u32;
     let mut arm_ids = Vec::new();
@@ -1021,7 +1531,7 @@ fn synthesize_enum_hash<'ctx>(
         let mut field_binding_ids = Vec::new();
         let mut field_tys = Vec::new();
 
-        if let EnumVariantKind::Tuple(fields) = &variant.kind {
+        if let EnumVariantKind::Tuple(fields) | EnumVariantKind::Struct(fields) = &variant.kind {
             for (field_idx, field) in fields.iter().enumerate() {
                 let binding_node_id = synthetic_node_id(syn_id, node_offset);
                 node_offset += 1;
@@ -1035,7 +1545,6 @@ fn synthesize_enum_hash<'ctx>(
                             name: binding_name,
                             local: binding_node_id,
                             ty: field.ty,
-                            mode: BindingMode::ByValue,
                         },
                     },
                 });
@@ -1117,6 +1626,7 @@ fn synthesize_enum_hash<'ctx>(
     Some(ThirFunction {
         id: syn_id,
         body: Some(body_block),
+        constructor_self: None,
         span,
         params: vec![self_param, hasher_param],
         stmts: builder.stmts,
@@ -1147,7 +1657,7 @@ fn synthesize_enum_equality<'ctx>(
     let span = synthetic_span();
     let adt_def = enum_def.adt_def;
     let self_local = builder.push_expr(ExprKind::Local(self_node_id), self_ref_ty);
-    let self_scrutinee = builder.push_expr(ExprKind::Deref(self_local), info.self_ty);
+    let self_scrutinee = self_local;
 
     let mut node_offset = 2u32;
     let mut outer_arms = Vec::new();
@@ -1157,7 +1667,7 @@ fn synthesize_enum_equality<'ctx>(
         let mut self_binding_ids = Vec::new();
         let mut field_tys = Vec::new();
 
-        if let EnumVariantKind::Tuple(fields) = &variant.kind {
+        if let EnumVariantKind::Tuple(fields) | EnumVariantKind::Struct(fields) = &variant.kind {
             for (field_idx, field) in fields.iter().enumerate() {
                 let binding_node_id = synthetic_node_id(syn_id, node_offset);
                 node_offset += 1;
@@ -1171,7 +1681,6 @@ fn synthesize_enum_equality<'ctx>(
                             name: binding_name,
                             local: binding_node_id,
                             ty: field.ty,
-                            mode: BindingMode::ByValue,
                         },
                     },
                 });
@@ -1191,13 +1700,13 @@ fn synthesize_enum_equality<'ctx>(
         };
 
         let other_local = builder.push_expr(ExprKind::Local(other_node_id), other_ref_ty);
-        let other_scrutinee = builder.push_expr(ExprKind::Deref(other_local), info.self_ty);
+        let other_scrutinee = other_local;
 
         let mut inner_arms = Vec::new();
         let mut other_subpatterns = Vec::new();
         let mut other_binding_ids = Vec::new();
 
-        if let EnumVariantKind::Tuple(fields) = &variant.kind {
+        if let EnumVariantKind::Tuple(fields) | EnumVariantKind::Struct(fields) = &variant.kind {
             for (field_idx, field) in fields.iter().enumerate() {
                 let binding_node_id = synthetic_node_id(syn_id, node_offset);
                 node_offset += 1;
@@ -1211,7 +1720,6 @@ fn synthesize_enum_equality<'ctx>(
                             name: binding_name,
                             local: binding_node_id,
                             ty: field.ty,
-                            mode: BindingMode::ByValue,
                         },
                     },
                 });
@@ -1302,6 +1810,7 @@ fn synthesize_enum_equality<'ctx>(
     Some(ThirFunction {
         id: syn_id,
         body: Some(body_block),
+        constructor_self: None,
         span,
         params: vec![self_param, other_param],
         stmts: builder.stmts,
@@ -1318,36 +1827,17 @@ fn synthesize_closure_call<'ctx>(
     info: SyntheticMethodInfo<'ctx>,
     syn_id: DefinitionID,
 ) -> Option<ThirFunction<'ctx>> {
-    let TyKind::Closure {
-        kind: closure_kind,
-        inputs,
-        output,
-        ..
-    } = info.self_ty.kind()
-    else {
+    let TyKind::Closure { inputs, output, .. } = info.self_ty.kind() else {
         return None;
     };
-    let is_async = gcx.std_item_def(StdItem::AsyncFn) == Some(info.interface_id)
-        || gcx.std_item_def(StdItem::AsyncFnMut) == Some(info.interface_id)
-        || gcx.std_item_def(StdItem::AsyncFnOnce) == Some(info.interface_id);
+    let is_async = gcx.std_item_def(StdItem::AsyncFn) == Some(info.interface_id);
 
     let span = synthetic_span();
     let mut builder = ThirBuilder::new(gcx, span);
 
     let args_ty = callable_args_ty(gcx, inputs);
 
-    let self_param_ty = match info.kind {
-        SyntheticMethodKind::ClosureCall => gcx.store.interners.intern_ty(TyKind::Reference(
-            info.self_ty,
-            crate::hir::Mutability::Immutable,
-        )),
-        SyntheticMethodKind::ClosureCallMut => gcx.store.interners.intern_ty(TyKind::Reference(
-            info.self_ty,
-            crate::hir::Mutability::Mutable,
-        )),
-        SyntheticMethodKind::ClosureCallOnce => info.self_ty,
-        _ => return None,
-    };
+    let self_param_ty = info.self_ty;
 
     let self_node_id = synthetic_node_id(syn_id, 0);
     let args_node_id = synthetic_node_id(syn_id, 1);
@@ -1367,38 +1857,8 @@ fn synthesize_closure_call<'ctx>(
     };
 
     let self_local = builder.push_expr(ExprKind::Local(self_node_id), self_param_ty);
-    let mut body_stmts = Vec::new();
-    let callee = if matches!(info.kind, SyntheticMethodKind::ClosureCallOnce) {
-        if matches!(
-            closure_kind,
-            crate::sema::models::ClosureKind::FnMut | crate::sema::models::ClosureKind::AsyncFnMut
-        ) {
-            // Consuming a mutable callable transfers ownership of its receiver.
-            // Invoke it from mutable owned storage, just as `var f = f; f()`.
-            let receiver_id = synthetic_node_id(syn_id, 2);
-            body_stmts.push(builder.push_stmt(StmtKind::Let {
-                id: receiver_id,
-                pattern: Pattern {
-                    ty: info.self_ty,
-                    span,
-                    kind: PatternKind::Binding {
-                        name: gcx.intern_symbol("receiver"),
-                        local: receiver_id,
-                        ty: info.self_ty,
-                        mode: BindingMode::ByValue,
-                    },
-                },
-                expr: Some(self_local),
-                ty: info.self_ty,
-                mutable: true,
-            }));
-            builder.push_expr(ExprKind::Local(receiver_id), info.self_ty)
-        } else {
-            self_local
-        }
-    } else {
-        builder.push_expr(ExprKind::Deref(self_local), info.self_ty)
-    };
+    let body_stmts = Vec::new();
+    let callee = self_local;
 
     let mut call_args = Vec::new();
     for (idx, &input_ty) in inputs.iter().enumerate() {
@@ -1415,6 +1875,7 @@ fn synthesize_closure_call<'ctx>(
 
     let call_expr = builder.push_expr(
         ExprKind::Call {
+            argument_evaluation_order: None,
             callee,
             args: call_args,
             is_async,
@@ -1432,6 +1893,7 @@ fn synthesize_closure_call<'ctx>(
     Some(ThirFunction {
         id: syn_id,
         body: Some(body_block),
+        constructor_self: None,
         span,
         params: vec![self_param, args_param],
         stmts: builder.stmts,
@@ -1464,7 +1926,7 @@ fn synthesize_enum_clone<'ctx>(
     };
 
     let self_local = builder.push_expr(ExprKind::Local(self_node_id), self_ref_ty);
-    let scrutinee = builder.push_expr(ExprKind::Deref(self_local), info.self_ty);
+    let scrutinee = self_local;
 
     let mut arm_ids = Vec::new();
     let mut node_offset = 1u32;
@@ -1486,6 +1948,7 @@ fn synthesize_enum_clone<'ctx>(
 
                 let body_expr = builder.push_expr(
                     ExprKind::Adt(AdtExpression {
+                        base: None,
                         definition: adt_def,
                         variant_index: Some(variant_index),
                         generic_args,
@@ -1503,7 +1966,7 @@ fn synthesize_enum_clone<'ctx>(
                 });
                 arm_ids.push(arm_id);
             }
-            EnumVariantKind::Tuple(fields) => {
+            EnumVariantKind::Tuple(fields) | EnumVariantKind::Struct(fields) => {
                 let mut subpatterns = Vec::new();
                 let mut field_exprs = Vec::new();
 
@@ -1522,22 +1985,13 @@ fn synthesize_enum_clone<'ctx>(
                                 name: binding_name,
                                 local: binding_node_id,
                                 ty: field.ty,
-                                mode: BindingMode::ByValue,
                             },
                         },
                     });
 
                     let field_local = builder.push_expr(ExprKind::Local(binding_node_id), field.ty);
-                    let cloned_field = if gcx.is_type_copyable(field.ty) {
-                        field_local
-                    } else {
-                        match field.ty.kind() {
-                            TyKind::Adt(_, _) => {
-                                clone_adt_field(gcx, &mut builder, field_local, field.ty, clone_def)
-                            }
-                            _ => field_local,
-                        }
-                    };
+                    let cloned_field =
+                        clone_field(gcx, &mut builder, field_local, field.ty, clone_def)?;
 
                     field_exprs.push(FieldExpression {
                         index: FieldIndex::from_usize(field_idx),
@@ -1557,6 +2011,7 @@ fn synthesize_enum_clone<'ctx>(
 
                 let body_expr = builder.push_expr(
                     ExprKind::Adt(AdtExpression {
+                        base: None,
                         definition: adt_def,
                         variant_index: Some(variant_index),
                         generic_args,
@@ -1591,6 +2046,7 @@ fn synthesize_enum_clone<'ctx>(
     Some(ThirFunction {
         id: syn_id,
         body: Some(body_block),
+        constructor_self: None,
         span,
         params: vec![self_param],
         stmts: builder.stmts,
@@ -1602,64 +2058,34 @@ fn synthesize_enum_clone<'ctx>(
     })
 }
 
-fn clone_adt_field<'ctx>(
+fn clone_field<'ctx>(
     gcx: GlobalContext<'ctx>,
     builder: &mut ThirBuilder<'ctx>,
     field_access: ExprId,
     field_ty: Ty<'ctx>,
     clone_def: DefinitionID,
-) -> ExprId {
-    let field_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
-        field_ty,
-        crate::hir::Mutability::Immutable,
-    ));
-    let field_ref = builder.push_expr(
-        ExprKind::Reference {
-            mutable: false,
-            expr: field_access,
-        },
-        field_ref_ty,
-    );
-
-    let clone_ref = InterfaceReference {
-        id: clone_def,
-        arguments: gcx
-            .store
-            .interners
-            .intern_generic_args(vec![GenericArgument::Type(field_ty)]),
-        bindings: &[],
-    };
-
-    let Some(witness) = crate::sema::tycheck::resolve_conformance_witness(gcx, clone_ref) else {
-        return field_access;
-    };
-
-    let Some(reqs) = gcx.get_interface_requirements(clone_def) else {
-        return field_access;
-    };
-    let Some(clone_method) = reqs.methods.iter().find(|m| gcx.symbol_eq(m.name, "clone")) else {
-        return field_access;
-    };
-    let Some(method_witness) = witness.method_witnesses.get(&clone_method.id) else {
-        return field_access;
-    };
-
-    let callee_id = method_witness
-        .implementation
-        .impl_id()
-        .unwrap_or(clone_method.id);
+) -> Option<ExprId> {
+    // Call the requirement with its actual field type. Normal witness
+    // selection after substitution handles primitive, nominal, and generic
+    // fields uniformly; a missing implementation must never become a copy.
+    let reqs = gcx.get_interface_requirements(clone_def)?;
+    let clone_method = reqs
+        .methods
+        .iter()
+        .find(|m| gcx.symbol_eq(m.name, "clone"))?;
     let generic_args = gcx
         .store
         .interners
         .intern_generic_args(vec![GenericArgument::Type(field_ty)]);
-    let callee = make_zst_callee(gcx, builder, callee_id, generic_args);
+    let callee = make_zst_callee(gcx, builder, clone_method.id, generic_args);
 
-    builder.push_expr(
+    Some(builder.push_expr(
         ExprKind::Call {
+            argument_evaluation_order: None,
             callee,
-            args: vec![field_ref],
+            args: vec![field_access],
             is_async: false,
         },
         field_ty,
-    )
+    ))
 }

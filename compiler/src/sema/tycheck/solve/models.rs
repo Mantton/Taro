@@ -3,7 +3,7 @@ use crate::{
     hir::{BinaryOperator, NodeID, UnaryOperator},
     sema::{
         error::SpannedErrorList,
-        models::{Const, GenericArgument, GenericArguments, InterfaceReference, Ty},
+        models::{Const, Constraint, GenericArgument, GenericArguments, InterfaceReference, Ty},
         resolve::models::DefinitionID,
     },
     span::Span,
@@ -12,8 +12,22 @@ use crate::{
 #[derive(Debug, Clone)]
 pub enum Adjustment<'ctx> {
     Dereference,
-    BorrowMutable,
-    BorrowImmutable,
+    /// Call the Deref requirement through its normal conformance witness.
+    DerefCall {
+        method: DefinitionID,
+        arguments: GenericArguments<'ctx>,
+        result: Ty<'ctx>,
+    },
+    /// Weaken raw-pointer permission while preserving its unchecked provenance.
+    PointerToConst,
+    /// Contextual nil literal with the selected raw-pointer type.
+    NullPointer {
+        to: Ty<'ctx>,
+    },
+    ClassUpcast {
+        to: Ty<'ctx>,
+    },
+    Reference,
     BoxExistential {
         from: Ty<'ctx>,
         interfaces: &'ctx [InterfaceReference<'ctx>],
@@ -27,6 +41,10 @@ pub enum Adjustment<'ctx> {
         is_some: bool,
         generic_args: GenericArguments<'ctx>,
     },
+    /// Contextual success injection, after the payload's ordinary coercions.
+    ResultOkWrap {
+        generic_args: GenericArguments<'ctx>,
+    },
     /// Coerce a non-capturing closure to a function pointer
     ClosureToFnPointer {
         closure_def_id: DefinitionID,
@@ -37,15 +55,29 @@ pub enum Adjustment<'ctx> {
 #[derive(Debug, Clone)]
 pub enum Goal<'ctx> {
     Equal(Ty<'ctx>, Ty<'ctx>),
+    /// Constructor inference binds Self through a Result's success slot.
+    ConstructorResult(Ty<'ctx>, Ty<'ctx>),
+    /// Delegation initializes storage on success and yields Result[(), E].
+    InitializerStatement(Ty<'ctx>, Ty<'ctx>),
     ConstraintEqual(Ty<'ctx>, Ty<'ctx>),
+    /// Recheck after defaults resolve; hidden payload requirements are witnessed.
+    ExistentialConstraint(Constraint<'ctx>),
     Conforms {
         ty: Ty<'ctx>,
         interface: InterfaceReference<'ctx>,
     },
-    ConformsWithDiagnostic {
+    /// A direct inferred generic call may open one hidden payload. This is
+    /// deliberately not an ordinary conformance of its owning container.
+    OpenedConforms {
+        source: DefinitionID,
+        arguments: GenericArguments<'ctx>,
+        template: InterfaceReference<'ctx>,
         ty: Ty<'ctx>,
         interface: InterfaceReference<'ctx>,
-        diagnostic: ConformanceDiagnostic,
+    },
+    ValidateOpening {
+        source: DefinitionID,
+        arguments: GenericArguments<'ctx>,
     },
     Apply(ApplyGoalData<'ctx>),
     BindOverload(BindOverloadGoalData<'ctx>),
@@ -69,8 +101,11 @@ pub enum Goal<'ctx> {
         is_unsafe: bool,
     },
     Member(MemberGoalData<'ctx>),
+    BindMethodValue(BindMethodValueGoalData<'ctx>),
+    MethodValueSignature(MethodValueSignatureGoalData<'ctx>),
     InferredStaticMember(InferredStaticMemberGoalData<'ctx>),
     MethodCall(MethodCallData<'ctx>),
+    IndexAccess(IndexAccessGoalData<'ctx>),
     StructLiteral(StructLiteralGoalData<'ctx>),
     CollectionLiteral {
         ty: Ty<'ctx>,
@@ -80,70 +115,6 @@ pub enum Goal<'ctx> {
     TupleAccess(TupleAccessGoalData<'ctx>),
     Deref(DerefGoalData<'ctx>),
     DefaultFallback(DefaultFallbackGoalData<'ctx>),
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct ConformanceDiagnostic {
-    pub message: &'static str,
-    pub span: Span,
-}
-
-/// Context for compiler-lowered APIs whose Sendable requirements deserve a
-/// more actionable diagnostic than a generic conformance failure.
-#[derive(Debug, Clone, Copy)]
-pub enum CompilerCallContext {
-    Blocking {
-        callee: DefinitionID,
-        closure_span: Span,
-        call_span: Span,
-    },
-    AddCleanup {
-        callee: DefinitionID,
-        state_span: Span,
-        callback_span: Span,
-    },
-}
-
-impl CompilerCallContext {
-    pub fn diagnostic_for(
-        self,
-        callee_id: DefinitionID,
-        parameter_index: usize,
-    ) -> Option<ConformanceDiagnostic> {
-        match self {
-            CompilerCallContext::Blocking {
-                callee,
-                closure_span,
-                call_span,
-            } if callee == callee_id => match parameter_index {
-                0 => Some(ConformanceDiagnostic {
-                    message: "std.task.blocking result must be Sendable",
-                    span: call_span,
-                }),
-                1 => Some(ConformanceDiagnostic {
-                    message: "std.task.blocking closure captures must be Sendable",
-                    span: closure_span,
-                }),
-                _ => None,
-            },
-            CompilerCallContext::AddCleanup {
-                callee,
-                state_span,
-                callback_span,
-            } if callee == callee_id => match parameter_index {
-                1 => Some(ConformanceDiagnostic {
-                    message: "std.runtime.addCleanup state must be Sendable",
-                    span: state_span,
-                }),
-                2 => Some(ConformanceDiagnostic {
-                    message: "std.runtime.addCleanup callback captures must be Sendable",
-                    span: callback_span,
-                }),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -164,12 +135,9 @@ pub struct DisjunctionBranch<'ctx> {
     pub goal: Goal<'ctx>,
     pub source: Option<DefinitionID>,
     /// Cost of auto-reference applied to reach this candidate.
-    /// Lower is better: None=0, Immutable=1, Mutable=2.
+    /// Lower is better: no automatic reference=0, reference=1.
     /// Used for ranking candidates when multiple match.
     pub autoref_cost: u8,
-    /// Whether the candidate's return type matches the expected type (e.g. mutability expectations).
-    /// Used for ranking: true gives a significant score bonus (+1000).
-    pub matches_expectation: bool,
     /// Whether the candidate matches async/sync preference from call context.
     /// Used for ranking overloads between same-shape sync/async candidates.
     pub matches_async_preference: bool,
@@ -181,6 +149,8 @@ pub struct DisjunctionBranch<'ctx> {
 
 #[derive(Debug, Clone)]
 pub struct BindOverloadGoalData<'ctx> {
+    /// Class type used for qualified static lookup; ancestor arguments stay fixed.
+    pub static_owner: Option<Ty<'ctx>>,
     pub node_id: NodeID,
     pub var_ty: Ty<'ctx>,
     pub candidate_ty: Ty<'ctx>,
@@ -203,23 +173,8 @@ pub struct InterfaceCallInfo {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct ResolvedPropertyRead<'ctx> {
-    pub property_id: DefinitionID,
+pub struct ResolvedPropertyRead {
     pub getter_id: DefinitionID,
-    pub setter_id: Option<DefinitionID>,
-    pub ty: Ty<'ctx>,
-    /// The concrete receiver type on which the property was found, after autoderef.
-    pub receiver_ty: Ty<'ctx>,
-    /// The number of receiver dereferences applied before borrowing for the getter.
-    pub autoderef_count: usize,
-    pub getter_is_async: bool,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct ResolvedPropertyWrite<'ctx> {
-    pub property_id: DefinitionID,
-    pub setter_id: DefinitionID,
-    pub ty: Ty<'ctx>,
 }
 
 #[derive(Debug, Clone)]
@@ -231,29 +186,12 @@ pub struct BindInterfaceMethodGoalData<'ctx> {
     pub instantiation_args: Option<GenericArguments<'ctx>>,
 }
 
-/// Binds a method overload with associated receiver type and adjustments.
-/// This is used when method resolution needs to consider multiple overloads
-/// with different receiver mutabilities (e.g., `at(&self)` vs `at(&mut self)`).
+/// Bind a selected method and publish only its receiver adjustments.
 #[derive(Debug, Clone)]
 pub struct BindMethodOverloadGoalData<'ctx> {
-    /// The node ID of the method call expression
-    pub node_id: NodeID,
-    /// The receiver node ID (for recording adjustments)
+    pub binding: Box<Goal<'ctx>>,
     pub receiver_node_id: NodeID,
-    /// The type variable representing the method type
-    pub var_ty: Ty<'ctx>,
-    /// The type of the method candidate
-    pub candidate_ty: Ty<'ctx>,
-    /// The adjusted receiver type (after auto-ref)
-    pub receiver_ty: Ty<'ctx>,
-    /// The type variable used for the receiver in the Apply goal
-    /// When this overload is selected, we equate receiver_ty_var = receiver_ty
-    pub receiver_ty_var: Ty<'ctx>,
-    /// The method's definition ID
-    pub source: DefinitionID,
-    /// Optional instantiation arguments
-    pub instantiation_args: Option<GenericArguments<'ctx>>,
-    /// Adjustments to apply to the receiver (deref, borrow, etc.)
+    pub receiver_constraint: Option<(Ty<'ctx>, Ty<'ctx>)>,
     pub adjustments: Vec<Adjustment<'ctx>>,
 }
 
@@ -266,26 +204,59 @@ pub enum SolverResult<'ctx> {
 #[derive(Debug, Clone)]
 pub struct ApplyGoalData<'ctx> {
     pub call_node_id: NodeID,
+    /// Direct callable expression; implicit method/operator goals have none.
+    pub callee_node_id: Option<NodeID>,
     pub call_span: Span,
     pub callee_ty: Ty<'ctx>,
     pub callee_source: Option<DefinitionID>,
     pub is_unsafe_context: bool,
     pub result_ty: Ty<'ctx>,
-    pub _expect_ty: Option<Ty<'ctx>>,
     pub arguments: Vec<ApplyArgument<'ctx>>,
     /// If true, skip label validation (used for operator calls)
     pub skip_labels: bool,
+    /// Operator overload probes compare receiver and arguments. The selected
+    /// conformance's output is checked afterwards against result context.
+    pub input_only_selection: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct MemberGoalData<'ctx> {
+    pub classify_only: bool,
+    pub receiver_addressable: bool,
+    pub explicit_arguments: Option<crate::hir::TypeArguments>,
     pub node_id: NodeID,
     pub receiver_node: NodeID,
     pub receiver: Ty<'ctx>,
-    pub receiver_can_mut_borrow: bool,
     pub name: Identifier,
     pub result: Ty<'ctx>,
     pub span: Span,
+    pub signature_hint: Option<Ty<'ctx>>,
+}
+
+/// Select an ordinary method first, then expose its receiverless signature for
+/// a closure that will capture the receiver. No environment is created in an
+/// overload probe, so rejected branches cannot publish synthetic definitions.
+#[derive(Debug, Clone)]
+pub struct BindMethodValueGoalData<'ctx> {
+    pub explicit_arguments: Option<crate::hir::TypeArguments>,
+    pub node_id: NodeID,
+    pub var_ty: Ty<'ctx>,
+    pub candidate_ty: Ty<'ctx>,
+    pub source: DefinitionID,
+    pub instantiation_args: Option<GenericArguments<'ctx>>,
+    pub call_info: Option<InterfaceCallInfo>,
+    pub receiver: Ty<'ctx>,
+    pub signature_hint: Option<Ty<'ctx>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MethodValueSignatureGoalData<'ctx> {
+    pub node_id: NodeID,
+    pub source: DefinitionID,
+    pub method_ty: Ty<'ctx>,
+    pub callback_ty: Ty<'ctx>,
+    pub receiver: Ty<'ctx>,
+    pub signature_hint: Option<Ty<'ctx>>,
 }
 
 #[derive(Debug, Clone)]
@@ -300,10 +271,22 @@ pub struct InferredStaticMemberGoalData<'ctx> {
 }
 
 #[derive(Debug, Clone)]
+pub struct IndexAccessGoalData<'ctx> {
+    pub receiver_addressable: bool,
+    pub nodes: crate::hir::IndexCallNodes,
+    pub receiver: Ty<'ctx>,
+    pub keys: Vec<ApplyArgument<'ctx>>,
+    pub output: Ty<'ctx>,
+    pub method_ty: Ty<'ctx>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
 pub struct MethodCallData<'ctx> {
+    pub receiver_addressable: bool,
+    pub selected: Option<(DefinitionID, GenericArguments<'ctx>)>,
     pub node_id: NodeID,
     pub receiver: Ty<'ctx>,
-    pub receiver_can_mut_borrow: bool,
     pub reciever_span: Span,
     pub reciever_node: NodeID,
     pub is_unsafe_context: bool,
@@ -312,7 +295,6 @@ pub struct MethodCallData<'ctx> {
     pub result: Ty<'ctx>,
     pub method_ty: Ty<'ctx>,
     pub prefer_async: bool,
-    pub expect_ty: Option<Ty<'ctx>>,
     pub span: Span,
 }
 
@@ -326,9 +308,9 @@ pub struct ApplyArgument<'ctx> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct UnOpGoalData<'ctx> {
+    pub receiver_addressable: bool,
     pub lhs: Ty<'ctx>,
     pub rho: Ty<'ctx>,
-    pub expectation: Option<Ty<'ctx>>,
     pub operator: UnaryOperator,
     pub span: Span,
     pub node_id: NodeID,
@@ -337,10 +319,10 @@ pub struct UnOpGoalData<'ctx> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BinOpGoalData<'ctx> {
+    pub receiver_addressable: bool,
     pub lhs: Ty<'ctx>,
     pub rhs: Ty<'ctx>,
     pub rho: Ty<'ctx>,
-    pub expectation: Option<Ty<'ctx>>,
     pub operator: BinaryOperator,
     pub span: Span,
     pub node_id: NodeID,
@@ -351,7 +333,8 @@ pub struct BinOpGoalData<'ctx> {
 /// Goal data for compound assignment operations (+=, -=, etc.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AssignOpGoalData<'ctx> {
-    /// Type of the LHS (must be a mutable place)
+    pub receiver_addressable: bool,
+    /// Receiver type; reference implementations require existing storage.
     pub lhs: Ty<'ctx>,
     /// Type of the RHS value
     pub rhs: Ty<'ctx>,
@@ -363,16 +346,31 @@ pub struct AssignOpGoalData<'ctx> {
     pub rhs_id: NodeID,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum LiteralConstructor {
+    Struct,
+    Variant(crate::hir::DefinitionID),
+    /// Context can arrive from a later assignment or generic call obligation.
+    InferredVariant {
+        node_id: NodeID,
+        name: Identifier,
+    },
+}
+
 #[derive(Debug, Clone)]
 pub struct StructLiteralGoalData<'ctx> {
     pub ty_span: Span,
     pub span: Span,
     pub struct_ty: Ty<'ctx>,
+    pub constructor: LiteralConstructor,
     pub fields: Vec<StructLiteralField<'ctx>>,
+    pub base_span: Option<Span>,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct StructLiteralField<'ctx> {
+    /// Deferred constructors supply field context once the enum type resolves.
+    pub expectation: Option<Ty<'ctx>>,
     pub name: crate::span::Symbol,
     pub node_id: NodeID,
     pub ty: Ty<'ctx>,
@@ -382,6 +380,7 @@ pub struct StructLiteralField<'ctx> {
 
 #[derive(Debug, Clone)]
 pub struct TupleAccessGoalData<'ctx> {
+    pub receiver_addressable: bool,
     /// The `.N` access node that owns the resolved field index.
     pub node_id: NodeID,
     /// The receiver expression that must receive any autoderef adjustments.
@@ -394,7 +393,10 @@ pub struct TupleAccessGoalData<'ctx> {
 
 #[derive(Debug, Clone)]
 pub struct DerefGoalData<'ctx> {
+    pub operand_node: NodeID,
+    pub receiver_addressable: bool,
     pub operand_ty: Ty<'ctx>,
+    pub is_unsafe_context: bool,
     pub result_ty: Ty<'ctx>,
     pub span: Span,
 }

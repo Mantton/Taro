@@ -1,0 +1,7 @@
+func main() {
+    var value = 1
+    var &copy = &value
+    match &value {
+        case &bound => {}
+    }
+}

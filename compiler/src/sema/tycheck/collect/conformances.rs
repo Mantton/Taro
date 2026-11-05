@@ -4,10 +4,7 @@ use crate::{
     error::CompileResult,
     hir::{self, DefinitionID, DefinitionKind, HirVisitor, StdItem},
     sema::{
-        models::{
-            ConformanceRecord, ConstKind, Constraint, GenericArgument, GoalResult,
-            InterfaceReference, SelectionMode, Ty, TyKind,
-        },
+        models::{ConformanceRecord, Constraint, GenericArgument, InterfaceReference, Ty},
         resolve::models::TypeHead,
         tycheck::{
             infer::InferCtx,
@@ -26,6 +23,10 @@ use crate::{
     span::Span,
 };
 use std::rc::Rc;
+
+#[cfg(test)]
+#[path = "g31_tests.rs"]
+mod g31_tests;
 
 pub fn run(package: &hir::Package, context: Gcx) -> CompileResult<()> {
     Actor::run(package, context)
@@ -47,15 +48,6 @@ impl<'ctx> Actor<'ctx> {
     }
 }
 
-fn generic_arg_has_inference(arg: GenericArgument<'_>) -> bool {
-    match arg {
-        GenericArgument::Type(ty) => ty.contains_inference(),
-        GenericArgument::Const(c) => {
-            matches!(c.kind, ConstKind::Infer(_)) || c.ty.contains_inference()
-        }
-    }
-}
-
 impl<'ctx> HirVisitor for Actor<'ctx> {
     fn visit_declaration(&mut self, declaration: &hir::Declaration) -> Self::Result {
         match &declaration.kind {
@@ -66,7 +58,15 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
             }
             hir::DeclarationKind::Struct(node) => {
                 if let Some(conformances) = &node.conformances {
-                    self.collect_inline_conformance(declaration.id, conformances);
+                    if node.class_header.is_some() {
+                        let mut interfaces = conformances.clone();
+                        interfaces.bounds.retain(|bound| {
+                            super::class_hierarchy::is_interface_bound(self.context, &bound.path)
+                        });
+                        self.collect_inline_conformance(declaration.id, &interfaces);
+                    } else {
+                        self.collect_inline_conformance(declaration.id, conformances);
+                    }
                 }
             }
             hir::DeclarationKind::Enum(node) => {
@@ -80,10 +80,7 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
 }
 
 impl<'ctx> Actor<'ctx> {
-    /// Collect conformance from impl blocks (impl Interface for Type {}).
-    /// Marker-only interfaces (Copy, Sendable) can be implemented via impl
-    /// blocks with where clauses to express conditional conformance.
-    /// Compiler-only interfaces (Tuple) cannot be implemented by user code.
+    /// Collect explicit conformances; compiler-derived Tuple membership stays reserved.
     fn collect_impl_conformance(&mut self, impl_id: DefinitionID, interface_ty: &hir::Type) {
         // Extract the path from the interface type (must be a nominal type)
         let hir::TypeKind::Nominal(resolved_path) = &interface_ty.kind else {
@@ -117,17 +114,20 @@ impl<'ctx> Actor<'ctx> {
             .lowerer()
             .lower_interface_reference(self_ty, &interface_path);
 
-        // Reject compiler-only interfaces (Tuple)
+        // Reject compiler-only capability claims.
         if self.is_compiler_only_interface(reference.id) {
             self.emit_compiler_only_error(interface_ty.span, reference);
             return;
         }
 
-        // Orphan rule check: must own the type OR own the interface. A bare
-        // type parameter is not owned by any package, so universal impls must
-        // be declared alongside the interface.
-        if !self.is_conformance_allowed(ty_key, self_ty, reference.id, impl_pkg) {
-            self.emit_orphan_error(interface_ty.span, self_ty, reference);
+        if self.reject_task_clone_claim(self_ty, reference.id, interface_ty.span) {
+            return;
+        }
+
+        if let Err(reason) =
+            crate::sema::tycheck::utils::coherence::check_orphan(self.context, reference, impl_pkg)
+        {
+            self.emit_orphan_error(interface_ty.span, self_ty, reference, reason);
             return;
         }
 
@@ -152,7 +152,7 @@ impl<'ctx> Actor<'ctx> {
     }
 
     /// Collect conformances from inline syntax on struct/enum definitions.
-    /// This allows auto-derivation of derivable interfaces like Copy, Clone, Hashable, PartialEq.
+    /// This allows auto-derivation of derivable interfaces like Clone, Hashable and PartialEq.
     fn collect_inline_conformance(
         &mut self,
         type_id: DefinitionID,
@@ -169,36 +169,62 @@ impl<'ctx> Actor<'ctx> {
         let icx = DefTyLoweringCtx::new(type_id, self.context);
 
         for interface in interfaces {
-            if self.reject_interface_alias_implementation(interface) {
-                continue;
+            for reference in icx.lowerer().lower_interface_references(self_ty, interface) {
+                // Check for duplicate conformances
+                if let Some(prev) = self.find_conflicting_conformance(ty_key, reference, type_id) {
+                    self.emit_redundant(interface.span, &prev);
+                    continue;
+                }
+
+                // Reject compiler-only capability claims.
+                if self.is_compiler_only_interface(reference.id) {
+                    self.emit_compiler_only_error(interface.span, reference);
+                    continue;
+                }
+
+                if self.reject_task_clone_claim(self_ty, reference.id, interface.span) {
+                    continue;
+                }
+
+                // Register the conformance
+                let is_conditional = !self.context.canonical_constraints_of(type_id).is_empty()
+                    || (!self.context.generics_of(type_id).is_empty()
+                        && [
+                            StdItem::Clone,
+                            StdItem::PartialEq,
+                            StdItem::Hashable,
+                            StdItem::Equatable,
+                            StdItem::Encodable,
+                            StdItem::Decodable,
+                        ]
+                        .iter()
+                        .any(|item| self.context.std_item_def(*item) == Some(reference.id)));
+                let record = ConformanceRecord {
+                    target: ty_key,
+                    interface: reference,
+                    extension: type_id, // For inline conformance, the "extension" is the type itself
+                    location: interface.span,
+                    is_conditional,
+                    is_inline: true, // Inline conformance allows auto-synthesis
+                };
+
+                self.context.insert_conformance_record(record);
             }
-            let reference = icx.lowerer().lower_interface_reference(self_ty, interface);
-
-            // Check for duplicate conformances
-            if let Some(prev) = self.find_conflicting_conformance(ty_key, reference, type_id) {
-                self.emit_redundant(interface.span, &prev);
-                continue;
-            }
-
-            // Reject compiler-only interfaces (Tuple)
-            if self.is_compiler_only_interface(reference.id) {
-                self.emit_compiler_only_error(interface.span, reference);
-                continue;
-            }
-
-            // Register the conformance
-            let is_conditional = !self.context.canonical_constraints_of(type_id).is_empty();
-            let record = ConformanceRecord {
-                target: ty_key,
-                interface: reference,
-                extension: type_id, // For inline conformance, the "extension" is the type itself
-                location: interface.span,
-                is_conditional,
-                is_inline: true, // Inline conformance allows auto-synthesis
-            };
-
-            self.context.insert_conformance_record(record);
         }
+    }
+
+    fn reject_task_clone_claim(&self, ty: Ty<'ctx>, interface: DefinitionID, span: Span) -> bool {
+        let task_handle = matches!(
+            crate::sema::tycheck::utils::normalize_aliases(self.context, ty).kind(),
+            crate::sema::models::TyKind::Adt(def, _) if self.context.std_item_def(StdItem::Task) == Some(def.id)
+        );
+        if task_handle && self.context.std_item_def(StdItem::Clone) == Some(interface) {
+            self.context
+                .dcx()
+                .emit_error("Task handles cannot conform to Clone".into(), Some(span));
+            return true;
+        }
+        false
     }
 
     fn reject_interface_alias_implementation(&self, node: &hir::PathNode) -> bool {
@@ -226,13 +252,8 @@ impl<'ctx> Actor<'ctx> {
 
     /// Check if an interface is compiler-only (cannot be implemented by user code).
     fn is_compiler_only_interface(&self, interface_id: DefinitionID) -> bool {
-        // Tuple is a compiler-only interface
-        if let Some(tuple_def) = self.context.std_item_def(StdItem::Tuple) {
-            if interface_id == tuple_def {
-                return true;
-            }
-        }
-        false
+        // Tuple membership is compiler-derived.
+        self.context.std_item_def(StdItem::Tuple) == Some(interface_id)
     }
 
     fn emit_compiler_only_error(&self, span: Span, interface: InterfaceReference<'ctx>) {
@@ -246,56 +267,6 @@ impl<'ctx> Actor<'ctx> {
         );
     }
 
-    /// Orphan rule: you can add a conformance only if you own the type OR own the interface.
-    /// For reference/pointer types, localness propagates through the reference.
-    fn is_conformance_allowed(
-        &self,
-        ty: TypeHead,
-        self_ty: Ty<'ctx>,
-        interface_id: DefinitionID,
-        extension_pkg: PackageIndex,
-    ) -> bool {
-        // Check if we own the interface
-        if interface_id.package() == extension_pkg {
-            return true;
-        }
-
-        // Check if we own the type (propagating through references/pointers)
-        self.is_type_local(ty, self_ty, extension_pkg)
-    }
-
-    /// Check if a type is "local" to the given package.
-    /// For reference/pointer types, localness propagates to the inner type.
-    fn is_type_local(&self, ty: TypeHead, self_ty: Ty<'ctx>, pkg: PackageIndex) -> bool {
-        match ty {
-            TypeHead::Nominal(id) => id.package() == pkg,
-            TypeHead::Closure(id) => id.package() == pkg,
-            TypeHead::Parameter(_) => false,
-            // For references and pointers, check the inner type
-            TypeHead::Reference(_) | TypeHead::Pointer(_) => self.is_inner_type_local(self_ty, pkg),
-            // Built-in types are owned by std
-            TypeHead::Primary(_) | TypeHead::Tuple(_) | TypeHead::Array => self.is_std_package(pkg),
-        }
-    }
-
-    /// Check if the inner type of a reference/pointer is local.
-    fn is_inner_type_local(&self, ty: Ty<'ctx>, pkg: PackageIndex) -> bool {
-        match ty.kind() {
-            TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => {
-                // Recursively check the inner type
-                self.is_inner_type_local(inner, pkg)
-            }
-            TyKind::Adt(def, _) => def.id.package() == pkg,
-            // For other types, fall back to std ownership
-            _ => self.is_std_package(pkg),
-        }
-    }
-
-    /// Check if the given package is the standard library.
-    fn is_std_package(&self, pkg: PackageIndex) -> bool {
-        self.context.is_std_package(pkg)
-    }
-
     /// Find a conflicting conformance across all visible packages.
     fn find_conflicting_conformance(
         &self,
@@ -303,40 +274,15 @@ impl<'ctx> Actor<'ctx> {
         interface: InterfaceReference<'ctx>,
         new_extension_id: DefinitionID,
     ) -> Option<ConformanceRecord<'ctx>> {
-        // Get the package that owns the type (if nominal)
-        let type_pkg = match ty_key {
-            TypeHead::Nominal(id) => Some(id.package()),
-            TypeHead::Closure(id) => Some(id.package()),
-            TypeHead::Parameter(_) => None,
-            _ => None,
-        };
-
-        // Check the type's home package first (if different from current)
-        if let Some(pkg) = type_pkg {
-            if let Some(prev) =
-                self.find_conformance_in_package(pkg, ty_key, interface, new_extension_id)
+        for package in self.context.conformance_ownership_packages(
+            interface.id,
+            interface.self_ty().expect("conformance Self"),
+            interface.arguments,
+        ) {
+            if let Some(previous) =
+                self.find_conformance_in_package(package, ty_key, interface, new_extension_id)
             {
-                return Some(prev);
-            }
-        }
-
-        // Check the interface's home package
-        let interface_pkg = interface.id.package();
-        if Some(interface_pkg) != type_pkg {
-            if let Some(prev) =
-                self.find_conformance_in_package(interface_pkg, ty_key, interface, new_extension_id)
-            {
-                return Some(prev);
-            }
-        }
-
-        // Check the current session package
-        let current_pkg = self.context.package_index();
-        if Some(current_pkg) != type_pkg && current_pkg != interface_pkg {
-            if let Some(prev) =
-                self.find_conformance_in_package(current_pkg, ty_key, interface, new_extension_id)
-            {
-                return Some(prev);
+                return Some(previous);
             }
         }
 
@@ -397,6 +343,10 @@ impl<'ctx> Actor<'ctx> {
         let new_iface =
             instantiate_interface_ref_with_args(self.context, new_interface, new_extension_args);
 
+        let existing_iface =
+            crate::sema::tycheck::utils::normalize_aliases(self.context, existing_iface);
+        let new_iface = crate::sema::tycheck::utils::normalize_aliases(self.context, new_iface);
+
         let Some(existing_self) = self.conformance_self_ty(existing.extension) else {
             return false;
         };
@@ -406,6 +356,9 @@ impl<'ctx> Actor<'ctx> {
         let existing_self =
             instantiate_ty_with_args(self.context, existing_self, existing_extension_args);
         let new_self = instantiate_ty_with_args(self.context, new_self, new_extension_args);
+        let existing_self =
+            crate::sema::tycheck::utils::normalize_aliases(self.context, existing_self);
+        let new_self = crate::sema::tycheck::utils::normalize_aliases(self.context, new_self);
         if unifier.unify(existing_self, new_self).is_err() {
             return false;
         }
@@ -498,59 +451,33 @@ impl<'ctx> Actor<'ctx> {
             }
         }
 
-        let param_env = self
-            .context
-            .store
-            .arenas
-            .global
-            .alloc_slice_clone(instantiated.as_slice());
-
-        for constraint in instantiated {
-            let Constraint::Bound { ty, interface } = constraint else {
-                continue;
-            };
-
-            let ty = normalize_ty(icx.clone(), ty, &env);
-            let mut interface = interface;
-            interface.arguments = icx.resolve_args_if_possible(interface.arguments);
-
-            if ty.contains_inference()
-                || interface
-                    .arguments
-                    .iter()
-                    .any(|arg| generic_arg_has_inference(*arg))
-                || interface
-                    .bindings
-                    .iter()
-                    .any(|binding| binding.ty.contains_inference())
-            {
-                // Conservatively treat unresolved obligations as potentially satisfiable.
-                continue;
-            }
-
-            let self_ty = interface.self_ty().unwrap_or(ty);
-            let goal = interface.to_goal_with_self_ty(self.context, param_env, self_ty);
-
-            if matches!(
-                self.context
-                    .prove_interface_goal(goal, SelectionMode::Coherence),
-                GoalResult::NoSolution
-            ) {
-                return false;
-            }
-        }
+        // Positive bounds may become satisfiable in another package or after
+        // a dependency update. Only contradictory equalities prove disjointness;
+        // absence of a current witness is never a negative conformance proof.
 
         true
     }
 
-    fn emit_orphan_error(&self, span: Span, ty: Ty<'ctx>, interface: InterfaceReference<'ctx>) {
+    fn emit_orphan_error(
+        &self,
+        span: Span,
+        ty: Ty<'ctx>,
+        interface: InterfaceReference<'ctx>,
+        reason: crate::sema::tycheck::utils::coherence::OrphanError,
+    ) {
         let interface_name = interface.format(self.context);
         let type_name = ty.format(self.context);
+        use crate::sema::tycheck::utils::coherence::OrphanError;
+        let reason = match reason {
+            OrphanError::NoLocalInput => {
+                "neither the interface nor a qualifying input type is defined in this package"
+            }
+            OrphanError::UncoveredParameter => {
+                "an uncovered type parameter appears before the first local input type"
+            }
+        };
         self.context.dcx().emit_error(
-            format!(
-                "cannot implement '{}' for '{}': neither the type nor the interface is defined in this package",
-                interface_name, type_name
-            ),
+            format!("cannot implement '{interface_name}' for '{type_name}': {reason}"),
             Some(span),
         );
     }
@@ -564,5 +491,189 @@ impl<'ctx> Actor<'ctx> {
             "existing conformance is defined here".into(),
             Some(prev.location),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn inherited_class_conformances_keep_base_arguments_and_distinct_child_instantiations() {
+        use crate::sema::models::{GenericArgument, SelectionMode, Ty, TyKind};
+        crate::test_support::analyze_script(
+            r#"
+interface Compare[Other = Self] { func compare(_ other: &Other) -> bool; }
+interface Marker[Other = Self] {
+    func marker() -> int32 { 1 }
+    func echo[Z](_ value: Z) -> Z { value }
+}
+struct Base[A, B] {}
+conform[X, Y] Base[Y, X] to Compare {
+    func compare(_ other: &Base[Y, X]) -> bool { true }
+}
+conform[X, Y] Base[Y, X] to Marker {}
+struct Child[U, V] {}
+conform[U, V] Child[U, V] to Compare[Child[U, V]] {
+    func compare(_ other: &Child[U, V]) -> bool { true }
+}
+func main() {}
+"#,
+            |package, gcx| {
+                let named = |name: &str| {
+                    package
+                        .root
+                        .declarations
+                        .iter()
+                        .find(|decl| decl.identifier.symbol.as_str() == name)
+                        .unwrap()
+                        .id
+                };
+                let base_id = named("Base");
+                let child_id = named("Child");
+                let empty_info = crate::sema::models::ClassInfo {
+                    initializers: &[],
+                    base: None,
+                    methods: &[],
+                    payload: None,
+                    is_final: false,
+                };
+                let mut base_definition = gcx.get_struct_definition(base_id).clone();
+                base_definition.class_info = Some(empty_info);
+                gcx.cache_struct_definition(base_id, base_definition);
+                let TyKind::Adt(base_def, _) = gcx.get_type(base_id).kind() else {
+                    unreachable!()
+                };
+                let TyKind::Adt(child_def, child_identity) = gcx.get_type(child_id).kind() else {
+                    unreachable!()
+                };
+                let parent = Ty::new(
+                    TyKind::Adt(
+                        base_def,
+                        gcx.store
+                            .interners
+                            .intern_generic_args(vec![child_identity[1], child_identity[0]]),
+                    ),
+                    gcx,
+                );
+                let mut child_definition = gcx.get_struct_definition(child_id).clone();
+                child_definition.class_info = Some(crate::sema::models::ClassInfo {
+                    base: Some(parent),
+                    ..empty_info
+                });
+                gcx.cache_struct_definition(child_id, child_definition);
+                gcx.with_session_type_database(|database| {
+                    database.selection_cache.clear();
+                    database.witness_cache.clear();
+                });
+                let args = |types: Vec<_>| {
+                    gcx.store
+                        .interners
+                        .intern_generic_args(types.into_iter().map(GenericArgument::Type).collect())
+                };
+                let child = Ty::new(
+                    TyKind::Adt(child_def, args(vec![gcx.types.int32, gcx.types.bool])),
+                    gcx,
+                );
+                let base = gcx.class_base(child).unwrap();
+                assert_eq!(
+                    base,
+                    Ty::new(
+                        TyKind::Adt(base_def, args(vec![gcx.types.bool, gcx.types.int32])),
+                        gcx
+                    )
+                );
+                let goal = |interface, rhs| crate::sema::models::InterfaceGoal {
+                    interface_id: interface,
+                    self_ty: child,
+                    interface_args: args(vec![rhs]),
+                    bindings: &[],
+                    param_env: &[],
+                };
+                let compare = named("Compare");
+                for rhs in [base, child] {
+                    let witness = gcx
+                        .build_conformance_witness(goal(compare, rhs), SelectionMode::Codegen)
+                        .unwrap();
+                    let requirement =
+                        gcx.get_interface_requirements(compare).unwrap().methods[0].id;
+                    let instance = crate::specialize::resolve_instance(
+                        gcx,
+                        requirement,
+                        args(vec![child, rhs]),
+                    );
+                    assert!(instance.is_item());
+                    let declared_owner = gcx
+                        .get_impl_target_ty(witness.extension_id.unwrap())
+                        .unwrap();
+                    let actual_owner =
+                        crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args(
+                            gcx,
+                            declared_owner,
+                            instance.args(),
+                        );
+                    assert_eq!(actual_owner, rhs);
+                    if rhs == base {
+                        assert_eq!(instance.args(), args(vec![gcx.types.int32, gcx.types.bool]));
+                    }
+                }
+                let marker = named("Marker");
+                assert!(
+                    gcx.build_conformance_witness(goal(marker, base), SelectionMode::Codegen)
+                        .is_ok()
+                );
+                assert!(
+                    gcx.build_conformance_witness(goal(marker, child), SelectionMode::Codegen)
+                        .is_err(),
+                    "an inherited default argument is Base, never silently Child"
+                );
+                let echo = gcx
+                    .get_interface_requirements(marker)
+                    .unwrap()
+                    .methods
+                    .iter()
+                    .find(|method| method.name.as_str() == "echo")
+                    .unwrap()
+                    .id;
+                let inherited = crate::specialize::resolve_instance(
+                    gcx,
+                    echo,
+                    args(vec![child, base, gcx.types.int64]),
+                );
+                assert_eq!(inherited.def_id(), echo);
+                assert_eq!(inherited.args(), args(vec![base, base, gcx.types.int64]));
+            },
+        );
+    }
+
+    use super::*;
+    use crate::{
+        sema::{
+            resolve::models::DefinitionIndex,
+            std_items::{StdItemEntry, StdItemRegistry},
+        },
+        span::FileID,
+        test_support::with_test_gcx,
+    };
+
+    #[test]
+    fn compiler_only_capabilities_cannot_be_asserted_by_conformances() {
+        with_test_gcx(|gcx| {
+            let tuple = DefinitionID::new(gcx.package_index(), DefinitionIndex::from_raw(41));
+            let ordinary = DefinitionID::new(gcx.package_index(), DefinitionIndex::from_raw(42));
+            let registry =
+                StdItemRegistry::from_entries([(StdItem::Tuple, tuple)].map(|(item, def_id)| {
+                    (
+                        item,
+                        StdItemEntry {
+                            def_id,
+                            def_kind: DefinitionKind::Interface,
+                            span: Span::empty(FileID::from_raw(0)),
+                        },
+                    )
+                }));
+            *gcx.store.std_items.borrow_mut() = Some((gcx.package_index(), registry));
+            let actor = Actor::new(gcx);
+            assert!(actor.is_compiler_only_interface(tuple));
+            assert!(!actor.is_compiler_only_interface(ordinary));
+        });
     }
 }

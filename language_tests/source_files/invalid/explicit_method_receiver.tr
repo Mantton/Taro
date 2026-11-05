@@ -1,0 +1,5 @@
+struct Counter { value: int32 }
+extend Counter {
+    func read(&self) -> int32 { self.value }
+}
+func main() {}

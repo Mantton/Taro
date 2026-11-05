@@ -1,179 +1,134 @@
-import std.io.Error
-import std.marker.Sendable
-import std.mem.{MutableSpan, Span}
-import std.result.Result
+import std::runtime::SharedOwner
+import std::io::Error
+import std::mem::{Span}
+import std::result::Result
 
-public type IpAddress = std.sys.net.IpAddress
-public type SocketAddress = std.sys.net.SocketAddress
+public type IpAddress = std::sys::net::IpAddress
+public type SocketAddress = std::sys::net::SocketAddress
 
-const DEFAULT_TCP_BACKLOG: int32 = 128
+const DEFAULT_TCP_BACKLOG: int32 = 1024
 
-struct SocketCloseState {
-    inner: std.sys.net.task.RawAsyncSocket
-    cleanup: std.runtime.Cleanup?
+internal struct SocketCloseState {
+    inner: std::sys::net::task::RawAsyncSocket
 }
 
-func snapshotRawSocket(
-    _ socket: &std.sys.net.task.RawAsyncSocket,
-) -> std.sys.net.task.RawAsyncSocket {
-    let ptr = unsafe { socket as *const std.sys.net.task.RawAsyncSocket }
+// A non-owning request token, never a second close obligation. The borrowed
+// wrapper retains SharedOwner across direct await; native requests validate
+// source identity and acknowledge cancellation before releasing any buffers.
+internal func snapshotRawSocket(
+    _ socket: &std::sys::net::task::RawAsyncSocket,
+) -> std::sys::net::task::RawAsyncSocket {
+    ptr := unsafe { socket as *const std::sys::net::task::RawAsyncSocket }
     return unsafe { ptr.read() }
 }
 
-func takeRawSocket(_ state: &SocketCloseState) -> std.sys.net.task.RawAsyncSocket {
-    let ptr = unsafe {
-        (&state.inner as *const std.sys.net.task.RawAsyncSocket) as *mut std.sys.net.task.RawAsyncSocket
-    }
-    return std.sys.net.task.take(unsafe { ptr as &mut std.sys.net.task.RawAsyncSocket })
+internal func closedSocketError(_ operation: string) -> Error {
+    Error::new(.closed).withOperation(operation)
 }
 
-func closedSocketError(_ operation: string) -> Error {
-    Error(.closed).withOperation(operation)
-}
-
-func ensureSocketOpen(_ state: &SocketCloseState, _ operation: string) -> Result[(), Error] {
-    let valid = std.sys.net.task.isValid(&state.inner)
-    std.runtime.keepAlive(state)
+internal func ensureSocketOpen(_ state: SharedOwner[SocketCloseState], _ operation: string) -> Result[(), Error] {
+    valid := std::sys::net::task::isValid(&state.get().inner)
     if !valid {
         return .err(closedSocketError(operation))
     }
     return .ok(())
 }
 
-func socketCloseState(
-    _ inner: std.sys.net.task.RawAsyncSocket,
-) -> Result[&SocketCloseState, Error] {
-    let state = make(SocketCloseState {
-        inner,
-        cleanup: .none,
-    })
-    let cleanupState = snapshotRawSocket(&state.inner)
-    let cleanupRes = std.runtime.addCleanup(
-        state,
-        cleanupState,
-        |raw: std.sys.net.task.RawAsyncSocket| {
-            let _ = std.sys.net.task.close(raw)
-        },
-    )
-
-    match cleanupRes {
-        case .ok(cleanup) => {
-            state.cleanup = .some(cleanup)
-            std.runtime.keepAlive(state)
-            return .ok(state)
-        }
-        case .err(_) => {
-            let raw = takeRawSocket(state)
-            let _ = std.sys.net.task.close(raw)
-            std.runtime.keepAlive(state)
-            return .err(Error(.unexpected).withOperation("register resource cleanup"))
-        }
-    }
+internal func socketCloseState(
+    _ inner: std::sys::net::task::RawAsyncSocket,
+) -> Result[SharedOwner[SocketCloseState], Error] {
+    return .ok(SharedOwner[SocketCloseState]::new(SocketCloseState { inner }))
 }
 
-func claimRawSocket(
-    _ state: &SocketCloseState,
+internal func claimRawSocket(
+    _ state: SharedOwner[SocketCloseState],
     _ operation: string,
-) -> Result[std.sys.net.task.RawAsyncSocket, Error] {
-    let cancelled = match &state.cleanup {
-        case .some(cleanup) => cleanup.cancel()
-        case .none => false
-    }
-    if !cancelled {
-        std.runtime.keepAlive(state)
+) -> Result[std::sys::net::task::RawAsyncSocket, Error] {
+    var value: &SocketCloseState = state.get()
+    if !std::sys::net::task::isValid(&value.inner) {
         return .err(closedSocketError(operation))
     }
-
-    let raw = takeRawSocket(state)
-    std.runtime.keepAlive(state)
-    return .ok(raw)
+    return .ok(std::sys::net::task::take(&value.inner))
 }
 
-func closeSocketState(_ state: &SocketCloseState) -> Result[(), Error] {
-    let raw = match claimRawSocket(state, "close") {
+internal func closeSocketState(_ state: SharedOwner[SocketCloseState]) -> Result[(), Error] {
+    raw := match claimRawSocket(state, "close") {
         case .ok(value) => value
         case .err(err) => return .err(err)
     }
-    let result = std.sys.net.task.close(raw)
-    std.runtime.keepAlive(state)
+    result := std::sys::net::task::close(raw)
     return result
 }
 
 public struct TcpListener {
-    state: &SocketCloseState
+    internal state: SharedOwner[SocketCloseState]
 }
 
 public struct TcpStream {
-    state: &SocketCloseState
+    internal state: SharedOwner[SocketCloseState]
 }
 
 public struct UdpSocket {
-    state: &SocketCloseState
+    internal state: SharedOwner[SocketCloseState]
 }
 
-impl Sendable for TcpListener {}
-impl Sendable for TcpStream {}
-impl Sendable for UdpSocket {}
-
-impl TcpListener {
-    public func bind(_ address: SocketAddress) -> Result[TcpListener, Error] {
-        TcpListener.bindWithBacklog(address, DEFAULT_TCP_BACKLOG)
+extend TcpListener {
+    public static func bind(_ address: SocketAddress) -> Result[TcpListener, Error] {
+        TcpListener::bindWithBacklog(address, DEFAULT_TCP_BACKLOG)
     }
 
-    public func bindWithBacklog(_ address: SocketAddress, _ backlog: int32) -> Result[TcpListener, Error] {
-        let socketRes = std.sys.net.task.socket(std.sys.net.domainForAddress(address), .stream)
-        let socket = match socketRes {
+    public static func bindWithBacklog(_ address: SocketAddress, _ backlog: int32) -> Result[TcpListener, Error] {
+        socketRes := std::sys::net::task::socket(std::sys::net::domainForAddress(address), .stream)
+        socket := match socketRes {
             case .ok(value) => value
             case .err(err) => return .err(err)
         }
-        let state = match socketCloseState(socket) {
+        state := match socketCloseState(socket) {
             case .ok(value) => value
             case .err(err) => return .err(err)
         }
 
-        let reuseRes = std.sys.net.task.setReuseAddr(&state.inner, true)
-        std.runtime.keepAlive(state)
+        reuseRes := std::sys::net::task::setReuseAddr(&state.get().inner, true)
         match reuseRes {
             case .ok(_) => {}
             case .err(err) => {
-                let _ = closeSocketState(state)
+                var _ = closeSocketState(state)
                 return .err(err)
             }
         }
 
-        let bindRes = std.sys.net.task.bind(&state.inner, address)
-        std.runtime.keepAlive(state)
+        bindRes := std::sys::net::task::bind(&state.get().inner, address)
         match bindRes {
             case .ok(_) => {}
             case .err(err) => {
-                let _ = closeSocketState(state)
+                var _ = closeSocketState(state)
                 return .err(err)
             }
         }
 
-        let listenRes = std.sys.net.task.listen(&state.inner, backlog)
-        std.runtime.keepAlive(state)
+        listenRes := std::sys::net::task::listen(&state.get().inner, backlog)
         match listenRes {
             case .ok(_) => return .ok(TcpListener { state })
             case .err(err) => {
-                let _ = closeSocketState(state)
+                var _ = closeSocketState(state)
                 return .err(err)
             }
         }
     }
 
-    public func accept(&self) async -> Result[(TcpStream, SocketAddress), Error] {
+    public func accept() async -> Result[(TcpStream, SocketAddress), Error] {
         match ensureSocketOpen(self.state, "accept") {
             case .ok(_) => {}
             case .err(err) => return .err(err)
         }
-        let acceptRes = await std.sys.net.task.accept(&self.state.inner)
-        std.runtime.keepAlive(self.state)
-        let socketPair = match acceptRes {
+        // Borrow the private snapshot across await, retaining state below.
+        raw := snapshotRawSocket(&self.state.get().inner)
+        acceptRes := await std::sys::net::task::accept(&raw)
+        socketPair := match acceptRes {
             case .ok(value) => value
             case .err(err) => return .err(err)
         }
-        let state = match socketCloseState(socketPair.0) {
+        state := match socketCloseState(socketPair.0) {
             case .ok(value) => value
             case .err(err) => return .err(err)
         }
@@ -181,39 +136,43 @@ impl TcpListener {
         return .ok((TcpStream { state }, socketPair.1))
     }
 
-    public func localAddress(&self) -> Result[SocketAddress, Error] {
+    public func localAddress() -> Result[SocketAddress, Error] {
         match ensureSocketOpen(self.state, "get local address") {
             case .ok(_) => {}
             case .err(err) => return .err(err)
         }
-        let result = std.sys.net.task.localAddress(&self.state.inner)
-        std.runtime.keepAlive(self.state)
+        result := std::sys::net::task::localAddress(&self.state.get().inner)
         return result
     }
 
-    public func close(&self) -> Result[(), Error] {
+    /// Stops new operations through all shared copies. If a native operation
+    /// is in flight, success acknowledges the request; OS close is deferred
+    /// until it finishes. Deferred close errors are reported on stderr and in
+    /// runtime statistics. Explicit close is required; collection does not close.
+    public func close() -> Result[(), Error] {
         closeSocketState(self.state)
     }
 }
 
-impl TcpStream {
-    public func connect(_ address: SocketAddress) async -> Result[TcpStream, Error] {
-        let socketRes = std.sys.net.task.socket(std.sys.net.domainForAddress(address), .stream)
-        let socket = match socketRes {
+extend TcpStream {
+    public static func connect(_ address: SocketAddress) async -> Result[TcpStream, Error] {
+        socketRes := std::sys::net::task::socket(std::sys::net::domainForAddress(address), .stream)
+        socket := match socketRes {
             case .ok(value) => value
             case .err(err) => return .err(err)
         }
-        let state = match socketCloseState(socket) {
+        state := match socketCloseState(socket) {
             case .ok(value) => value
             case .err(err) => return .err(err)
         }
 
-        let connectRes = await std.sys.net.task.connect(&state.inner, address)
-        std.runtime.keepAlive(state)
+        // Borrow the private snapshot across await, retaining state below.
+        raw := snapshotRawSocket(&state.get().inner)
+        connectRes := await std::sys::net::task::connect(&raw, address)
         match connectRes {
             case .ok(_) => {}
             case .err(err) => {
-                let _ = closeSocketState(state)
+                var _ = closeSocketState(state)
                 return .err(err)
             }
         }
@@ -221,87 +180,124 @@ impl TcpStream {
         return .ok(TcpStream { state })
     }
 
-    public func localAddress(&self) -> Result[SocketAddress, Error] {
+    public func localAddress() -> Result[SocketAddress, Error] {
         match ensureSocketOpen(self.state, "get local address") {
             case .ok(_) => {}
             case .err(err) => return .err(err)
         }
-        let result = std.sys.net.task.localAddress(&self.state.inner)
-        std.runtime.keepAlive(self.state)
+        result := std::sys::net::task::localAddress(&self.state.get().inner)
         return result
     }
 
-    public func peerAddress(&self) -> Result[SocketAddress, Error] {
+    public func peerAddress() -> Result[SocketAddress, Error] {
         match ensureSocketOpen(self.state, "get peer address") {
             case .ok(_) => {}
             case .err(err) => return .err(err)
         }
-        let result = std.sys.net.task.peerAddress(&self.state.inner)
-        std.runtime.keepAlive(self.state)
+        result := std::sys::net::task::peerAddress(&self.state.get().inner)
         return result
     }
 
-    public func close(&self) -> Result[(), Error] {
+    /// Stops new operations through all shared copies. If a native operation
+    /// is in flight, success acknowledges the request; OS close is deferred
+    /// until it finishes. Deferred close errors are reported on stderr and in
+    /// runtime statistics. Explicit close is required; collection does not close.
+    public func close() -> Result[(), Error] {
         closeSocketState(self.state)
     }
 
-    public func intoStream(&mut self) -> Result[std.io.task.AsyncStream, Error] {
+    public func intoStream() -> Result[std::io::task::AsyncStream, Error] {
         var raw = match claimRawSocket(self.state, "convert socket to stream") {
             case .ok(value) => value
             case .err(err) => return .err(err)
         }
-        let result = std.sys.net.task.intoStream(&mut raw)
+        result := std::sys::net::task::intoStream(&raw)
         match result {
             case .ok(stream) => {
-                std.runtime.keepAlive(self.state)
                 return .ok(stream)
             }
             case .err(err) => {
-                let _ = std.sys.net.task.close(raw)
-                std.runtime.keepAlive(self.state)
+                var _ = std::sys::net::task::close(raw)
                 return .err(err)
             }
         }
     }
 
-    public func read(&self, _ buf: MutableSpan[uint8]) async -> Result[usize, Error] {
+    public func read(_ buf: Span[uint8]) async -> Result[usize, Error] {
         match ensureSocketOpen(self.state, "read") {
             case .ok(_) => {}
             case .err(err) => return .err(err)
         }
-        let result = await std.sys.net.task.read(&self.state.inner, buf)
-        std.runtime.keepAlive(self.state)
+        // Borrow the private snapshot across await, retaining state below.
+        raw := snapshotRawSocket(&self.state.get().inner)
+        result := await std::sys::net::task::read(&raw, buf)
         return result
     }
 
-    public func write(&self, _ buf: Span[uint8]) async -> Result[usize, Error] {
+    /// Like `read`, but fails with `.timedOut` if the socket is still not
+    /// readable at `deadline`. Available data always beats the deadline.
+    public func readUntil(_ buf: Span[uint8], _ deadline: std::time::Instant) async -> Result[usize, Error] {
+        match ensureSocketOpen(self.state, "read") {
+            case .ok(_) => {}
+            case .err(err) => return .err(err)
+        }
+        raw := snapshotRawSocket(&self.state.get().inner)
+        result := await std::sys::net::task::read(&raw, buf, deadline: .some(deadline))
+        return result
+    }
+
+    // The steps of readUntil and writeAllUntil, for callers that usually complete
+    // without suspending and so needn't build a frame for each operation.
+    internal func tryRead(_ buf: Span[uint8]) -> Result[usize, Error] {
+        ensureSocketOpen(self.state, "read")!
+        raw := snapshotRawSocket(&self.state.get().inner)
+        return std::sys::net::task::tryRead(&raw, buf)
+    }
+    internal func tryWrite(_ buf: Span[uint8]) -> Result[usize, Error] {
+        ensureSocketOpen(self.state, "write")!
+        raw := snapshotRawSocket(&self.state.get().inner)
+        return std::sys::net::task::tryWrite(&raw, buf)
+    }
+    internal func waitReadableUntil(_ deadline: std::time::Instant) async -> Result[(), Error] {
+        ensureSocketOpen(self.state, "read")!
+        raw := snapshotRawSocket(&self.state.get().inner)
+        return await std::sys::net::task::waitReadable(&raw, deadline: deadline)
+    }
+    internal func waitWritableUntil(_ deadline: std::time::Instant) async -> Result[(), Error] {
+        ensureSocketOpen(self.state, "write")!
+        raw := snapshotRawSocket(&self.state.get().inner)
+        return await std::sys::net::task::waitWritable(&raw, deadline: deadline)
+    }
+
+    public func write(_ buf: Span[uint8]) async -> Result[usize, Error] {
         match ensureSocketOpen(self.state, "write") {
             case .ok(_) => {}
             case .err(err) => return .err(err)
         }
-        let result = await std.sys.net.task.write(&self.state.inner, buf)
-        std.runtime.keepAlive(self.state)
+        // Borrow the private snapshot across await, retaining state below.
+        raw := snapshotRawSocket(&self.state.get().inner)
+        result := await std::sys::net::task::write(&raw, buf)
         return result
     }
 
-    public func writeAll(&self, _ buf: Span[uint8]) async -> Result[(), Error] {
+    public func writeAll(_ buf: Span[uint8]) async -> Result[(), Error] {
         match ensureSocketOpen(self.state, "write all") {
             case .ok(_) => {}
             case .err(err) => return .err(err)
         }
-        let len = buf.len()
+        len := buf.len()
         if len == 0 {
             return .ok(())
         }
 
         var written: usize = 0
         while written < len {
-            let remaining = buf.slice(written, len - written)
-            let writeRes = await self.write(remaining)
+            remaining := buf.slice(written, len - written)
+            writeRes := await self.write(remaining)
             match writeRes {
                 case .ok(count) => {
                     if count == 0 {
-                        return .err(Error(.writeZero).withOperation("write all"))
+                        return .err(Error::new(.writeZero).withOperation("write all"))
                     }
                     written += count
                 }
@@ -312,27 +308,45 @@ impl TcpStream {
         return .ok(())
     }
 
-    public func write(&self, _ s: string) async -> Result[(), Error] {
+    /// Like `writeAll`, but fails with `.timedOut` if the socket stops accepting
+    /// bytes until `deadline`. Bytes already written stay written, so a timeout
+    /// leaves the stream's framing unknown: close it.
+    public func writeAllUntil(_ buf: Span[uint8], _ deadline: std::time::Instant) async -> Result[(), Error] {
+        var written: usize = 0
+        while written < buf.len() {
+            match ensureSocketOpen(self.state, "write all") {
+                case .ok(_) => {}
+                case .err(err) => return .err(err)
+            }
+            raw := snapshotRawSocket(&self.state.get().inner)
+            count := (await std::sys::net::task::write(&raw, buf.slice(written, buf.len() - written), deadline: .some(deadline)))!
+            if count == 0 { return .err(Error::new(.writeZero).withOperation("write all")) }
+            written += count
+        }
+        return .ok(())
+    }
+
+    public func write(_ s: string) async -> Result[(), Error] {
         match ensureSocketOpen(self.state, "write all") {
             case .ok(_) => {}
             case .err(err) => return .err(err)
         }
-        let len = std.string.stringLen(s)
+        len := std::string::stringLen(s)
         if len == 0 {
             return .ok(())
         }
 
-        let ptr = std.string.stringData(s)
-        let bytes = Span[uint8].from(ptr, len)
+        ptr := std::string::stringData(s)
+        bytes := unsafe { Span[uint8]::from(ptr, len) }
         return await self.writeAll(bytes)
     }
 
-    public func readExact(&self, _ buf: MutableSpan[uint8]) async -> Result[(), Error] {
+    public func readExact(_ buf: Span[uint8]) async -> Result[(), Error] {
         match ensureSocketOpen(self.state, "read exact") {
             case .ok(_) => {}
             case .err(err) => return .err(err)
         }
-        let len = buf.len()
+        len := buf.len()
         if len == 0 {
             return .ok(())
         }
@@ -340,15 +354,15 @@ impl TcpStream {
         var total: usize = 0
         var writable = buf
         while total < len {
-            let tail = writable.slice(total, len - total)
-            let readRes = await self.read(tail)
-            let count = match readRes {
+            tail := writable.slice(total, len - total)
+            readRes := await self.read(tail)
+            count := match readRes {
                 case .ok(value) => value
                 case .err(err) => return .err(err)
             }
 
             if count == 0 {
-                return .err(Error(.unexpectedEof).withOperation("read exact"))
+                return .err(Error::new(.unexpectedEof).withOperation("read exact"))
             }
 
             total += count
@@ -358,24 +372,23 @@ impl TcpStream {
     }
 }
 
-impl UdpSocket {
-    public func bind(_ address: SocketAddress) -> Result[UdpSocket, Error] {
-        let socketRes = std.sys.net.task.socket(std.sys.net.domainForAddress(address), .datagram)
-        let socket = match socketRes {
+extend UdpSocket {
+    public static func bind(_ address: SocketAddress) -> Result[UdpSocket, Error] {
+        socketRes := std::sys::net::task::socket(std::sys::net::domainForAddress(address), .datagram)
+        socket := match socketRes {
             case .ok(value) => value
             case .err(err) => return .err(err)
         }
-        let state = match socketCloseState(socket) {
+        state := match socketCloseState(socket) {
             case .ok(value) => value
             case .err(err) => return .err(err)
         }
 
-        let bindRes = std.sys.net.task.bind(&state.inner, address)
-        std.runtime.keepAlive(state)
+        bindRes := std::sys::net::task::bind(&state.get().inner, address)
         match bindRes {
             case .ok(_) => {}
             case .err(err) => {
-                let _ = closeSocketState(state)
+                var _ = closeSocketState(state)
                 return .err(err)
             }
         }
@@ -383,37 +396,42 @@ impl UdpSocket {
         return .ok(UdpSocket { state })
     }
 
-    public func localAddress(&self) -> Result[SocketAddress, Error] {
+    public func localAddress() -> Result[SocketAddress, Error] {
         match ensureSocketOpen(self.state, "get local address") {
             case .ok(_) => {}
             case .err(err) => return .err(err)
         }
-        let result = std.sys.net.task.localAddress(&self.state.inner)
-        std.runtime.keepAlive(self.state)
+        result := std::sys::net::task::localAddress(&self.state.get().inner)
         return result
     }
 
-    public func sendTo(&self, _ buf: Span[uint8], _ address: SocketAddress) async -> Result[usize, Error] {
+    public func sendTo(_ buf: Span[uint8], _ address: SocketAddress) async -> Result[usize, Error] {
         match ensureSocketOpen(self.state, "send datagram") {
             case .ok(_) => {}
             case .err(err) => return .err(err)
         }
-        let result = await std.sys.net.task.sendTo(&self.state.inner, buf, address)
-        std.runtime.keepAlive(self.state)
+        // Borrow the private snapshot across await, retaining state below.
+        raw := snapshotRawSocket(&self.state.get().inner)
+        result := await std::sys::net::task::sendTo(&raw, buf, address)
         return result
     }
 
-    public func recvFrom(&self, _ buf: MutableSpan[uint8]) async -> Result[(usize, SocketAddress), Error] {
+    public func recvFrom(_ buf: Span[uint8]) async -> Result[(usize, SocketAddress), Error] {
         match ensureSocketOpen(self.state, "receive datagram") {
             case .ok(_) => {}
             case .err(err) => return .err(err)
         }
-        let result = await std.sys.net.task.recvFrom(&self.state.inner, buf)
-        std.runtime.keepAlive(self.state)
+        // Borrow the private snapshot across await, retaining state below.
+        raw := snapshotRawSocket(&self.state.get().inner)
+        result := await std::sys::net::task::recvFrom(&raw, buf)
         return result
     }
 
-    public func close(&self) -> Result[(), Error] {
+    /// Stops new operations through all shared copies. If a native operation
+    /// is in flight, success acknowledges the request; OS close is deferred
+    /// until it finishes. Deferred close errors are reported on stderr and in
+    /// runtime statistics. Explicit close is required; collection does not close.
+    public func close() -> Result[(), Error] {
         closeSocketState(self.state)
     }
 }

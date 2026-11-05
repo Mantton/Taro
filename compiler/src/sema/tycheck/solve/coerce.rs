@@ -1,20 +1,136 @@
 use crate::{
     hir::{Mutability, NodeID},
     sema::{
-        error::{ExpectedFound, TypeError},
+        error::TypeError,
         models::{
             AliasKind, GenericArgument, InferTy, InterfaceReference, SelectionError, SelectionMode,
             Ty, TyKind,
         },
-        resolve::models::TypeHead,
-        tycheck::utils::{type_head_from_value_ty, unresolved::ty_contains_unresolved_inference},
+        tycheck::utils::unresolved::ty_contains_unresolved_inference,
     },
     span::{Span, Spanned},
 };
 
 use super::{Adjustment, ConstraintSolver, Goal, Obligation, SolverResult};
 
+#[cfg(test)]
+mod nil_pointer_tests {
+    #[test]
+    fn nil_pointer_returns_and_locals_have_resolved_mir_types() {
+        let errors = crate::test_support::analyze_script_mir_diagnostics(
+            r#"
+func nullConst() -> *const int32 { nil }
+func nullMut() -> *mut int32 { nil }
+func nullGeneric[T]() -> *const T { nil }
+func identity[T](_ value: T) -> T { value }
+func main() {
+    var pointer: *const int32 = nil
+    var mutable: *mut int32 = nil
+    pointer = nullConst()
+    mutable = nullMut()
+    var generic = nullGeneric[bool]()
+    var contextual: *const int32 = identity({ nil })
+}
+"#,
+        );
+        assert!(errors.is_empty(), "{errors:#?}");
+    }
+}
+
 impl<'ctx> ConstraintSolver<'ctx> {
+    pub(super) fn solve_opened_conforms(
+        &mut self,
+        location: Span,
+        source: crate::hir::DefinitionID,
+        arguments: crate::sema::models::GenericArguments<'ctx>,
+        template: InterfaceReference<'ctx>,
+        ty: Ty<'ctx>,
+        interface: InterfaceReference<'ctx>,
+    ) -> SolverResult<'ctx> {
+        let ty = self.structurally_resolve(ty);
+        let (interface, unresolved) = self.resolve_interface_ref(interface);
+        if ty_contains_unresolved_inference(ty) {
+            return SolverResult::Deferred;
+        }
+        if let TyKind::BoxedExistential { interfaces } = ty.kind() {
+            let arguments = self.icx.resolve_vars_if_possible(arguments);
+            if let Ok(Some(plan)) =
+                crate::sema::lowering::erased_opening::plan(self.gcx(), source, arguments)
+                && plan.erased == ty
+            {
+                let expected =
+                    crate::sema::tycheck::utils::erased_self::bind(self.gcx(), interface, ty);
+                let mut provided = Vec::new();
+                for root in interfaces {
+                    for raw in self.collect_interface_with_supers(*root) {
+                        if !crate::sema::lowering::erased_opening::relative_self_matches_template(
+                            self.gcx(),
+                            template,
+                            raw,
+                            plan.parameter,
+                        ) {
+                            continue;
+                        }
+                        let candidate =
+                            crate::sema::tycheck::utils::erased_self::bind(self.gcx(), raw, ty);
+                        if !provided.contains(&candidate)
+                            && self.existential_interface_ref_matches_with_mode(
+                                expected, candidate, unresolved, false,
+                            )
+                        {
+                            provided.push(candidate);
+                        }
+                    }
+                }
+                if provided.len() == 1
+                    && self.existential_interface_ref_matches_with_mode(
+                        expected,
+                        provided[0],
+                        unresolved,
+                        true,
+                    )
+                {
+                    return SolverResult::Solved(vec![Obligation {
+                        location,
+                        goal: Goal::ValidateOpening { source, arguments },
+                    }]);
+                }
+                if provided.len() > 1 {
+                    return SolverResult::Error(vec![Spanned::new(
+                        TypeError::AmbiguousOverload,
+                        location,
+                    )]);
+                }
+            }
+        }
+        self.solve_conforms(location, ty, interface)
+    }
+
+    pub(super) fn solve_validate_opening(
+        &mut self,
+        location: Span,
+        source: crate::hir::DefinitionID,
+        arguments: crate::sema::models::GenericArguments<'ctx>,
+    ) -> SolverResult<'ctx> {
+        let arguments = self.icx.resolve_vars_if_possible(arguments);
+        if arguments.iter().any(|argument| match argument {
+            GenericArgument::Type(ty) => ty.contains_inference(),
+            GenericArgument::Const(value) => {
+                matches!(value.kind, crate::sema::models::ConstKind::Infer(_))
+                    || value.ty.contains_inference()
+            }
+        }) {
+            return SolverResult::Deferred;
+        }
+        match crate::sema::lowering::erased_opening::plan(self.gcx(), source, arguments) {
+            Ok(_) => SolverResult::Solved(vec![]),
+            Err(_) => SolverResult::Error(vec![Spanned::new(
+                TypeError::ErasedMethodUsesHiddenType,
+                location,
+            )]),
+        }
+    }
+
     pub fn solve_coerce(
         &mut self,
         location: Span,
@@ -25,39 +141,80 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let from = self.structurally_resolve(from);
         let to = self.structurally_resolve(to);
 
-        if matches!(from.kind(), TyKind::Never) {
+        if from == to || matches!(from.kind(), TyKind::Never) {
             return SolverResult::Solved(vec![]);
         }
 
+        let ancestor = |source, target: Ty<'ctx>| {
+            let TyKind::Adt(target_def, _) = target.kind() else {
+                return None;
+            };
+            self.gcx()
+                .class_ancestry(source)
+                .into_iter()
+                .find(|ty| matches!(ty.kind(),TyKind::Adt(def,_) if def.id == target_def.id))
+        };
+        if from != to
+            && let Some(base) = ancestor(from, to)
+            && base != from
+        {
+            self.coercions += 1;
+            self.append_adjustments(node_id, vec![Adjustment::ClassUpcast { to }]);
+            return self.solve_constraint_equality(location, base, to);
+        }
         if let Some(result) = self.solve_existential_upcast(location, node_id, from, to) {
+            if matches!(result, SolverResult::Solved(_)) {
+                self.coercions += 1;
+            }
             return result;
         }
 
         if let Some(result) = self.solve_boxing_coercion(location, node_id, from, to) {
+            if matches!(result, SolverResult::Solved(_)) {
+                self.coercions += 1;
+            }
             return result;
         }
 
-        if let Some(result) = self.solve_pointer_coercion(location, from, to) {
+        if let Some(result) = self.solve_pointer_coercion(location, node_id, from, to) {
             return result;
         }
 
         // Closure to function pointer coercion: || -> T to fn() -> T
         if let Some(result) = self.solve_closure_to_fn_pointer(location, node_id, from, to) {
+            if matches!(result, SolverResult::Solved(_)) {
+                self.coercions += 1;
+            }
             return result;
         }
 
         // Closure to type parameter with Fn bound coercion
-        if let Some(result) = self.solve_closure_to_fn_bound_param(location, from, to) {
+        if let Some(result) = self.solve_callable_to_fn_bound_param(location, from, to) {
             return result;
         }
 
         // Nil coercion: NilVar -> Optional[T] or NilVar -> *T
         if let Some(result) = self.solve_nil_coercion(location, node_id, from, to) {
+            if matches!(result, SolverResult::Solved(_)) {
+                self.coercions += 1;
+            }
             return result;
         }
 
         // Optional wrapping: T -> Optional[T]
         if let Some(result) = self.solve_optional_wrapping(location, node_id, from, to) {
+            if matches!(result, SolverResult::Solved(_)) {
+                self.coercions += 1;
+            }
+            return result;
+        }
+
+        // A known Result is never implicitly nested or unwrapped. Ordinary
+        // Result equality below still infers its generic arguments normally.
+        if let Some(result) = self.solve_result_success_wrapping(location, node_id, from, to) {
+            if matches!(result, SolverResult::Solved(_)) {
+                self.coercions += 1;
+            }
             return result;
         }
 
@@ -99,77 +256,31 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return Some(self.solve_equality(location, to, from));
         }
 
-        if matches!(
-            from.kind(),
-            TyKind::Closure { .. }
-                | TyKind::Parameter(_)
-                | TyKind::Alias {
-                    kind: AliasKind::Opaque,
-                    ..
-                }
-        ) {
-            let obligations = interfaces
-                .iter()
-                .map(|interface| {
-                    let mut arguments = interface.arguments.to_vec();
-                    if let Some(first) = arguments.first_mut() {
-                        *first = GenericArgument::Type(from);
-                    } else {
-                        arguments.push(GenericArgument::Type(from));
-                    }
-                    let interface = InterfaceReference {
-                        id: interface.id,
-                        arguments: self.gcx().store.interners.intern_generic_args(arguments),
-                        bindings: interface.bindings,
-                    };
-                    Obligation {
-                        location,
-                        goal: Goal::Conforms {
-                            ty: from,
-                            interface,
-                        },
-                    }
-                })
-                .collect();
-            self.record_adjustments(
-                node_id,
-                vec![Adjustment::BoxExistential { from, interfaces }],
-            );
-            return Some(SolverResult::Solved(obligations));
-        }
-
-        let Some(head) = type_head_from_value_ty(from) else {
-            let error = Spanned::new(
-                TypeError::TyMismatch(ExpectedFound::new(to, from)),
-                location,
-            );
-            return Some(SolverResult::Error(vec![error]));
-        };
-
-        if let Some(matches) = self.collect_head_conformance_matches(head, interfaces, true) {
-            let obligations = self.interface_match_obligations(location, &matches);
-            self.record_adjustments(
-                node_id,
-                vec![Adjustment::BoxExistential { from, interfaces }],
-            );
-            return Some(SolverResult::Solved(obligations));
-        }
-
-        let missing = self.missing_conformances(head, interfaces);
-        let errors = missing
-            .into_iter()
+        // Every source uses the conformance engine, including conditional ADT
+        // implementations. Bind erased Self before checking receiver-relative
+        // defaults instead of matching only a nominal type head.
+        let obligations = interfaces
+            .iter()
             .map(|interface| {
-                Spanned::new(
-                    TypeError::NonConformance {
+                let interface = crate::sema::impl_engine::ref_ops::interface_ref_with_self(
+                    self.gcx(),
+                    from,
+                    *interface,
+                );
+                Obligation {
+                    location,
+                    goal: Goal::Conforms {
                         ty: from,
                         interface,
                     },
-                    location,
-                )
+                }
             })
             .collect();
-
-        Some(SolverResult::Error(errors))
+        self.record_adjustments(
+            node_id,
+            vec![Adjustment::BoxExistential { from, interfaces }],
+        );
+        Some(SolverResult::Solved(obligations))
     }
 
     fn solve_existential_upcast(
@@ -239,12 +350,17 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         // Check if target is a function pointer type
         let TyKind::FnPointer {
+            effects,
             inputs: fn_inputs,
             output: fn_output,
         } = to.kind()
         else {
             return None;
         };
+
+        if effects != Default::default() {
+            return None;
+        }
 
         // Check if the closure has no captures
         let gcx = self.gcx();
@@ -285,119 +401,22 @@ impl<'ctx> ConstraintSolver<'ctx> {
     fn solve_pointer_coercion(
         &mut self,
         location: Span,
+        node_id: NodeID,
         from: Ty<'ctx>,
         to: Ty<'ctx>,
     ) -> Option<SolverResult<'ctx>> {
-        // Reference coercion: &mut T -> &T
-        if let (
-            TyKind::Reference(from_inner, Mutability::Mutable),
-            TyKind::Reference(to_inner, Mutability::Immutable),
-        ) = (from.kind(), to.kind())
-        {
-            return Some(self.solve_equality(location, to_inner, from_inner));
-        }
-
         // Raw pointer coercion: *mut T -> *T
         if let (
             TyKind::Pointer(from_inner, Mutability::Mutable),
             TyKind::Pointer(to_inner, Mutability::Immutable),
         ) = (from.kind(), to.kind())
         {
+            self.coercions += 1;
+            self.record_adjustments(node_id, vec![Adjustment::PointerToConst]);
             return Some(self.solve_equality(location, to_inner, from_inner));
         }
 
         None
-    }
-
-    fn missing_conformances(
-        &self,
-        head: TypeHead,
-        interfaces: &'ctx [InterfaceReference<'ctx>],
-    ) -> Vec<InterfaceReference<'ctx>> {
-        let gcx = self.gcx();
-
-        // Collect conformance records from all visible packages
-        let records = gcx.collect_from_databases(|db| {
-            db.conformance_by_head
-                .get(&head)
-                .map_or_else(Vec::new, |ids| {
-                    ids.iter()
-                        .filter_map(|id| db.conformance_records.get(id).copied())
-                        .collect()
-                })
-        });
-
-        let mut missing = Vec::new();
-        for iface in interfaces {
-            let mut satisfied = false;
-            for record in &records {
-                if self.interface_ref_matches_with_mode(*iface, record.interface, true, false) {
-                    satisfied = true;
-                    break;
-                }
-
-                let mut supers = self.collect_interface_with_supers(record.interface);
-                if supers.drain(1..).any(|candidate| {
-                    self.interface_ref_matches_with_mode(*iface, candidate, true, false)
-                }) {
-                    satisfied = true;
-                    break;
-                }
-            }
-            if !satisfied {
-                missing.push(*iface);
-            }
-        }
-
-        missing
-    }
-
-    fn collect_head_conformance_matches(
-        &self,
-        head: TypeHead,
-        interfaces: &'ctx [InterfaceReference<'ctx>],
-        infer: bool,
-    ) -> Option<Vec<(InterfaceReference<'ctx>, InterfaceReference<'ctx>)>> {
-        let gcx = self.gcx();
-        let records = gcx.collect_from_databases(|db| {
-            db.conformance_by_head
-                .get(&head)
-                .map_or_else(Vec::new, |ids| {
-                    ids.iter()
-                        .filter_map(|id| db.conformance_records.get(id).copied())
-                        .collect()
-                })
-        });
-
-        let mut matches_out = Vec::with_capacity(interfaces.len());
-        for iface in interfaces {
-            let mut matched = None;
-            for record in &records {
-                if self.interface_ref_matches_with_mode(*iface, record.interface, infer, false) {
-                    matched = Some(record.interface);
-                    break;
-                }
-
-                for candidate in self
-                    .collect_interface_with_supers(record.interface)
-                    .into_iter()
-                    .skip(1)
-                {
-                    if self.interface_ref_matches_with_mode(*iface, candidate, infer, false) {
-                        matched = Some(candidate);
-                        break;
-                    }
-                }
-                if matched.is_some() {
-                    break;
-                }
-            }
-
-            let actual = matched?;
-            matches_out.push((*iface, actual));
-        }
-
-        Some(matches_out)
     }
 
     fn collect_existential_matches(
@@ -531,31 +550,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
     }
 
-    fn interface_ref_matches_with_mode(
-        &self,
-        expected: InterfaceReference<'ctx>,
-        actual: InterfaceReference<'ctx>,
-        infer: bool,
-        commit: bool,
-    ) -> bool {
-        if !infer {
-            return self.interface_ref_matches(expected, actual);
-        }
-
-        let matches = self
-            .icx
-            .probe(|_| self.interface_ref_matches_with_inference(expected, actual));
-        if !matches {
-            return false;
-        }
-
-        if commit {
-            return self.interface_ref_matches_with_inference(expected, actual);
-        }
-
-        true
-    }
-
     fn existential_interface_ref_matches_with_mode(
         &self,
         expected: InterfaceReference<'ctx>,
@@ -579,14 +573,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
 
         true
-    }
-
-    fn interface_ref_matches_with_inference(
-        &self,
-        expected: InterfaceReference<'ctx>,
-        actual: InterfaceReference<'ctx>,
-    ) -> bool {
-        expected.id == actual.id && self.interface_args_match_with_inference(expected, actual)
     }
 
     fn existential_interface_ref_matches_with_inference(
@@ -644,6 +630,14 @@ impl<'ctx> ConstraintSolver<'ctx> {
     ) -> SolverResult<'ctx> {
         let ty = self.structurally_resolve(ty);
         let (interface, has_infer) = self.resolve_interface_ref(interface);
+        // Generic defaults may resolve only after the boxing goal was built.
+        // Rebind their erased Self now, rather than leaving a newly resolved
+        // receiver-relative argument as an unrelated hidden type.
+        let interface = crate::sema::tycheck::utils::erased_self::bind(
+            self.gcx(),
+            interface,
+            interface.self_ty().unwrap_or(ty),
+        );
 
         if ty.is_error() {
             return SolverResult::Solved(vec![]);
@@ -652,13 +646,16 @@ impl<'ctx> ConstraintSolver<'ctx> {
         // Special case: closures implicitly implement Fn/AsyncFn.
         // Check this BEFORE deferring on has_infer, because the Equal obligations
         // we generate will bind any inference variables in the interface (like output type U).
-        if let Some(result) = self.solve_closure_fn_conformance(location, ty, interface) {
+        if let Some(result) = self.solve_callable_fn_conformance(location, ty, interface) {
             return result;
         }
 
         // Now defer if interface has unresolved inference variables
         // (except for closure conformance which we already handled)
         if has_infer {
+            if let Some(obligations) = self.infer_conformance_arguments(ty, interface, location) {
+                return SolverResult::Solved(obligations);
+            }
             return SolverResult::Deferred;
         }
 
@@ -757,41 +754,17 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     return SolverResult::Solved(vec![]);
                 }
             }
-            TyKind::BoxedExistential { interfaces } => {
-                // The payload may implement Copy, but the owning existential
-                // box itself is not Copy. Do not let dynamic interface
-                // membership bypass representation checks or generic bounds,
-                // including bounds on interfaces that inherit Copy.
-                let copy_id = self.gcx().std_item_def(crate::hir::StdItem::Copy);
-                if self
-                    .collect_interface_with_supers(interface)
-                    .iter()
-                    .any(|required| Some(required.id) == copy_id)
+            TyKind::BoxedExistential { .. } => {
+                if self.gcx().std_item_def(crate::hir::StdItem::AnyObject) == Some(interface.id)
+                    && self
+                        .gcx()
+                        .existential_requires_interface(ty, crate::hir::StdItem::AnyObject)
                 {
-                    return SolverResult::Error(vec![Spanned::new(
-                        TypeError::NonConformance { ty, interface },
-                        location,
-                    )]);
-                }
-                let mut satisfied = interfaces
-                    .iter()
-                    .any(|source| self.existential_interface_ref_matches(interface, *source));
-
-                if !satisfied {
-                    satisfied = interfaces.iter().any(|source| {
-                        self.collect_interface_with_supers(*source)
-                            .into_iter()
-                            .skip(1)
-                            .any(|candidate| {
-                                self.existential_interface_ref_matches(interface, candidate)
-                            })
-                    });
-                }
-
-                if satisfied {
                     return SolverResult::Solved(vec![]);
                 }
-
+                // Its witness proves conformance of the hidden payload only.
+                // A direct generic call can open that payload through the
+                // separate OpenedConforms goal; no general any-P:P rule exists.
                 let error = Spanned::new(TypeError::NonConformance { ty, interface }, location);
                 return SolverResult::Error(vec![error]);
             }
@@ -810,6 +783,20 @@ impl<'ctx> ConstraintSolver<'ctx> {
         // checking; treating those as assumptions would let an invalid call
         // prove its own required conformance.
         let goal = interface.to_goal_with_self_ty(self.gcx(), self.assumption_constraints, self_ty);
+        // A definition-level bound proves conformance even when its subject
+        // is compound (&T, for example). Its concrete methods are selected
+        // after specialization; requesting a concrete witness here rejects
+        // valid generic bodies. Pending call requirements are not assumptions.
+        if matches!(
+            self.gcx()
+                .select_interface_impl(goal, SelectionMode::Typecheck),
+            crate::sema::models::SelectionResult::Selected(crate::sema::models::SelectedImpl {
+                source: crate::sema::models::CandidateSource::ParamEnv,
+                ..
+            })
+        ) {
+            return SolverResult::Solved(vec![]);
+        }
         match self
             .gcx()
             .build_conformance_witness(goal, SelectionMode::Typecheck)
@@ -847,6 +834,12 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return None;
         };
 
+        // A generic/overloaded call may supply the nullable target later.
+        // Binding its type variable to NilVar would lose that concrete ABI.
+        if to.is_ty_var() {
+            return Some(SolverResult::Deferred);
+        }
+
         // Check if target is Optional[T]
         if let Some((args, _inner)) = self.unwrap_optional_type(to) {
             self.record_adjustments(
@@ -862,6 +855,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         // Check if target is pointer (nil -> null pointer)
         if let TyKind::Pointer(_, _) = to.kind() {
+            // Nil variables track validity rather than unifying with a target.
+            // Preserve the selected pointer type for THIR/MIR lowering.
+            self.record_adjustments(node_id, vec![Adjustment::NullPointer { to }]);
             self.icx.mark_nil_var_bound(nil_id);
             return Some(SolverResult::Solved(vec![]));
         }
@@ -898,23 +894,47 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return None;
         }
 
-        self.record_adjustments(
-            node_id,
-            vec![Adjustment::OptionalWrap {
-                is_some: true,
-                generic_args: args,
-            }],
-        );
-
-        // Recursively coerce inner: from -> inner_ty
-        Some(SolverResult::Solved(vec![super::Obligation {
-            location,
-            goal: super::Goal::Coerce {
+        // Resolve the payload coercion before appending the wrapper. In
+        // particular, a class upcast or existential box must operate on T,
+        // never on the completed Optional/Result enum.
+        let result = self.solve_coerce(location, node_id, from, inner_ty);
+        if matches!(result, SolverResult::Solved(_)) {
+            self.append_adjustments(
                 node_id,
-                from,
-                to: inner_ty,
-            },
-        }]))
+                vec![Adjustment::OptionalWrap {
+                    is_some: true,
+                    generic_args: args,
+                }],
+            );
+        }
+        Some(result)
+    }
+
+    fn solve_result_success_wrapping(
+        &mut self,
+        location: Span,
+        node_id: NodeID,
+        from: Ty<'ctx>,
+        to: Ty<'ctx>,
+    ) -> Option<SolverResult<'ctx>> {
+        let (success, _) = self.gcx().result_parts(to)?;
+        if self.gcx().result_parts(from).is_some() || self.gcx().result_parts(success).is_some() {
+            return None;
+        }
+        // An unknown producer may itself return a Result. Keep ordinary
+        // equality inference (as for Optional) instead of forcing its payload
+        // type or blocking contextual generic calls such as identity(.err(e)).
+        if matches!(from.kind(), TyKind::Infer(InferTy::TyVar(_))) {
+            return None;
+        }
+        let TyKind::Adt(_, generic_args) = to.kind() else {
+            unreachable!()
+        };
+        let result = self.solve_coerce(location, node_id, from, success);
+        if matches!(result, SolverResult::Solved(_)) {
+            self.append_adjustments(node_id, vec![Adjustment::ResultOkWrap { generic_args }]);
+        }
+        Some(result)
     }
 
     /// Check if ty is Optional[T] and return (generic_args, inner_ty)
@@ -933,75 +953,18 @@ impl<'ctx> ConstraintSolver<'ctx> {
         Some((args, inner))
     }
 
-    /// Check if a closure type conforms to one of the callable interfaces.
-    fn solve_closure_fn_conformance(
+    /// Constrain the safe callable signature against Fn/AsyncFn arguments.
+    fn solve_callable_fn_conformance(
         &mut self,
         location: Span,
         ty: Ty<'ctx>,
         interface: InterfaceReference<'ctx>,
     ) -> Option<SolverResult<'ctx>> {
-        use crate::hir::StdItem;
-
-        // Check if ty is a closure
-        let TyKind::Closure {
-            kind,
-            inputs: closure_inputs,
-            output: closure_output,
-            ..
-        } = ty.kind()
-        else {
-            return None;
-        };
+        let (kind, closure_inputs, closure_output) = crate::sema::models::callable_signature(ty)?;
 
         let gcx = self.gcx();
 
-        let fn_def = gcx.std_item_def(StdItem::Fn);
-        let fn_mut_def = gcx.std_item_def(StdItem::FnMut);
-        let fn_once_def = gcx.std_item_def(StdItem::FnOnce);
-        let async_fn_def = gcx.std_item_def(StdItem::AsyncFn);
-        let async_fn_mut_def = gcx.std_item_def(StdItem::AsyncFnMut);
-        let async_fn_once_def = gcx.std_item_def(StdItem::AsyncFnOnce);
-        if fn_def != Some(interface.id)
-            && fn_mut_def != Some(interface.id)
-            && fn_once_def != Some(interface.id)
-            && async_fn_def != Some(interface.id)
-            && async_fn_mut_def != Some(interface.id)
-            && async_fn_once_def != Some(interface.id)
-        {
-            return None;
-        }
-        let allowed = if fn_def == Some(interface.id) {
-            matches!(kind, crate::sema::models::ClosureKind::Fn)
-        } else if fn_mut_def == Some(interface.id) {
-            matches!(
-                kind,
-                crate::sema::models::ClosureKind::Fn | crate::sema::models::ClosureKind::FnMut
-            )
-        } else if fn_once_def == Some(interface.id) {
-            matches!(
-                kind,
-                crate::sema::models::ClosureKind::Fn
-                    | crate::sema::models::ClosureKind::FnMut
-                    | crate::sema::models::ClosureKind::FnOnce
-            )
-        } else if async_fn_def == Some(interface.id) {
-            matches!(kind, crate::sema::models::ClosureKind::AsyncFn)
-        } else if async_fn_mut_def == Some(interface.id) {
-            matches!(
-                kind,
-                crate::sema::models::ClosureKind::AsyncFn
-                    | crate::sema::models::ClosureKind::AsyncFnMut
-            )
-        } else if async_fn_once_def == Some(interface.id) {
-            matches!(
-                kind,
-                crate::sema::models::ClosureKind::AsyncFn
-                    | crate::sema::models::ClosureKind::AsyncFnMut
-                    | crate::sema::models::ClosureKind::AsyncFnOnce
-            )
-        } else {
-            false
-        };
+        let allowed = crate::sema::models::callable_kind(gcx, interface.id) == Some(kind);
         if !allowed {
             return None;
         }
@@ -1017,7 +980,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         let closure_args_ty = crate::sema::models::callable_args_ty(gcx, closure_inputs);
 
-        self.register_closure_callable_adapter(ty);
+        self.register_callable_adapter(ty);
 
         // Create obligations to match Args and Output
         let mut obligations = vec![];
@@ -1035,22 +998,21 @@ impl<'ctx> ConstraintSolver<'ctx> {
         Some(SolverResult::Solved(obligations))
     }
 
-    /// Coerce a closure to a type that has callable bounds.
-    /// This extracts the callable bound and constrains the closure immediately.
-    fn solve_closure_to_fn_bound_param(
+    /// Constrain a concrete callable immediately against a generic callable bound.
+    fn solve_callable_to_fn_bound_param(
         &mut self,
         location: Span,
         from: Ty<'ctx>,
         to: Ty<'ctx>,
     ) -> Option<SolverResult<'ctx>> {
-        if !matches!(from.kind(), TyKind::Closure { .. }) {
+        if crate::sema::models::callable_signature(from).is_none() {
             return None;
         }
 
         // Generic call parameters have fresh inference variables at the call
         // site. Prove their callable bound using the same rules as boxing.
         for bound in self.param_env.bounds_for(to) {
-            if let Some(mut result) = self.solve_closure_fn_conformance(location, from, bound) {
+            if let Some(mut result) = self.solve_callable_fn_conformance(location, from, bound) {
                 if let SolverResult::Solved(obligations) = &mut result {
                     if to.is_infer() {
                         obligations.push(Obligation {
@@ -1065,13 +1027,13 @@ impl<'ctx> ConstraintSolver<'ctx> {
         None
     }
 
-    /// Register the concrete closure adapter while type checking still has a
+    /// Register the concrete callable adapter while type checking still has a
     /// chance to synthesize and serialize its THIR/MIR. Generic callable calls
     /// are specialized later, after THIR construction, which is too late to
-    /// create a missing `call`/`callMut`/`callOnce` body on demand.
-    fn register_closure_callable_adapter(&self, closure_ty: Ty<'ctx>) {
+    /// create a missing `call` body on demand.
+    fn register_callable_adapter(&self, closure_ty: Ty<'ctx>) {
         let gcx = self.gcx();
-        let Some(interface) = crate::sema::models::closure_interface_ref(gcx, closure_ty) else {
+        let Some(interface) = crate::sema::models::callable_interface_ref(gcx, closure_ty) else {
             return;
         };
         // A closure may be erased inside generic code and then dynamically cast

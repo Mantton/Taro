@@ -1,0 +1,27 @@
+import dep::{Reader, Base}
+final class Derived: Base {}
+conform Derived to Reader { public override func read() async -> int32 { await std::testing::yieldNow(); 19 }; }
+conform Derived to dep::Duplicate {
+    public func duplicate() async -> Self { await std::testing::yieldNow(); Derived() }
+}
+func main() async {
+    var duplicate: any dep::Duplicate = dep::makeDuplicate()
+    var next: any dep::Duplicate = await dep::duplicateErased(&duplicate)
+    assert((await next.read()) == 8, "imported ready-Self erasure wrapper")
+    var reader: any Reader = dep::makeReader() // any Reader; private dependency-defined concrete value.
+    assert((await reader.read()) == 7, "imported certified async witness")
+    assert((await dep::inspectErased(&reader)) == 7, "imported generic async opening over private concrete type")
+    var getter: any dep::Getter = dep::makeGetter() // any Getter; private payload remains borrowed through completion.
+    var result: &int32 = await dep::projectErased(&getter)
+    assert(*result == 11, "imported async reference result")
+    var derived: Derived = Derived() // Derived; inherited public initializer.
+    var base: Base = derived // Base; copied strong handle, dynamic type Derived.
+    var erased: any Reader = base // any Reader; imported base conformance.
+    assert((await base.read()) == 19, "cross-package direct async override")
+    assert((await dep::run(&base)) == 19, "cross-package generic async override")
+    assert((await erased.read()) == 19, "cross-package erased async override")
+    assert((await dep::inspectErased(&erased)) == 19, "late client type closes imported generic async opening")
+    var late: any dep::Duplicate = Derived()
+    var copied: any dep::Duplicate = await dep::duplicateErased(&late)
+    assert((await copied.read()) == 19, "late client type closes imported async Self wrapper")
+}

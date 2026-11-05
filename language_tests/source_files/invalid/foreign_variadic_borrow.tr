@@ -1,0 +1,4 @@
+extern "C" {
+    func native(_ value: &int32, _ args: int32...)
+}
+func main() {}

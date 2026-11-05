@@ -1,0 +1,4 @@
+error: a struct declaring init must be constructed by calling its initializer
+ -> language_tests/source_files/invalid/value_init_literal_bypass.tr:3:25
+	func main() { counter := Counter { value: 2 } }
+	                         ^^^^^^^^^^^^^^^^^^^^

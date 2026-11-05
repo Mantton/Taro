@@ -1,26 +1,26 @@
 public interface Source {
-    func source(&self) -> int32
+    func source() -> int32
 }
 
 public interface Adapted {
     type Output
-    func adapted(&self) -> Self.Output
+    func adapted() -> Self::Output
 }
 
-impl[Value] Adapted for Value where Value: Source {
+conform[Value] Value to Adapted where Value: Source {
     type Output = int32
 
-    public func adapted(&self) -> Self.Output {
+    public func adapted() -> Self::Output {
         self.source() + 1
     }
 }
 
-public struct RemoteSource: Copy {
+public struct RemoteSource {
     value: int32
 }
 
-impl Source for RemoteSource {
-    func source(&self) -> int32 {
+conform RemoteSource to Source {
+    func source() -> int32 {
         self.value
     }
 }

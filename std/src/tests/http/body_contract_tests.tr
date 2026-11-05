@@ -1,0 +1,418 @@
+import std::http::{Body, BodySource, Client, Error, ErrorKind, Handler, Request, Response, Server, Options, Transport}
+import std::io::AsyncReader
+import std::mem::Span
+import std::result::Result
+
+func contractSpan(_ bytes: &[uint8; 8]) -> Span[uint8] {
+    unsafe { Span[uint8]::from((bytes as *mut [uint8; 8]) as *mut uint8, 8) }
+}
+
+final class TestBodySource {
+    text: string
+    offset: usize
+    closes: std::sync::atomic::Int32
+    reading: std::sync::atomic::Bool
+    delayed: bool
+}
+extend TestBodySource {
+    init(_ text: string, delayed: bool = false) {
+        self.text = text
+        self.offset = 0
+        self.closes = std::sync::atomic::Int32::new(0_i32)
+        self.reading = std::sync::atomic::Bool::new(false)
+        self.delayed = delayed
+    }
+}
+conform TestBodySource to BodySource {
+    public func read(_ into: Span[uint8]) async -> Result[usize, std::io::Error] {
+        self.reading.store(true)
+        if self.delayed { await std::task::sleep(std::time::Duration::fromMillis(25_u64)) }
+        remaining := self.text.byteLen() - self.offset
+        count := if remaining < into.len() { remaining } else { into.len() }
+        var index: usize = 0
+        while index < count { *into.at(index) = self.text.byteAt(self.offset + index); index += 1 }
+        self.offset += count
+        return .ok(count)
+    }
+    public func close() -> Result[(), std::io::Error] {
+        var _ = self.closes.add(1_i32)
+        return .ok(())
+    }
+}
+
+@test
+func httpBodyCopiesShareCursorAndCloseAndSnapshotMutableBuffers() async {
+    bytes := std::collections::List[uint8]::new(); bytes.append(65_u8); bytes.append(66_u8)
+    body := Body::fromBytes(bytes)
+    bytes[0] = 90_u8
+    alias := body
+    var buffer: [uint8; 8] = [0_u8; 8]
+    span := contractSpan(&buffer).slice(0, 1)
+    std::assert((await body.read(span)).unwrap() == 1 && buffer[0] == 65_u8, "buffer constructor snapshots mutable input")
+    std::runtime::collect()
+    std::assert((await alias.read(span)).unwrap() == 1 && buffer[0] == 66_u8, "copies share cursor")
+    std::assert((await body.read(span)).unwrap() == 0, "source EOF")
+    std::assert((await alias.read(span)).unwrap() == 0, "EOF remains stable")
+    body.close().unwrap(); alias.close().unwrap()
+}
+
+@test
+func httpBodyLimitsAndLengthFailuresReleaseProducerExactlyOnce() async {
+    source := TestBodySource("abcdef")
+    body := Body::fromSource(source)
+    std::assert((await body.readAll(maxBytes: 3)).isErr(), "unknown-length streams obey collection limits")
+    body.close().unwrap()
+    std::assert(source.closes.load() == 1_i32, "limit closes producer once")
+
+    short := TestBodySource("a")
+    mismatch := Body::fromSource(short, length: .some(2))
+    std::assert((await mismatch.readAll()).isErr(), "declared length is checked at EOF")
+    std::assert(short.closes.load() == 1_i32, "mismatch closes producer")
+
+    long := TestBodySource("abc")
+    overflow := Body::fromSource(long, length: .some(1))
+    std::assert((await overflow.readAll()).isErr(), "producer cannot exceed declared length")
+    std::assert(long.closes.load() == 1_i32, "overflow closes producer")
+}
+
+@test
+func httpBodyCloseDuringReadDefersProducerReleaseAndRejectsConcurrentReads() async {
+    source := TestBodySource("hello", delayed: true)
+    body := Body::fromSource(source)
+    reader := std::task::spawn(() async => {
+        var buffer: [uint8; 8] = [0_u8; 8]
+        return await body.read(contractSpan(&buffer))
+    })
+    while !source.reading.load() { await std::testing::yieldNow() }
+    var buffer: [uint8; 8] = [0_u8; 8]
+    std::assert((await body.read(contractSpan(&buffer))).isErr(), "one active read per body")
+    body.close().unwrap()
+    std::assert(source.closes.load() == 0_i32, "close does not race producer read")
+    std::assert((await reader.result()).unwrap().unwrap() == 5, "accepted read can complete")
+    std::assert(source.closes.load() == 1_i32, "pending close completes after read")
+    std::assert((await body.read(contractSpan(&buffer))).isErr(), "aliases remain closed")
+}
+
+@test
+func httpBodyCancellationClosesTheProducer() async {
+    source := TestBodySource("hello", delayed: true)
+    body := Body::fromSource(source)
+    reader := std::task::spawn(() async => {
+        var buffer: [uint8; 8] = [0_u8; 8]
+        var _ = await body.read(contractSpan(&buffer))
+    })
+    while !source.reading.load() { await std::testing::yieldNow() }
+    reader.cancel(); var _ = await reader.result()
+    std::assert(source.closes.load() == 1_i32 && body.isClosed(), "cancelled reader releases source")
+}
+
+struct ContractRouter {}
+conform ContractRouter to Handler {
+    public func handle(_ request: &Request) async -> Result[Response, Error] {
+        request.headers.add("x-router", "visited")!
+        if request.url == "/stream" {
+            var response = Response::new(200_u16)
+            response.body = Body::fromSource(TestBodySource("streamed"))
+            return .ok(response)
+        }
+        return .ok(Response::text(200_u16, request.url))
+    }
+}
+struct ContractMiddleware { next: any Handler }
+conform ContractMiddleware to Handler {
+    public func handle(_ request: &Request) async -> Result[Response, Error] {
+        var response = (await self.next.handle(request))!
+        response.headers.add("x-middleware", request.headers.get("x-router").unwrap())!
+        return .ok(response)
+    }
+}
+
+@test
+func httpHandlersComposeUsingOneRequestReferenceAndValueResponses() async {
+    router := ContractMiddleware { next: ContractRouter {} }
+    request := Request::new("GET", "/hello")
+    response := (await router.handle(&request)).unwrap()
+    std::runtime::collect()
+    std::assert(request.headers.get("x-router").unwrap() == "visited", "same request identity passes through middleware")
+    std::assert(response.headers.get("x-middleware").unwrap() == "visited", "response value can be edited by middleware")
+    std::assert((await response.body.readToString()).unwrap() == "/hello", "response body survives erased handler return")
+}
+
+func contractFunction(_ request: &Request) async -> Result[Response, Error] {
+    if request.url == "/panic" { std::panic::panic("handler panic must stay isolated") }
+    if request.url == "/error" { return .err(Error { kind: .transport, message: "private implementation detail" }) }
+    return .ok(Response::text(200_u16, "ok"))
+}
+
+@test
+func httpServeAcceptsFunctionsAndIsolatesApplicationErrorsAndPanics() async {
+    server := Server::bind(std::net::SocketAddress::localhost(0_u16)).unwrap()
+    running := std::task::spawn(() async => { return await server.serve(contractFunction) })
+    client := Client::new().unwrap()
+    defer { client.close(); var _ = server.close() }
+    address := std::sprintf("http://127.0.0.1:%d", server.localAddress().unwrap().port)
+    error := (await client.get(address.concat("/error"))).unwrap()
+    std::assert(error.status == 500_u16 && (await error.body.readToString()).unwrap() == "Internal Server Error", "handler failure does not disclose details")
+    std::assert((await client.get(address.concat("/panic"))).isErr(), "panic closes only the active exchange")
+    response := (await client.get(address.concat("/ok"))).unwrap()
+    std::assert(response.status == 200_u16, "server remains available after panic")
+    response.close().unwrap()
+    server.close().unwrap()
+    (await running.result()).unwrap().unwrap()
+}
+
+@test
+func httpServeStreamsUnknownLengthBodiesThroughMiddleware() async {
+    server := Server::bind(std::net::SocketAddress::localhost(0_u16)).unwrap()
+    router := ContractMiddleware { next: ContractRouter {} }
+    running := std::task::spawn(() async => { return await server.serve(router) })
+    client := Client::new().unwrap()
+    defer { client.close(); var _ = server.close() }
+    address := std::sprintf("http://127.0.0.1:%d/stream", server.localAddress().unwrap().port)
+    response := (await client.get(address)).unwrap()
+    std::runtime::collect()
+    std::assert((await response.body.readToString()).unwrap() == "streamed", "unknown-length response uses valid chunk framing")
+    std::assert(response.headers.get("x-middleware").unwrap() == "visited", "shared middleware contract")
+    server.close().unwrap()
+    (await running.result()).unwrap().unwrap()
+}
+
+struct TestTransport {}
+conform TestTransport to std::http::Transport {
+    public func roundTrip(_ request: &Request) async -> Result[Response, Error] { return .ok(Response::text(200_u16, request.url)) }
+}
+@test
+func httpTransportContractSupportsIndependentImplementations() async {
+    var transport: any std::http::Transport = TestTransport {}
+    request := Request::new("GET", "test://fixture")
+    response := (await transport.roundTrip(&request)).unwrap()
+    std::assert((await response.body.readToString()).unwrap() == "test://fixture", "test transports share request/response types")
+}
+
+func contractSyncFunction(_ request: &Request) -> Result[Response, Error] {
+    return .ok(Response::text(200_u16, request.url))
+}
+@test
+func httpSyncFunctionsAdaptToTheSameHandlerContract() async {
+    adapter := std::http::syncHandler(contractSyncFunction)
+    request := Request::new("GET", "/sync")
+    response := (await adapter.handle(&request)).unwrap()
+    std::assert((await response.body.readToString()).unwrap() == "/sync", "ordinary handlers share the async serving loop")
+}
+
+final class GateHandler {
+    entered: std::sync::atomic::Int32
+    active: std::sync::atomic::Int32
+    exceeded: std::sync::atomic::Bool
+    release: std::sync::atomic::Bool
+    exited: std::sync::atomic::Bool
+    saved: std::optional::Optional[&Request]
+}
+extend GateHandler {
+    init() {
+        self.entered = std::sync::atomic::Int32::new(0_i32)
+        self.active = std::sync::atomic::Int32::new(0_i32)
+        self.exceeded = std::sync::atomic::Bool::new(false)
+        self.release = std::sync::atomic::Bool::new(false)
+        self.exited = std::sync::atomic::Bool::new(false)
+        self.saved = .none
+    }
+}
+conform GateHandler to Handler {
+    public func handle(_ request: &Request) async -> Result[Response, Error] {
+        if self.active.add(1_i32) > 1_i32 { self.exceeded.store(true) }
+        var _ = self.entered.add(1_i32)
+        self.saved = .some(request)
+        defer { var _ = self.active.add(-1_i32); self.exited.store(true) }
+        while !self.release.load() { await std::task::sleep(std::time::Duration::fromMillis(1_u64)) }
+        return .ok(Response::text(200_u16, "released"))
+    }
+}
+
+@test
+func httpServeBoundsConcurrentHandlersAndDrainsOnClose() async {
+    var options = Options::new(); options.maxConnections = .some(1 as usize); options.keepAlive = false
+    server := Server::bindWithOptions(std::net::SocketAddress::localhost(0_u16), options).unwrap()
+    gate := GateHandler()
+    finished := std::sync::atomic::Bool::new(false)
+    running := std::task::spawn(() async => {
+        result := await server.serve(gate)
+        (&finished).store(true)
+        return result
+    })
+    client := Client::new().unwrap()
+    defer { client.close(); var _ = server.close() }
+    address := std::sprintf("http://127.0.0.1:%d/gate", server.localAddress().unwrap().port)
+    first := std::task::spawn(() async => { return await client.get(address) })
+    while gate.entered.load() == 0_i32 { await std::testing::yieldNow() }
+    second := std::task::spawn(() async => { return await client.get(address) })
+    await std::task::sleep(std::time::Duration::fromMillis(10_u64))
+    std::assert(gate.entered.load() == 1_i32, "connection cap prevents concurrent handlers")
+    gate.release.store(true)
+    (await first.result()).unwrap().unwrap().close().unwrap()
+    (await second.result()).unwrap().unwrap().close().unwrap()
+    std::assert(!gate.exceeded.load(), "handler concurrency stayed bounded")
+    server.close().unwrap()
+    (await running.result()).unwrap().unwrap()
+    std::runtime::collect()
+    std::assert((&finished).load() && gate.saved.unwrap().url == "/gate", "retained metadata survives exchange completion")
+    std::assert(gate.saved.unwrap().body.isClosed(), "server releases retained request bodies")
+}
+
+@test
+func httpCancellingServeCancelsAndDrainsHandlers() async {
+    server := Server::bind(std::net::SocketAddress::localhost(0_u16)).unwrap()
+    gate := GateHandler()
+    running := std::task::spawn(() async => { return await server.serve(gate) })
+    client := Client::new().unwrap()
+    defer { client.close(); var _ = server.close() }
+    address := std::sprintf("http://127.0.0.1:%d/cancel", server.localAddress().unwrap().port)
+    request := std::task::spawn(() async => { return await client.get(address) })
+    while gate.entered.load() == 0_i32 { await std::testing::yieldNow() }
+    running.cancel(); var _ = await running.result()
+    std::assert(gate.exited.load(), "serve cancellation drains the handler child")
+    std::assert((await request.result()).unwrap().isErr(), "cancelled exchange closes the socket")
+    std::assert(gate.saved.unwrap().body.isClosed(), "cancelled exchange closes body aliases")
+}
+
+@test
+func httpClientCustomTransportSharesCloseStateAndClosesRequestBodies() async {
+    client := Client::withTransport(TestTransport {})
+    alias := client
+    request := Request::new("GET", "test://custom")
+    response := (await client.send(&request)).unwrap()
+    std::assert((await response.body.readToString()).unwrap() == "test://custom", "client delegates through public transport")
+    std::assert(request.body.isClosed(), "client closes the original request body")
+    client.close()
+    other := Request::new("GET", "test://closed")
+    match await alias.send(&other) {
+        case .err(error) => std::assert(error.kind == ErrorKind::closed, "copies share close state")
+        case .ok(_) => std::testing::fail("closed custom client accepted a request")
+    }
+    std::assert(other.body.isClosed(), "rejected sends close supplied bodies too")
+}
+
+struct LargeStreamHandler { source: TestBodySource }
+conform LargeStreamHandler to Handler {
+    public func handle(_ request: &Request) async -> Result[Response, Error] {
+        var response = Response::new(200_u16)
+        response.body = Body::fromSource(self.source)
+        return .ok(response)
+    }
+}
+@test
+func httpMultiChunkBodiesPreserveAllBytesAndReleaseSources() async {
+    builder := std::string::Builder::new()
+    var index: int32 = 0
+    while index < 1025 { builder.writeString("0123456789abcdef"); index += 1 }
+    text := builder.toString()
+    source := TestBodySource(text)
+    server := Server::bind(std::net::SocketAddress::localhost(0_u16)).unwrap()
+    running := std::task::spawn(() async => { return await server.serve(LargeStreamHandler { source }) })
+    client := Client::new().unwrap()
+    defer { client.close(); var _ = server.close() }
+    response := (await client.get(std::sprintf("http://127.0.0.1:%d/large", server.localAddress().unwrap().port))).unwrap()
+    std::runtime::collect()
+    std::assert((await response.body.readToString()).unwrap() == text, "multiple full and partial chunks retain exact content")
+    server.close().unwrap()
+    (await running.result()).unwrap().unwrap()
+    std::assert(source.closes.load() == 1_i32, "server releases the stream producer once")
+}
+
+@test
+func httpNoContentStatusesNeverPollBodyProducers() async {
+    server := Server::bind(std::net::SocketAddress::localhost(0_u16)).unwrap()
+    unknown := TestBodySource("", delayed: true)
+    known := TestBodySource("", delayed: true)
+    worker := std::task::spawn(() async => {
+        first := (await server.accept()).unwrap()
+        defer { first.close() }
+        var _ = (await first.request()).unwrap()
+        var invalid = Response::new(204_u16)
+        invalid.body = Body::fromSource(unknown)
+        std::assert((await first.respond(invalid)).isErr(), "204 requires an explicitly empty body")
+        second := (await server.accept()).unwrap()
+        defer { second.close() }
+        var _ = (await second.request()).unwrap()
+        var valid = Response::new(204_u16)
+        valid.body = Body::fromSource(known, length: .some(0))
+        (await second.respond(valid)).unwrap()
+    })
+    client := Client::new().unwrap()
+    defer { client.close(); var _ = server.close() }
+    url := std::sprintf("http://127.0.0.1:%d/empty", server.localAddress().unwrap().port)
+    std::assert((await client.get(url)).isErr(), "invalid body is rejected before headers")
+    response := (await client.get(url)).unwrap()
+    std::assert(response.status == 204_u16, "known-empty source is allowed")
+    response.close().unwrap()
+    (await worker.result()).unwrap()
+    std::assert(!unknown.reading.load() && !known.reading.load(), "no-content validation cannot perform unbounded producer I/O")
+    std::assert(unknown.closes.load() == 1_i32 && known.closes.load() == 1_i32, "sources are released exactly once")
+}
+
+final class BlockedBodySource {
+    closed: std::sync::atomic::Bool
+}
+extend BlockedBodySource {
+    init() { self.closed = std::sync::atomic::Bool::new(false) }
+}
+conform BlockedBodySource to BodySource {
+    public func read(_ into: Span[uint8]) async -> Result[usize, std::io::Error] {
+        await std::task::sleep(std::time::Duration::fromSeconds(10_u64))
+        return .ok(0)
+    }
+    public func close() -> Result[(), std::io::Error] {
+        self.closed.store(true)
+        return .ok(())
+    }
+}
+@test
+func httpClientDeadlineIncludesOutboundBodyCollection() async {
+    var options = Options::new(); options.timeoutMillis = 5_u64
+    client := Client::withOptions(options).unwrap()
+    defer { client.close() }
+    source := BlockedBodySource()
+    server := Server::bind(std::net::SocketAddress::localhost(0_u16)).unwrap()
+    defer { var _ = server.close() }
+    var request = Request::new("POST", httpUrl(server, "/producer"))
+    request.body = Body::fromSource(source)
+    match await client.send(&request) {
+        case .err(error) => std::assert(error.kind == ErrorKind::timeout, "producer collection is inside the request deadline")
+        case .ok(_) => std::testing::fail("blocked producer completed")
+    }
+    std::assert(source.closed.load() && request.body.isClosed(), "deadline drains producer cleanup")
+}
+
+
+final class ReplacingBodyHandler {
+    incoming: Body?
+    replacement: TestBodySource
+}
+extend ReplacingBodyHandler {
+    init() {
+        self.incoming = .none
+        self.replacement = TestBodySource("replacement")
+    }
+}
+conform ReplacingBodyHandler to Handler {
+    public func handle(_ request: &Request) async -> Result[Response, Error] {
+        self.incoming = .some(request.body)
+        request.body = Body::fromSource(self.replacement)
+        return .err(Error { kind: .transport, message: "replacement cleanup" })
+    }
+}
+@test
+func httpServeReleasesOriginalAndReplacedRequestBodies() async {
+    server := Server::bind(std::net::SocketAddress::localhost(0_u16)).unwrap()
+    handler := ReplacingBodyHandler()
+    running := std::task::spawn(() async => { return await server.serve(handler) })
+    client := Client::new().unwrap()
+    defer { client.close(); var _ = server.close() }
+    response := (await client.get(std::sprintf("http://127.0.0.1:%d/replace", server.localAddress().unwrap().port))).unwrap()
+    std::assert(response.status == 500_u16, "handler error uses normal cleanup")
+    response.close().unwrap()
+    server.close().unwrap()
+    (await running.result()).unwrap().unwrap()
+    std::assert(handler.incoming.unwrap().isClosed(), "replacing mutable request.body does not lose the incoming stream")
+    std::assert(handler.replacement.closes.load() == 1_i32, "replacement producer is closed once too")
+}

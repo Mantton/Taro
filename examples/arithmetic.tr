@@ -18,11 +18,11 @@ func divide(a: int32, b: int32) -> int32 {
 }
 
 func main() {
-    let x = 10
-    let y = 5
+    x := 10
+    y := 5
 
-    let sum = add(a: x, b: y)
-    let diff = subtract(a: x, b: y)
-    let product = multiply(a: x, b: y)
-    let quotient = divide(a: x, b: y)
+    sum := add(a: x, b: y)
+    diff := subtract(a: x, b: y)
+    product := multiply(a: x, b: y)
+    quotient := divide(a: x, b: y)
 }

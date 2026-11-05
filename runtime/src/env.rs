@@ -3,6 +3,11 @@
 //! Unix environment strings are arbitrary non-NUL bytes, while Rust's most
 //! convenient environment APIs are text-oriented. This module keeps the ABI
 //! byte-preserving and owns every value returned across the runtime boundary.
+//!
+//! Native ABI review: wire strings are copied, and caller output-slot addresses
+//! are never retained. Snapshot accessors lend their own bytes until close;
+//! malloc-backed path/value results instead require owned_bytes_free. These
+//! distinct raw contracts do not create safe borrowed Taro results.
 
 use crate::panic_unwind::RtString;
 use std::ffi::{CStr, OsString};

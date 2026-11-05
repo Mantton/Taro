@@ -1,0 +1,58 @@
+struct Trace { order: int32 }
+struct Payload { text: string }
+extend Payload {
+    func unwrap() -> string { self.text }
+}
+func step(_ trace: &Trace, _ value: int32) async -> int32 {
+    trace.order = trace.order * 10 + value
+    await std::task::yieldNow()
+    return value
+}
+func fetch(_ value: int32) async -> Payload {
+    text := std::sprintf("value=%d", value)
+    await std::task::yieldNow()
+    return Payload { text }
+}
+func consume(_ value: int32) -> int32 { value * 2 }
+func checked(_ succeeds: bool) async -> Result[int32, string] {
+    await std::task::yieldNow()
+    if succeeds { return .ok(41) }
+    return .err("expected failure")
+}
+func propagate(_ succeeds: bool) async -> Result[int32, string] {
+    value := await checked(succeeds)!
+    return .ok(value + 1)
+}
+func truth(_ trace: &Trace) async -> bool {
+    trace.order += 1000
+    await std::task::yieldNow()
+    return true
+}
+func invoke[F: AsyncFn(int32) -> Payload](_ f: F) async -> string {
+    return await f(7).unwrap()
+}
+func makeTask() async -> std::task::Task[int32] {
+    task := std::task::spawn(() async => { return 42 as int32 })
+    await std::task::yieldNow()
+    return task
+}
+func main() async {
+    var trace = Trace { order: 0 }
+    sum := await consume(step(&trace, 1) + step(&trace, 2))
+    assert(sum == 6 && trace.order == 12, "calls suspend once in source order")
+    assert(await fetch(42).unwrap() == "value=42", "synchronous consumers see completed values")
+    kept := await fetch(8).unwrap()
+    assert(await fetch(9).unwrap() == "value=9" && kept == "value=8", "live values survive another suspension")
+    assert(await invoke(fetch) == "value=7", "generic async callable chains")
+    assert(await propagate(true).unwrap() == 42, "postfix propagation succeeds")
+    assert(await propagate(false).isErr(), "postfix propagation retains errors")
+    assert((await false && truth(&trace)) == false, "short circuit skips the async call")
+    assert(trace.order == 12, "unselected async call did not run")
+    assert(await true || truth(&trace), "or also short circuits")
+    assert(trace.order == 12, "or did not run its async call")
+    assert(await step(&trace, await step(&trace, 3)) == 3, "nested markers")
+    assert(trace.order == 1233, "nested calls each run once")
+    task := await makeTask()
+    assert(await task.result().unwrap() == 42, "an async call may itself return a task handle")
+    println("PASS: expression-scoped await")
+}

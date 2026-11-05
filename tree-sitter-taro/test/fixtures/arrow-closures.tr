@@ -1,0 +1,10 @@
+func move(_ value: int32) -> int32 { return value }
+func arrows() {
+    increment := (value: int32) => value + 1
+    zero := () => 42
+    block := (value) => { return value }
+    owned := () => 42
+    pending := () async -> int32 => { return 42 }
+    call := move(3)
+    tuple := (1, 2)
+}

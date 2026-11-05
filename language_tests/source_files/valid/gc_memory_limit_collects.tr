@@ -1,0 +1,24 @@
+// ENV: TARO_GC_PERCENT=off TARO_GC_MEMORY_LIMIT=16MiB TARO_WORKERS=1
+// With pacing off, the soft memory limit alone triggers collection before the
+// heap grows past it, so churning far more garbage than the limit succeeds (G58a).
+extern "C" {
+    unsafe func __gc__test_collection_count() -> usize
+}
+func churn() -> usize {
+    var kept = 0 as usize
+    var round = 0
+    while round < 256 {
+        var bytes: [uint8] = []
+        bytes.reserve(1 << 20)
+        bytes.append(1)
+        kept += bytes.len()
+        round += 1
+    }
+    kept
+}
+func main() {
+    before := unsafe { __gc__test_collection_count() }
+    std::testing::assertEqual(churn(), 256 as usize, "every round allocated")
+    assert(unsafe { __gc__test_collection_count() } > before, "the memory limit triggered collection")
+    print("PASS: the soft memory limit triggers collection\n")
+}

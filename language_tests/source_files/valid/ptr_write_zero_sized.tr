@@ -1,0 +1,9 @@
+// Writing a zero-sized value through a raw pointer stores nothing and must
+// not require an LLVM value for the operand.
+func main() {
+    var unit: () = ()
+    slot := unsafe { &unit as *mut () }
+    unsafe { slot.write(()) }
+    var _: () = unit
+    print("PASS: zero-sized pointer write\n")
+}

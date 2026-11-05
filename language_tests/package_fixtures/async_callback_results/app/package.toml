@@ -1,0 +1,6 @@
+[package]
+name = "github.com/example/async-callback-results-app"
+kind = "executable"
+
+[require]
+"github.com/example/async-callback-results-dep" = { path = "../dep", alias = "dep" }

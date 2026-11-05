@@ -1,0 +1,9 @@
+// VET
+@NoCopy
+struct State { value: int32 }
+func reference(_ state: &State) -> &State { state }
+func main() {
+    var state = State { value: 1 }
+    copied := *reference(&state)
+    var _ = &copied
+}

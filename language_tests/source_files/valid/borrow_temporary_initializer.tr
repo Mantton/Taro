@@ -1,0 +1,22 @@
+struct Record { value: int32 }
+
+extend Record {
+    func get() -> &int32 { &self.value }
+}
+
+type IntRef = &int32
+func alias(_ input: &int32) -> IntRef { input }
+
+func main() {
+    var first: &int32 = Record { value: 7 }.get()
+    var second: &int32 = if true {
+        Record { value: 9 }.get()
+    } else {
+        Record { value: 11 }.get()
+    }
+    var third: &int32 = { Record { value: 13 }.get() }
+    var fourth: &int32 = &*alias(Record { value: 17 }.get())
+    assert(*fourth == 17, "aliases preserve the selected pointee owner")
+    assert(*first == 7 && *second == 9 && *third == 13, "selected owners survive their initializer")
+    print("temporary borrow owners ok\n")
+}

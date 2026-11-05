@@ -1,0 +1,4 @@
+error: expected Base, found Derived
+ -> language_tests/source_files/invalid/class_mutable_upcast.tr:4:41
+	func invalid(_ slot: &Derived) { replace(slot) }
+	                                         ^^^^

@@ -1,3 +1,12 @@
 [workspace]
 resolver = "2"
 members = ["compiler", "compiler-cli", "taro-bin", "runtime"]
+
+# Full debuginfo made target/debug grow past 12 GiB (each compiler test binary
+# links LLVM). Line tables keep file:line backtraces for workspace crates;
+# set `debug = true` locally when stepping through locals in a debugger.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

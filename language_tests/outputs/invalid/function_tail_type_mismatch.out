@@ -1,0 +1,4 @@
+error: expected int32, found bool
+ -> language_tests/source_files/invalid/function_tail_type_mismatch.tr:3:4
+	    value
+	    ^^^^^

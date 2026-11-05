@@ -1,0 +1,7 @@
+class Base { value: int32 }
+extend Base { subscript(index: usize) -> int32 { address { &self.value } } }
+class Child: Base {}
+extend Child { final override subscript(index: usize) -> int32 { get { 7 } } }
+class Grandchild: Child {}
+extend Grandchild { override subscript(index: usize) -> int32 { address { &self.value } } }
+func main() {}

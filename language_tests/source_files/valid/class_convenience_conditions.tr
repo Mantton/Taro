@@ -1,0 +1,32 @@
+class Base { value: int32 }
+extend Base {
+    init(_ value: int32) { self.value = value }
+    init(flag: bool) { self.value = 2 }
+    convenience init() { self.init(7) }
+    convenience init(text: string) { self.init(); self.value += 1 }
+}
+final class Automatic: Base { stamp: int32 = 11 }
+final class Complete: Base { stamp: int32 = 12 }
+extend Complete {
+    override init(_ value: int32) { super.init(value) }
+    override init(flag: bool) { super.init(flag: flag) }
+}
+final class Own: Base {}
+extend Own { convenience init() { self.init(99) } }
+class PrivateBase { value: int32 }
+extend PrivateBase {
+    private init(_ value: int32) { self.value = value }
+    convenience init() { self.init(23) }
+}
+final class PrivateChild: PrivateBase {}
+func main() {
+    var automatic: Automatic = Automatic()
+    var complete: Complete = Complete(text: "base")
+    var own: Own = Own()
+    var inherited: Own = Own(text: "base")
+    var hidden: PrivateChild = PrivateChild()
+    assert(automatic.value == 7 && automatic.stamp == 11, "automatic designated coverage")
+    assert(complete.value == 8 && complete.stamp == 12, "explicit complete designated coverage")
+    assert(own.value == 99 && inherited.value == 8, "convenience bodies delegate statically to other convenience bodies")
+    assert(hidden.value == 23, "private designated entry is available internally without exposing construction")
+}

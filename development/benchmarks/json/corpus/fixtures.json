@@ -1,0 +1,56 @@
+{
+  "repository": "https://github.com/ibireme/yyjson_benchmark",
+  "revision": "aeefe6a44f37fccf1f9d730766abab9ffea43c6b",
+  "license": "MIT",
+  "license_file": {
+    "name": "LICENSE",
+    "path": "LICENSE",
+    "bytes": 1084,
+    "sha256": "45e384d3d52c73cba3a64d6e6c25d47cd738cd8a55c30629e3201046eda62947",
+    "git_blob": "a09bff355348932f9a1bd8c2e7417afb1ec0c943"
+  },
+  "files": [
+    {
+      "name": "canada",
+      "path": "data/json/canada.json",
+      "bytes": 2251051,
+      "sha256": "f83b3b354030d5dd58740c68ac4fecef64cb730a0d12a90362a7f23077f50d78",
+      "git_blob": "04f63b405b2ad0826a19b6e7290b19227e7c772d"
+    },
+    {
+      "name": "citm_catalog",
+      "path": "data/json/citm_catalog.json",
+      "bytes": 1727204,
+      "sha256": "a73e7a883f6ea8de113dff59702975e60119b4b58d451d518a929f31c92e2059",
+      "git_blob": "245fdbbedf478e0094ce25ad8f771c2b9031320c"
+    },
+    {
+      "name": "gsoc-2018",
+      "path": "data/json/gsoc-2018.json",
+      "bytes": 3327831,
+      "sha256": "72f1ef4898d88049da856c2ab8f4ec3e2c968ce209b2bbfd16cef842eb2e185f",
+      "git_blob": "fe316970217a39af76a8703c346ef048da1dd5fa"
+    },
+    {
+      "name": "poet",
+      "path": "data/json/poet.json",
+      "bytes": 3512883,
+      "sha256": "2c2689a3b5df460f02e4dee2a36ac32cc27c43e2964fba7965eba3469bf617ec",
+      "git_blob": "25caf9c3bae9a890d559c92f61a70ab6e28f94e8"
+    },
+    {
+      "name": "fgo",
+      "path": "data/json/fgo.json",
+      "bytes": 48765043,
+      "sha256": "4d0153f122aa4f049888dce8162d38b677e0127e2be90ae3afd998813f44a738",
+      "git_blob": "2b788df02190ff74ae5dc2ac45b80128cdadc7ff"
+    },
+    {
+      "name": "otfcc",
+      "path": "data/json/otfcc.json",
+      "bytes": 66409302,
+      "sha256": "7cbdeac112ab424d7cc94c99f675b2b0b4b0315055437725cd47648426c831df",
+      "git_blob": "8157aacb7290a6e9dcaef4caddacb86b54dd4cec"
+    }
+  ]
+}

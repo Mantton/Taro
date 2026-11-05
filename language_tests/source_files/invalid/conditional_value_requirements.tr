@@ -1,0 +1,9 @@
+import std::marker::Clone
+
+struct Wrapper[T]: Clone { value: T }
+struct Plain { value: int32 }
+func needsClone[T: Clone](_ value: &T) {}
+func main() {
+    var plain: Wrapper[Plain] = Wrapper[Plain] { value: Plain { value: 2 } }
+    needsClone(&plain)
+}

@@ -34,6 +34,10 @@
   (member_expression
     (identifier) @function.call))
 
+(call_expression
+  (qualified_expression
+    (identifier) @function.call))
+
 ; Parameters
 (parameter
   label: (identifier) @variable.parameter)
@@ -54,13 +58,17 @@
 (member_expression
   (identifier) @property .)
 
+(enum_struct_field
+  name: (identifier) @property)
+(named_pattern_field
+  name: (identifier) @property)
+
 ; Enum variants
 (enum_variant
   name: (identifier) @constant)
 
 ; Self
 (self_expression) @variable.builtin
-"self" @variable.builtin
 
 ; Attributes
 (attribute
@@ -118,6 +126,7 @@
 "}" @punctuation.bracket
 "," @punctuation.delimiter
 ":" @punctuation.delimiter
+"::" @punctuation.delimiter
 "." @punctuation.delimiter
 
 ; Keywords — declarations
@@ -125,9 +134,12 @@
 "struct" @keyword
 "enum" @keyword
 "interface" @keyword
-"impl" @keyword
+"extend" @keyword
+"conform" @keyword
+"to" @keyword
 "type" @keyword
 "const" @keyword
+"readonly" @keyword
 "static" @keyword
 "namespace" @keyword
 "extern" @keyword
@@ -147,13 +159,20 @@
 "guard" @keyword.control
 
 ; Keywords — bindings
-"let" @keyword
 "var" @keyword
+":=" @operator
+"async" @keyword
+"await" @keyword
+"subscript" @keyword
+"get" @keyword
+"set" @keyword
+"address" @keyword
 "mut" @keyword
 
 ; Keywords — visibility
 "public" @keyword
 "private" @keyword
+"internal" @keyword
 "export" @keyword
 
 ; Keywords — other
@@ -180,3 +199,11 @@
 (compiler_directive
   (identifier) @keyword.directive)
 "#" @keyword.directive
+
+"class" @keyword
+"final" @keyword
+"override" @keyword
+
+"init" @keyword
+"required" @keyword
+"convenience" @keyword

@@ -1,0 +1,4 @@
+error: no field 'z' on type Point
+ -> language_tests/source_files/invalid/named_pattern_unknown_field.tr:4:31
+	    match point { case Point { z, .. } => {}; }
+	                               ^

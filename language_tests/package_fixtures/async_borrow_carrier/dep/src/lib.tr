@@ -1,0 +1,17 @@
+public func tick() async {}
+public func read(_ value: &int32) async -> int32 {
+    await tick()
+    *value
+}
+public func increment(_ value: &int32) async {
+    await tick()
+    *value += 1
+}
+public func project(_ value: &int32) async -> &int32 {
+    await tick()
+    value
+}
+public func exclusive(_ value: &int32) async -> &int32 {
+    await tick()
+    value
+}

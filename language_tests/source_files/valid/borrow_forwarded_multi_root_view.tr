@@ -1,0 +1,16 @@
+struct SelectionPair { left: &int32; right: &int32 }
+extend SelectionPair {
+    func keep( _ unused: &int32) -> SelectionPair { self }
+}
+func forward(_ selection: SelectionPair) -> SelectionPair { selection }
+func main() {
+    var left: int32 = 7
+    var right: int32 = 11
+    var unrelated: int32 = 13
+    var selection: SelectionPair = forward(SelectionPair { left: &left, right: &right })
+    var saved: SelectionPair = selection.keep(&unrelated)
+    assert(*saved.left == 7 && *saved.right == 11, "one formal input preserves both underlying owners")
+    left = 17
+    right = 19
+    assert(left == 17 && right == 19, "both loans end at their last dependent use")
+}

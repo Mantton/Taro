@@ -1,0 +1,86 @@
+struct Response { status: uint16, body: string }
+extend Response {
+    static func text(_ status: uint16, _ body: string) -> Response { Response { status, body } }
+}
+interface Read { func read() -> string; }
+struct Value { text: string }
+conform Value to Read {
+    func read() -> string { self.text }
+}
+class Base { value: int32 }
+extend Base {
+    init() { self.value = 7 }
+}
+class Child: Base {}
+extend Child {
+    override init() { super.init() }
+}
+enum Status { case ready }
+func response() -> Result[Response, string] { .text(200, "ok") }
+func integer() -> Result[int32, string] { 42 }
+func identity[T](_ value: T) -> T { value }
+func success[T, E](_ value: T) -> Result[T, E] { value }
+func pass(_ value: Result[int32, string]) -> Result[int32, string] { value }
+func select(_ flag: bool) -> Result[int32, string] {
+    if flag { 8 } else { .err("failure") }
+}
+func matched(_ flag: bool) -> Result[int32, string] {
+    match flag {
+        case true => 9
+        case false => .err("failure")
+    }
+}
+func sameTypes() -> Result[int32, int32] { 11 }
+func unit() -> Result[(), string] { () }
+func effect(_ counter: &int32) { *counter += 1 }
+func voidTail(_ counter: &int32) -> Result[(), string] { effect(counter) }
+func reference() -> Result[&int32, string] {
+    var value: int32 = 41
+    return &value
+}
+func boxed(_ value: Value) -> Result[(any Read)?, string] { value }
+func upcast(_ value: Child) -> Result[Base?, string] { value }
+func checked(_ succeeds: bool) async -> Result[int32, string] {
+    await std::task::yieldNow()
+    if succeeds { return 41 }
+    return .err("expected")
+}
+func propagated(_ succeeds: bool) async -> Result[int32, string] {
+    return await checked(succeeds)! + 1
+}
+func main() async {
+    assert(response().unwrap().status == 200, "contextual factory and integer inference")
+    assert(integer().unwrap() == 42, "tail success conversion")
+    var local: Result[int32, string] = 1
+    local = 2
+    assert(local.unwrap() == 2 && pass(3).unwrap() == 3, "locals, assignment and arguments")
+    var inferred: Result[int32, string] = identity(4 as int32)
+    assert(inferred.unwrap() == 4, "the producer determines its actual type")
+    var inferredFailure: Result[int32, string] = identity(.err("retained"))
+    var inferredSuccess: Result[int32, string] = identity(.ok(6))
+    assert(inferredFailure.isErr() && inferredSuccess.unwrap() == 6, "generic Result producers keep contextual inference")
+    assert(success[int32, string](5).unwrap() == 5, "generic success conversion")
+    assert(select(true).unwrap() == 8 && select(false).isErr(), "conditional branches")
+    assert(matched(true).unwrap() == 9 && matched(false).isErr(), "match branches")
+    assert(sameTypes().isOk(), "a bare value always means success")
+    var failed: Result[int32, string] = .err("retained")
+    assert(pass(failed).isErr(), "matching Results retain failure")
+    var nested: Result[Result[int32, string], bool] = .ok(.err("inner"))
+    assert(nested.unwrap().isErr(), "explicit nesting retains the inner error")
+    var status: Result[Status, string] = .ready
+    match status.unwrap() {
+        case .ready => {}
+    }
+    var counter: int32 = 0
+    assert(unit().isOk() && voidTail(&counter).isOk() && counter == 1, "unit and void expressions")
+    saved := reference().unwrap()
+    var source = Value { text: std::sprintf("saved=%d", 42) }
+    erased := boxed(source).unwrap().unwrap()
+    source.text = "changed"
+    parent := upcast(Child()).unwrap().unwrap()
+    await std::task::yieldNow()
+    assert(*saved == 41 && erased.read() == "saved=42" && parent.value == 7, "payload adjustments preserve roots and value snapshots")
+    assert(await propagated(true).unwrap() == 42, "scoped await plus propagation plus success conversion")
+    assert(await propagated(false).isErr(), "propagation returns failure without success wrapping")
+    println("PASS: contextual Result success conversion")
+}

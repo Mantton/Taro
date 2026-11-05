@@ -1,0 +1,44 @@
+public struct Record {
+    left: int32
+    right: int32
+}
+
+public struct Projector { chooseLeft: &bool }
+
+public func makeRecord() -> Record { Record { left: 7, right: 9 } }
+public func makeProjector(_ flag: &bool) -> Projector { Projector { chooseLeft: flag } }
+
+conform Projector to Fn[(&Record,), &int32] {
+    public func call( args: (&Record,)) -> &int32 {
+        if *self.chooseLeft { &args.0.left } else { &args.0.right }
+    }
+}
+
+extend &Record {
+    public func select[F: Fn[&Record, &int32]](_ f: F) -> &int32 { f(self) }
+}
+
+public struct Selection { value: &int32 }
+public struct ViewProjector { chooseLeft: &bool }
+
+public func makeViewProjector(_ flag: &bool) -> ViewProjector {
+    ViewProjector { chooseLeft: flag }
+}
+
+extend Selection {
+    public func read() -> int32 { *self.value }
+}
+
+conform ViewProjector to Fn[(&Record,), Selection] {
+    public func call( args: (&Record,)) -> Selection {
+        if *self.chooseLeft {
+            Selection { value: &args.0.left }
+        } else {
+            Selection { value: &args.0.right }
+        }
+    }
+}
+
+extend &Record {
+    public func selectView[F: Fn[&Record, Selection]](_ f: F) -> Selection { f(self) }
+}

@@ -1,0 +1,10 @@
+static var inits: int32 = 0
+public struct Resource[T] { readonly value: T; readonly size: usize = std::mem::sizeOf[T]() }
+extend[T] Resource[T] {
+    @noinline
+    public init(_ value: T) {
+        self.value = value
+        inits += 1
+    }
+}
+public func initCount() -> int32 { inits }

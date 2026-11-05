@@ -59,7 +59,8 @@ impl HirVisitor for Actor<'_> {
         context: hir::AssocContext,
     ) -> Self::Result {
         match &declaration.kind {
-            AssociatedDeclarationKind::Function(node) => {
+            AssociatedDeclarationKind::Function(node)
+            | AssociatedDeclarationKind::Initializer(node) => {
                 self.collect_function(declaration.id, node, hir::FunctionContext::Assoc(context))
             }
             AssociatedDeclarationKind::Type(node) => {

@@ -1,0 +1,18 @@
+struct Target { trace: int32; value: int32 }
+
+func destination(_ target: &Target) -> &int32 {
+    target.trace = target.trace * 10 + 2
+    &target.value
+}
+
+func source(_ target: &Target) -> int32 {
+    target.trace = target.trace * 10 + 1
+    7
+}
+
+func main() {
+    var target: Target = Target { trace: 0, value: 0 }
+    *destination(&target) = source(&target)
+    assert(target.trace == 12, "ordinary assignment fully evaluates RHS before resolving its destination")
+    assert(target.value == 7, "ordinary assignment installs the evaluated RHS")
+}

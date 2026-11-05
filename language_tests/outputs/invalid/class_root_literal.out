@@ -1,0 +1,4 @@
+error: a class must be constructed by calling its initializer
+ -> language_tests/source_files/invalid/class_root_literal.tr:2:39
+	func main() { var document: Document = Document { revision: 1 } }
+	                                       ^^^^^^^^^^^^^^^^^^^^^^^^

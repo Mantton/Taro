@@ -1,0 +1,53 @@
+func advance(_ index: &int32) -> int32? {
+    *index += 1
+    if *index <= 3 { return .some(*index) }
+    return .none
+}
+
+func produce(_ condition: bool) -> int32? {
+    if condition { return .some(1) }
+    return .none
+}
+
+func main() {
+    count := 5 // int32; inferred mutable local
+    count += 1
+    {
+        count := count + 1 // int32; a new binding, initialized from the outer count
+        assert(count == 7, "shorthand shadows after its initializer")
+    }
+    assert(count == 6, "inner shorthand does not retarget the outer binding")
+
+    var maybe: int32? = .some(10)
+    if var value = maybe && value > 0 {
+        value += 1
+        assert(value == 11, "optional var provides mutable owned storage")
+    } else { panic("expected value") }
+    assert(maybe.unwrap() == 10, "mutating the binding leaves a Copy source unchanged")
+
+    if var first = maybe && var second = maybe && first == second {
+        assert(first == 10, "later conditions see earlier bindings")
+    } else { panic("expected equal values") }
+
+    if case var .some(payload) = maybe && payload == 10 {
+        payload = 12
+        assert(payload == 12, "case var provides mutable storage")
+    } else { panic("expected payload") }
+
+    var index: int32 = 0
+    var total: int32 = 0
+    while var value = advance(&index) && value < 3 {
+        value += 10
+        total += value
+    }
+    assert(index == 3 && total == 23, "while var recreates the binding each iteration")
+
+    if var impossible = produce(true && false) {
+        panic("nested boolean arguments must be evaluated normally")
+    }
+
+    guard var remaining = maybe else { panic("expected guard success") }
+    remaining += 1
+    assert(remaining == 11, "guard var remains mutable after success")
+    print("binding surface\n")
+}

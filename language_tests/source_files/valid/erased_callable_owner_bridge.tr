@@ -1,0 +1,10 @@
+// Native ownership regression.
+// A witness bridge must remain unwindable even when its implementation returns
+// a constant. Caller-owned containers retain independent cleanup obligations
+// across subsequent erased calls; no allocation may destroy either owner twice.
+func main() {
+    var zero: any Fn() -> int32 = () => 42_i32
+    assert(zero() == 42_i32, "constant-result witness bridge")
+    var unary: any Fn(int32) -> int32 = (x: int32) => x * 2_i32
+    assert(unary(21_i32) == 42_i32, "the earlier erased owner must still exist")
+}

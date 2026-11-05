@@ -1,0 +1,12 @@
+// Intended to pass before S31 acceptance; extra V is not determined by Base.
+struct Box[T] { value: T }
+class Base[T] { value: T }
+extend[U] Base[Box[U]] {
+    init(_ value: Box[U]) { self.value = value }
+}
+final class Child[T, V]: Base[T] { extra: V? = .none }
+func main() {
+    var child: Child[Box[int32], bool] = Child[Box[int32], bool](Box[int32] { value: 7 })
+    assert(child.value.value == 7, "shaped inherited entry preserves unrelated class parameters")
+    assert(child.extra.isNone(), "extra class parameter default")
+}

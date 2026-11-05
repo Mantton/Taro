@@ -1,0 +1,32 @@
+// ENV: TARO_WORKERS=4
+// Conditional cleanup keeps the flag and backing slot across the first await,
+// but the slot does not yet contain a language value and must not be traced.
+enum State {
+    case empty
+    case active(string, std::task::Task[int32])
+}
+func check(_ index: int32) async {
+    var retained: State
+    await std::task::sleep(std::time::Duration::fromMillis(1))
+    var text: string = std::sprintf("pending enum %v", index)
+    var child: std::task::Task[int32] = std::task::spawn(() => 7_i32)
+    retained = .active(text, child)
+    await std::task::sleep(std::time::Duration::fromMillis(1))
+    match retained {
+        case .active(label, task) => {
+            assert(label == std::sprintf("pending enum %v", index), "initialized frame payload survives collection")
+            match await task.result() {
+                case .ok(value) => assert(value == 7_i32, "initialized native payload is transferred once")
+                case _ => panic("lost initialized native payload")
+            }
+        }
+        case .empty => panic("lost initialized frame case")
+    }
+}
+func main() async {
+    var index: int32 = 0
+    while index < 32 {
+        await check(index)
+        index += 1
+    }
+}

@@ -1,0 +1,17 @@
+static var left: int32 = readRight()
+static var right: int32 = readLeft()
+func readRight() -> int32 { right }
+func readLeft() -> int32 { left }
+func readCycle() { var result: int32 = left }
+func main() async {
+    first := std::task::spawn(() => readCycle())
+    match await first.result() {
+        case .err(.panicked(_)) => {}
+        case _ => panic("dependency cycle must fail")
+    }
+    second := std::task::spawn(() => readCycle())
+    match await second.result() {
+        case .err(.panicked(_)) => {}
+        case _ => panic("cycle leaves failed state")
+    }
+}

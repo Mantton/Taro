@@ -1,4 +1,4 @@
 func main() {
-    let positive = 2147483648
-    let negative = -2147483649
+    positive := 2147483648
+    negative := -2147483649
 }

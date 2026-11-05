@@ -1,0 +1,5 @@
+// PACKAGE: erased_owned_self_returns
+// Native ownership regression.
+// The library emits the concrete Self-result bridge; the app only sees its
+// interface container and must reconstruct its complete declared refinement.
+func main() {}

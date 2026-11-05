@@ -1,0 +1,30 @@
+import std::hash::{Hashable, Hasher}
+static var initialized: int32 = 0
+static var defaults: int32 = 0
+static var computed: int32 = 0
+func initialLabel() -> string { defaults += 1; "draft" }
+class Base { number: int32 }
+extend Base { init(_ number: int32) { initialized += 1; self.number = number }; }
+final class Record: Base, Clone, PartialEq, Hashable { label: string = initialLabel() }
+extend Record {
+    var ignored: int32 { get { computed += 1; 999 } }
+}
+func hashValue[T: Hashable](_ value: &T) -> uint64 {
+    var hasher: std::hash::DefaultHasher = std::hash::DefaultHasher::new()
+    value.hash(into: &hasher)
+    hasher.finish()
+}
+func main() {
+    var original: Record = Record(7) // Record; one strong handle.
+    var copied: Record = original // Record; aliases original object.
+    var cloned: Record = original.clone() // Record; owns a distinct object, all stored fields cloned.
+    assert(copied === original && cloned !== original, "Copy shares identity; Clone creates fresh storage")
+    assert(cloned == original, "structural equality includes inherited and local stored fields")
+    assert(hashValue(&cloned) == hashValue(&original), "synthesized hash agrees with structural equality")
+    assert(initialized == 1 && defaults == 1 && computed == 0, "Clone bypasses init/defaults and structural operations ignore computed properties")
+    cloned.number = 8
+    assert(original.number == 7 && cloned != original, "inherited field equality reads independent cloned storage")
+    cloned.number = 7
+    cloned.label = "published"
+    assert(original.label == "draft" && cloned != original, "local fields participate in equality")
+}

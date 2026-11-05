@@ -1,0 +1,8 @@
+error: field 'raw' of Sender[int64] is not visible here
+ -> language_tests/source_files/invalid/sync_forged_channel_type.tr:3:73
+	    var forged: std::sync::Sender[bool] = std::sync::Sender[bool] { raw: sender.raw }
+	                                                                         ^^^^^^^^^^
+error: field 'raw' of Sender[bool] is not visible here
+ -> language_tests/source_files/invalid/sync_forged_channel_type.tr:3:68
+	    var forged: std::sync::Sender[bool] = std::sync::Sender[bool] { raw: sender.raw }
+	                                                                    ^^^^

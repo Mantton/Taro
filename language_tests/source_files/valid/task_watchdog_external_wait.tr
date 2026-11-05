@@ -5,5 +5,5 @@
 // EXPECT_STDERR_NOT_CONTAINS: panic:
 
 func main() async {
-    await std.task.sleep(std.time.Duration.fromMillis(150_u64))
+    await std::task::sleep(std::time::Duration::fromMillis(150_u64))
 }

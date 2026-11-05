@@ -1,0 +1,36 @@
+class Document { revision: int32 = 1; readonly name: string }
+extend Document {
+    init(_ name: string) { self.name = name }
+    func increment( _ amount: int32) { self.revision += amount }
+    func count() -> int32 { self.revision }
+}
+struct Pair { left: int32; right: int32 }
+class Workspace { document: Document; pair: Pair; counts: List[int32] }
+extend Workspace {
+    init() {
+        self.document = Document("draft")
+        self.pair = Pair { left: 1, right: 2 }
+        self.counts = []
+    }
+}
+func increment(_ value: &int32) { *value += 1 }
+func main() {
+    var workspace: Workspace = Workspace()
+    var alias: Workspace = workspace
+    increment(&workspace.pair.left)
+    assert(alias.pair.left == 2, "nested inline field mutation uses object permission")
+    var left: &int32 = &workspace.pair.left
+    alias.pair.right += 1
+    *left += 1
+    assert(workspace.pair.right == 3, "separate inline fields have disjoint guards")
+    workspace.counts.append(alias.counts.len() as int32)
+    assert(workspace.counts[0] == 0, "reserved receiver permits a temporary alias read")
+    var document: Document = workspace.document
+    document.increment(document.count())
+    assert(workspace.document.revision == 2, "method receiver reservation activates after arguments")
+    var old: Document = workspace.document
+    var revision: &int32 = &old.revision
+    workspace.document = Document("new")
+    assert(*revision == 2, "copied strong handle decouples the old object from the replaced slot")
+    assert(workspace.document.name == "new", "replacement installs a new handle")
+}

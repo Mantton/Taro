@@ -1,0 +1,83 @@
+interface Readable[Key] { type Element; subscript(key: Key) -> Self::Element { get } }
+interface Storage[Key] { type Element; subscript(key: Key) -> Self::Element { address } }
+interface DefaultRead { subscript(index: usize) -> int32 { get { 41 } } }
+interface PointerStorage {
+    type Element
+    func pointer() -> &Self::Element;
+    subscript(index: usize) -> Self::Element { address { self.pointer() } }
+}
+interface MultipleIndices {
+    subscript(index: usize) -> int32 { get }
+    subscript(row: int32, column: int32) -> int32 { get }
+}
+struct Buffer[Value] { value: Value }
+conform[Value] &Buffer[Value] to Readable[usize] {
+    type Element = Value
+    subscript(index: usize) -> Value { address { &self.value } }
+}
+struct FullBuffer { value: int32 }
+conform &FullBuffer to Storage[usize] {
+    type Element = int32
+    subscript(index: usize) -> int32 { address { &self.value } }
+}
+conform &FullBuffer to PointerStorage {
+    type Element = int32
+    func pointer() -> &int32 { &self.value };
+}
+conform &FullBuffer to MultipleIndices {
+    subscript(index: usize) -> int32 { get { self.value } }
+    subscript(row: int32, column: int32) -> int32 { get { self.value + row + column } }
+}
+struct DefaultBuffer {}
+conform DefaultBuffer to DefaultRead {}
+func read[T: Readable[usize, Element = int32]](_ value: T) -> int32 { value[0 as usize] }
+func update[T: Storage[usize, Element = int32]](_ value: T) -> &int32 {
+    value[0 as usize] = 11
+    value[0 as usize] += 2
+    &value[0 as usize]
+}
+func pointerUpdate[T: PointerStorage[Element = int32]](_ value: T) { value[0 as usize] += 3 }
+class AdoptedBase { first: int32; second: int32 }
+extend AdoptedBase { init(_ first: int32, _ second: int32) { self.first = first; self.second = second } }
+conform AdoptedBase to PointerStorage { type Element = int32; func pointer() -> &int32 { &self.first }; }
+class AdoptedChild: AdoptedBase {}
+conform AdoptedChild to PointerStorage { override subscript(index: usize) -> int32 { address { &self.second } } }
+func main() {
+    var buffer = Buffer[int32] { value: 7 }
+    assert(read(&buffer) == 7, "generic getter")
+    var erased: any Readable[usize, Element = int32] = &buffer
+    assert(erased[0 as usize] == 7, "erased getter")
+    // The concrete conformance exposes its extra capabilities; Readable does not.
+    buffer[0 as usize] = 8
+    reference := &buffer[0 as usize]
+    *reference = 9
+    assert(buffer.value == 9 && erased[0 as usize] == 9, "concrete capability superset")
+    var stringBuffer = Buffer[string] { value: "before" }
+    stringBuffer[0 as usize] = "after"
+    assert(stringBuffer[0 as usize] == "after", "generic conformance argument substitution")
+    var full = FullBuffer { value: 10 }
+    retained := update(&full)
+    assert(full.value == 13, "generic setter and address")
+    var erasedFull: any Storage[usize, Element = int32] = &full
+    erasedFull[0 as usize] = 17
+    erasedFull[0 as usize] += 2
+    other := &erasedFull[0 as usize]
+    std::runtime::collect()
+    *other += 1
+    assert(*retained == 20, "erased address retains concrete storage")
+    pointerUpdate(&full)
+    var defaultStorage: any PointerStorage[Element = int32] = &full
+    defaultStorage[0 as usize] = 29
+    assert(full.value == 29, "default getter/setter/address witness chain")
+    var multiple: any MultipleIndices = &full
+    assert(multiple[0 as usize] == 29 && multiple[2 as int32, 3 as int32] == 34, "overloaded native requirements")
+    var defaultRead: any DefaultRead = DefaultBuffer {}
+    assert(defaultRead[0 as usize] == 41, "explicit default getter")
+    adopted := AdoptedChild(47, 53)
+    var adoptedBase: AdoptedBase = adopted
+    assert(adoptedBase[0 as usize] == 53, "adopted default getter follows overridden native address")
+    var adoptedErased: any PointerStorage[Element = int32] = adopted
+    adoptedErased[0 as usize] = 59
+    assert(adopted.first == 47 && adopted.second == 59, "partial native conformance keeps inherited default families")
+
+}

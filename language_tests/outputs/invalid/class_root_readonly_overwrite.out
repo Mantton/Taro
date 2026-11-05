@@ -1,0 +1,4 @@
+error: a readonly field can only be initialized once
+ -> language_tests/source_files/invalid/class_root_readonly_overwrite.tr:2:27
+	extend Document { init() { self.revision = 2 } }
+	                           ^^^^^^^^^^^^^^^^^

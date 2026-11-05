@@ -1,0 +1,4 @@
+error: this access requires a subscript address accessor; get/set does not provide element storage
+ -> language_tests/source_files/invalid/native_subscript_operator_reference.tr:15:4
+	    buffer[0 as usize] += 1_i32
+	    ^^^^^^^^^^^^^^^^^^

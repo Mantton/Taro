@@ -1,0 +1,29 @@
+import std::iter::{Lazy, Iterable, fromIterator}
+func retainedSource() -> Lazy[int32, List[int32]] {
+    var source: List[int32] = [1, 2, 3]
+    source.lazy()
+}
+func retainedReferences() -> List[&int32] {
+    var target: int32 = 42
+    var source: List[int32] = [1, 2]
+    source.lazy().map((item: int32) => &target).collect()
+}
+func main() {
+    var calls: int32 = 0
+    pipeline := retainedSource().filter((value: int32) => value > 1).map((value: int32) => {
+        calls += 1
+        var noise: List[string] = ["callback", "allocation"]
+        value + noise.len() as int32
+    })
+    first := pipeline.collect()
+    second := pipeline.collect()
+    assert(calls == 4 && first[0] == 4 && second[1] == 5, "live pipeline survives repeated GC traversal")
+    refs := retainedReferences()
+    for i in 0_i32..100_i32 { var noise: List[int32] = [i, i + 1] }
+    assert(*refs[0] == 42 && *refs[1] == 42, "reference results keep captured local storage alive")
+    *refs[0] = 7
+    assert(*refs[1] == 7, "mapped references preserve alias identity")
+    cursor := first.iter()
+    single := fromIterator(cursor).lazy()
+    assert(single.collect().len() == 2 && single.collect().isEmpty(), "single pass source stays single pass")
+}

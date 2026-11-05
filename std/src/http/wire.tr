@@ -1,0 +1,309 @@
+import std::bytes::Buffer
+import std::io::{AsyncReader, Reader, Writer}
+import std::mem::Span
+import std::result::Result
+
+const HEAD_SPIN_ATTEMPTS: int32 = 48
+// Most requests fit the first read. Larger ones earn larger reads as they fill them.
+const MIN_READ_BYTES: usize = 512
+const MAX_READ_BYTES: usize = 4096
+
+// One cursor per connection. Head parsing reads only bounded chunks and leaves
+// over-read body/pipeline bytes here. The active body exclusively owns reads.
+final class WireInput {
+    stream: WireStream
+    buffer: Buffer
+    incoming: IncomingBody?
+    // Whether the last parsed request asked to close the connection after it.
+    closeRequested: bool
+    // Waits to skip before busy-waiting again, and how many the last miss earned.
+    spinSkips: uint8
+    spinBackoff: uint8
+    readBytes: usize
+}
+extend WireInput {
+    init(_ stream: WireStream) {
+        self.stream = stream
+        self.buffer = Buffer::new()
+        self.incoming = .none
+        self.closeRequested = false
+        self.spinSkips = 0_u8
+        self.spinBackoff = 0_u8
+        self.readBytes = MIN_READ_BYTES
+    }
+    // The next head if it arrives within about the time it takes the reactor to
+    // report it, sparing a registration and a thread wake. Other runnable work gets
+    // the worker between attempts. A peer too slow for this soon stops being tried,
+    // and so do workers the scheduler doesn't currently need awake.
+    func spinForHead(_ maximum: usize) async -> Result[Span[uint8]?, Error] {
+        if !unsafe { __rt__task_may_spin() } { return .ok(.none) }
+        if self.spinSkips != 0_u8 {
+            self.spinSkips -= 1_u8
+            return .ok(.none)
+        }
+        var attempts = 0
+        while attempts < HEAD_SPIN_ATTEMPTS {
+            if unsafe { __rt__task_should_stop_spinning() } { await std::task::yieldNow() }
+            match self.availableHead(maximum) {
+                case .ok(.some(bytes)) => {
+                    self.spinBackoff = 0_u8
+                    return .ok(.some(bytes))
+                }
+                case .ok(.none) => {}
+                case .err(error) => return .err(error)
+            }
+            attempts += 1
+        }
+        self.spinBackoff = if self.spinBackoff >= 31_u8 { 63_u8 } else { self.spinBackoff * 2_u8 + 1_u8 }
+        self.spinSkips = self.spinBackoff
+        return .ok(.none)
+    }
+    // Room at the end of the buffer for a socket read to fill directly. This is the
+    // connection's exclusive cursor, so nothing moves it until `commit`.
+    func spare(_ budget: usize) -> Result[Span[uint8], Error] {
+        count := if budget < self.readBytes { budget } else { self.readBytes }
+        match self.buffer.spare(count) {
+            case .ok(span) => return .ok(span)
+            case .err(error) => return .err(ioFailure(error))
+        }
+    }
+    func commit(_ size: usize) -> Result[(), Error] {
+        if size == 0 { return .err(failure(.protocol, "unexpected EOF in HTTP framing")) }
+        self.buffer.commitSpare(size)
+        if size == self.readBytes && size < MAX_READ_BYTES { self.readBytes *= 2 }
+        return .ok(())
+    }
+    func fill(_ budget: usize) async -> Result[(), Error] {
+        if budget == 0 { return .err(failure(.limit, "HTTP framing exceeds configured limit")) }
+        span := self.spare(budget)!
+        size := match await self.stream.read(span) {
+            case .ok(size) => size
+            case .err(error) => return .err(ioFailure(error))
+        }
+        return self.commit(size)
+    }
+    func discard(_ count: usize) {
+        self.buffer.skip(count)
+    }
+    // The end of a complete head in `bytes`. Earlier scans have already ruled out
+    // anything before `from` as the start of its terminator.
+    func headEnd(_ bytes: Span[uint8], _ from: usize) -> usize? {
+        var index = from
+        while index + 3 < bytes.len() {
+            // The terminator's last byte tells how far it could possibly start.
+            last := *bytes.at(index + 3)
+            if last == 10_u8 {
+                if *bytes.at(index) == 13_u8 && *bytes.at(index + 1) == 10_u8 && *bytes.at(index + 2) == 13_u8 {
+                    return .some(index + 4)
+                }
+                index += 2
+            } else if last == 13_u8 {
+                index += 1
+            } else {
+                index += 4
+            }
+        }
+        return .none
+    }
+    func head(_ maximum: usize) async -> Result[Span[uint8], Error] {
+        var index: usize = 0
+        loop {
+            bytes := self.buffer.bytes()
+            match self.headEnd(bytes, index) {
+                case .some(end) => return .ok(bytes.slice(0, end))
+                case .none => {}
+            }
+            if bytes.len() >= maximum { return .err(failure(.limit, "HTTP head exceeds configured limit")) }
+            index = if bytes.len() > 3 { bytes.len() - 3 } else { 0 }
+            (await self.fill(maximum - bytes.len()))!
+        }
+    }
+    // The next head on a plain socket, reading only what is already available.
+    // `.none` means the socket has nothing more yet: wait, then call this again.
+    func availableHead(_ maximum: usize) -> Result[Span[uint8]?, Error] {
+        var index: usize = 0
+        loop {
+            bytes := self.buffer.bytes()
+            match self.headEnd(bytes, index) {
+                case .some(end) => return .ok(.some(bytes.slice(0, end)))
+                case .none => {}
+            }
+            if bytes.len() >= maximum { return .err(failure(.limit, "HTTP head exceeds configured limit")) }
+            index = if bytes.len() > 3 { bytes.len() - 3 } else { 0 }
+            span := self.spare(maximum - bytes.len())!
+            match self.stream.socket.tryRead(span) {
+                case .ok(size) => self.commit(size)!
+                case .err(error) if error.isKind(.wouldBlock) => return .ok(.none)
+                case .err(error) => return .err(ioFailure(error))
+            }
+        }
+    }
+    func line(_ maximum: usize) async -> Result[string, Error] {
+        var index: usize = 0
+        loop {
+            bytes := self.buffer.bytes()
+            while index < bytes.len() {
+                if index >= maximum { return .err(failure(.limit, "HTTP line exceeds configured limit")) }
+                if *bytes.at(index) == 10_u8 {
+                    if index == 0 || *bytes.at(index - 1) != 13_u8 { return .err(failure(.protocol, "HTTP requires CRLF")) }
+                    text := std::string::stringFromBytes(bytes.slice(0, index + 1))
+                    self.discard(index + 1)
+                    return .ok(text)
+                }
+                index += 1
+            }
+            (await self.fill(maximum - bytes.len()))!
+        }
+    }
+    func read(_ into: Span[uint8]) async -> Result[usize, std::io::Error] {
+        if !self.buffer.isEmpty() { return self.buffer.read(into) }
+        return await self.stream.read(into)
+    }
+}
+
+// Framing is private and survives replacement of the public Body handle.
+// Server abandonment disables reuse; client abandonment also closes its socket.
+final class IncomingBody {
+    input: WireInput
+    remaining: usize
+    chunked: bool
+    eofDelimited: bool
+    needTerminator: bool
+    framingBytes: usize
+    total: usize
+    options: Options
+    complete: std::sync::atomic::Bool
+    abandoned: std::sync::atomic::Bool
+}
+extend IncomingBody {
+    init(_ input: WireInput, _ length: usize, _ chunked: bool, _ options: Options) {
+        self.input = input
+        self.remaining = length
+        self.chunked = chunked
+        self.eofDelimited = false
+        self.needTerminator = false
+        self.framingBytes = 0
+        self.total = 0
+        self.options = options
+        self.complete = std::sync::atomic::Bool::new(!chunked && length == 0)
+        self.abandoned = std::sync::atomic::Bool::new(false)
+    }
+    func readFramed(_ into: Span[uint8]) async -> Result[usize, Error] {
+        if self.complete.load() { return .ok(0) }
+        if self.abandoned.load() { return .err(failure(.closed, "HTTP body abandoned")) }
+        if self.eofDelimited {
+            budget := self.options.maxBodyBytes - self.total
+            size := if into.len() <= budget { into.len() } else { budget + 1 }
+            count := match await self.input.read(into.slice(0, size)) {
+                case .ok(count) => count
+                case .err(error) => return .err(ioFailure(error))
+            }
+            if count > budget { return .err(failure(.limit, "HTTP body exceeds configured limit")) }
+            self.total += count
+            if count == 0 { self.complete.store(true) }
+            return .ok(count)
+        }
+        if self.chunked && self.remaining == 0 {
+            if self.needTerminator {
+                if (await self.input.line(2))! != "\r\n" { return .err(failure(.protocol, "expected chunk CRLF")) }
+            }
+            line := (await self.input.line(self.options.maxHeaderBytes - self.framingBytes))!
+            self.framingBytes += line.byteLen()
+            if self.options.maxHeaderBytes < 2 || self.framingBytes > self.options.maxHeaderBytes - 2 { return .err(failure(.limit, "HTTP chunk framing exceeds limit")) }
+            self.framingBytes += 2
+            var size: usize = 0
+            if !unsafe { __rt__http_chunk_size(line, &size as *mut usize) } { return .err(failure(.protocol, "invalid HTTP chunk size")) }
+            if size > self.options.maxBodyBytes - self.total { return .err(failure(.limit, "HTTP body exceeds configured limit")) }
+            self.remaining = size
+            self.needTerminator = true
+            if size == 0 {
+                if (await self.input.line(2))! != "\r\n" { return .err(failure(.protocol, "HTTP trailers unsupported")) }
+                self.complete.store(true)
+                return .ok(0)
+            }
+        }
+        size := if self.remaining < into.len() { self.remaining } else { into.len() }
+        count := match await self.input.read(into.slice(0, size)) {
+            case .ok(count) => count
+            case .err(error) => return .err(ioFailure(error))
+        }
+        if count == 0 { return .err(failure(.protocol, "truncated HTTP body")) }
+        self.remaining -= count
+        self.total += count
+        if !self.chunked && self.remaining == 0 { self.complete.store(true) }
+        return .ok(count)
+    }
+}
+conform IncomingBody to BodySource {
+    public func read(_ into: Span[uint8]) async -> Result[usize, std::io::Error] {
+        if into.len() == 0 { return .ok(0) }
+        result := await std::task::withTimeout(std::time::Duration::fromMillis(self.options.timeoutMillis), () async => {
+            return await self.readFramed(into)
+        })
+        match result {
+            case .ok(.ok(count)) => return .ok(count)
+            case .ok(.err(error)) => return .err(std::io::Error::new(.invalidData).withOperation(error.message))
+            case .err(_) => return .err(std::io::Error::new(.timedOut).withOperation("HTTP body read"))
+        }
+    }
+    public func close() -> Result[(), std::io::Error] {
+        if !self.complete.load() { self.abandoned.store(true) }
+        return .ok(())
+    }
+}
+
+func readRequest(_ input: WireInput, _ options: Options) async -> Result[Request, Error] {
+    bytes := (await input.head(options.maxHeaderBytes))!
+    return parseRequest(input, options, bytes)
+}
+
+// As the runtime's `CheckedHead`, which fills it.
+@repr("C")
+struct CheckedHead {
+    method: *const uint8
+    methodLength: usize
+    methodIsStatic: usize
+    target: *const uint8
+    targetLength: usize
+    consumed: usize
+    length: usize
+    chunked: usize
+    close: usize
+}
+
+func parseRequest(_ input: WireInput, _ options: Options, _ bytes: Span[uint8]) -> Result[Request, Error] {
+    var checked = CheckedHead {
+        method: bytes.asPtr(), methodLength: 0, methodIsStatic: 0,
+        target: bytes.asPtr(), targetLength: 0,
+        consumed: 0, length: 0, chunked: 0, close: 0,
+    }
+    rejected := unsafe { __rt__http_check_head(bytes.asPtr(), bytes.len(), options.maxHeaders, options.maxBodyBytes, &checked as *mut CheckedHead as *mut usize) }
+    if rejected != 0 {
+        defer { unsafe { __rt__http_snapshot_close(rejected) } }
+        return .err(snapshotError(rejected))
+    }
+    copy := std::string::stringFromBytes(bytes)
+    start := std::string::stringData(copy)
+    base := unsafe { bytes.asPtr() as usize }
+    method := if checked.methodIsStatic != 0 {
+        unsafe { std::string::stringFromParts(checked.method, checked.methodLength) }
+    } else {
+        unsafe { std::string::stringFromParts(start.add((checked.method as usize) - base), checked.methodLength) }
+    }
+    url := unsafe { std::string::stringFromParts(start.add((checked.target as usize) - base), checked.targetLength) }
+    // `bytes` is exactly this head, so reading `copy` later sees the same headers.
+    headers := Headers::unread(copy)
+    length := checked.length
+    chunked := checked.chunked != 0
+    input.closeRequested = checked.close != 0
+    input.discard(checked.consumed)
+    // Without a body there is no framing to read, so nothing can block reuse.
+    if length == 0 && !chunked {
+        input.incoming = .none
+        return .ok(Request { method, url, headers, body: Body::empty() })
+    }
+    source := IncomingBody(input, length, chunked, options)
+    input.incoming = .some(source)
+    var known: usize? = if chunked { .none } else { .some(length) }
+    return .ok(Request { method, url, headers, body: Body::fromIncoming(source, length: known) })
+}

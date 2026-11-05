@@ -1,0 +1,27 @@
+public struct Buffer[Element] { value: Element }
+extend[Element] &Buffer[Element] {
+    public subscript(index: usize) -> Element {
+        get { self.value }
+        set(value) { self.value = value }
+        address { &self.value }
+    }
+    public var element: Element { get { self.value } }
+}
+public func buffer[Element](_ value: Element) -> Buffer[Element] { Buffer[Element] { value } }
+public func read[Element](_ value: &Buffer[Element]) -> Element { value[0 as usize] }
+
+public interface Readable[Key] { type Element; subscript(index: Key) -> Self::Element { get } }
+conform[Value] &Buffer[Value] to Readable[usize] {
+    type Element = Value
+    public subscript(index: usize) -> Value { address { &self.value } }
+}
+public func genericRead[Value, Source: Readable[usize, Element = Value]](_ source: Source) -> Value { source[0 as usize] }
+public class Base[First, Second] { first: First; second: Second }
+extend[First, Second] Base[First, Second] {
+    public init(_ first: First, _ second: Second) { self.first = first; self.second = second }
+    public func pointer() -> &Second { &self.second };
+    public func read() -> Second { self.second };
+    public subscript(index: usize) -> Second { address { &self.second } }
+}
+public class External {}
+extend External { public init() {} }

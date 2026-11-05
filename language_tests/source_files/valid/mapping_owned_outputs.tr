@@ -1,0 +1,28 @@
+struct Mapped { value: int32 }
+struct ErrorView { value: &int32 }
+
+func main() {
+    var amount: int32 = 2
+    var input: int32? = .some(3)
+    var mapped: Mapped? = input.map((input: int32) => Mapped { value: input + amount })
+    amount = 9
+    match mapped {
+        case .some(value) => assert(value.value == 5, "noncopyable owned result with borrowing callback")
+        case .none => std::panic::panic("mapped value")
+    }
+
+    var code: int32 = 7
+    var failed: std::result::Result[int32, ErrorView] = .err(ErrorView { value: &code })
+    var forwarded: std::result::Result[Mapped, ErrorView] = failed.map((input: int32) => Mapped { value: input })
+    match forwarded {
+        case .err(error) => assert(*error.value == 7, "map preserves existing error-view dependencies")
+        case .ok(_) => std::panic::panic("expected forwarded error")
+    }
+
+    var succeeded: std::result::Result[ErrorView, int32] = .ok(ErrorView { value: &code })
+    var success: std::result::Result[ErrorView, int32] = succeeded.mapErr((error: int32) => error + 1)
+    match success {
+        case .ok(value) => assert(*value.value == 7, "mapErr preserves existing success-view dependencies")
+        case .err(_) => std::panic::panic("expected forwarded success")
+    }
+}

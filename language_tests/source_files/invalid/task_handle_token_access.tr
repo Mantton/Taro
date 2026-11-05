@@ -1,0 +1,3 @@
+import std::task::Task
+func extract(_ task: &Task[int32]) -> *mut uint8 { task.handle }
+func main() {}

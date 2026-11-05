@@ -1,0 +1,10 @@
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: panic: dictionary changed structurally during iteration
+import std::iter::{Iterable, Iterator}
+
+func main() {
+    var values: [int64: int64] = [1: 10]
+    var cursor = values.entries()
+    values.set(key: 2, value: 20)
+    var _ = cursor.next()
+}

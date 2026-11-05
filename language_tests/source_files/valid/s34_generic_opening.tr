@@ -1,0 +1,18 @@
+// Open the hidden concrete type, not the existential container's layout.
+interface Readable { func read() -> int32; }
+struct Counter { value: int32 }
+conform Counter to Readable { func read() -> int32 { self.value }; }
+func inspect[T: Readable](_ value: &T) -> int32 { value.read() }
+func layout[T: Readable](_ value: &T) -> usize { std::mem::sizeOf[T]() }
+func reset[T: Readable](_ value: &T) { assert(value.read() == 7, "mutable opening reads hidden value") }
+func consume[T: Readable](_ value: T) -> int32 { value.read() }
+func main() {
+    var boxed: any Readable = Counter { value: 7 } // any Readable; noncopyable owning erasure.
+    var read: int32 = inspect(&boxed) // int32; T is hidden Counter for this call.
+    assert(read == 7, "shared opening dispatches the concrete implementation")
+    var bytes: usize = layout(&boxed) // usize; layout of Counter, not any Readable.
+    assert(bytes == std::mem::sizeOf[Counter](), "opening uses the concrete generic specialization")
+    reset(&boxed)
+    var consumed: int32 = consume(boxed) // int32; boxed moves because its static type is noncopyable.
+    assert(consumed == 7, "owned opening consumes exactly one hidden value")
+}

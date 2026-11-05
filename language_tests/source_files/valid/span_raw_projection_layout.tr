@@ -1,0 +1,10 @@
+// Raw slices use a two-word pointer/length header.
+func main() {
+    var bytes: [uint8; 2] = [7, 9]
+    var data: *mut uint8 = unsafe { &bytes as *mut uint8 }
+    var span: std::mem::Span[uint8] = unsafe { std::mem::Span[uint8]::from(data as *const uint8, 2) }
+    assert(*span.at(0) == 7 && *span.at(1) == 9, "raw shared span uses its data pointer")
+    var writable: std::mem::Span[uint8] = unsafe { std::mem::Span[uint8]::from(data, 2) }
+    *writable.at(1) = 11
+    assert(bytes[1] == 11, "raw mutable span writes the original array")
+}

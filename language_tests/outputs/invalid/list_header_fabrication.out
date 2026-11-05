@@ -1,0 +1,4 @@
+error: field 'storage' of List[int32] is not visible here
+ -> language_tests/source_files/invalid/list_header_fabrication.tr:4:44
+	    var values: List[int32] = List[int32] { storage: pointer }
+	                                            ^^^^^^^^

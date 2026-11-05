@@ -1,0 +1,3 @@
+[package]
+name = "github.com/example/clone-components-dep"
+kind = "library"

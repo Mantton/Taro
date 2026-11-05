@@ -1,0 +1,6 @@
+[package]
+name = "github.com/example/g31_orphan_errors-app"
+kind = "executable"
+
+[require]
+"github.com/example/g31_orphan_errors-foreign" = { path = "../foreign", alias = "remote" }

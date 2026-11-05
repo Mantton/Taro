@@ -1,0 +1,11 @@
+error: function with return type `int64` can complete without returning a value
+ -> language_tests/source_files/invalid/closure_missing_return.tr:4:12
+    var _ = (limit: int64) -> int64 => {
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        var total: int64 = 0
+        while true {
+            if total > limit { return total }
+            total += 1
+        }
+    }
+     ^

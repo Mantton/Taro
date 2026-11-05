@@ -1,0 +1,20 @@
+// Inherited variadic entries construct the most-derived object and run defaults once.
+static var defaults: int32 = 0
+func nextDefault() -> int32 { defaults += 1; defaults }
+class Base { values: [int32; ..]; label: string; first: int32 = nextDefault() }
+extend Base {
+    init(label: string, _ values: int32...) { self.label = label; self.values = values };
+    func kind() -> int32 { 1 };
+}
+class Child: Base { second: int32 = nextDefault() }
+extend Child { override func kind() -> int32 { 2 }; }
+final class Grandchild: Child { third: int32 = nextDefault() }
+func main() {
+    child := Grandchild(label: "many", 7, 9, 11)
+    var base: Base = child
+    assert(base.kind() == 2 && (base as? Grandchild).isSome(), "most-derived object")
+    assert(child.label == "many" && child.values[2] == 11, "labels and variadic forwarding")
+    assert(child.first == 1 && child.second == 2 && child.third == 3 && defaults == 3, "each default exactly once")
+    empty := Grandchild(label: "empty")
+    assert(empty.values.len() == 0 && defaults == 6, "empty variadic and independent defaults")
+}

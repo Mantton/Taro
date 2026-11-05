@@ -1,7 +1,9 @@
 # Editor integrations
 
 The integrations provide syntax highlighting and static editing support. Use
-`taro check` for compiler diagnostics.
+`taro check` for compiler diagnostics and `taro vet` for advisory `@NoCopy`
+copy checks. Static highlighting recognizes the attribute but performs no copy
+analysis.
 
 ## VS Code
 
@@ -35,6 +37,11 @@ after changing the grammar or queries. The generated extension uses a local
 checkout of this repository; no separate grammar mirror is required. The
 tracked `editors/zed` directory is the source template, not the installation
 folder.
+
+The maintained fixtures cover writable bindings, `extend`/`conform`, implicit
+receivers, GC spans, native subscripts, computed getters, async calls, both defer
+forms, class initializers and explicit Weak values. Retired lifecycle/storage
+modifier rules and scopes are removed.
 
 The Tree-sitter grammar is an approximation for editor use, not the compiler's
 parser. Some supported language constructs still require grammar coverage.

@@ -9,12 +9,6 @@ use std::path::PathBuf;
 #[derive(Deserialize, Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
 pub struct PackageIdentifier(pub EcoString);
 
-impl PackageIdentifier {
-    pub fn hashed_name(&self) -> String {
-        blake3::hash(self.0.as_bytes()).to_string()
-    }
-}
-
 #[derive(Deserialize, Debug, Clone)]
 pub struct Manifest {
     pub package: Metadata,

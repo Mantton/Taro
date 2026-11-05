@@ -1,0 +1,4 @@
+extend List[int32] {
+    func foreign() -> int32 { 7 }
+}
+func main() {}

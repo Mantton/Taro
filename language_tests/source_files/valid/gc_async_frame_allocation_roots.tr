@@ -1,0 +1,25 @@
+// ENV: TARO_GC_STRESS=1
+// ENV: TARO_WORKERS=1
+// Allocating a callee's async frame can collect while the caller holds the
+// callee's arguments, such as a borrowed heap-promoted receiver, in
+// temporaries; the allocation site must publish them (G54).
+struct Counter {
+    value: int32
+}
+extend Counter {
+    func bumped() async -> int32 {
+        self.value + 1
+    }
+}
+func main() async {
+    counter := Counter { value: 10 }
+    result := await counter.bumped()
+    std::testing::assertEqual(result, 11, "borrowed receiver survives frame allocation")
+    text := "frame " + "argument"
+    label := await describe(text)
+    std::testing::assertEqual(label, "frame argument!", "string argument survives frame allocation")
+    print("PASS: async frame allocation publishes caller roots\n")
+}
+func describe(_ text: string) async -> string {
+    text + "!"
+}

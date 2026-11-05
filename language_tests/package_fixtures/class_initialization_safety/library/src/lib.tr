@@ -1,0 +1,15 @@
+public class Token { public value: int32 }
+extend Token { public init(_ value: int32) { self.value = value }; }
+public class Base[T] { public value: T; private secret: Token }
+extend[T] Base[T] {
+    public init(_ value: T) {
+        self.value = value
+        std::runtime::collect()
+        self.secret = Token(40)
+    }
+    public func secretValue() -> int32 { self.secret.value }
+}
+public class Middle[T]: Base[List[T]] { public marker: int32 }
+extend[T] Middle[T] {
+    public init(_ items: List[T], marker: int32) { super.init(items); self.marker = marker }
+}

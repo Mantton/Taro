@@ -1,0 +1,12 @@
+error: this access requires a subscript address accessor; get/set does not provide element storage
+ -> language_tests/source_files/invalid/native_subscript_storage.tr:12:18
+	    reference := &buffer[0 as usize]
+	                  ^^^^^^^^^^^^^^^^^^
+error: this access requires a subscript address accessor; get/set does not provide element storage
+ -> language_tests/source_files/invalid/native_subscript_storage.tr:13:4
+	    buffer[0 as usize].value = 9
+	    ^^^^^^^^^^^^^^^^^^
+error: this access requires a subscript address accessor; get/set does not provide element storage
+ -> language_tests/source_files/invalid/native_subscript_storage.tr:14:4
+	    buffer[0 as usize].bump()
+	    ^^^^^^^^^^^^^^^^^^

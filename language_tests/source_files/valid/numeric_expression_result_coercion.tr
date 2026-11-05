@@ -1,0 +1,24 @@
+// Boxing or wrapping a numeric result must happen after its operators run.
+func unsignedValue() -> uint64 { 6_u64 }
+func signedValue() -> int32 { 6 }
+func displayNumber(_ value: any std::fmt::Display) -> string {
+    return std::sprintf("%v", value)
+}
+func main() {
+    var small: uint32 = 3_u32
+    assert(displayNumber(unsignedValue() * 2_u64 + small as uint64) == "15", "nested arithmetic boxes only its result")
+    assert(std::sprintf("%d", -(signedValue() + 1)) == "-7", "negation keeps its arithmetic operand numeric")
+    assert(displayNumber((3_u64 << 1_u64) | (4_u64 + 1_u64)) == "7", "bitwise operands stay numeric")
+
+    var wrapped: uint64? = unsignedValue() * 2_u64 + small as uint64
+    assert(wrapped.unwrap() == 15_u64, "Optional wraps the completed arithmetic result")
+    var negative: int32? = -(signedValue() + 1)
+    assert(negative.unwrap() == -7, "Optional wraps the completed unary result")
+
+    var narrow: uint8 = (2 + 3) * 4
+    var optionalNarrow: uint8? = (2 + 3) * 4
+    assert(optionalNarrow.unwrap() == 20_u8, "the result context still constrains untyped numeric literals")
+    var fraction: float = (1.5 + 2.5) * 2.0
+    assert(narrow == 20_u8 && fraction == 8.0, "numeric expectations still guide literal inference")
+    println("ok")
+}

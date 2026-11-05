@@ -1,0 +1,8 @@
+import std::marker::Clone
+
+struct CopyOnly { value: int32 }
+func duplicate[T: Clone](_ value: &T) -> T { value.clone() }
+func main() {
+    var value: CopyOnly = CopyOnly { value: 7 }
+    var result: CopyOnly = duplicate(&value)
+}

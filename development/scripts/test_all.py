@@ -8,6 +8,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import disk_guard
+
 
 def positive_int(value: str) -> int:
     try:
@@ -81,14 +83,26 @@ def main() -> int:
     parser.add_argument("--skip-lto-smoke", action="store_true")
     parser.add_argument("--skip-std-package-tests", action="store_true")
     parser.add_argument("--skip-language-tests", action="store_true")
+    parser.add_argument(
+        "--disposable-dist",
+        action="store_true",
+        help="Build the distribution in a temporary directory and delete it afterwards.",
+    )
     args = parser.parse_args()
+    disk_guard.enforce()
+    if args.disposable_dist and args.skip_build_dist:
+        parser.error("--disposable-dist requires building the distribution")
 
     script_dir = Path(__file__).resolve().parent
     repo_root = script_dir.parent.parent
     verifiers_root = repo_root / "development" / "verifiers"
     build_script = repo_root / "development" / "scripts" / "build_dist.py"
     language_tests_script = repo_root / "development" / "scripts" / "language_tests.py"
-    dist_dir = repo_root / "dist"
+    dist_dir = (
+        Path(tempfile.mkdtemp(prefix="taro_dist_"))
+        if args.disposable_dist
+        else repo_root / "dist"
+    )
     taro_bin = dist_dir / "bin" / "taro"
     std_path = repo_root / "std"
     hello_example = repo_root / "examples" / "hello.tr"
@@ -143,7 +157,15 @@ def main() -> int:
         if args.skip_build_dist:
             print("SKIPPED: disabled via --skip-build-dist")
         else:
-            run_command([sys.executable, str(build_script)], cwd=repo_root)
+            run_command(
+                [
+                    sys.executable,
+                    str(build_script),
+                    "--dist-dir",
+                    str(dist_dir),
+                ],
+                cwd=repo_root,
+            )
 
         # Integration tests use the new compiler with dist's attached std, which
         # must be refreshed first when the compiler's build identity changes.
@@ -151,7 +173,7 @@ def main() -> int:
         if args.skip_cargo_tests:
             print("SKIPPED: disabled via --skip-cargo-tests")
         else:
-            run_command(["cargo", "test", "--workspace"], cwd=repo_root)
+            run_command(["cargo", "test", "--workspace"], cwd=repo_root, env=env)
 
         current_stage = "toolchain validation"
         needs_toolchain = not all((
@@ -437,9 +459,11 @@ def main() -> int:
             print("SKIPPED: disabled via --skip-language-tests")
         else:
             command = [sys.executable, str(language_tests_script), "--codegen-profile", "both"]
+            if taro_bin.is_file():
+                command.extend(["--dist", str(dist_dir)])
             if args.jobs is not None:
                 command.extend(["--jobs", str(args.jobs)])
-            run_command(command, cwd=repo_root)
+            run_command(command, cwd=repo_root, env=env)
 
     except subprocess.CalledProcessError as error:
         print()
@@ -455,6 +479,9 @@ def main() -> int:
         print()
         print("Interrupted")
         return 130
+    finally:
+        if args.disposable_dist:
+            shutil.rmtree(dist_dir, ignore_errors=True)
 
     print()
     print("All enabled stages passed.")

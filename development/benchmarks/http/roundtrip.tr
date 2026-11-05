@@ -1,0 +1,52 @@
+import std::convert::Parse
+import std::http::{Client, Error, Handler, Options, Request, Response, Server}
+import std::result::Result
+
+struct PayloadHandler { text: string }
+conform PayloadHandler to Handler {
+    public func handle(_ request: &Request) async -> Result[Response, Error] {
+        return .ok(Response::text(200_u16, self.text))
+    }
+}
+
+// Loopback exercises both Taro endpoints. Use separate fixed peers for a
+// cross-language client/server comparison; this measures the combined path.
+func main() async {
+    args := std::env::args()
+    std::assert(args.len() == 4, "usage: roundtrip <bytes: multiple of 16> <iterations> <keepalive: 0|1>")
+    size := usize::parse(args.at(1)).unwrap()
+    count := uint64::parse(args.at(2)).unwrap()
+    std::assert(size > 0 && size <= 1024 * 1024 && size % 16 == 0 && count > 0 && count <= 10000_u64, "bounded positive inputs")
+    builder := std::string::Builder::new()
+    var written: usize = 0
+    while written < size { builder.writeString("0123456789abcdef"); written += 16 }
+    payload := builder.toString()
+    var options = Options::new()
+    options.keepAlive = args.at(3) == "1"
+    server := Server::bindWithOptions(std::net::SocketAddress::localhost(0_u16), options).unwrap()
+    running := std::task::spawn(() async => { return await server.serve(PayloadHandler { text: payload }) })
+    client := Client::withOptions(options).unwrap()
+    defer { client.close(); var _ = server.close() }
+    url := std::sprintf("http://127.0.0.1:%d/benchmark", server.localAddress().unwrap().port)
+    warmup := (await client.get(url)).unwrap()
+    std::assert((await warmup.body.readToString()).unwrap() == payload, "complete payload correctness outside timing")
+    std::runtime::collect()
+    before := std::runtime::gcStats()
+    start := std::time::Instant::now()
+    var checksum: uint64 = 0_u64
+    var index: uint64 = 0_u64
+    while index < count {
+        response := (await client.get(url)).unwrap()
+        text := (await response.body.readToString()).unwrap()
+        checksum += text.byteLen() as uint64
+        std::hint::blackBox(text)
+        index += 1_u64
+    }
+    elapsed := start.elapsed()
+    after := std::runtime::gcStats()
+    std::assert(checksum == size as uint64 * count, "all responses completed")
+    client.close(); (await server.shutdown(std::time::Duration::fromSeconds(2_u64))).unwrap()
+    (await running.result()).unwrap().unwrap()
+    nanos := elapsed.seconds() * 1000000000_u64 + elapsed.subsecNanos() as uint64
+    std::println(std::sprintf("bytes=%d ops=%d ns=%d checksum=%d allocated_bytes=%d collections=%d", size, count, nanos, checksum, after.allocatedBytes - before.allocatedBytes, after.collections - before.collections))
+}

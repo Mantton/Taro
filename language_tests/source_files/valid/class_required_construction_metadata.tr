@@ -1,0 +1,2 @@
+// PACKAGE: class_required_construction
+// Required designated/convenience dispatch crosses metadata with the runtime subclass intact.

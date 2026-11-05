@@ -1,0 +1,11 @@
+// CHECK_ONLY
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_CONTAINS: type 'Child' does not conform to interface 'Add[Child]'
+// EXPECT_STDERR_NOT_CONTAINS: panicked
+interface Add[Other = Self] { type Output = Self; func add(_ other: Other) -> Self::Output; }
+class Base {}
+conform Base to Add { func add(_ other: Base) -> Base { self }; }
+class Child: Base {}
+func same[T: Add[T]](_ value: T) -> T::Output { value.add(value) }
+func check(_ value: Child) { result := same(value) }
+func main() {}

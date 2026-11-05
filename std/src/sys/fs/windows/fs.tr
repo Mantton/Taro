@@ -1,9 +1,9 @@
-import std.io.Error
-import std.panic.todo
-import std.result.Result
+import std::io::Error
+import std::panic::todo
+import std::result::Result
 
 public struct PlatformFile {
-    raw: int32
+    internal raw: int32
 }
 
 public func openReadOnly(_ path: string) -> Result[PlatformFile, Error] {
@@ -29,7 +29,7 @@ public func symlink(_ target: string, _ linkPath: string) -> Result[(), Error] {
     todo("std.sys.fs.symlink not implemented on windows yet")
 }
 
-public func close(_ file: &mut PlatformFile) -> Result[(), Error] {
+public func close(_ file: &PlatformFile) -> Result[(), Error] {
     todo("std.sys.fs.close not implemented on windows yet")
 }
 
@@ -37,8 +37,8 @@ public func isValid(_ file: &PlatformFile) -> bool {
     file.raw >= 0
 }
 
-public func take(_ file: &mut PlatformFile) -> PlatformFile {
-    let raw = file.raw
+public func take(_ file: &PlatformFile) -> PlatformFile {
+    raw := file.raw
     file.raw = -1
     return PlatformFile { raw }
 }
@@ -55,7 +55,7 @@ public func seek(_ file: &PlatformFile, _ offset: isize, _ whence: int32) -> Res
     todo("std.sys.fs.seek not implemented on windows yet")
 }
 
-public func intoAsyncStream(_ file: &mut PlatformFile) -> Result[std.sys.io.RawAsyncStream, Error] {
+public func intoAsyncStream(_ file: &PlatformFile) -> Result[std::sys::io::RawAsyncStream, Error] {
     todo("std.sys.fs.intoAsyncStream not implemented on windows yet")
 }
 

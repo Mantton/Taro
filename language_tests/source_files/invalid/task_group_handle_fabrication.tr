@@ -1,0 +1,7 @@
+import std::task::TaskGroup
+
+func forge(_ group: &TaskGroup[int32]) -> TaskGroup[string] {
+    TaskGroup[string] { id: group.id }
+}
+
+func main() {}

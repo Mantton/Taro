@@ -17,5 +17,5 @@ func inlinePanicFrame(_ value: int64) -> int64 {
 }
 
 func main() {
-    std.printf("%v\n", inlinePanicFrame(1))
+    std::printf("%v\n", inlinePanicFrame(1))
 }

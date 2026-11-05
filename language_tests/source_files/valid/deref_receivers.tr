@@ -1,0 +1,55 @@
+struct Point { value: int32 }
+extend Point { func read() -> int32 { self.value }; }
+extend &Point { func bump() { self.value += 1 }; }
+struct View[T] { target: &T; calls: &int32 }
+conform[T] View[T] to Deref {
+    type Target = T
+    func deref() -> &T { *self.calls += 1; self.target }
+}
+struct Own { value: bool; target: &Point; calls: &int32 }
+extend Own { func read() -> bool { self.value }; }
+conform Own to Deref {
+    type Target = Point
+    func deref() -> &Point { *self.calls += 1; self.target }
+}
+struct Inline { point: Point }
+conform &Inline to Deref {
+    type Target = Point
+    func deref() -> &Point { &self.point }
+}
+func makeView[T](_ target: &T, _ calls: &int32) -> View[T] { View { target, calls } }
+func read[T: Deref[Target = Point]](_ value: T) -> int32 { value.value }
+func main() {
+    var point = Point { value: 1 }
+    var calls = 0_i32
+    view := View { target: &point, calls: &calls }
+    var copy = *view
+    copy.value = 40
+    assert(calls == 1 && point.value == 1, "unary dereference copies the target value")
+    calls = 0
+    assert(view.read() == 1 && calls == 1, "method lookup evaluates deref once")
+    calls = 0
+    view.bump()
+    assert(point.value == 2 && calls == 1, "target storage receiver auto-reference")
+    var address = &view.value
+    *address = 7
+    assert(point.value == 7, "field references point into target storage")
+    makeView(&point, &calls).value = 8
+    assert(read(view) == 8, "generic associated target and temporary wrappers")
+    own := Own { value: true, target: &point, calls: &calls }
+    calls = 0
+    assert(own.value && own.read() && calls == 0, "own fields and methods precede Deref")
+    var inline = Inline { point: Point { value: 10 } }
+    inline.value = 11
+    assert(inline.point.value == 11, "storage Deref refers to the actual inline wrapper")
+    *inline = Point { value: 12 }
+    assert(inline.point.value == 12, "assignment through unary Deref")
+    var tuple = (1_i32, 2_i32)
+    makeView(&tuple, &calls).1 = 3
+    assert(tuple.1 == 3, "tuple fields use the referenced target")
+    var nested = makeView(&view, &calls)
+    calls = 0
+    assert(nested.value == 8 && calls == 2, "each nested Deref step evaluates once")
+    var builtin: Inline = *&inline
+    assert(builtin.point.value == 12, "references retain builtin one-step dereference")
+}

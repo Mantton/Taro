@@ -1,0 +1,59 @@
+// TEST
+// OVERFLOW_CHECKS
+import std::ops::{Add, Sub, Mul, Div, Rem, Shl, Shr, Neg, AddAssign}
+
+func add[T: Add[Output = T]](_ a: &T, _ b: &T) -> T { *a + *b }
+func sub[T: Sub[Output = T]](_ a: &T, _ b: &T) -> T { *a - *b }
+func mul[T: Mul[Output = T]](_ a: &T, _ b: &T) -> T { *a * *b }
+func div[T: Div[Output = T]](_ a: &T, _ b: &T) -> T { *a / *b }
+func rem[T: Rem[Output = T]](_ a: &T, _ b: &T) -> T { *a % *b }
+func shl[T: Shl[Output = T]](_ a: &T, _ b: &T) -> T { *a << *b }
+func shr[T: Shr[Output = T]](_ a: &T, _ b: &T) -> T { *a >> *b }
+func neg[T: Neg[Output = T]](_ a: T) -> T { -a }
+func accumulate[T](_ a: &T, _ b: &T) where &T: AddAssign[T] { *a += *b }
+
+@test
+@expectPanic("attempt to add with overflow")
+func addition() { var a: uint8 = 255; var b: uint8 = 1; var _ = add(&a, &b) }
+@test
+@expectPanic("attempt to subtract with overflow")
+func subtraction() { var a: uint8 = 0; var b: uint8 = 1; var _ = sub(&a, &b) }
+@test
+@expectPanic("attempt to multiply with overflow")
+func multiplication() { var a: uint8 = 128; var b: uint8 = 2; var _ = mul(&a, &b) }
+@test
+@expectPanic("attempt to divide by zero")
+func division() { var a: int32 = 1; var b: int32 = 0; var _ = div(&a, &b) }
+@test
+@expectPanic("attempt to calculate the remainder with a divisor of zero")
+func remainder() { var a: int32 = 1; var b: int32 = 0; var _ = rem(&a, &b) }
+@test
+@expectPanic("attempt to shift left with overflow")
+func leftShift() { var a: uint8 = 1; var b: uint8 = 8; var _ = shl(&a, &b) }
+@test
+@expectPanic("attempt to shift right with overflow")
+func rightShift() { var a: uint8 = 1; var b: uint8 = 8; var _ = shr(&a, &b) }
+@test
+@expectPanic("attempt to negate with overflow")
+func negation() { var _ = neg(-128_i8) }
+@test
+@expectPanic("attempt to add with overflow")
+func assignment() {
+    var a: uint8 = 255
+    var b: uint8 = 1
+    // A failed arithmetic call must leave the destination initialized and unchanged.
+    defer { assert(a == 255, "overflow assignment preserves its old value") }
+    accumulate(&a, &b)
+}
+@test
+@expectPanic("attempt to add with overflow")
+func erasedAddition() {
+    // The standard library is release-built; its metadata must not replace this
+    // checked caller's arithmetic witness table through linker coalescing.
+    var source: any std::fmt::Display = 255_u8
+    var one: uint8 = 1
+    match source as? any Add[uint8, Output = uint8] {
+        case .some(adder) => { var _ = adder.add(one) }
+        case .none => panic("missing arithmetic conformance")
+    }
+}

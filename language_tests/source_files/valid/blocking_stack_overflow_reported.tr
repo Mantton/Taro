@@ -1,0 +1,12 @@
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: panic: stack overflow
+// A native pool thread still installs its per-thread signal stack after GC
+// thread registration is retired. Main's alternate stack cannot protect it.
+func descendOnBlockingThread(_ n: int64) -> int64 {
+    if n == 0 { return 0 }
+    descendOnBlockingThread(n - 1) + 1
+}
+func main() async {
+    result := await std::task::blocking(() => descendOnBlockingThread(100000000))
+    std::printf("unreachable %v\n", result)
+}

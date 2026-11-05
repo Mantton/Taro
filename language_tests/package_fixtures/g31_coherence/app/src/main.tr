@@ -1,0 +1,14 @@
+import std::ops::{PartialEq, Neg}
+func compare[L: PartialEq[R], R](_ left: L, _ right: R) -> bool { left.eq(right) }
+func main() {
+    // The receiver is a foreign scalar; its implementation lives with the RHS.
+    value := owner::make(7)
+    assert(compare(7, value), "a foreign scalar uses the local RHS conformance")
+    var array: [int32; 3] = [1, 2, 3]
+    assert(compare(array, owner::make(3)), "an imported alias preserves covered type and const parameters")
+    var reference: any Neg[Output = int32] = &value
+    assert(reference.neg() == -7, "references preserve local target ownership")
+    var scalar = 0
+    pointer := unsafe { &scalar as *const int32 }
+    assert(!owner::checkPointer(pointer, &value), "raw pointers cover parameters before the local RHS")
+}

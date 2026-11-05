@@ -1,0 +1,6 @@
+final class Object { value: int32 }
+extend Object { init(_ value: int32) { self.value = value } }
+func inspect(_ object: Object) {
+    match object { case Object { value } => {}; }
+}
+func main() {}

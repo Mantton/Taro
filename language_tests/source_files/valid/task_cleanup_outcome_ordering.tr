@@ -1,0 +1,60 @@
+// G22: task outcomes are published after cleanup. A defer that panics during
+// normal return or cancellation turns the outcome into that panic, the
+// remaining defers still run, repeated cancellation is harmless, and a
+// cancel request cannot overwrite a completed outcome.
+// EXPECT_STDERR_COUNT: 1 task panic: normal cleanup
+// EXPECT_STDERR_COUNT: 1 task panic: cancel cleanup
+static var LOG: string = ""
+func note(_ s: string) { LOG = std::sprintf("%s%s;", LOG, s) }
+
+func describe[T](_ r: Result[T, std::task::TaskError]) -> string {
+    match r {
+        case .ok(_) => return "ok"
+        case .err(.cancelled) => return "cancelled"
+        case .err(.panicked(p)) => return std::sprintf("panicked(%s)", p.message())
+    }
+}
+
+func main() async {
+    // Cancelling before a task's first poll never runs its body (or defers);
+    // each cancelled task first reports that it is running.
+    var (started, running) = std::sync::bounded[int32](1).unwrap()
+    normal := std::task::spawn(() async => {
+        defer { note("outer") }
+        defer { panic("normal cleanup") }
+        defer { note("inner") }
+        return 1_i64
+    })
+    std::printf("normal return: %s %s\n", describe(await normal.result()), LOG)
+    LOG = ""
+
+    cancelled := std::task::spawn(() async => {
+        defer { note("outer") }
+        defer { panic("cancel cleanup") }
+        defer { note("inner") }
+        started.trySend(1).unwrap()
+        await std::task::sleep(std::time::Duration::fromSeconds(60_u64))
+        return 1_i64
+    })
+    var _ = await running.recv()
+    cancelled.cancel()
+    cancelled.cancel()
+    std::printf("cancellation: %s %s\n", describe(await cancelled.result()), LOG)
+    LOG = ""
+
+    quiet := std::task::spawn(() async => {
+        defer { note("cleanup") }
+        started.trySend(2).unwrap()
+        await std::task::sleep(std::time::Duration::fromSeconds(60_u64))
+        return 1_i64
+    })
+    var _ = await running.recv()
+    quiet.cancel()
+    quiet.cancel()
+    std::printf("repeated cancel: %s %s\n", describe(await quiet.result()), LOG)
+
+    done := std::task::spawn(() async => { 5_i64 })
+    var _ = await done.result()
+    done.cancel()
+    std::printf("cancel after completion: %s\n", describe(await done.result()))
+}

@@ -1,0 +1,8 @@
+// No Writer import: Buffer's convenience method remains an inherent API.
+@test
+func bufferStringMethodDoesNotRequireAWriterImport() {
+    buffer := std::bytes::Buffer::new()
+    buffer.writeString("concrete").unwrap()
+    std::io::writeString(buffer, " + generic").unwrap()
+    std::assert(buffer.toString() == "concrete + generic", "both string-write routes append once")
+}

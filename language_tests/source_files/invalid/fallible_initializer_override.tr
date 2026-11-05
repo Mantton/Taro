@@ -1,0 +1,5 @@
+class Base { value: int32 }
+extend Base { public required init() -> Result[Self, string] { self.value = 1 } }
+final class Child: Base {}
+extend Child { public required override init() -> Result[Self, int32] { return .err(1) } }
+func main() {}

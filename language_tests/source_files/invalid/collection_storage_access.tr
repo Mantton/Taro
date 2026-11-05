@@ -1,0 +1,6 @@
+func main() {
+    var dictionary: std::collections::Dictionary[int32, int32] = std::collections::Dictionary[int32, int32]::new()
+    slots := dictionary.storage
+    var values: std::collections::Set[int32] = std::collections::Set[int32]::new()
+    storage := values.storage
+}

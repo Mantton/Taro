@@ -1,0 +1,4 @@
+error: call to unsafe function '__intrinsic_string_from_parts' must be inside an unsafe { ... } block
+ -> language_tests/source_files/invalid/string_raw_intrinsic_safe.tr:4:23
+	    var text: string = std::intrinsic::__intrinsic_string_from_parts(data, 1)
+	                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

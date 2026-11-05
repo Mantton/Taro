@@ -1,0 +1,19 @@
+struct Selection { value: &int32 }
+struct Wrapper[T] { value: T }
+type ReadRef[T] = &T
+
+func forward[T](_ value: T) -> T { value }
+
+func main() {
+    var value: int32 = 7 // int32
+    var selection: Selection = Selection { value: &value } // Selection
+    var wrapped: Wrapper[Selection] = forward(Wrapper { value: selection }) // Wrapper[Selection]
+    assert(*wrapped.value.value == 7, "relaxed wrappers preserve local view dependencies")
+    var optional: (&int32)? = .some(&value) // Optional[&int32]
+    assert(*optional.unwrap() == 7, "Optional explicitly supports borrowed values")
+    var result: Result[&int32, int32] = .ok(&value) // Result[&int32, int32]
+    assert(*result.unwrap() == 7, "Result explicitly supports borrowed values")
+    var alias: ReadRef[int32] = &value // &int32 through a checked type alias
+    assert(*alias == 7, "transparent aliases preserve value semantics")
+    print("escapable views ok\n")
+}

@@ -1,0 +1,50 @@
+// ENV: TARO_WORKERS=1
+// A queued channel message is a root until received: its managed fields
+// survive collection while only the queue holds them (G50, invariant 6).
+extern "C" {
+    unsafe func __gc__test_probe_create(_ target: *const uint8) -> *mut uint8
+    unsafe func __gc__test_collect_probe_is_live(_ probe: *mut uint8) -> bool
+}
+
+struct Envelope { label: string; parts: [string] }
+
+func send(_ sender: std::sync::Sender[Envelope]) -> *mut uint8 {
+    var parts: [string] = []
+    parts.append("first " + "part")
+    label := "queued " + "message"
+    probe := unsafe { __gc__test_probe_create(std::string::stringData(label)) }
+    var _ = sender.trySend(Envelope { label, parts })
+    probe
+}
+
+func main() async {
+    var (sender, receiver) = std::sync::bounded[Envelope](4).unwrap()
+    probe := send(sender)
+    assert(unsafe { __gc__test_collect_probe_is_live(probe) }, "a queued message stays live")
+    match receiver.tryRecv() {
+        case .ok(.some(envelope)) => {
+            std::testing::assertEqual(envelope.label, "queued message", "the label arrives intact")
+            std::testing::assertEqual(*envelope.parts.at(0), "first part", "nested list elements arrive intact")
+        }
+        case _ => assert(false, "message expected")
+    }
+    var (unbounded, drain) = std::sync::unbounded[string]()
+    var i = 0
+    while i < 20 {
+        var _ = unbounded.trySend("item " + "value")
+        i += 1
+    }
+    var _ = unsafe { __gc__test_collect_probe_is_live(probe) }
+    var received = 0
+    while true {
+        match drain.tryRecv() {
+            case .ok(.some(text)) => {
+                std::testing::assertEqual(text, "item value", "queued strings survive collection")
+                received += 1
+            }
+            case _ => break
+        }
+    }
+    std::testing::assertEqual(received, 20, "every queued message arrives")
+    print("PASS: queued channel messages stay rooted\n")
+}

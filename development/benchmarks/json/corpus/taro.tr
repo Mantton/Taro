@@ -1,0 +1,149 @@
+import std::collections::List
+import std::encoding::Decodable
+import std::json::Value
+
+// Benchmark-only budget. The installed std default remains unchanged.
+const MAX_BYTES: usize = 100 * 1024 * 1024
+
+struct Geometry: Decodable { `type`: string; coordinates: List[List[List[double]]] }
+struct Properties: Decodable { name: string }
+struct Feature: Decodable { `type`: string; properties: Properties; geometry: Geometry }
+struct Canada: Decodable { `type`: string; features: List[Feature] }
+
+struct Shape {
+    objects: uint64; arrays: uint64; strings: uint64; numbers: uint64
+    booleans: uint64; nulls: uint64; utf8_bytes: uint64; depth: uint64
+}
+
+func inspect(_ value: &Value, _ shape: &Shape, _ depth: uint64) {
+    if depth > shape.depth { shape.depth = depth }
+    match value {
+        case .null => shape.nulls += 1
+        case .boolean(_) => shape.booleans += 1
+        case .number(_) => shape.numbers += 1
+        case .string(text) => { shape.strings += 1; shape.utf8_bytes += text.byteLen() as uint64 }
+        case .array(values) => {
+            shape.arrays += 1
+            var i: usize = 0
+            while i < values.len() { inspect(values.at(i), shape, depth + 1); i += 1 }
+        }
+        case .object(object) => {
+            shape.objects += 1
+            var i: usize = 0
+            while i < object.len() {
+                shape.utf8_bytes += object.keyAt(i).byteLen() as uint64
+                inspect(object.valueAt(i), shape, depth + 1)
+                i += 1
+            }
+        }
+    }
+}
+
+func top(_ value: &Value) -> uint64 {
+    match value {
+        case .array(values) => values.len() as uint64
+        case .object(object) => object.len() as uint64
+        case .string(text) => text.byteLen() as uint64
+        case _ => 1
+    }
+}
+
+func options() -> std::json::Options { std::json::Options::new().withMaxInputBytes(MAX_BYTES) }
+
+func isDom(_ mode: string) -> bool { mode == "dom" }
+
+func decodeDom(_ input: string, _ mode: string) -> Value {
+    return std::json::parseWithOptions(input, options()).unwrap()
+}
+
+func decodeCanada(_ input: string, _ mode: string) -> Canada {
+    return std::json::decodeWithOptions[Canada](input, options().withValidationFirst(mode == "typed-validated")).unwrap()
+}
+
+func operation(_ input: string, _ mode: string) -> uint64 {
+    if isDom(mode) {
+        value := decodeDom(input, mode)
+        count := top(&value)
+        std::hint::blackBox(value)
+        return count
+    }
+    value := decodeCanada(input, mode)
+    count := value.features.len() as uint64
+    std::hint::blackBox(value)
+    return count
+}
+
+func check(_ input: string, _ mode: string, _ expectedSum: double) {
+    if isDom(mode) {
+        value := decodeDom(input, mode)
+        // Verify the complete retained tree after a real collection.
+        std::runtime::collect()
+        var shape = Shape { objects: 0, arrays: 0, strings: 0, numbers: 0, booleans: 0, nulls: 0, utf8_bytes: 0, depth: 0 }
+        inspect(&value, &shape, 0)
+        std::println(std::sprintf("shape objects=%d arrays=%d strings=%d numbers=%d booleans=%d nulls=%d utf8_bytes=%d depth=%d top=%d", shape.objects, shape.arrays, shape.strings, shape.numbers, shape.booleans, shape.nulls, shape.utf8_bytes, shape.depth, top(&value)))
+        return
+    }
+    value := decodeCanada(input, mode)
+    std::runtime::collect()
+    assert(value.`type` == "FeatureCollection", "root type")
+    var rings: uint64 = 0
+    var points: uint64 = 0
+    var coordinates: uint64 = 0
+    var sum: double = 0.0
+    for feature in value.features {
+        assert(feature.`type` == "Feature" && feature.properties.name == "Canada" && feature.geometry.`type` == "Polygon", "complete feature fields")
+        for ring in feature.geometry.coordinates {
+            rings += 1
+            for point in ring {
+                assert(point.len() == 2, "point dimension")
+                points += 1
+                for coordinate in point { coordinates += 1; sum += coordinate }
+            }
+        }
+    }
+    // Verify floats inside the program: this SDK has no float Display/encoder.
+    difference := if sum > expectedSum { sum - expectedSum } else { expectedSum - sum }
+    assert(difference < 0.00001, "coordinate numeric checksum")
+    std::println(std::sprintf("typed features=%d rings=%d points=%d coordinates=%d float_sum_checked=1", value.features.len(), rings, points, coordinates))
+}
+
+func main() {
+    args := std::env::args()
+    if args.len() != 7 { panic("usage: corpus <check|run|audit> <dom|typed|typed-validated> <file> <count> <samples> <expected-sum>") }
+    action := args.at(1)
+    mode := args.at(2)
+    assert(isDom(mode) || mode == "typed" || mode == "typed-validated", "unknown mode")
+    input := std::fs::readToString(args.at(3)).unwrap()
+    assert(input.byteLen() <= MAX_BYTES, "benchmark input exceeds 100 MiB")
+    if action == "check" { check(input, mode, double::parse(args.at(6)).unwrap()); return }
+    count := uint64::parse(args.at(4)).unwrap()
+    samples := uint64::parse(args.at(5)).unwrap()
+    assert(count > 0 && samples > 0, "positive counts")
+    std::hint::blackBox(operation(input, mode))
+    std::runtime::collect()
+    assert(samples <= 20, "at most 20 samples")
+    var times: [uint64; 20] = [0; 20]
+    var checksums: [uint64; 20] = [0; 20]
+    before := std::runtime::gcStats()
+    var sample: uint64 = 0
+    while sample < samples {
+        var checksum: uint64 = 0
+        start := std::time::Instant::now()
+        var i: uint64 = 0
+        while i < count { checksum += operation(input, mode); i += 1 }
+        elapsed := start.elapsed()
+        ns := elapsed.seconds() * 1000000000_u64 + elapsed.subsecNanos() as uint64
+        times[sample as usize] = ns
+        checksums[sample as usize] = checksum
+        sample += 1
+    }
+    after := std::runtime::gcStats()
+    if action == "run" {
+        sample = 0
+        while sample < samples {
+            std::println(std::sprintf("sample ns=%d ops=%d checksum=%d", *times.at(sample as usize), count, *checksums.at(sample as usize)))
+            sample += 1
+        }
+    }
+    std::println(std::sprintf("stats ops=%d allocated_bytes=%d collections=%d pause_ns=%d heap_bytes=%d", count * samples, after.allocatedBytes - before.allocatedBytes, after.collections - before.collections, after.totalPauseNanos - before.totalPauseNanos, after.heapBytes))
+}

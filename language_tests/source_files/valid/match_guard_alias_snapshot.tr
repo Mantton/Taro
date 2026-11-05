@@ -1,0 +1,25 @@
+// Unguarded matches read a place directly. A guard may change the variant
+// through an alias, so subsequent pattern projections must use a value snapshot.
+enum Choice { case number(int64); case pair(int64, int64) }
+func change(_ value: &Choice) -> bool { *value = .pair(90, 91); false }
+func guarded(_ value: &Choice) -> int64 {
+    match value {
+        case .number(n) if change(value) => n
+        case .number(n) => n
+        case .pair(a, _) => a
+    }
+}
+func main() {
+    var value: Choice = .number(7)
+    assert(guarded(&value) == 7, "guard fallback reads the original payload snapshot")
+    total := match value {
+        case .pair(a, b) => { value = .number(99); a + b }
+        case .number(n) => n
+    }
+    assert(total == 181, "value bindings survive replacement of the matched source")
+    current := match &value {
+        case .number(n) => n
+        case .pair(a, _) => a
+    }
+    assert(current == 99, "unguarded reference targets observe their current value")
+}

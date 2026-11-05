@@ -1,0 +1,3 @@
+func main() {
+    var fabricated: std::runtime::Cleanup = std::runtime::Cleanup { token: 2 }
+}

@@ -1,0 +1,13 @@
+import std::mem::Span
+
+func forge(_ pointer: *const int32) {
+    var view: Span[int32] = Span[int32] { ptr: pointer, len: 1 }
+    var value: int32 = *view.at(0)
+}
+
+func forgeWritable(_ pointer: *mut int32) {
+    var view: Span[int32] = Span[int32] { ptr: pointer, len: 1 }
+    *view.at(0) = 7
+}
+
+func main() {}

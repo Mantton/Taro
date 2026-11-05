@@ -1,0 +1,3 @@
+enum State { case tuple(int32) }
+func identity[T](_ value: T) -> T { value }
+func main() { var value: State = identity(.tuple {}) }

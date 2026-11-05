@@ -1,0 +1,9 @@
+// Ordinary compilation preserves value copies; the opt-in vet command reports them.
+@NoCopy
+struct State { value: int32 }
+func main() {
+    var original = State { value: 1 }
+    var copied = original
+    copied.value = 2
+    assert(original.value == 1 && copied.value == 2, "NoCopy is advisory")
+}

@@ -1,0 +1,14 @@
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: panic cannot cross a foreign callback boundary
+// EXPECT_STDERR_CONTAINS: callback-boundary
+extern "C" {
+    unsafe func qsort(_ base: *mut uint8, _ count: usize, _ width: usize, _ compare: (*const uint8, *const uint8) -> int32)
+}
+func compare(_ left: *const uint8, _ right: *const uint8) -> int32 {
+    defer { print("callback cleanup\n") }
+    panic("callback-boundary")
+}
+func main() {
+    var values: [int32; 2] = [2, 1]
+    unsafe { qsort(&values[0] as *mut uint8, 2 as usize, 4 as usize, compare) }
+}

@@ -1,0 +1,3 @@
+enum Shape { case rect { width: int32; height: int32 } }
+func update(_ base: Shape) -> Shape { .rect { width: 1, ..base } }
+func main() {}

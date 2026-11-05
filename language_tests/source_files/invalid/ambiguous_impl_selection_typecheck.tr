@@ -6,15 +6,15 @@ struct AmbBox[T] {
     value: T
 }
 
-impl AmbA for int32 {}
-impl AmbB for int32 {}
+conform int32 to AmbA {}
+conform int32 to AmbB {}
 
-impl[T: AmbA] AmbMarker for AmbBox[T] {}
-impl[T: AmbB] AmbMarker for AmbBox[T] {}
+conform[T: AmbA] AmbBox[T] to AmbMarker {}
+conform[T: AmbB] AmbBox[T] to AmbMarker {}
 
 func requireAmbMarker[T: AmbMarker](_ value: T) {}
 
 func main() {
-    let value = AmbBox[int32] { value: 1 }
+    value := AmbBox[int32] { value: 1 }
     requireAmbMarker(value)
 }

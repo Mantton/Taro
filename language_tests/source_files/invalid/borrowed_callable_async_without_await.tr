@@ -1,0 +1,6 @@
+func tick() async {}
+func borrowed[F: AsyncFn() -> int32](_ callback: &F) -> &F { callback }
+func main() {
+    operation := () => { await tick(); 7_i32 }
+    borrowed(&operation)()
+}

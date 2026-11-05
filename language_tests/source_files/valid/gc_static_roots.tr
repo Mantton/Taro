@@ -1,27 +1,66 @@
-// Typed static roots retain managed values across collections.
-static var STATIC_TEXT: string = ""
-
-func seedStaticText() {
-    STATIC_TEXT = std.sprintf("static root %v", 12345)
+// Managed values held only by statics are roots: lists, class handles,
+// strings and erased values survive forced collection (G53).
+extern "C" {
+    unsafe func __gc__test_probe_create(_ target: *const uint8) -> *mut uint8
+    unsafe func __gc__test_collect_probe_is_live(_ probe: *mut uint8) -> bool
+}
+func collect() {
+    probe := unsafe { __gc__test_probe_create(0 as *const uint8) }
+    var _ = unsafe { __gc__test_collect_probe_is_live(probe) }
 }
 
-func churnAllocations() {
-    var i: usize = 0
-    var total: usize = 0
-    while i < 50000 {
-        let rendered = std.sprintf("churn %v", i)
-        total = total + std.string.stringLen(rendered)
-        i += 1
+final class Counter { count: int64 }
+extend Counter { init(_ count: int64) { self.count = count } }
+
+interface Labeled {
+    func label() -> string
+}
+struct Tag { text: string }
+conform Tag to Labeled {
+    func label() -> string { self.text }
+}
+
+static var NAMES: [string] = []
+static var COUNTER: Counter = Counter(0)
+static var MESSAGE: string = ""
+static var LABEL: (any Labeled)? = .none
+static var LAZY_TEXT: string = "lazy " + "static"
+
+func churn() -> int64 {
+    var total: int64 = 0
+    var round: int64 = 0
+    while round < 200 {
+        var scratch: [string] = []
+        scratch.append("scratch " + "value")
+        total += scratch.len() as int64
+        round += 1
     }
-    assert(total > 0, "allocation churn should run")
+    total
+}
+
+func fill() -> *mut uint8 {
+    NAMES.append("first " + "name")
+    NAMES.append("second " + "name")
+    COUNTER = Counter(41)
+    MESSAGE = "static " + "message"
+    LABEL = .some(Tag { text: "erased " + "label" })
+    unsafe { __gc__test_probe_create(std::string::stringData(MESSAGE)) }
 }
 
 func main() {
-    seedStaticText()
-    std.runtime.collect()
-    churnAllocations()
-    std.runtime.collect()
-
-    assert(STATIC_TEXT == "static root 12345", "static GC root should retain formatted string")
-    print("PASS: GC static roots\n")
+    probe := fill()
+    collect()
+    var _ = churn()
+    collect()
+    assert(unsafe { __gc__test_collect_probe_is_live(probe) }, "a string held by a static stays live")
+    std::testing::assertEqual(NAMES.len(), 2 as usize, "a static list keeps its elements")
+    std::testing::assertEqual(*NAMES.at(1), "second name", "static list elements survive collection")
+    COUNTER.count += 1
+    std::testing::assertEqual(COUNTER.count, 42, "a static class handle keeps its object")
+    std::testing::assertEqual(MESSAGE, "static message", "a static string survives collection")
+    std::testing::assertEqual(LABEL.unwrap().label(), "erased label", "a static erased value survives collection")
+    std::testing::assertEqual(LAZY_TEXT, "lazy static", "a lazy static initializer result survives collection")
+    collect()
+    std::testing::assertEqual(LAZY_TEXT, "lazy static", "a published lazy static stays rooted")
+    print("PASS: statics root managed values\n")
 }

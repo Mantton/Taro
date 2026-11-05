@@ -1,0 +1,15 @@
+struct Item { values: List[usize] }
+extend Item {
+    func training() -> &List[usize] { &self.values }
+}
+func main() {
+    var first: List[Item] = [Item { values: [0] }]
+    var seen: List[usize] = [0]
+    var index: usize = 0
+    while index < 1 {
+        source := first[index].training()[index]
+        seen[source] += 1
+        index += 1
+    }
+    assert(seen[0] == 1, "nested key")
+}

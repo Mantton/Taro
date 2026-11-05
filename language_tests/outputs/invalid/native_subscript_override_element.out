@@ -1,0 +1,4 @@
+error: subscript override must preserve the element type exactly
+ -> language_tests/source_files/invalid/native_subscript_override_element.tr:6:24
+	extend Child { override subscript(index: usize) -> SpecificElement { get { self.specific } } }
+	                        ^^^^^^^^^

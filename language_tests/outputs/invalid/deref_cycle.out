@@ -1,0 +1,4 @@
+error: Deref lookup has a cycle or exceeds 32 steps at Loop
+ -> language_tests/source_files/invalid/deref_cycle.tr:6:36
+	func read(_ value: Loop) -> int32 { value.missing }
+	                                    ^^^^^^^^^^^^^

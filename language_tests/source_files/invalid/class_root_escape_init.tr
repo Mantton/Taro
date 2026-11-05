@@ -1,0 +1,4 @@
+func publish[T](_ value: &T) {}
+class Document { revision: int32 }
+extend Document { init() { self.revision = 1; publish(&self) } }
+func main() { var document: Document = Document() }

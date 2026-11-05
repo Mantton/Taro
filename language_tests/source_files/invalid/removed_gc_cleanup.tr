@@ -1,0 +1,1 @@
+func main() { removed := std::runtime::addCleanup(1, (), () => {}) }

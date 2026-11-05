@@ -1,0 +1,66 @@
+// TEST
+import std::weak::Weak
+extern "C" {
+    unsafe func __gc__test_probe_create(_ target: *const uint8) -> *mut uint8
+    unsafe func __gc__test_collect_probe_is_live(_ probe: *mut uint8) -> bool
+}
+func collectWeakValues() {
+    probe := unsafe { __gc__test_probe_create(0 as *const uint8) }
+    var _ = unsafe { __gc__test_collect_probe_is_live(probe) }
+}
+struct WeakOwner { value: int32 }
+struct WeakPair { first: int32; second: int32 }
+static var WEAK_STATIC_VALUE: int32 = 91
+@noinline
+func expiredWeak() -> Weak[WeakOwner] {
+    owner := WeakOwner { value: 42 }
+    return Weak[WeakOwner]::new(&owner)
+}
+@noinline
+func expiredInteriorWeak() -> Weak[int32] {
+    owner := WeakPair { first: 3, second: 5 }
+    return Weak[int32]::new(&owner.second)
+}
+@noinline
+func liveSnapshot() -> (Weak[WeakOwner], &WeakOwner) {
+    owner := WeakOwner { value: 42 }
+    original := &owner
+    weak := Weak[WeakOwner]::new(original)
+    snapshot := weak.value().unwrap()
+    assert(original.value == 42, "original remains strong through weak upgrade")
+    return (weak, snapshot)
+}
+@test
+func weakTracksLiveStorageAndStrongSnapshots() {
+    pair := liveSnapshot()
+    collectWeakValues()
+    assert(pair.0.value().isSome(), "a strong snapshot keeps the target alive")
+    assert(pair.1.value == 42, "the snapshot survives collection")
+    weak := pair.0
+    collectWeakValues()
+    assert(weak.value().isNone(), "target clears after the last strong snapshot use")
+}
+@test
+func copiedWeakCellsClearWithoutRetainingTargets() {
+    weak := expiredWeak()
+    copy := weak
+    collectWeakValues()
+    assert(weak.value().isNone() && copy.value().isNone(), "weak copies share clearing state")
+    collectWeakValues()
+    assert(copy.value().isNone(), "a cleared weak reference cannot resurrect its target")
+}
+@test
+func weakSupportsInteriorAndStaticTargets() {
+    pair := WeakPair { first: 3, second: 5 }
+    strong := &pair
+    weak := Weak[int32]::new(&pair.second)
+    collectWeakValues()
+    assert(*weak.value().unwrap() == 5, "weak interior reference retains the original address")
+    assert(strong.first == 3, "the containing allocation stays strongly reachable")
+    expired := expiredInteriorWeak()
+    collectWeakValues()
+    assert(expired.value().isNone(), "weak interior reference clears with its allocation")
+    permanent := Weak[int32]::new(&WEAK_STATIC_VALUE)
+    collectWeakValues()
+    assert(*permanent.value().unwrap() == 91, "static targets remain available")
+}

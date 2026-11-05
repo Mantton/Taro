@@ -1,0 +1,4 @@
+error: named patterns require a struct or named enum variant
+ -> language_tests/source_files/invalid/named_pattern_class.tr:4:24
+	    match object { case Object { value } => {}; }
+	                        ^^^^^^^^^^^^^^^^

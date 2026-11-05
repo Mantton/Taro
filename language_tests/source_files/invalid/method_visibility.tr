@@ -4,22 +4,22 @@ struct Secret {
     value: int32
 }
 
-impl Secret {
-    private func hidden(&self) -> int32 {
+extend Secret {
+    private func hidden() -> int32 {
         self.value
     }
 
-    public func visible(&self) -> int32 {
+    public func visible() -> int32 {
         self.hidden()
     }
 }
 
 func main() {
-    let s = Secret { value: 42 }
+    s := Secret { value: 42 }
 
     // This should work
-    let _ = s.visible()
+    var _ = s.visible()
 
     // This should fail - calling private method from outside
-    let _ = s.hidden()
+    var _ = s.hidden()
 }

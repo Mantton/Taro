@@ -5,5 +5,5 @@ func main() {
         total += 1
         iteration += 1
     }
-    std.printf("%v\n", total)
+    std::printf("%v\n", total)
 }

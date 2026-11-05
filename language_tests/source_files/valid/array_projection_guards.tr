@@ -1,0 +1,24 @@
+
+// Reviewed primitives preserve their array input's dependency. Unsafe is
+// needed only because the primitive itself does not perform a bounds check.
+extern "taro_intrinsic" {
+    unsafe func __intrinsic_array_read_unchecked(_ input: &[int32; 2], _ index: usize) -> &int32
+}
+
+func element(_ input: &[int32; 2], _ index: usize) -> &int32 {
+    assert(index < 2, "array projection")
+    unsafe { __intrinsic_array_read_unchecked(input, index) }
+}
+
+func main() {
+    var values: [int32; 2] = [3_i32, 7_i32]
+    var saved: &int32 = element(&values, 1)
+    assert(*saved == 7, "array projection")
+    values[1] = 8 // Saved references share this element.
+    var changed: &int32 = element(&values, 1)
+    *changed = 9
+    assert(*changed == 9, "array projection")
+    values[1] = 10
+    assert(values[1] == 10, "array projection")
+    print("array projections ok\n")
+}

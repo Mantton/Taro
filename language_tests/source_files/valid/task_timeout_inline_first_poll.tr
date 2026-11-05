@@ -1,0 +1,126 @@
+// withTimeout gives its operation a first poll right away, on the caller's stack.
+// That operation is still a task of its own, and nothing else may reveal the change.
+func nextValue(_ value: int32) async -> int32 {
+    await std::task::yieldNow()
+    return value + 1
+}
+
+func completesImmediately() async {
+    result := await std::task::withTimeout(std::time::Duration::fromSeconds(30), () async => { return 41 as int32 })
+    assert(result.unwrap() == 41, "an operation that never waits returns its value")
+}
+
+func waitsAfterFirstPoll() async {
+    result := await std::task::withTimeout(std::time::Duration::fromSeconds(30), () async => {
+        return await nextValue(1)
+    })
+    assert(result.unwrap() == 2, "an operation that waits finishes through the normal path")
+}
+
+func panicsInFirstPoll() async {
+    result := await std::task::withTimeout(std::time::Duration::fromSeconds(30), () async -> int32 => {
+        std::panic::panic("planned failure")
+        return 0
+    })
+    assert(result.isErr(), "a panic ends the operation")
+    assert((await nextValue(1)) == 2, "the caller keeps running after its operation panics")
+}
+
+func nestsTimeouts() async {
+    result := await std::task::withTimeout(std::time::Duration::fromSeconds(30), () async => {
+        inner := await std::task::withTimeout(std::time::Duration::fromSeconds(30), () async => {
+            return await nextValue(10)
+        })
+        return inner.unwrap() + 1
+    })
+    assert(result.unwrap() == 12, "an operation can use a timeout of its own")
+}
+
+func spawnsFromFirstPoll() async {
+    result := await std::task::withTimeout(std::time::Duration::fromSeconds(30), () async => {
+        child := std::task::spawn(() async => { return await nextValue(20) })
+        return (await child.result()).unwrap()
+    })
+    assert(result.unwrap() == 21, "an operation can spawn and wait in its first poll")
+}
+
+func collectsInFirstPoll() async {
+    kept := std::collections::List[string]::new()
+    kept.append(std::sprintf("%s%s", "kept ", "value"))
+    result := await std::task::withTimeout(std::time::Duration::fromSeconds(30), () async => {
+        made := std::sprintf("%s%s", "made ", "here")
+        std::runtime::collect()
+        await std::task::yieldNow()
+        std::runtime::collect()
+        return made
+    })
+    std::runtime::collect()
+    assert(result.unwrap() == "made here", "the operation's own values survive a collection")
+    assert(kept[0] == "kept value", "the caller's values survive a collection in its operation")
+}
+
+func millisSince(_ started: std::time::Instant) -> uint64 {
+    elapsed := started.elapsed()
+    return elapsed.seconds() * 1000 + ((elapsed.subsecNanos() / 1000000) as uint64)
+}
+
+func busyFor(_ millis: uint64) {
+    started := std::time::Instant::now()
+    while millisSince(started) < millis {}
+}
+
+func expiresDuringFirstPoll() async {
+    // A timeout counts from the call, however long the first poll takes.
+    started := std::time::Instant::now()
+    late := await std::task::withTimeout(std::time::Duration::fromSeconds(1), () async -> int32 => {
+        busyFor(1100)
+        await std::task::sleep(std::time::Duration::fromSeconds(3600))
+        return 0
+    })
+    assert(late.isErr(), "a waiting operation loses to a deadline that passed in its first poll")
+    assert(millisSince(started) < 3000, "and the caller doesn't wait for a second timeout")
+}
+
+func cancelsWhileOperationWaits() async {
+    entered := std::sync::atomic::Bool::new(false)
+    caller := std::task::spawn(() async => {
+        return await std::task::withTimeout(std::time::Duration::fromSeconds(3600), () async -> int32 => {
+            entered.store(true)
+            await std::task::sleep(std::time::Duration::fromSeconds(3600))
+            return 0
+        })
+    })
+    while !entered.load() { await std::task::yieldNow() }
+    caller.cancel()
+    assert((await caller.result()).isErr(), "cancelling the caller reaches its waiting operation")
+}
+
+func cancelsCallerAfterOperation() async {
+    finished := std::sync::atomic::Bool::new(false)
+    reachedEnd := std::sync::atomic::Bool::new(false)
+    caller := std::task::spawn(() async => {
+        var _ = await std::task::withTimeout(std::time::Duration::fromSeconds(30), () async => { return 1 as int32 })
+        finished.store(true)
+        // The caller's own cancellation state must be back in place by now.
+        while true { await std::task::yieldNow() }
+        reachedEnd.store(true)
+        return 0 as int32
+    })
+    while !finished.load() { await std::task::yieldNow() }
+    caller.cancel()
+    assert((await caller.result()).isErr(), "the caller stays cancellable after its operation's poll")
+    assert(!reachedEnd.load(), "and stops where it was cancelled")
+}
+
+func main() async {
+    await completesImmediately()
+    await waitsAfterFirstPoll()
+    await panicsInFirstPoll()
+    await nestsTimeouts()
+    await spawnsFromFirstPoll()
+    await collectsInFirstPoll()
+    await cancelsWhileOperationWaits()
+    await cancelsCallerAfterOperation()
+    await expiresDuringFirstPoll()
+    println("PASS: an operation's inline first poll is indistinguishable from a queued one")
+}

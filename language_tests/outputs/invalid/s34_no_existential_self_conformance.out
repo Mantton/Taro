@@ -1,0 +1,4 @@
+error: type 'any Readable' does not conform to interface 'Readable'
+ -> language_tests/source_files/invalid/s34_no_existential_self_conformance.tr:7:22
+	    var read: int32 = inspect[any Readable](&boxed) // Error: explicitly chosen any Readable does not conform to Readable.
+	                      ^^^^^^^^^^^^^^^^^^^^^

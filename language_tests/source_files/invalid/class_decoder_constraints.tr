@@ -1,0 +1,7 @@
+class Restricted: std::encoding::Decodable { value: int32 }
+extend Restricted {
+    public required init[D: std::encoding::Decoder & Clone](from decoder: D) -> Result[Self, D::Error] {
+        self.value = decoder.decodeInt32()!
+    }
+}
+func main() {}

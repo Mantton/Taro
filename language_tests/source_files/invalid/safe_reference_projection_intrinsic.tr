@@ -1,0 +1,4 @@
+extern "taro_intrinsic" {
+    func __intrinsic_ref_project(_ source: &int32, _ data: *const uint8) -> &uint8
+}
+func main() {}

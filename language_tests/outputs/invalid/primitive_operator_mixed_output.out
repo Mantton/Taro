@@ -1,0 +1,4 @@
+error: type 'int32' does not conform to interface 'Add[int32, Output = int64]'
+ -> language_tests/source_files/invalid/primitive_operator_mixed_output.tr:5:4
+	    require(value)
+	    ^^^^^^^

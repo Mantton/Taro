@@ -1,0 +1,9 @@
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: panic: out of memory
+// EXPECT_STDERR_CONTAINS: taro stack:
+// An unrecovered GC heap exhaustion reports a Taro panic (G58a).
+func main() {
+    var bytes: [uint8] = []
+    bytes.reserve(1 << 56)
+    print("unreachable\n")
+}

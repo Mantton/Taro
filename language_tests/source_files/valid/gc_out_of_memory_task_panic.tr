@@ -1,0 +1,25 @@
+// ENV: TARO_WORKERS=1
+// Exhausting the GC heap is a Taro panic: a task that cannot allocate fails
+// with "out of memory" and the rest of the program keeps allocating (G58a).
+func exhaust() async -> int64 {
+    var bytes: [uint8] = []
+    // Passes the list's capacity check but no OS can map it.
+    bytes.reserve(1 << 56)
+    return 1
+}
+func main() async {
+    task := std::task::spawn(() async => { await exhaust() })
+    match await task.result() {
+        case .ok(_) => std::panic::panic("an unmappable reservation succeeded")
+        case .err(.panicked(payload)) => std::testing::assertEqual(payload.message(), "out of memory", "out-of-memory panic message")
+        case .err(.cancelled) => std::panic::panic("the task was cancelled")
+    }
+    var after: [string] = []
+    var i = 0
+    while i < 1000 {
+        after.append("still " + "allocating")
+        i += 1
+    }
+    std::testing::assertEqual(after.len(), 1000 as usize, "allocation continues after recovery")
+    print("PASS: out-of-memory is a recoverable task panic\n")
+}

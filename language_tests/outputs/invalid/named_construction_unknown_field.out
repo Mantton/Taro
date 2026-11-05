@@ -1,0 +1,4 @@
+error: no field 'depth' on type Shape
+ -> language_tests/source_files/invalid/named_construction_unknown_field.tr:2:50
+	func main() { var shape = Shape::rect { width: 1, depth: 2 } }
+	                                                  ^^^^^^

@@ -1,0 +1,9 @@
+struct Counter {}
+
+extend Counter {
+    static func owned(self) {}
+    static func shared(&self) {}
+    static func exclusive(&self) {}
+}
+
+func main() {}

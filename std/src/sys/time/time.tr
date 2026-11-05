@@ -1,26 +1,26 @@
 @cfg(family("unix"))
-import std.sys.time.unix.*
+import std::sys::time::unix::*
 
 @cfg(family("unix"))
-export std.sys.time.unix.{monotonicNow, realtimeNow}
+export std::sys::time::unix::{monotonicNow, realtimeNow}
 
 @cfg(family("windows"))
-import std.sys.time.windows.*
+import std::sys::time::windows::*
 
 @cfg(family("windows"))
-export std.sys.time.windows.{monotonicNow, realtimeNow}
+export std::sys::time::windows::{monotonicNow, realtimeNow}
 
 public struct MonotonicTime {
     secs: uint64
     nanos: uint32
 }
 
-impl MonotonicTime {
-    public func seconds(&self) -> uint64 {
+extend MonotonicTime {
+    public func seconds() -> uint64 {
         return self.secs
     }
 
-    public func subsecNanos(&self) -> uint32 {
+    public func subsecNanos() -> uint32 {
         return self.nanos
     }
 }
@@ -30,12 +30,12 @@ public struct RealtimeTime {
     nanos: uint32
 }
 
-impl RealtimeTime {
-    public func seconds(&self) -> int64 {
+extend RealtimeTime {
+    public func seconds() -> int64 {
         return self.secs
     }
 
-    public func subsecNanos(&self) -> uint32 {
+    public func subsecNanos() -> uint32 {
         return self.nanos
     }
 }

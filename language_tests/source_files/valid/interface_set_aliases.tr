@@ -1,17 +1,17 @@
 interface InterfaceSetReadable {
-    func read(&self) -> int32
+    func read() -> int32
 }
 
 interface InterfaceSetWritable {
-    func written(&self) -> int32
+    func written() -> int32
 }
 
 interface InterfaceSetBox[Value] {
-    func boxed(&self) -> Value
+    func boxed() -> Value
 }
 
 interface InterfaceSetNamed[Value] {
-    func named(&self) -> Value
+    func named() -> Value
 }
 
 type InterfaceSetReadWrite = InterfaceSetReadable & InterfaceSetWritable
@@ -22,35 +22,35 @@ type InterfaceSetGeneric[Value] = InterfaceSetBox[Value] & InterfaceSetNamed[Val
 
 interface InterfaceSetExtended: InterfaceSetNested {}
 
-struct InterfaceSetValue: Copy {
+struct InterfaceSetValue {
     value: int32
 }
 
-impl InterfaceSetReadable for InterfaceSetValue {
-    func read(&self) -> int32 {
+conform InterfaceSetValue to InterfaceSetReadable {
+    func read() -> int32 {
         self.value
     }
 }
 
-impl InterfaceSetWritable for InterfaceSetValue {
-    func written(&self) -> int32 {
+conform InterfaceSetValue to InterfaceSetWritable {
+    func written() -> int32 {
         self.value + 1
     }
 }
 
-impl InterfaceSetBox[int32] for InterfaceSetValue {
-    func boxed(&self) -> int32 {
+conform InterfaceSetValue to InterfaceSetBox[int32] {
+    func boxed() -> int32 {
         self.value
     }
 }
 
-impl InterfaceSetNamed[int32] for InterfaceSetValue {
-    func named(&self) -> int32 {
+conform InterfaceSetValue to InterfaceSetNamed[int32] {
+    func named() -> int32 {
         self.value + 2
     }
 }
 
-impl InterfaceSetExtended for InterfaceSetValue {}
+conform InterfaceSetValue to InterfaceSetExtended {}
 
 func interfaceSetBound[Value: InterfaceSetNested](_ value: Value) -> int32 {
     value.read() + value.written()
@@ -93,5 +93,5 @@ func main() {
     assert(interfaceSetExistential(InterfaceSetValue { value: 20 }) == 41, "existential alias")
     assert(interfaceSetBound(interfaceSetOpaque(20)) == 41, "opaque alias")
     assert(interfaceSetExtended(InterfaceSetValue { value: 20 }) == 41, "superinterface alias")
-    std.print("ok\n")
+    std::print("ok\n")
 }

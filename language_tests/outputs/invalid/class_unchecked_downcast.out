@@ -1,0 +1,4 @@
+error: expected Derived, found Base
+ -> language_tests/source_files/invalid/class_unchecked_downcast.tr:3:41
+	func invalid(_ value: Base) -> Derived { value as Derived }
+	                                         ^^^^^^^^^^^^^^^^

@@ -1,0 +1,8 @@
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_CONTAINS: initialization
+// EXPECT_STDERR_NOT_CONTAINS: invalid LLVM
+// EXPECT_STDERR_NOT_CONTAINS: panicked
+static var saved: Optional[any Fn() -> int32] = .none
+class Example { value: int32 }
+extend Example { init() { self.value = 1; saved = .some(() => self.value) }; }
+func main() { value := Example() }

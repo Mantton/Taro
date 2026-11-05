@@ -1,0 +1,25 @@
+struct Selection { value: &int32 }
+struct MutableSelection { value: &int32 }
+extend Selection {
+    func get() -> &int32 { self.value }
+}
+extend MutableSelection {
+    func get() -> &int32 { &*self.value }
+}
+func read(_ selection: &Selection) -> &int32 { selection.get() }
+func edit(_ selection: &MutableSelection) -> &int32 { selection.get() }
+func main() {
+    var value: int32 = 7
+    var selection: Selection = Selection { value: &value }
+    var saved: &int32 = read(&selection)
+    assert(*saved == 7, "typed field return keeps its input dependency")
+    value = 8
+
+    var mutable: MutableSelection = MutableSelection { value: &value }
+    var editing: &int32 = edit(&mutable)
+    *editing += 1
+    assert(*editing == 9, "mutable field projection preserves exclusive access")
+    value = 10
+    assert(value == 10, "last use releases the retained data dependency")
+    print("typed view returns ok\n")
+}

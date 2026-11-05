@@ -1,6 +1,6 @@
-import std.io.Error
-import std.result.Result
-import std.mem.{Span, MutableSpan}
+import std::io::Error
+import std::result::Result
+import std::mem::{Span}
 
 /// The `Reader` interface allows for reading bytes from a source.
 public interface Reader {
@@ -8,7 +8,7 @@ public interface Reader {
     /// number of bytes that were read.
     ///
     /// If 0 is returned, it indicates that the end of the file has been reached.
-    public func read(&mut self, _ buf: MutableSpan[uint8]) -> Result[usize, Error]
+    public func read(_ buf: Span[uint8]) -> Result[usize, Error]
 }
 
 /// The `Writer` interface allows for writing bytes into a destination.
@@ -17,26 +17,35 @@ public interface Writer {
     /// how many bytes were written.
     ///
     /// If an error occurs, no bytes may have been written or only a partial amount.
-    public func write(&mut self, _ buf: Span[uint8]) -> Result[usize, Error]
-    
+    public func write(_ buf: Span[uint8]) -> Result[usize, Error]
+
+    /// Writes a complete immutable string. The default gives byte Writers an
+    /// independent writable copy, including when they retain or modify spans.
+    /// Storage-backed Writers can override this to append without a temporary.
+    public func writeString(_ text: string) -> Result[(), Error] {
+        if text.byteLen() == 0 { return .ok(()) }
+        bytes := Span[uint8]::fromString(&text)
+        return std::io::writeAll(self, bytes)
+    }
+
     /// Flushes this output stream, ensuring that all intermediately buffered
     /// contents reach their destination.
-    public func flush(&mut self) -> Result[(), Error]
+    public func flush() -> Result[(), Error]
 }
 
 /// The `AsyncReader` interface allows async reads into byte buffers.
 public interface AsyncReader {
     /// Parses up to `buf.len()` bytes into `buf`, returning the count.
-    public func read(&self, _ buf: MutableSpan[uint8]) async -> Result[usize, Error]
+    public func read(_ buf: Span[uint8]) async -> Result[usize, Error]
 }
 
 /// The `AsyncWriter` interface allows async writes from byte buffers.
 public interface AsyncWriter {
     /// Writes some or all bytes from `buf`, returning the written byte count.
-    public func write(&self, _ buf: Span[uint8]) async -> Result[usize, Error]
+    public func write(_ buf: Span[uint8]) async -> Result[usize, Error]
 
     /// Flushes buffered output state to the destination.
-    public func flush(&self) async -> Result[(), Error]
+    public func flush() async -> Result[(), Error]
 }
 
 /// Enumeration of possible methods to seek within an I/O object.
@@ -54,5 +63,5 @@ public enum SeekFrom {
 public interface Seeker {
     /// Move the cursor to an offset, based on the specified `SeekFrom` instruction.
     /// Returns the new position from the start of the stream if the operation was successful.
-    public func seek(&mut self, _ pos: SeekFrom) -> Result[isize, Error]
+    public func seek(_ pos: SeekFrom) -> Result[isize, Error]
 }

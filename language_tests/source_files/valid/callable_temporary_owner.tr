@@ -1,0 +1,44 @@
+struct Record { value: int32 }
+func invoke[F: Fn[&Record, &int32]](_ project: F) {
+    var saved: &int32 = project(&Record { value: 9 })
+    assert(*saved == 9, "generic callback initializer retains its argument owner")
+}
+func invokeMut[F: Fn[&Record, &int32]](_ project: F) {
+    var callback: F = project
+    var saved: &int32 = callback(&Record { value: 11 })
+    assert(*saved == 11, "mutable callback retains its argument owner")
+}
+func invokeOnce[F: Fn[&Record, &int32]](_ project: F) {
+    var saved: &int32 = project(&Record { value: 13 })
+    assert(*saved == 13, "consuming callback retains its argument owner")
+}
+func projectTwice[F: Fn[&Record, &int32]](_ project: F) {
+    var callback: F = project
+    var first: Record = Record { value: 17 }
+    var second: Record = Record { value: 19 }
+    var left: &int32 = callback(&first)
+    var right: &int32 = callback(&second)
+    *left += 1
+    *right += 2
+    assert(*left == 18 && *right == 21, "separate input loans survive successive FnMut calls")
+}
+struct Token { value: int32 }
+func main() {
+    project := (input: &Record) => &input.value
+    var saved: &int32 = project(&Record { value: 7 })
+    assert(*saved == 7, "closure initializer retains its argument owner")
+    invoke((input: &Record) => &input.value)
+    var calls: int32 = 0
+    invokeMut((input: &Record) => {
+        calls += 1
+        &input.value
+    })
+    assert(calls == 1, "mutable callback executes once")
+    projectTwice((input: &Record) => &input.value)
+    var token: Token = Token { value: 1 }
+    invokeOnce((input: &Record) => {
+        var consumed: Token = token
+        assert(consumed.value == 1, "owned callback capture transfers once")
+        &input.value
+    })
+}

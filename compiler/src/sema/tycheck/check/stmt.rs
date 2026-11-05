@@ -7,13 +7,11 @@ impl<'ctx> Checker<'ctx> {
                 self.check_local_declaration(decl);
             }
             hir::StatementKind::Expression(node) => {
-                let ty = if let Some(cs) = cs.as_mut() {
-                    let ty = self.synth_with_expectation(node, None, cs);
-                    cs.infer_cx.resolve_vars_if_possible(ty)
+                if let Some(cs) = cs.as_mut() {
+                    self.synth_with_expectation(node, None, cs);
                 } else {
-                    self.top_level_check(node, None)
-                };
-                self.warn_if_discarded_task(ty, node.span);
+                    self.top_level_check(node, None);
+                }
             }
             hir::StatementKind::Variable(node) => {
                 if let Some(cs) = cs.as_mut() {
@@ -34,15 +32,6 @@ impl<'ctx> Checker<'ctx> {
             } => {
                 self.check_guard(condition, else_block, cs.as_deref_mut());
             }
-        }
-    }
-
-    fn warn_if_discarded_task(&self, ty: Ty<'ctx>, span: Span) {
-        if self.task_inner_type(ty).is_some() {
-            self.gcx().dcx().emit_warning(
-                "unused Task is cancelled immediately; await `.result()`, call `.detach()`, or use `std.task.detached(...)` for explicit fire-and-forget work".into(),
-                Some(span),
-            );
         }
     }
 
@@ -185,7 +174,7 @@ impl<'ctx> Checker<'ctx> {
                     );
                 }
             }
-            TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => {
+            TyKind::Pointer(inner, _) | TyKind::Reference(inner) => {
                 self.check_opaque_type_usage(inner, span, true);
             }
             TyKind::Tuple(items) => {
@@ -212,12 +201,6 @@ impl<'ctx> Checker<'ctx> {
 
             if let Some(expression) = node.initializer.as_ref() {
                 let init_ty = self.synth_with_expectation(expression, Some(local_ty), &mut cs);
-                if matches!(node.pattern.kind, hir::PatternKind::Wildcard) {
-                    self.warn_if_discarded_task(
-                        cs.infer_cx.resolve_vars_if_possible(init_ty),
-                        expression.span,
-                    );
-                }
                 if node.ty.is_none()
                     && matches!(node.pattern.kind, hir::PatternKind::Wildcard)
                     && matches!(
@@ -239,10 +222,10 @@ impl<'ctx> Checker<'ctx> {
             }
 
             let scrutinee_id = node.initializer.as_ref().map(|e| e.id).unwrap_or(node.id);
-            self.check_pattern(&node.pattern, local_ty, scrutinee_id, &mut cs);
+            self.check_local_pattern(&node.pattern, local_ty, scrutinee_id, &mut cs);
             cs.solve_all();
 
-            self.commit_constraint_results(&cs);
+            self.commit_constraint_results(&mut cs);
         });
     }
 
@@ -255,13 +238,13 @@ impl<'ctx> Checker<'ctx> {
         }
 
         if let Some(expression) = node.initializer.as_ref() {
-            let init_ty = self.synth_with_expectation(expression, Some(local_ty), cs);
-            if matches!(node.pattern.kind, hir::PatternKind::Wildcard) {
-                self.warn_if_discarded_task(
-                    cs.infer_cx.resolve_vars_if_possible(init_ty),
-                    expression.span,
-                );
-            }
+            // A literal initializing an unannotated local is an array, as it is at
+            // the top level of a body. Here the local's unknown type must not read as
+            // a generic expectation, which would keep it open past the code that uses it.
+            let expectation = (node.ty.is_some()
+                || !matches!(expression.kind, hir::ExpressionKind::Array(_)))
+            .then_some(local_ty);
+            let init_ty = self.synth_with_expectation(expression, expectation, cs);
             if node.ty.is_none()
                 && matches!(node.pattern.kind, hir::PatternKind::Wildcard)
                 && matches!(
@@ -283,7 +266,7 @@ impl<'ctx> Checker<'ctx> {
         }
 
         let scrutinee_id = node.initializer.as_ref().map(|e| e.id).unwrap_or(node.id);
-        self.check_pattern(&node.pattern, local_ty, scrutinee_id, cs);
+        self.check_local_pattern(&node.pattern, local_ty, scrutinee_id, cs);
     }
 
     pub(super) fn check_loop(&self, block: &hir::Block, mut cs: Option<&mut Cs<'ctx>>) {

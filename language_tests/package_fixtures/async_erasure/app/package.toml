@@ -1,0 +1,5 @@
+[package]
+name = "github.com/taro-story/s38-async-app"
+kind = "executable"
+[require]
+"github.com/taro-story/s38-async-dep" = { path = "../dep", alias = "dep" }

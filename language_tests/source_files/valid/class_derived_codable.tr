@@ -1,0 +1,178 @@
+// TEST
+import std::encoding::{Codable, Decoder, Decodable}
+
+class DecodingPerson: Codable {
+    name: string
+    age: int32
+    nickname: string?
+}
+
+extend DecodingPerson {
+    init(_ name: string) { self.name = name; self.age = 99; self.nickname = .none }
+}
+
+@test
+func classDecodingBypassesUnrelatedInitializersAndKeepsErrors() {
+    value := std::json::decode[DecodingPerson]("{\"age\":37,\"skip\":[1,2],\"name\":\"Ada\"}").unwrap()
+    std::runtime::collect()
+    assert(value.name == "Ada" && value.age == 37 && value.nickname.isNone(), "fresh object initialized from decoded fields")
+    assert(std::json::encode(&value).unwrap() == "{\"name\":\"Ada\",\"age\":37,\"nickname\":null}", "class round trip")
+    match std::json::decode[DecodingPerson]("{\"name\":\"rooted\",\"age\":\"bad\"}") {
+        case .err(.codec(error)) => assert(error.path() == "$[\"age\"]", "partial decoding reports the field path")
+        case _ => panic("field type error expected")
+    }
+    match std::json::decode[DecodingPerson]("{\"age\":1}") {
+        case .err(.codec(error)) => assert(error.kind() == std::encoding::CodingErrorKind::missingField, "missing required field remains an error")
+        case _ => panic("missing name expected")
+    }
+}
+
+class DecodingBase[T]: Codable { value: T }
+extend[T] DecodingBase[T] { public init(_ value: T) { self.value = value } }
+class DecodingChild[T]: DecodingBase[List[T]] { extra: string = "child ".concat("default") }
+
+@test
+func inheritedClassDecoderConstructsTheRequestedSubclass() {
+    value := std::json::decode[DecodingChild[int32]]("{\"value\":[1,2],\"extra\":\"ignored\"}").unwrap()
+    var base: DecodingBase[List[int32]] = value
+    std::runtime::collect()
+    assert(value.value[1] == 2 && value.extra == "child default", "inherited decoder initializes the concrete subclass's defaults")
+    assert(base is DecodingChild[int32], "allocation uses the subclass descriptor")
+    assert(std::json::encode(&value).unwrap() == "{\"value\":[1,2]}", "inherited encoder omits added child fields")
+}
+
+class DecodingNode[T]: Codable { value: T; children: List[DecodingNode[T]] }
+
+@test
+func recursiveGenericClassDecodingKeepsValuesRooted() {
+    root := std::json::decode[DecodingNode[string]]("{\"value\":\"root\",\"children\":[{\"value\":\"leaf\",\"children\":[]}]}").unwrap()
+    std::runtime::collect()
+    assert(root.children[0].value == "leaf", "nested objects survive collection")
+    assert(std::json::encode(&root).unwrap() == "{\"value\":\"root\",\"children\":[{\"value\":\"leaf\",\"children\":[]}]}", "recursive round trip")
+}
+
+struct OpaqueBaseField {}
+class UncodedBase { ignored: OpaqueBaseField; stamp: int32 }
+extend UncodedBase { public init() { self.ignored = OpaqueBaseField {}; self.stamp = 42 } }
+final class NewlyCodable: UncodedBase, Codable { name: string }
+
+@test
+func newClassConformanceCallsAnUncodedBaseInitializer() {
+    value := std::json::decode[NewlyCodable]("{\"name\":\"Ada\"}").unwrap()
+    std::runtime::collect()
+    assert(value.stamp == 42 && value.name == "Ada", "non-Decodable base uses its designated init()")
+    assert(std::json::encode(&value).unwrap() == "{\"name\":\"Ada\"}", "new conformance describes this level only")
+}
+
+static var classDefaultCalls: int32 = 0
+func decodedClassDefault() -> int32 { classDefaultCalls += 1; return 7 }
+final class DefaultedCodec: Codable {
+    readonly fixed: int32 = decodedClassDefault()
+    replacement: int32 = decodedClassDefault()
+}
+
+@test
+func classDecoderEvaluatesDefaultsAndPreservesReadonlyPresets() {
+    classDefaultCalls = 0
+    value := std::json::decode[DefaultedCodec]("{\"fixed\":99,\"replacement\":42}").unwrap()
+    assert(value.fixed == 7 && value.replacement == 42 && classDefaultCalls == 2, "class defaults run, readonly presets are retained")
+    match std::json::decode[DefaultedCodec]("{}") {
+        case .err(.codec(error)) => assert(error.path() == "$[\"replacement\"]", "mutable non-optional defaults do not fill missing fields")
+        case _ => panic("missing replacement expected")
+    }
+}
+
+struct ManualClassWire: Decodable { value: int32 }
+class ManualDecoded: Decodable { value: int32; opaque: OpaqueBaseField }
+extend ManualDecoded {
+    public required init[D: Decoder](from decoder: D) -> Result[Self, D::Error] {
+        wire := ManualClassWire::decode(from: decoder)!
+        self.value = wire.value + 1
+        self.opaque = OpaqueBaseField {}
+    }
+}
+final class ManualDecodedChild: ManualDecoded { extra: int32 = 13 }
+
+@test
+func manualRequiredDecoderInitializersAreInherited() {
+    value := std::json::decode[ManualDecodedChild]("{\"value\":41}").unwrap()
+    std::runtime::collect()
+    assert(value.value == 42 && value.extra == 13, "custom decoder initializer keeps control through inheritance")
+}
+
+
+static var classDefaultOrder: string = ""
+func recordClassDefault(_ name: string) -> int32 {
+    classDefaultOrder = classDefaultOrder.concat(name)
+    return 7
+}
+class OrderedDecodedBase: Codable { value: int32 = recordClassDefault("base") }
+final class OrderedDecodedChild: OrderedDecodedBase { extra: int32 = recordClassDefault("child") }
+
+@test
+func inheritedDecoderEvaluatesSubclassDefaultsBeforeTheBaseDecoder() {
+    classDefaultOrder = ""
+    value := std::json::decode[OrderedDecodedChild]("{\"value\":42}").unwrap()
+    assert(classDefaultOrder == "childbase" && value.value == 42 && value.extra == 7, "default provider order follows class construction")
+}
+
+
+extend ManualDecoded {
+    public init(_ value: int32) { self.value = value; self.opaque = OpaqueBaseField {} }
+}
+final class ManualDecodedOverride: ManualDecoded { extra: int32 }
+extend ManualDecodedOverride {
+    public required override init[D: Decoder](from decoder: D) -> Result[Self, D::Error] {
+        wire := ManualClassWire::decode(from: decoder)!
+        super.init(wire.value + 1)
+        self.extra = 13
+    }
+}
+
+@test
+func subclassDecoderUsesItsRequiredInitializerOverride() {
+    value := std::json::decode[ManualDecodedOverride]("{\"value\":41}").unwrap()
+    var base: ManualDecoded = value
+    std::runtime::collect()
+    assert(value.value == 42 && value.extra == 13, "override constructs the complete subclass")
+    assert(base is ManualDecodedOverride, "override keeps the subclass descriptor")
+}
+
+class BoundedUncodedBase[T: Clone] { existing: T? }
+extend[T: Clone] BoundedUncodedBase[T] { public init() { self.existing = .none } }
+final class BoundedNewCodec[T: Clone]: BoundedUncodedBase[T], Codable { value: T }
+
+@test
+func classDecoderProvesGenericBaseInitializerRequirementsInItsClassContext() {
+    value := std::json::decode[BoundedNewCodec[int32]]("{\"value\":42}").unwrap()
+    assert(value.value == 42 && value.existing.isNone(), "generic superclass init bounds")
+}
+
+
+struct NonCodablePayload {}
+@test
+func conditionalClassDecodingDoesNotRestrictUnrelatedConstruction() {
+    value := DecodingBase[NonCodablePayload](NonCodablePayload {})
+    var _ = value.value
+    decoded := std::json::decode[DecodingBase[int32]]("{\"value\":7}").unwrap()
+    assert(decoded.value == 7, "codec capability remains conditional")
+}
+
+class ConvenientDecoded: Decodable { value: int32; opaque: OpaqueBaseField }
+extend ConvenientDecoded {
+    public init(_ value: int32) { self.value = value; self.opaque = OpaqueBaseField {} }
+    public required convenience init[D: Decoder](from decoder: D) -> Result[Self, D::Error] {
+        wire := ManualClassWire::decode(from: decoder)!
+        self.init(wire.value + 1)
+    }
+}
+final class ConvenientDecodedChild: ConvenientDecoded { extra: int32 = 13 }
+
+@test
+func inheritedConvenienceDecoderConstructsTheRequestedSubclass() {
+    value := std::json::decode[ConvenientDecodedChild]("{\"value\":41}").unwrap()
+    var base: ConvenientDecoded = value
+    std::runtime::collect()
+    assert(value.value == 42 && value.extra == 13, "required convenience decoding initializer")
+    assert(base is ConvenientDecodedChild, "convenience decoding keeps the requested subclass")
+}

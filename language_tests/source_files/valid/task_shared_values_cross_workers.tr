@@ -1,0 +1,51 @@
+// G44: with Sendable gates removed, blocking work and tasks on other workers
+// may capture references, raw pointers and shared class values; the program
+// synchronizes them itself. Blocking captures of a reference and a raw-pointer
+// result were rejected before ("std.task.blocking closure captures must be
+// Sendable").
+// ENV: TARO_WORKERS=4
+final class Tally {
+    hits: int32
+}
+extend Tally {
+    init() { self.hits = 0 }
+}
+
+func main() async {
+    var value: int32 = 7
+    borrowed := &value
+    doubled := await std::task::blocking(() -> int32 => { return *borrowed * 2 })
+    address := await std::task::blocking(() -> *const int32 => { return unsafe { borrowed as *const int32 } })
+    var same: string = if unsafe { address as usize == (&value as *const int32) as usize } { "yes" } else { "no" }
+    std::printf("blocking read: %d, same address: %s\n", doubled, same)
+
+    tally := Tally()
+    lock := std::sync::Mutex[int32]::new(0).unwrap()
+    var (sender, receiver) = std::sync::bounded[*mut int32](8).unwrap()
+    var tasks = std::collections::List[std::task::Task[int32]]::new()
+    var i = 0
+    while i < 4 {
+        tasks.append(std::task::spawn(() async => {
+            var n = 0
+            while n < 50 {
+                var _ = await lock.withLock((count: &int32) => {
+                    *count += 1
+                    tally.hits += 1
+                })
+                n += 1
+            }
+            var _ = await sender.send(unsafe { &value as *mut int32 })
+            return 0_i32
+        }))
+        i += 1
+    }
+    var received = 0
+    while received < 4 {
+        pointer := (await receiver.recv()).unwrap()
+        unsafe { *pointer += 1 }
+        received += 1
+    }
+    for task in tasks { var _ = await task.result() }
+    total := (await lock.withLock((count: &int32) => *count)).unwrap()
+    std::printf("locked total: %d, shared class hits: %d, value through channel pointers: %d\n", total, tally.hits, value)
+}

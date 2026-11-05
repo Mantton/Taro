@@ -1,0 +1,4 @@
+error: call to unsafe function 'stringFromParts' must be inside an unsafe { ... } block
+ -> language_tests/source_files/invalid/string_raw_parts_safe.tr:4:23
+	    var text: string = std::string::stringFromParts(data, 1)
+	                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

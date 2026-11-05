@@ -1,0 +1,2 @@
+internal struct State { internal value: int32; }
+internal func makeState() -> State { State { value: 1 } }

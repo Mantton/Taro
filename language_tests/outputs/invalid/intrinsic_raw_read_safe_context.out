@@ -1,0 +1,4 @@
+error: call to unsafe function '__intrinsic_ptr_read' must be inside an unsafe { ... } block
+ -> language_tests/source_files/invalid/intrinsic_raw_read_safe_context.tr:5:11
+	    return __intrinsic_ptr_read[int32](storage.asPtr())
+	           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

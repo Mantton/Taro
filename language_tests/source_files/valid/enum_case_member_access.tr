@@ -5,15 +5,15 @@ enum Color {
     case green
 }
 
-impl Color {
-    func code(&self) -> int32 {
+extend Color {
+    func code() -> int32 {
         match self {
             case .red => 1
             case .green => 2
         }
     }
 
-    func describe(&self) -> string {
+    func describe() -> string {
         match self {
             case .red => "red"
             case .green => "green"
@@ -22,8 +22,8 @@ impl Color {
 
     // An associated function, which is not a variant and must still resolve as
     // a type-relative path.
-    func fallback() -> Color {
-        return Color.red
+    static func fallback() -> Color {
+        return Color::red
     }
 }
 
@@ -32,50 +32,50 @@ enum Shape {
     case square(int32)
 }
 
-impl Shape {
-    func area(&self) -> int32 {
+extend Shape {
+    func area() -> int32 {
         match self {
-            case .circle(r) => 3 * (*r) * (*r)
-            case .square(s) => (*s) * (*s)
+            case .circle(r) => 3 * (r) * (r)
+            case .square(s) => (s) * (s)
         }
     }
 }
 
 interface Named {
     type Label
-    func label(&self) -> Self.Label
+    func label() -> Self::Label
 }
 
 struct Tag {}
 
-impl Named for Tag {
+conform Tag to Named {
     type Label = string
-    func label(&self) -> Self.Label {
+    func label() -> Self::Label {
         return "tag"
     }
 }
 
 func main() {
     // Binding first, which always worked.
-    let bound = Color.red
+    bound := Color::red
     printf("%d\n", bound.code())
 
     // Calling straight through the qualified case.
-    printf("%d\n", Color.red.code())
-    printf("%d\n", Color.green.code())
-    printf("%s\n", Color.green.describe())
+    printf("%d\n", Color::red.code())
+    printf("%d\n", Color::green.code())
+    printf("%s\n", Color::green.describe())
 
     // A case carrying a payload.
-    printf("%d\n", Shape.circle(2).area())
-    printf("%d\n", Shape.square(4).area())
+    printf("%d\n", Shape::circle(2).area())
+    printf("%d\n", Shape::square(4).area())
 
     // The result of one call feeding the next.
-    printf("%d\n", Color.fallback().code())
+    printf("%d\n", Color::fallback().code())
 
     // An associated function on the enum still resolves as a type path.
-    printf("%s\n", Color.fallback().describe())
+    printf("%s\n", Color::fallback().describe())
 
     // Associated types are unaffected.
-    let tag = Tag {}
+    tag := Tag {}
     printf("%s\n", tag.label())
 }

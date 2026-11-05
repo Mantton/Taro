@@ -1,0 +1,4 @@
+error: enum variant 'tuple' does not have named fields
+ -> language_tests/source_files/invalid/named_construction_inferred_wrong_shape.tr:3:42
+	func main() { var value: State = identity(.tuple {}) }
+	                                          ^^^^^^

@@ -1,0 +1,21 @@
+struct Selection { value: &int32 }
+struct MutableSelection { value: &int32 }
+
+func edit(_ selection: &MutableSelection) {
+    *selection.value += 1
+}
+
+func main() {
+    var first: int32 = 7
+    var second: int32 = 9
+    var selection: Selection = Selection { value: &first }
+    assert(*selection.value == 7, "initial view")
+    selection = Selection { value: &second }
+    first = 8
+    assert(*selection.value == 9, "local replacement tracks the new source")
+    var mutable: MutableSelection = MutableSelection { value: &second }
+    var mutable = mutable
+    edit(&mutable)
+    assert(*mutable.value == 10, "a helper can mutate the existing referent")
+    print("local view replacement ok\n")
+}

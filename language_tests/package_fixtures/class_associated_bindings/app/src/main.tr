@@ -1,0 +1,22 @@
+import classes::{Reader, Base, Object, Identity}
+class Child[X, Y]: Base[Y, X] {}
+conform[X, Y] Child[X, Y] to Reader[X] { public override func marker() -> int32 { 9 }; }
+class Derived: Object {}
+func read[X, Y](_ value: Child[X, Y]) -> &Y { value.item() }
+func main() {
+    value := Child[bool, int64](42_i64)
+    var sameGeneric: Child[bool, int64] = value.same()
+    assert(sameGeneric === value, "generic inherited Self retains the actual subclass")
+    var result: &int64 = read(value)
+    *result = 77_i64
+    var erased: any Reader[bool, Output = int64] = value
+    assert(*erased.item() == 77 && erased.marker() == 9, "imported associated output survives generic bases and a partial conformance override")
+    var known: Base[int64, bool] = value
+    assert(*known.item() == 77, "base and child agree on the fixed output type")
+    child := Derived()
+    var fixed: Object = child.fixed()
+    var same: Derived = child.same()
+    assert((fixed as? Derived).isNone() && same === child, "imported Self default is fixed while direct Self stays dynamic")
+    var boxed: any Identity[Fixed = Object] = child
+    assert((boxed.fixed() as? Derived).isNone(), "metadata retains the resolved default binding")
+}

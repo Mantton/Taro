@@ -1,0 +1,7 @@
+class Element {}
+class SpecificElement: Element {}
+class Base { value: Element }
+extend Base { subscript(index: usize) -> Element { get { self.value } } }
+class Child: Base { specific: SpecificElement }
+extend Child { override subscript(index: usize) -> SpecificElement { get { self.specific } } }
+func main() {}

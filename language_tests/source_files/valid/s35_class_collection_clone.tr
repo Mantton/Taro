@@ -1,0 +1,10 @@
+final class Bag: Clone { values: List[int32] }
+extend Bag { init(_ values: List[int32]) { self.values = values }; }
+func main() {
+    var source: Bag = Bag([1, 2]) // Bag; object owns a noncopyable collection.
+    var cloned: Bag = source.clone() // Bag; field Clone creates independent list storage.
+    cloned.values[0] = 7
+    cloned.values.append(3)
+    assert(source !== cloned && source.values[0] == 1 && source.values.len() == 2, "class Clone composes with noncopyable collection Clone")
+    assert(cloned.values[0] == 7 && cloned.values.len() == 3, "cloned collection remains independently mutable")
+}

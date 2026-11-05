@@ -7,12 +7,9 @@ use crate::{
             GenericParameterDefinitionKind, InterfaceReference, Ty,
         },
         resolve::models::DefinitionKind,
-        tycheck::{
-            fold::{TypeFoldable, TypeFolder, TypeSuperFoldable},
-            utils::instantiate::{
-                instantiate_const_with_args, instantiate_interface_ref_with_args,
-                instantiate_ty_with_args,
-            },
+        tycheck::utils::instantiate::{
+            instantiate_const_with_args, instantiate_interface_ref_with_args,
+            instantiate_ty_with_args,
         },
     },
 };
@@ -53,11 +50,10 @@ pub fn complete_interface_arguments<'ctx>(
     for param in generics.parameters.iter().skip(out.len()) {
         let current_args = gcx.store.interners.intern_generic_args_slice(&out);
         match &param.kind {
-            GenericParameterDefinitionKind::Type { default: Some(_) } => {
+            GenericParameterDefinitionKind::Type {
+                default: Some(_), ..
+            } => {
                 let mut default_ty = gcx.try_generic_type_default(param.id)?;
-                if let Some(GenericArgument::Type(self_ty)) = out.first().copied() {
-                    default_ty = substitute_interface_self_default(gcx, default_ty, self_ty);
-                }
                 default_ty = instantiate_ty_with_args(gcx, default_ty, current_args);
                 out.push(GenericArgument::Type(default_ty));
             }
@@ -68,7 +64,7 @@ pub fn complete_interface_arguments<'ctx>(
                 let default_const = instantiate_const_with_args(gcx, default_const, current_args);
                 out.push(GenericArgument::Const(default_const));
             }
-            GenericParameterDefinitionKind::Type { default: None }
+            GenericParameterDefinitionKind::Type { default: None, .. }
             | GenericParameterDefinitionKind::Const { default: None, .. } => return None,
         }
     }
@@ -88,11 +84,15 @@ pub fn interface_ref_with_self<'ctx>(
     let mut args: Vec<_> = iface.arguments.iter().copied().collect();
     args[0] = GenericArgument::Type(self_ty);
     let arguments = gcx.store.interners.intern_generic_args(args);
-    InterfaceReference {
-        id: iface.id,
-        arguments,
-        bindings: iface.bindings,
-    }
+    crate::sema::tycheck::utils::erased_self::bind(
+        gcx,
+        InterfaceReference {
+            id: iface.id,
+            arguments,
+            bindings: iface.bindings,
+        },
+        self_ty,
+    )
 }
 
 pub fn collect_interface_with_superfaces<'ctx>(
@@ -227,6 +227,42 @@ pub fn method_is_dispatchable(
     method.has_self && gcx.generics_of(method.id).total_count() == 0
 }
 
+/// A conditional method keeps its ABI slot even when its additional where
+/// clause is unavailable for this conformance. Do not materialize such a body:
+/// its own calls may require conformances the containing type never promised.
+pub(crate) fn concrete_method_constraints_hold<'ctx>(
+    gcx: Gcx<'ctx>,
+    method: DefinitionID,
+    arguments: GenericArguments<'ctx>,
+) -> bool {
+    use crate::sema::{
+        models::{Constraint, GoalResult, SelectionMode},
+        tycheck::{
+            infer::InferCtx,
+            utils::{ParamEnv, instantiate::instantiate_constraint_with_args, normalize_ty},
+        },
+    };
+    let icx = std::rc::Rc::new(InferCtx::new(gcx));
+    // The method's constraints are obligations, never assumptions proving
+    // themselves. The interface conformance has already been selected.
+    let env = ParamEnv::default();
+    gcx.constraints_of(method)
+        .into_iter()
+        .all(|constraint| {
+            match instantiate_constraint_with_args(gcx, constraint.value, arguments) {
+                Constraint::TypeEquality(left, right) => {
+                    normalize_ty(icx.clone(), left, &env) == normalize_ty(icx.clone(), right, &env)
+                }
+                Constraint::Bound { ty, interface } => {
+                    let ty = normalize_ty(icx.clone(), ty, &env);
+                    let goal = interface.to_goal_with_self_ty(gcx, &[], ty);
+                    super::prove_interface_goal(gcx, goal, SelectionMode::Codegen)
+                        == GoalResult::Proven
+                }
+            }
+        })
+}
+
 /// Number of method slots in an interface's witness table. Superface table
 /// pointers are stored immediately after these slots, so this count also
 /// defines where the superface fields begin.
@@ -288,34 +324,4 @@ fn bindings_are_compatible(
             .iter()
             .any(|actual_binding| actual_binding == expected_binding)
     })
-}
-
-fn substitute_interface_self_default<'ctx>(
-    gcx: Gcx<'ctx>,
-    ty: Ty<'ctx>,
-    concrete_self_ty: Ty<'ctx>,
-) -> Ty<'ctx> {
-    struct InterfaceSelfSubstitutor<'ctx> {
-        gcx: Gcx<'ctx>,
-        concrete_self_ty: Ty<'ctx>,
-    }
-
-    impl<'ctx> TypeFolder<'ctx> for InterfaceSelfSubstitutor<'ctx> {
-        fn gcx(&self) -> Gcx<'ctx> {
-            self.gcx
-        }
-
-        fn fold_ty(&mut self, ty: Ty<'ctx>) -> Ty<'ctx> {
-            if ty == self.gcx.types.self_type_parameter {
-                return self.concrete_self_ty;
-            }
-            ty.super_fold_with(self)
-        }
-    }
-
-    let mut substitutor = InterfaceSelfSubstitutor {
-        gcx,
-        concrete_self_ty,
-    };
-    ty.fold_with(&mut substitutor)
 }

@@ -1,0 +1,7 @@
+import std::mem::SpanIterator
+
+func rewind(_ iterator: &SpanIterator[int32]) {
+    var _ = iterator.cursor
+}
+
+func main() {}

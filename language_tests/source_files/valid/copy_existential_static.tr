@@ -1,0 +1,25 @@
+interface Editable { func read() -> int32; func write( _ value: int32); }
+struct Counter { value: int32 }
+conform Counter to Editable {
+    func read() -> int32 { self.value }
+    func write( _ value: int32) { self.value = value }
+}
+struct Wrapper { item: any Editable }
+func main() {
+    var original: any Editable = Counter { value: 7 } // any Editable; statically Copy.
+    var copied: any Editable = original // any Editable; independent Counter storage.
+    copied.write(19)
+    assert(copied.read() == 7, "value witness edits its receiver copy")
+    copied.asRef[Counter]().unwrap().value = 19
+    assert(original.read() == 7 && copied.read() == 19, "Copy erasure duplicates value storage")
+    var old: &Counter = original.asRef[Counter]().unwrap() // &Counter; protects original, not copied.
+    var edited: &Counter = copied.asRef[Counter]().unwrap() // &mut Counter; independent owner.
+    edited.value += 1
+    assert(old.value == 7 && edited.value == 20, "copied headers refresh payload and metadata addresses")
+    var wrapper: Wrapper = Wrapper { item: original } // Wrapper; owns another copied Counter.
+    var second: Wrapper = wrapper // Wrapper; nested static Copy is compositional.
+    second.item.asRef[Counter]().unwrap().value = 31
+    assert(wrapper.item.read() == 7 && second.item.read() == 31, "aggregate Copy preserves erased value independence")
+    var extracted: Counter = copied.takeAs[Counter]().unwrap() // Counter; Copy receiver is copied into extraction.
+    assert(extracted.value == 20 && copied.read() == 20, "owned operations copy statically Copy containers")
+}

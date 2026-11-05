@@ -1,0 +1,4 @@
+interface Readable { subscript(index: usize) -> int32 { get } }
+struct Buffer {}
+conform Buffer to Readable { func __subscript_get(_ index: usize) -> int32 { 7 }; }
+func main() {}

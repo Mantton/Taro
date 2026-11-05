@@ -1,0 +1,640 @@
+import std::http::{Client, ErrorKind, Headers, Options, Request, Response, Server, Body}
+import std::net::{SocketAddress, TcpStream}
+import std::mem::Span
+
+func httpText(_ body: Body) async -> string { (await body.readToString()).unwrap() }
+func httpUrl(_ server: Server, _ path: string) -> string { std::sprintf("http://127.0.0.1:%d%s", server.localAddress().unwrap().port, path) }
+
+@test
+func httpHeadersPreserveDuplicatesAndRejectInjection() {
+    headers := Headers::new()
+    headers.add("Set-Cookie", "a=1").unwrap(); headers.add("set-cookie", "b=2").unwrap()
+    std::assert(headers.len() == 2 && headers.get("SET-COOKIE").unwrap() == "a=1", "case-insensitive ordered headers")
+    std::assert(headers.add("bad name", "x").isErr(), "invalid name rejected")
+    std::assert(headers.add("x", "ok\r\nInjected: yes").isErr(), "header injection rejected")
+    copy := headers.copy(); copy.add("x-extra", "copy").unwrap()
+    std::assert(headers.len() == 2 && copy.len() == 3, "explicit header copy isolates entries")
+}
+
+struct HttpPerson: std::encoding::Codable { name: string; age: int32 }
+
+@test
+func httpClientServerRoundTripAndJsonSurviveCollection() async {
+    server := Server::bind(SocketAddress::localhost(0_u16)).unwrap()
+    defer { var _ = server.close() }
+    worker := std::task::spawn(() async => {
+        connection := (await server.accept()).unwrap()
+        defer { connection.close() }
+        defer { connection.close() }
+        request := (await connection.request()).unwrap()
+        std::runtime::collect()
+        std::assert(request.method == "POST" && request.url == "/person?q=1", "request line")
+        person := (await request.json[HttpPerson]()).unwrap()
+        std::assert(person.name == "Ada" && person.age == 37, "JSON request decodes through public token path")
+        var response = Response::text(201_u16, std::json::encode(&person).unwrap())
+        response.headers.add("Set-Cookie", "a=1").unwrap(); response.headers.add("Set-Cookie", "b=2").unwrap()
+        (await connection.respond(response)).unwrap()
+    })
+    client := Client::new().unwrap()
+    defer { client.close() }
+    var request = Request::new("POST", httpUrl(server, "/person?q=1"))
+    text := "{\"name\":\"Ada\",\"age\":37}"
+    request.body = Body::fromString(text)
+    response := (await client.send(&request)).unwrap()
+    std::runtime::collect()
+    std::assert(response.status == 201_u16 && (await response.json[HttpPerson]()).unwrap().name == "Ada", "response GC roots")
+    var cookies: usize = 0
+    var slot: usize = 0
+    while slot < response.headers.len() {
+        if response.headers.at(slot).name == "set-cookie" { cookies += 1 }
+        slot += 1
+    }
+    std::assert(cookies == 2 && response.headers.get("set-cookie").unwrap() == "a=1", "repeated response headers retained")
+    (await worker.result()).unwrap()
+    alias := client; client.close()
+    match await alias.get(httpUrl(server, "/closed")) {
+        case .err(error) => std::assert(error.kind == ErrorKind::closed, "close invalidates all client copies")
+        case .ok(_) => std::testing::fail("closed client must fail")
+    }
+}
+
+func httpRaw(_ server: Server, _ message: string) async -> string {
+    stream := (await TcpStream::connect(server.localAddress().unwrap())).unwrap()
+    defer { var _ = stream.close() }
+    (await stream.writeAll(Span[uint8]::fromString(&message))).unwrap()
+    return await httpReadAll(stream)
+}
+
+func httpReadAll(_ stream: TcpStream) async -> string {
+    var body = std::string::Builder::new()
+    loop {
+        var bytes: [uint8; 128] = [0_u8; 128]
+        span := unsafe { Span[uint8]::from((&bytes as *mut [uint8; 128]) as *mut uint8, 128) }
+        count := (await stream.read(span)).unwrap()
+        if count == 0 { break }
+        var index: usize = 0
+        while index < count { body.writeByte(bytes[index]); index += 1 }
+    }
+    return body.toString()
+}
+
+@test
+func httpServerDecodesChunksAndWritesHeadWithoutBody() async {
+    server := Server::bind(SocketAddress::localhost(0_u16)).unwrap()
+    defer { var _ = server.close() }
+    worker := std::task::spawn(() async => {
+        connection := (await server.accept()).unwrap()
+        defer { connection.close() }
+        request := (await connection.request()).unwrap()
+        std::assert(request.method == "HEAD" && (await httpText(request.body)) == "hello", "chunked request body decoded")
+        (await connection.respond(Response::text(200_u16, "invisible"))).unwrap()
+    })
+    response := await httpRaw(server, "HEAD / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n2;test=yes\r\nhe\r\n3\r\nllo\r\n0\r\n\r\n")
+    std::assert(response.endsWith("\r\n\r\n"), "HEAD suppresses response body")
+    (await worker.result()).unwrap()
+}
+
+@test
+func httpServerRejectsAmbiguousFramingAndBodyLimits() async {
+    var options = Options::new(); options.maxBodyBytes = 3
+    server := Server::bindWithOptions(SocketAddress::localhost(0_u16), options).unwrap()
+    defer { var _ = server.close() }
+    worker := std::task::spawn(() async => {
+        var index: int32 = 0
+        while index < 2 {
+            connection := (await server.accept()).unwrap()
+        defer { connection.close() }
+            match await connection.request() {
+                case .err(error) => std::assert(error.kind == (if index == 0 { ErrorKind::protocol } else { ErrorKind::limit }), "strict request framing and limits")
+                case .ok(_) => std::testing::fail("bad request accepted")
+            }
+            connection.close(); index += 1
+        }
+    })
+    var _ = await httpRaw(server, "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\nTransfer-Encoding: chunked\r\n\r\n")
+    var _ = await httpRaw(server, "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\n\r\n")
+    (await worker.result()).unwrap()
+}
+
+@test
+func httpServerTimeoutClosesIdleConnections() async {
+    var options = Options::new(); options.timeoutMillis = 25_u64
+    server := Server::bindWithOptions(SocketAddress::localhost(0_u16), options).unwrap()
+    defer { var _ = server.close() }
+    worker := std::task::spawn(() async => {
+        connection := (await server.accept()).unwrap()
+        defer { connection.close() }
+        match await connection.request() {
+            case .err(error) => std::assert(error.kind == ErrorKind::timeout, "idle request times out")
+            case .ok(_) => std::testing::fail("idle connection produced a request")
+        }
+        connection.close()
+    })
+    stream := (await TcpStream::connect(server.localAddress().unwrap())).unwrap()
+    defer { var _ = stream.close() }
+    (await worker.result()).unwrap()
+}
+
+@test
+func httpCancellationClosesAcceptedConnection() async {
+    server := Server::bind(SocketAddress::localhost(0_u16)).unwrap()
+    defer { var _ = server.close() }
+    stream := (await TcpStream::connect(server.localAddress().unwrap())).unwrap()
+    defer { var _ = stream.close() }
+    connection := (await server.accept()).unwrap()
+        defer { connection.close() }
+    reader := std::task::spawn(() async => { var _ = await connection.request() })
+    await std::task::sleep(std::time::Duration::fromMillis(5_u64))
+    reader.cancel()
+    var _ = await reader.result()
+    // Cancellation cleanup closes the shared socket even if the request had
+    // already entered its nested timeout task.
+    var bytes: [uint8; 1] = [0_u8; 1]
+    span := unsafe { Span[uint8]::from((&bytes as *mut [uint8; 1]) as *mut uint8, 1) }
+    std::assert((await stream.read(span)).unwrap() == 0, "cancelled read closes peer")
+    std::assert((await connection.request()).isErr(), "connection aliases stay closed")
+    connection.close()
+}
+
+@test
+func httpClientLimitsAndTransportFramingAreEnforced() async {
+    server := Server::bind(SocketAddress::localhost(0_u16)).unwrap()
+    defer { var _ = server.close() }
+    worker := std::task::spawn(() async => {
+        connection := (await server.accept()).unwrap()
+        defer { connection.close() }
+        var _ = (await connection.request()).unwrap()
+        var _ = await connection.respond(Response::text(404_u16, "too long"))
+    })
+    var options = Options::new(); options.maxBodyBytes = 3
+    client := Client::withOptions(options).unwrap()
+    defer { client.close() }
+    match await client.get(httpUrl(server, "/")) {
+        case .err(error) => std::assert(error.kind == ErrorKind::limit, "response body is bounded")
+        case .ok(_) => std::testing::fail("oversized response accepted")
+    }
+    (await worker.result()).unwrap()
+    var request = Request::new("POST", httpUrl(server, "/"))
+    request.headers.add("content-length", "100").unwrap()
+    std::assert((await client.send(&request)).isErr(), "caller cannot override transport framing")
+    std::assert((await client.get("file:///etc/hosts")).isErr(), "unsupported schemes rejected")
+}
+
+@test
+func httpRepeatedExchangesRetainBinaryBodiesAcrossGc() async {
+    server := Server::bind(SocketAddress::localhost(0_u16)).unwrap()
+    defer { var _ = server.close() }
+    worker := std::task::spawn(() async => {
+        var index: int32 = 0
+        while index < 8 {
+            connection := (await server.accept()).unwrap()
+        defer { connection.close() }
+            request := (await connection.request()).unwrap()
+            std::runtime::collect()
+            var response = Response::new(200_u16); response.body = request.body
+            (await connection.respond(response)).unwrap()
+            index += 1
+        }
+    })
+    client := Client::new().unwrap()
+    defer { client.close() }
+    var index: int32 = 0
+    while index < 8 {
+        var request = Request::new("POST", httpUrl(server, "/echo"))
+        bytes := std::collections::List[uint8]::new(); bytes.append(0_u8); bytes.append(255_u8); bytes.append(index as uint8)
+        request.body = Body::fromBytes(bytes)
+        response := (await client.send(&request)).unwrap()
+        std::runtime::collect()
+        data := (await response.body.readAll()).unwrap()
+        std::assert(data.len() == 3 && data[0] == 0_u8 && data[1] == 255_u8 && data[2] == index as uint8, "binary payload remains rooted")
+        index += 1
+    }
+    (await worker.result()).unwrap()
+}
+
+@test
+func httpClientCancellationClosesStreamingExchange() async {
+    server := Server::bind(SocketAddress::localhost(0_u16)).unwrap()
+    defer { var _ = server.close() }
+    accepted := std::sync::atomic::Bool::new(false)
+    completed := std::sync::atomic::Bool::new(false)
+    worker := std::task::spawn(() async => {
+        connection := (await server.accept()).unwrap()
+        defer { connection.close() }
+        var _ = (await connection.request()).unwrap()
+        (&accepted).store(true)
+        await std::task::sleep(std::time::Duration::fromMillis(25_u64))
+        var _ = await connection.respond(Response::text(200_u16, "abandoned delivery"))
+        (&completed).store(true)
+    })
+    client := Client::new().unwrap()
+    url := httpUrl(server, "/cancel")
+    request := std::task::spawn(() async => { var _ = await client.get(url) })
+    while !(&accepted).load() { await std::task::sleep(std::time::Duration::fromMillis(1_u64)) }
+    request.cancel(); client.close()
+    var _ = await request.result()
+    (await worker.result()).unwrap()
+    std::assert((&completed).load(), "peer observes cancellation without hanging")
+    std::runtime::collect()
+}
+
+
+@test
+func httpServerHandlesFragmentedHeadersAndChunks() async {
+    server := Server::bind(SocketAddress::localhost(0_u16)).unwrap()
+    defer { var _ = server.close() }
+    worker := std::task::spawn(() async => {
+        connection := (await server.accept()).unwrap()
+        defer { connection.close() }
+        request := (await connection.request()).unwrap()
+        std::assert((await httpText(request.body)) == "hello", "fragments preserve chunk boundaries")
+        (await connection.respond(Response::text(200_u16, "received"))).unwrap()
+    })
+    stream := (await TcpStream::connect(server.localAddress().unwrap())).unwrap()
+    defer { var _ = stream.close() }
+    text := "POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n"
+    bytes := Span[uint8]::fromString(&text)
+    var index: usize = 0
+    while index < bytes.len() {
+        (await stream.writeAll(bytes.slice(index, 1))).unwrap()
+        index += 1
+    }
+    std::assert((await httpReadAll(stream)).endsWith("received"), "fragmented exchange completes")
+    (await worker.result()).unwrap()
+}
+
+
+@test
+func httpResetContentStatusRejectsAResponseBody() async {
+    server := Server::bind(SocketAddress::localhost(0_u16)).unwrap()
+    defer { var _ = server.close() }
+    worker := std::task::spawn(() async => {
+        connection := (await server.accept()).unwrap()
+        defer { connection.close() }
+        var _ = (await connection.request()).unwrap()
+        match await connection.respond(Response::text(205_u16, "forbidden")) {
+            case .err(error) => std::assert(error.kind == ErrorKind::invalidInput, "205 forbids response content")
+            case .ok(_) => std::testing::fail("205 body must not be sent")
+        }
+    })
+    client := Client::new().unwrap()
+    defer { client.close() }
+    std::assert((await client.get(httpUrl(server, "/"))).isErr(), "invalid response is closed before headers are sent")
+    (await worker.result()).unwrap()
+}
+
+// Each byte is a successful read, so only an absolute deadline can end this.
+@test
+func httpRequestDeadlineBoundsASlowHead() async {
+    var options = Options::new(); options.timeoutMillis = 40_u64
+    server := Server::bindWithOptions(SocketAddress::localhost(0_u16), options).unwrap()
+    defer { var _ = server.close() }
+    stream := (await TcpStream::connect(server.localAddress().unwrap())).unwrap()
+    defer { var _ = stream.close() }
+    stop := std::sync::atomic::Bool::new(false)
+    dripper := std::task::spawn(() async => {
+        while !stop.load() {
+            if (await stream.write("x")).isErr() { break }
+            await std::task::sleep(std::time::Duration::fromMillis(2_u64))
+        }
+    })
+    connection := (await server.accept()).unwrap()
+    defer { connection.close() }
+    match await connection.request() {
+        case .err(error) => std::assert(error.kind == ErrorKind::timeout && error.message == "HTTP operation timed out", "a slow head hits the request deadline")
+        case .ok(_) => std::testing::fail("an unfinished head produced a request")
+    }
+    stop.store(true)
+    (await dripper.result()).unwrap()
+}
+
+@test
+func httpResponseDeadlineBoundsAStalledClient() async {
+    var options = Options::new(); options.timeoutMillis = 40_u64
+    server := Server::bindWithOptions(SocketAddress::localhost(0_u16), options).unwrap()
+    defer { var _ = server.close() }
+    stream := (await TcpStream::connect(server.localAddress().unwrap())).unwrap()
+    defer { var _ = stream.close() }
+    (await stream.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")).unwrap()
+    connection := (await server.accept()).unwrap()
+    defer { connection.close() }
+    var _ = (await connection.request()).unwrap()
+    // Larger than the kernel's socket buffers, and the client never reads.
+    // Doubling keeps setup cheap when GC stress collects at every allocation.
+    var text = "x"
+    while text.byteLen() < 16 * 1024 * 1024 { text = text.concat(text) }
+    match await connection.respond(Response::text(200_u16, text)) {
+        case .err(error) => std::assert(error.kind == ErrorKind::timeout && error.message == "HTTP operation timed out", "a stalled client hits the response deadline")
+        case .ok(_) => std::testing::fail("the whole response fit in socket buffers")
+    }
+    std::assert((await connection.request()).isErr(), "a timed out response closes the connection")
+}
+
+// Each exchange gets a fresh deadline, whatever the connection's total age.
+@test
+func httpExchangeDeadlinesRestartOnKeepAlive() async {
+    var options = Options::new(); options.timeoutMillis = 150_u64
+    server := Server::bindWithOptions(SocketAddress::localhost(0_u16), options).unwrap()
+    defer { var _ = server.close() }
+    stream := (await TcpStream::connect(server.localAddress().unwrap())).unwrap()
+    defer { var _ = stream.close() }
+    connection := (await server.accept()).unwrap()
+    defer { connection.close() }
+    var buffer: [uint8; 512] = [0_u8; 512]
+    span := unsafe { Span[uint8]::from((&buffer as *mut [uint8; 512]) as *mut uint8, 512) }
+    var exchange = 0
+    while exchange < 4 {
+        await std::task::sleep(std::time::Duration::fromMillis(60_u64))
+        (await stream.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")).unwrap()
+        var _ = (await connection.request()).unwrap()
+        (await connection.respond(Response::text(200_u16, "ok"))).unwrap()
+        std::assert((await stream.read(span)).unwrap() > 0, "keep-alive response arrives")
+        exchange += 1
+    }
+}
+
+@test
+func httpEmptyBodiesAreAtEofWithNothingToRelease() async {
+    body := Body::empty()
+    copy := body
+    std::assert(body.isClosed() && body.remainingLength().unwrap() == 0, "an empty body has nothing left to read or release")
+    body.close().unwrap()
+    copy.close().unwrap()
+    std::assert((await body.readToString()).unwrap() == "", "an empty body reads as empty, even after close")
+    std::assert((await copy.readAll()).unwrap().len() == 0, "every copy reads as empty")
+    response := Response::new(204_u16)
+    std::assert((await response.body.readToString()).unwrap() == "", "a new response body is empty")
+}
+
+@test
+func httpParsedHeadTextOutlivesItsInputAcrossCollections() async {
+    server := Server::bind(SocketAddress::localhost(0_u16)).unwrap()
+    defer { var _ = server.close() }
+    stream := (await TcpStream::connect(server.localAddress().unwrap())).unwrap()
+    defer { var _ = stream.close() }
+    // Pipelined, so parsing the second reuses the buffer holding the first.
+    first := "BREW /first?a=1 HTTP/1.1\r\nHost: first.example\r\nX-Custom: one two\r\nX-Empty:\r\nAccept: */*\r\n\r\n"
+    second := "GET /second HTTP/1.1\r\nHost: second.example\r\nX-Custom: three\r\n\r\n"
+    pipelined := std::sprintf("%s%s", first, second)
+    (await stream.writeAll(Span[uint8]::fromString(&pipelined))).unwrap()
+    connection := (await server.accept()).unwrap()
+    defer { connection.close() }
+    retained := (await connection.request()).unwrap()
+    (await connection.respond(Response::new(204_u16))).unwrap()
+    next := (await connection.request()).unwrap()
+    std::runtime::collect()
+    std::assert(retained.method == "BREW" && retained.url == "/first?a=1", "the request line survives the next parse")
+    std::assert(retained.headers.get("host").unwrap() == "first.example", "a common name's value survives")
+    std::assert(retained.headers.at(1).name == "x-custom" && retained.headers.at(1).value == "one two", "an unusual name is normalized and its value kept")
+    std::assert(retained.headers.get("x-empty").unwrap() == "", "an empty value stays empty")
+    std::assert(retained.headers.get("ACCEPT").unwrap() == "*/*", "the last header ends at its own length")
+    std::assert(next.method == "GET" && next.url == "/second" && next.headers.get("x-custom").unwrap() == "three", "the next request has its own text")
+}
+
+@test
+func httpRequestHeadersCanBeReadAfterTheNextRequestArrived() async {
+    server := Server::bind(SocketAddress::localhost(0_u16)).unwrap()
+    defer { var _ = server.close() }
+    stream := (await TcpStream::connect(server.localAddress().unwrap())).unwrap()
+    defer { var _ = stream.close() }
+    connection := (await server.accept()).unwrap()
+    defer { connection.close() }
+    (await stream.write("GET /a HTTP/1.1\r\nHost: x\r\nX-Multi: 1\r\nx-multi: 2\r\nAccept: text/plain\r\n\r\nPURGE /b?q=1 HTTP/1.1\r\nHost: y\r\nX-Second: z\r\n\r\n")).unwrap()
+    first := (await connection.request()).unwrap()
+    std::assert(first.method == "GET" && first.url == "/a", "first request line")
+    (await connection.respond(Response::text(200_u16, "ok"))).unwrap()
+    second := (await connection.request()).unwrap()
+    std::assert(second.method == "PURGE" && second.url == "/b?q=1", "a method with no common spelling")
+    std::runtime::collect()
+
+    std::assert(first.headers.len() == 4, "headers read once the connection has moved on")
+    std::assert(first.headers.at(1).name == "x-multi" && first.headers.at(1).value == "1", "names lowered, order kept")
+    std::assert(first.headers.at(2).name == "x-multi" && first.headers.at(2).value == "2", "duplicates kept")
+    std::assert(first.headers.get("ACCEPT").unwrap() == "text/plain", "case-insensitive lookup")
+    std::assert(first.headers.get("x-second").isNone(), "each request sees only its own head")
+
+    // Changing or copying headers that nothing has read yet starts from the head.
+    second.headers.add("x-added", "1").unwrap()
+    std::assert(second.headers.len() == 3 && second.headers.get("x-second").unwrap() == "z", "an addition keeps the parsed headers")
+    (await connection.respond(Response::text(200_u16, "ok"))).unwrap()
+    (await stream.write("GET /c HTTP/1.1\r\nHost: z\r\nX-Third: t\r\n\r\n")).unwrap()
+    third := (await connection.request()).unwrap()
+    copy := third.headers.copy()
+    copy.add("x-copy", "1").unwrap()
+    std::assert(third.headers.len() == 2 && copy.len() == 3, "a copy of unread headers stays separate")
+}
+
+@test
+func httpConcurrentFirstReadsOfHeadersAllSeeThemWhole() async {
+    server := Server::bind(SocketAddress::localhost(0_u16)).unwrap()
+    defer { var _ = server.close() }
+    stream := (await TcpStream::connect(server.localAddress().unwrap())).unwrap()
+    defer { var _ = stream.close() }
+    connection := (await server.accept()).unwrap()
+    defer { connection.close() }
+    var round = 0
+    while round < 50 {
+        (await stream.write("GET / HTTP/1.1\r\nHost: x\r\nX-One: 1\r\nX-Two: 2\r\nX-Three: 3\r\n\r\n")).unwrap()
+        request := (await connection.request()).unwrap()
+        headers := request.headers
+        var readers = std::collections::List[std::task::Task[bool]]::new()
+        var reader = 0
+        while reader < 6 {
+            readers.append(std::task::spawn(() async => {
+                return headers.len() == 4 && headers.get("x-three").unwrap() == "3"
+            }))
+            reader += 1
+        }
+        if round % 10 == 0 { std::runtime::collect() }
+        reader = 0
+        while reader < 6 {
+            std::assert((await readers.at(reader as usize).result()).unwrap(), "no reader sees a partial list")
+            reader += 1
+        }
+        var scratch: [uint8; 256] = [0_u8; 256]
+        (await connection.respond(Response::text(200_u16, "ok"))).unwrap()
+        var _ = (await stream.read(unsafe { Span[uint8]::from((&scratch as *mut [uint8; 256]) as *mut uint8, 256) })).unwrap()
+        round += 1
+    }
+}
+
+@test
+func httpConnectionCloseIsHonouredWhetherOrNotHeadersAreRead() async {
+    for value in ["close", "keep-alive, Close", "  CLOSE  ,x"] {
+        server := Server::bind(SocketAddress::localhost(0_u16)).unwrap()
+        defer { var _ = server.close() }
+        stream := (await TcpStream::connect(server.localAddress().unwrap())).unwrap()
+        defer { var _ = stream.close() }
+        connection := (await server.accept()).unwrap()
+        defer { connection.close() }
+        (await stream.write(std::sprintf("GET / HTTP/1.1\r\nHost: x\r\nConnection: %s\r\n\r\n", value))).unwrap()
+        var _ = (await connection.request()).unwrap()
+        (await connection.respond(Response::text(200_u16, "bye"))).unwrap()
+        std::assert((await httpReadAll(stream)).endsWith("bye"), "the response ends with the connection")
+    }
+    for value in ["x-close", "closed", "keep-alive"] {
+        server := Server::bind(SocketAddress::localhost(0_u16)).unwrap()
+        defer { var _ = server.close() }
+        stream := (await TcpStream::connect(server.localAddress().unwrap())).unwrap()
+        defer { var _ = stream.close() }
+        connection := (await server.accept()).unwrap()
+        defer { connection.close() }
+        (await stream.write(std::sprintf("GET /1 HTTP/1.1\r\nHost: x\r\nConnection: %s\r\n\r\nGET /2 HTTP/1.1\r\nHost: x\r\n\r\n", value))).unwrap()
+        var _ = (await connection.request()).unwrap()
+        (await connection.respond(Response::text(200_u16, "more"))).unwrap()
+        std::assert((await connection.request()).unwrap().url == "/2", "a token that only contains close doesn't close")
+    }
+}
+
+@test
+func httpRejectedHeadsAreReportedAndLeaveLaterParsingIntact() async {
+    var attempt = 0
+    while attempt < 3 {
+        server := Server::bind(SocketAddress::localhost(0_u16)).unwrap()
+        defer { var _ = server.close() }
+        stream := (await TcpStream::connect(server.localAddress().unwrap())).unwrap()
+        defer { var _ = stream.close() }
+        connection := (await server.accept()).unwrap()
+        defer { connection.close() }
+        (await stream.write("GET / HTTP/1.1\r\nNo-Host: here\r\n\r\n")).unwrap()
+        std::assert((await connection.request()).isErr(), "a request without Host is rejected")
+
+        stream2 := (await TcpStream::connect(server.localAddress().unwrap())).unwrap()
+        defer { var _ = stream2.close() }
+        accepted := (await server.accept()).unwrap()
+        defer { accepted.close() }
+        (await stream2.write("GET /fine HTTP/1.1\r\nHost: x\r\nX-After: 1\r\n\r\n")).unwrap()
+        request := (await accepted.request()).unwrap()
+        std::assert(request.url == "/fine" && request.headers.get("x-after").unwrap() == "1", "parsing continues normally")
+        attempt += 1
+    }
+}
+
+@test
+func httpHeadsAreFoundAcrossReadsWhereverTheirTerminatorSplits() async {
+    server := Server::bind(SocketAddress::localhost(0_u16)).unwrap()
+    defer { var _ = server.close() }
+    stream := (await TcpStream::connect(server.localAddress().unwrap())).unwrap()
+    defer { var _ = stream.close() }
+    connection := (await server.accept()).unwrap()
+    defer { connection.close() }
+    // A body and the next request can share a read with a head.
+    (await stream.write("POST /body HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhelloGET /next HTTP/1.1\r\nHost: x\r\n\r\n")).unwrap()
+    posted := (await connection.request()).unwrap()
+    std::assert(posted.url == "/body" && (await httpText(posted.body)) == "hello", "body bytes follow their head")
+    (await connection.respond(Response::text(200_u16, "ok"))).unwrap()
+    next := (await connection.request()).unwrap()
+    std::assert(next.url == "/next", "pipelined head follows the body")
+    (await connection.respond(Response::text(200_u16, "ok"))).unwrap()
+
+    valid := "GET /split HTTP/1.1\r\nHost: x\r\nX-Value: v\r\n\r\n"
+    validBytes := Span[uint8]::fromString(&valid)
+    var cut: usize = 1
+    while cut <= 8 {
+        (await stream.writeAll(validBytes.slice(0, validBytes.len() - cut))).unwrap()
+        await std::task::sleep(std::time::Duration::fromMillis(2_u64))
+        (await stream.writeAll(validBytes.slice(validBytes.len() - cut, cut))).unwrap()
+        split := (await connection.request()).unwrap()
+        std::assert(split.url == "/split" && split.headers.get("x-value").unwrap() == "v", "terminator found across reads")
+        (await connection.respond(Response::text(200_u16, "ok"))).unwrap()
+        cut += 1
+    }
+}
+
+@test
+func httpPeersSlowerThanTheBusyWaitAreStillServedInOrder() async {
+    server := Server::bind(SocketAddress::localhost(0_u16)).unwrap()
+    defer { var _ = server.close() }
+    stream := (await TcpStream::connect(server.localAddress().unwrap())).unwrap()
+    defer { var _ = stream.close() }
+    connection := (await server.accept()).unwrap()
+    defer { connection.close() }
+    // Enough misses to reach the longest backoff, then a fast peer again.
+    var round: usize = 0
+    while round < 140 {
+        if round < 70 { await std::task::sleep(std::time::Duration::fromMillis(1_u64)) }
+        (await stream.write(std::sprintf("GET /%v HTTP/1.1\r\nHost: x\r\n\r\n", round))).unwrap()
+        request := (await connection.request()).unwrap()
+        std::assert(request.url == std::sprintf("/%v", round), "each wait finds its own request")
+        (await connection.respond(Response::text(200_u16, "ok"))).unwrap()
+        var scratch: [uint8; 256] = [0_u8; 256]
+        var _ = (await stream.read(unsafe { Span[uint8]::from((&scratch as *mut [uint8; 256]) as *mut uint8, 256) })).unwrap()
+        round += 1
+    }
+}
+
+@test
+func httpAWaitingConnectionLeavesOtherTasksRunning() async {
+    server := Server::bind(SocketAddress::localhost(0_u16)).unwrap()
+    defer { var _ = server.close() }
+    stream := (await TcpStream::connect(server.localAddress().unwrap())).unwrap()
+    defer { var _ = stream.close() }
+    connection := (await server.accept()).unwrap()
+    defer { connection.close() }
+    waiting := std::task::spawn(() async => {
+        return (await connection.request()).unwrap().url
+    })
+    // This task and the waiter share the runtime; it can only finish if it gets turns.
+    var turns = 0
+    while turns < 1000 {
+        await std::task::yieldNow()
+        turns += 1
+    }
+    await std::task::sleep(std::time::Duration::fromMillis(2_u64))
+    (await stream.write("GET /late HTTP/1.1\r\nHost: x\r\n\r\n")).unwrap()
+    std::assert((await waiting.result()).unwrap() == "/late", "the wait outlasts the busy-wait")
+}
+
+@test
+func httpAPeerClosingDuringAWaitEndsTheRequest() async {
+    server := Server::bind(SocketAddress::localhost(0_u16)).unwrap()
+    defer { var _ = server.close() }
+    stream := (await TcpStream::connect(server.localAddress().unwrap())).unwrap()
+    connection := (await server.accept()).unwrap()
+    defer { connection.close() }
+    waiting := std::task::spawn(() async => {
+        return (await connection.request()).isErr()
+    })
+    await std::task::yieldNow()
+    var _ = stream.close()
+    std::assert((await waiting.result()).unwrap(), "the end of the stream is reported, not spun on")
+}
+
+@test
+func httpConnectionsHoldNoBuffersBeforeUse() async {
+    server := Server::bind(std::net::SocketAddress::localhost(0_u16)).unwrap()
+    address := server.localAddress().unwrap()
+    var clients = std::collections::List[std::net::TcpStream]::new()
+    var connections = std::collections::List[std::http::Connection]::new()
+    var index = 0
+    var allocated: uint64 = 0_u64
+    while index < 32 {
+        clients.append((await std::net::TcpStream::connect(address)).unwrap())
+        before := std::runtime::gcStats().allocatedBytes
+        connections.append((await server.accept()).unwrap())
+        allocated += std::runtime::gcStats().allocatedBytes - before
+        index += 1
+    }
+    // Formerly about 17 KiB each, most of it a write buffer rounded up to two pages.
+    std::assert(allocated / 32_u64 < 2048_u64, "an accepted connection allocates no I/O buffers")
+    for connection in connections { connection.close() }
+    for client in clients { var _ = client.close() }
+    server.close().unwrap()
+}
+
+@test
+func emptySocketReadsDoNotAllocate() async {
+    listener := std::net::TcpListener::bind(std::net::SocketAddress::localhost(0_u16)).unwrap()
+    client := (await std::net::TcpStream::connect(listener.localAddress().unwrap())).unwrap()
+    accepted := (await listener.accept()).unwrap().0
+    var byte: [uint8; 1] = [0_u8; 1]
+    span := unsafe { Span[uint8]::from((&byte as *mut [uint8; 1]) as *mut uint8, 1) }
+    before := std::runtime::gcStats().allocatedBytes
+    var attempts = 0
+    while attempts < 64 {
+        std::assert(accepted.tryRead(span).unwrapErr().isKind(.wouldBlock), "nothing was sent")
+        attempts += 1
+    }
+    std::assert(std::runtime::gcStats().allocatedBytes == before, "a routine miss allocates nothing")
+    var _ = client.close(); var _ = accepted.close(); var _ = listener.close()
+}

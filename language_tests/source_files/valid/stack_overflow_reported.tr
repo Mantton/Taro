@@ -11,8 +11,8 @@ func descend(_ n: int64) -> int64 {
 }
 
 func main() {
-    std.print("descending\n")
+    std::print("descending\n")
     // Far past any reachable depth, so this always exhausts the stack.
-    let result = descend(100000000)
-    std.printf("unreachable %v\n", result)
+    result := descend(100000000)
+    std::printf("unreachable %v\n", result)
 }

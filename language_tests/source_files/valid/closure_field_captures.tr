@@ -1,0 +1,40 @@
+// Native ownership regression.
+struct Item { value: int32 }
+struct Pair { left: Item; right: Item }
+struct View { value: int32; unrelated: &int32 }
+func own[T](_ value: T) -> T { value }
+func main() {
+    var pair: Pair = Pair { left: Item { value: 7 }, right: Item { value: 9 } }
+    read := () => pair.left.value
+    pair.right.value = 11
+    assert(read() == 7, "shared field capture leaves sibling writable")
+
+    var edit = () => { pair.left.value += 1 }
+    pair.right.value = 13
+    edit()
+    assert(pair.left.value == 8 && pair.right.value == 13, "mutable field capture leaves sibling writable")
+
+    var snapshot = () => { pair.left.value += 1; pair.left.value }
+    assert(snapshot() == 9 && snapshot() == 10, "literal closures share captured storage")
+    assert(pair.left.value == 10, "outer storage sees closure edits")
+
+    nested := () => { inner := () => pair.left.value; inner() }
+    pair.right.value = 17
+    assert(nested() == 10, "nested capture propagates the field path")
+    take := () => { inner := () => pair.left; inner() }
+    var sibling: Item = pair.right
+    var selected: Item = take()
+    assert(selected.value + sibling.value == 27, "owned nested capture moves only its field")
+
+    tuple := (Item { value: 19 }, Item { value: 23 })
+    takeFirst := () => tuple.0
+    var second: Item = tuple.1
+    var first: Item = takeFirst()
+    assert(first.value + second.value == 42, "tuple projections capture separately")
+
+    var outside: int32 = 29
+    var view: View = View { value: 31, unrelated: &outside }
+    independent := own(() => view.value)
+    cloned := independent.clone()
+    assert(independent() + cloned() == 62, "unused borrowed field adds no capture dependency")
+}

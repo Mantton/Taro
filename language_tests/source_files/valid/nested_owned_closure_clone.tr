@@ -1,0 +1,11 @@
+import std::marker::Clone
+func main() {
+    var count: int32 = 0
+    var inner = () => { count += 1; count }
+    var outer = () => inner()
+    var cloned = outer.clone()
+    assert(outer() == 1, "nested callable remains repeatable")
+    assert(outer() == 2, "original environment advances")
+    assert(cloned() == 3, "Clone preserves shared captured variables")
+    assert(cloned() == 4, "nested closure copies share the captured counter")
+}

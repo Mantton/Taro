@@ -1,0 +1,17 @@
+import classes
+class SpecialCounter: classes::Counter {}
+extend SpecialCounter {
+    public override func read() -> int32 { return super.read() + 1; }
+    public override func echo[U](_ value: U) -> U { return super.echo(value); }
+}
+func main() {
+    var counter: classes::Counter = classes::Counter(7)
+    assert(counter.read() == 7, "library descriptor dispatch")
+    var input: List[int32] = [3, 5]
+    var values: List[int32] = counter.echo(input)
+    assert(values.len() == 2, "client closes library generic dispatch with a noncopyable argument")
+    assert(counter.echo(13_i64) == 13, "second native specialization")
+    var saved: &int32 = counter.reference()
+    assert(*saved == 7, "imported virtual return preserves the input guard")
+    assert((counter as? SpecialCounter).isNone(), "imported base keeps its original dynamic identity")
+}

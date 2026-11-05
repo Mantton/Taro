@@ -6,15 +6,15 @@ valid/integer_overflow.tr
 valid/overflow_panic_runs_defer.tr
 
 # GC roots, descriptors, and stack allocation
-valid/gc_descriptor_roots.tr
-valid/gc_generic_allocation_descriptors.tr
-valid/gc_offsets_linkage.tr
+valid/gc_nested_erased_box_roots.tr
+valid/gc_erased_containers.tr
+valid/gc_lto_root_maps.tr
 valid/gc_static_roots.tr
-valid/gc_stack_map_stress.tr
-valid/gc_loop_fstring_roots.tr
-valid/gc_loop_printf_roots.tr
-valid/gc_precise_liveness.tr
-valid/cleanup_panic_observation.tr
+valid/gc_suspended_frame_root.tr
+valid/gc_native_string_argument_survives.tr
+valid/gc_string_values.tr
+valid/gc_keep_alive_extends_liveness.tr
+valid/task_cleanup_outcome_ordering.tr
 valid/loop_stack_allocation.tr
 
 # Calls, ABI boundaries, and cross-package symbols
@@ -64,3 +64,62 @@ valid/reference_local_bindings.tr
 # Lexing and struct-literal control flow
 valid/nested_comments.tr
 valid/struct_literal_control_flow.tr
+
+# Stable GC references, callbacks, and scoped task cleanup
+valid/class_root_fields.tr
+valid/span_raw_projection_layout.tr
+valid/gc_unified_references.tr
+valid/gc_class_field_reference_no_box.tr
+valid/zero_sized_collection_elements.tr
+valid/contextual_call_borrows.tr
+valid/reference_escape_through_erasure.tr
+valid/async_callback_input_results.tr
+valid/task_group_scope.tr
+
+valid/interface_conditional_witness.tr
+valid/class_virtual_generics.tr
+valid/class_inheritance_surface.tr
+valid/class_virtual_metadata.tr
+valid/class_derived_initializer_arguments.tr
+
+# Inherited designated construction and source-shaped generic environments
+valid/class_inherited_designated_generics.tr
+valid/class_inherited_designated_specialization.tr
+valid/class_inherited_designated_shaped.tr
+valid/class_inherited_designated_context.tr
+valid/class_inherited_extra_parameter.tr
+valid/class_shaped_designated_override.tr
+
+# Convenience construction contexts and initialized GC handles
+valid/class_convenience_conditions.tr
+valid/class_convenience_generics.tr
+valid/class_initializer_metadata.tr
+
+# Native subscript capabilities and inference
+valid/native_subscript_access.tr
+valid/native_subscript_witnesses.tr
+valid/native_subscript_overrides.tr
+valid/native_subscripts_cross_package.tr
+valid/indexed_reference_receiver.tr
+valid/nested_index_key_inference.tr
+
+# Contextual nil values and freely movable shared captures
+valid/raw_pointer_nil.tr
+valid/nil_expression_effects.tr
+valid/shared_capture_tasks_can_migrate.tr
+
+# Named enum construction and value patterns, including metadata and GC roots
+valid/named_field_construction_patterns.tr
+valid/gc_named_field_patterns.tr
+valid/named_fields_cross_package.tr
+
+# Conversion bridges and Deref receiver/reference lowering
+valid/conversion_bridges.tr
+valid/conversion_deref_cross_package.tr
+valid/deref_receivers.tr
+valid/gc_deref_lifetimes.tr
+
+# Struct update field snapshots, copied payloads and imported layouts
+valid/struct_updates.tr
+valid/gc_struct_updates.tr
+valid/struct_update_cross_package.tr

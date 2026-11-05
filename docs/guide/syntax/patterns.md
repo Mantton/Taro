@@ -4,15 +4,14 @@ This chapter covers all pattern types used in pattern matching, variable binding
 
 ## Where Patterns Are Used
 
-Local `let`/`var` bindings accept identifiers, `_`, tuple patterns, and reference
-patterns at the outermost level. A local binding must be irrefutable: it must
+Local `var` bindings accept identifiers, `_`, tuple patterns, and named struct patterns. A local binding must be irrefutable: it must
 match every possible value of its type. Match arms and loop/binding conditions
-accept additional patterns. Optional-binding conditions (`if let`, `while let`, `guard let`)
+accept additional patterns. Optional-binding conditions (`if var`, `while var`, `guard var`)
 accept a single identifier; use `case` for destructuring in a condition:
 
 ```taro
 // Variable declarations
-let pattern = expression
+pattern := expression
 var pattern = expression
 
 // Match arms
@@ -35,7 +34,7 @@ guard case pattern = expression else { }
 Matches anything and discards the value.
 
 ```taro
-let _ = someValue           // Ignore the value
+var _ = someValue        // Ignore the value
 
 match result {
     case .ok(_) => "success"   // Ignore associated value
@@ -50,7 +49,7 @@ match result {
 Binds a value to a name.
 
 ```taro
-let x = 42                  // Binds 42 to 'x'
+x := 42                  // Binds 42 to 'x'
 
 match opt {
     case .some(value) => value  // Binds to 'value'
@@ -65,9 +64,9 @@ match opt {
 Destructures tuples.
 
 ```taro
-let (a, b) = (1, 2)
+var (a, b) = (1, 2)
 
-let (x, y, z) = point3d
+var (x, y, z) = point3d
 
 match pair {
     case (0, 0) => "origin"
@@ -84,21 +83,21 @@ match pair {
 Matches remaining elements in a tuple.
 
 ```taro
-let (first, ..) = tuple     // Match first, ignore rest
+var (first, ..) = tuple     // Match first, ignore rest
 
 match triple {
     case (a, ..) => a          // Just get first element
 }
 
 // With other patterns
-let (first, second, ..) = longTuple
+var (first, second, ..) = longTuple
 ```
 
 ---
 
 ## Path Pattern
 
-Matches enum variants. A qualified constant such as `Limits.MAX` is not an
+Matches enum variants. A qualified constant such as `Limits::MAX` is not an
 enum-variant pattern; use a literal or a guard to compare against constants.
 
 ### Qualified Path
@@ -107,14 +106,14 @@ Full path to the variant.
 
 ```taro
 match result {
-    case Result.ok(v) => v
-    case Result.err(e) => panic(e)
+    case Result::ok(v) => v
+    case Result::err(e) => panic(e)
 }
 
 match color {
-    case Color.red => 0xFF0000
-    case Color.green => 0x00FF00
-    case Color.blue => 0x0000FF
+    case Color::red => 0xFF0000
+    case Color::green => 0x00FF00
+    case Color::blue => 0x0000FF
 }
 ```
 
@@ -140,6 +139,29 @@ match message {
     case .write(text) => print(text)
 }
 ```
+
+---
+
+## Named Field Patterns
+
+Structs and struct-style enum variants match fields by name. Fields can be
+listed in any order; `name: pattern` renames or further destructures a field,
+and a final `..` ignores omitted fields. Without `..`, every field is required.
+
+```taro
+match shape {
+    case .rect { height, width: w } => w * height
+    case .empty {} => 0
+}
+var Point { x, .. } = point
+if case .rect { width, .. } = shape { print(width) }
+```
+
+Bindings are writable value copies. Matching a reference automatically reads
+its target; changing a binding does not change the source’s inline fields.
+Class and reference values still share their targets. Reference patterns are
+not supported. Tuple variants use parentheses; struct-style variants use braces.
+Classes cannot be destructured with named patterns.
 
 ---
 
@@ -198,55 +220,39 @@ match name {
 
 ---
 
-## Reference Pattern
+## Value Bindings and References
 
-An explicit `&pattern` matches through one reference layer. Its inner
-bindings have the pointee types, rather than gaining another reference:
+All pattern bindings are writable value copies, including bindings introduced
+by `match` and `if case`. Editing an inline payload binding does not edit the
+source enum. Copies of class, List, and reference values still share their
+targets, as with ordinary assignment.
 
-```taro
-let value = 42
-match &value {
-    case &x => {
-        let copied: int32 = x
-    }
-}
-```
-
-`&const pattern` is the explicit immutable spelling. `&mut pattern` requires a
-mutable reference. Reference patterns also work in local bindings, including
-inside tuples:
+Structural match/if-case patterns automatically read through reference layers.
+Payload bindings remain values; explicit dereferencing is also accepted:
 
 ```taro
-func main() {
-    let value = 42
-    let &copy = &value
-    let (&nested,) = (&value,)
-    let &(first, second) = &(19, 23)
-    assert(copy == nested && first + second == 42, "reference bindings")
-}
-```
-
-`let` or `var` controls whether the new bindings can be reassigned. The `mut`
-in `let &mut x = ...` describes the reference being matched; it does not make
-`x` a mutable binding. Copying a pointee does not modify the referenced value,
-and a non-`Copy` value cannot be moved through either reference kind.
-
-Match arms and `case` conditions retain a different binding rule: an explicit
-`&mut pattern` makes its inner bindings mutable. The `let`/`var` rule above
-applies to local declarations.
-
-Without an explicit reference pattern, matching an enum or tuple through a
-reference automatically borrows the payload bindings:
-
-```taro
-let optional: int32? = .some(42)
-match &optional {
-    case .some(v) => {
-        let borrowed: &int32 = v
+var optional: int32? = .some(42)
+reference := &optional
+match reference {
+    case .some(value) => {
+        value += 1 // Changes the local copy; optional still contains 42.
     }
     case .none => {}
 }
+if case .some(value) = reference { value = 0 }
 ```
+
+`&pattern` is removed. Enum, tuple and literal patterns automatically read
+referents, including nested structural patterns. A plain identifier pattern
+copies the matched reference value itself; it does not read the pointee.
+Use ordinary dereferencing for local values, such as `var copy = *reference`.
+
+Matching can inspect the discriminant and bind selected fields directly from
+existing storage; explicit dereferencing does not require copying the whole
+enum. Guarded matches conservatively snapshot the scrutinee before testing
+arms, because a guard can replace the source through an alias. Each candidate's
+guard and body share the same binding copies; a failed guard discards them.
+There are no runtime borrow checks or reference protection tokens.
 
 ---
 
@@ -256,7 +262,7 @@ Patterns can be nested for complex destructuring.
 
 ```taro
 // Nested tuples
-let ((a, b), (c, d)) = nestedTuple
+var ((a, b), (c, d)) = nestedTuple
 
 // Enum with tuple
 match result {
@@ -303,7 +309,7 @@ Match expressions must be exhaustive—all possible values must be covered.
 
 ```taro
 enum Switch { case on, off; }
-let state: Switch = .on
+var state: Switch = .on
 
 // Must cover all cases
 match state {
@@ -318,3 +324,34 @@ match number {
     case _ => "non-zero"  // Covers everything else
 }
 ```
+
+## Conditional Value Bindings and Scope
+
+Conditional patterns preserve their source on both success and failure.
+Their bindings are writable value copies, with the same shallow sharing rules
+as ordinary assignment. Structural matching automatically reads references.
+
+```taro
+struct Token { value: int32 }
+enum State { case empty; case token(Token) }
+
+func main() {
+    var state: State = .token(Token { value: 1 })
+    if case .token(token) = &state {
+        token.value += 1 // Edits the binding copy.
+    }
+    if case .token(original) = state {
+        assert(original.value == 1, "source is unchanged")
+    }
+    guard case .token(saved) = state else { return }
+    state = .empty
+    assert(saved.value == 1, "guard binding is independent of the source")
+}
+```
+
+Bindings introduced by `if` and each `while` iteration have their branch's
+lexical scope. A successful `guard` makes its bindings available to subsequent
+statements and defer blocks. References that escape to a binding copy keep its
+GC storage alive independently of that lexical scope. Failed match guards do
+not write their binding copies back to the scrutinee; the successful arm uses
+the same copies that its guard inspected or edited.

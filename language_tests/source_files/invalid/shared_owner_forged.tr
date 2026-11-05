@@ -1,0 +1,4 @@
+func main() {
+    var forged: std::runtime::SharedOwner[int32] = std::runtime::SharedOwner[int32](7)
+    var value: int32 = *forged.get()
+}

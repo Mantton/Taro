@@ -1,0 +1,27 @@
+// ENV: TARO_WORKERS=1
+// A frame field holding a value that is dead at an await is cleared before
+// the frame suspends there, so a collection during that await reclaims the
+// value. A value still live at the await survives (G20 frame precision).
+extern "C" {
+    unsafe func __gc__test_probe_create(_ target: *const uint8) -> *mut uint8
+    unsafe func __gc__test_collect_probe_is_live(_ probe: *mut uint8) -> bool
+}
+@noinline
+func bufferProbe(_ buffer: std::bytes::Buffer) -> *mut uint8 {
+    unsafe { __gc__test_probe_create(buffer.bytes().asPtr()) }
+}
+func collectInChild(_ probe: *mut uint8) async -> bool {
+    await std::testing::yieldNow()
+    unsafe { __gc__test_collect_probe_is_live(probe) }
+}
+func main() async {
+    stale := std::bytes::Buffer::new("dead after first await")
+    kept := std::bytes::Buffer::new("live after second await")
+    await std::testing::yieldNow()
+    staleProbe := bufferProbe(stale)
+    keptProbe := bufferProbe(kept)
+    assert(!(await collectInChild(staleProbe)), "a suspended frame must not retain a dead field")
+    assert(await collectInChild(keptProbe), "a suspended frame must retain a live field")
+    assert(kept.toString() == "live after second await", "the live field is intact after resuming")
+    print("PASS: suspended frames trace only live fields\n")
+}

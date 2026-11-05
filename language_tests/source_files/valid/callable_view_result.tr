@@ -1,0 +1,24 @@
+struct Record { value: int32 }
+struct Selection { value: &int32 }
+extend &Record {
+    func select[F: Fn[&Record, Selection]](_ project: F) -> Selection {
+        project(self)
+    }
+}
+extend &Record {
+    func maybe[F: Fn[&Record, Selection?]](_ project: F) -> Selection? { project(self) }
+}
+func main() {
+    var choose: bool = true
+    var record: Record = Record { value: 7 }
+    var selected: Selection = record.select((input: &Record) => {
+        assert(choose, "callback reads its capture")
+        Selection { value: &input.value }
+    })
+    temporary := ((input: &Record) => Selection { value: &input.value })(&Record { value: 11 })
+    assert(*temporary.value == 11, "view result retains its selected temporary owner")
+    var absent: Selection? = record.maybe((input: &Record) => .none)
+    assert(absent.isNone(), "a payloadless result need not manufacture an input reference")
+    choose = false
+    assert(*selected.value == 7, "view depends on the record, not the consumed callback")
+}

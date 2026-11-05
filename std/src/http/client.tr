@@ -1,0 +1,202 @@
+import std::collections::List
+import std::mem::Span
+import std::result::Result
+
+final class IdleConnection {
+    origin: string
+    input: WireInput
+    since: std::time::Instant
+}
+extend IdleConnection {
+    init(_ origin: string, _ input: WireInput) {
+        self.origin = origin; self.input = input; self.since = std::time::Instant::now()
+    }
+}
+final class IdleSlot { value: std::sync::atomic::Handle[IdleConnection] }
+extend IdleSlot { init() { self.value = std::sync::atomic::Handle[IdleConnection]::new() } }
+final class ClientState {
+    options: Options
+    tls: std::tls::ClientConfig?
+    ownsTLS: bool
+    custom: (any Transport)?
+    closed: std::sync::atomic::Bool
+    idle: List[IdleSlot]
+}
+extend ClientState {
+    init(_ options: Options, _ tls: std::tls::ClientConfig?, _ ownsTLS: bool, _ custom: (any Transport)?) {
+        self.options = options; self.tls = tls; self.ownsTLS = ownsTLS; self.custom = custom
+        self.closed = std::sync::atomic::Bool::new(false)
+        self.idle = List[IdleSlot]::new(withCapacity: options.maxIdleConnections)
+        var index: usize = 0
+        while index < options.maxIdleConnections { self.idle.append(IdleSlot()); index += 1 }
+    }
+    func close() {
+        if self.closed.swap(true) { return }
+        for slot in self.idle {
+            match slot.value.swap(.none) {
+                case .some(connection) => { var _ = connection.input.stream.close() }
+                case .none => {}
+            }
+        }
+        if self.ownsTLS {
+            match self.tls {
+                case .some(config) => config.close()
+                case .none => {}
+            }
+        }
+    }
+    func take(_ origin: string) -> WireInput? {
+        if self.closed.load() || !self.options.keepAlive { return .none }
+        for slot in self.idle {
+            match slot.value.load() {
+                case .some(candidate) if candidate.origin == origin => {
+                    // CAS claims exactly the observed object, without replacing
+                    // a different origin another task might have installed.
+                    if slot.value.compareExchange(.some(candidate), .none) {
+                        elapsed := candidate.since.elapsed()
+                        millis := elapsed.seconds() * 1000_u64 + elapsed.subsecNanos() as uint64 / 1000000_u64
+                        if !self.closed.load() && millis < self.options.timeoutMillis { return .some(candidate.input) }
+                        var _ = candidate.input.stream.close()
+                    }
+                }
+                case _ => {}
+            }
+        }
+        return .none
+    }
+    func put(_ origin: string, _ input: WireInput) {
+        if !self.closed.load() && self.options.keepAlive && input.buffer.isEmpty() {
+            connection := IdleConnection(origin, input)
+            for slot in self.idle {
+                if slot.value.compareExchange(.none, .some(connection)) {
+                    // Close racing publication must not strand an idle socket.
+                    if self.closed.load() && slot.value.compareExchange(.some(connection), .none) { var _ = input.stream.close() }
+                    return
+                }
+            }
+        }
+        var _ = input.stream.close()
+    }
+}
+final class ResponseSource {
+    incoming: IncomingBody
+    client: ClientState
+    origin: string
+    reusable: bool
+    released: std::sync::atomic::Bool
+}
+extend ResponseSource {
+    init(_ incoming: IncomingBody, _ client: ClientState, _ origin: string, _ reusable: bool) {
+        self.incoming = incoming; self.client = client; self.origin = origin; self.reusable = reusable
+        self.released = std::sync::atomic::Bool::new(false)
+    }
+}
+conform ResponseSource to BodySource {
+    public func read(_ into: Span[uint8]) async -> Result[usize, std::io::Error] {
+        return await self.incoming.read(into)
+    }
+    public func close() -> Result[(), std::io::Error] {
+        if self.released.swap(true) { return .ok(()) }
+        if self.incoming.complete.load() && self.reusable && !self.incoming.abandoned.load() {
+            self.client.put(self.origin, self.incoming.input)
+        } else { var _ = self.incoming.input.stream.close() }
+        return .ok(())
+    }
+}
+
+func sendStreaming(_ client: ClientState, _ request: &Request, _ body: Body) async -> Result[Response, Error] {
+    options := client.options
+    if request.headers.len() > options.maxHeaders || request.method.byteLen() > options.maxHeaderBytes || request.url.byteLen() > options.maxHeaderBytes {
+        return .err(failure(.limit, "HTTP request exceeds configured limit"))
+    }
+    // Copy mutable headers before the first suspension. The immutable strings
+    // remain cheap headers; only the body cursor is shared and consumed.
+    headers := request.headers.copy()
+    var headerIndex: usize = 0
+    while headerIndex < headers.len() {
+        header := headers.at(headerIndex)
+        headerIndex += 1
+        if equalName(header.name, "host") || equalName(header.name, "content-length") || equalName(header.name, "transfer-encoding") || equalName(header.name, "connection") || equalName(header.name, "expect") || equalName(header.name, "trailer") || equalName(header.name, "upgrade") {
+            return .err(failure(.invalidInput, "HTTP client controls request framing headers"))
+        }
+    }
+    method := request.method
+    url := request.url
+    parsed := unsafe { __rt__http_url(url, method) }
+    defer { unsafe { __rt__http_snapshot_close(parsed) } }
+    if info(parsed, 0) != 0 { return .err(snapshotError(parsed)) }
+    host := snapshotText(parsed, 1)
+    target := snapshotText(parsed, 2)
+    authority := snapshotText(parsed, 3)
+    port := info(parsed, 4) as uint16
+    secure := info(parsed, 5) != 0
+    origin := (if secure { "https://" } else { "http://" }).concat(authority)
+    var head = std::string::Builder::new()
+    head.writeString(method); head.writeString(" "); head.writeString(target); head.writeString(" HTTP/1.1\r\nHost: ")
+    head.writeString(authority); head.writeString("\r\n")
+    head.writeString(headers.wire(options.maxHeaderBytes)!)
+    var chunked = false
+    match body.remainingLength() {
+        case .some(length) => {
+            if length > options.maxBodyBytes { return .err(failure(.limit, "HTTP upload exceeds configured limit")) }
+            head.writeString(std::sprintf("Content-Length: %d\r\n", length))
+        }
+        case .none => { chunked = true; head.writeString("Transfer-Encoding: chunked\r\n") }
+    }
+    if !options.keepAlive { head.writeString("Connection: close\r\n") }
+    head.writeString("\r\n")
+    if head.len() > options.maxHeaderBytes { return .err(failure(.limit, "HTTP request head exceeds configured limit")) }
+    var input: WireInput = match client.take(origin) {
+        case .some(input) => input
+        case .none => {
+            socket := match await std::net::TcpStream::connectHost(host, port) {
+                case .ok(socket) => socket
+                case .err(error) => return .err(failure(.transport, std::sprintf("%v", error)))
+            }
+            stream := WireStream(socket)
+            var prepared = false
+            defer { if !prepared { var _ = stream.close() } }
+            if secure {
+                config := client.tls.unwrap()
+                match await config.wrap(socket, serverName: host) {
+                    case .ok(tls) => {
+                        match stream.installTLS(tls) {
+                            case .ok(_) => {}
+                            case .err(error) => return .err(ioFailure(error))
+                        }
+                    }
+                    case .err(error) => return .err(ioFailure(error))
+                }
+            }
+            prepared = true
+            WireInput(stream)
+        }
+    }
+    var transferred = false
+    defer { if !transferred { var _ = input.stream.close() } }
+    (await writeResponse(input.stream, head.toString(), body, true, chunked, options.maxBodyBytes))!
+    var informational: usize = 0
+    loop {
+        bytes := (await input.head(options.maxHeaderBytes))!
+        snapshot := unsafe { __rt__http_parse_response(bytes.asPtr(), bytes.len(), options.maxHeaders, options.maxBodyBytes, method == "HEAD") }
+        defer { unsafe { __rt__http_snapshot_close(snapshot) } }
+        if info(snapshot, 0) != 0 { return .err(snapshotError(snapshot)) }
+        status := info(snapshot, 1)
+        headers := snapshotHeaders(snapshot, bytes, std::string::stringFromBytes(bytes))
+        input.discard(info(snapshot, 3))
+        if status < 200 {
+            informational += 1
+            if informational > 8 { return .err(failure(.limit, "too many informational HTTP responses")) }
+            continue
+        }
+        var bodyOptions = options
+        if status == 205 { bodyOptions.maxBodyBytes = 0 }
+        incoming := IncomingBody(input, info(snapshot, 4), info(snapshot, 5) != 0, bodyOptions)
+        incoming.eofDelimited = info(snapshot, 7) != 0
+        if incoming.eofDelimited { incoming.complete.store(false) }
+        source := ResponseSource(incoming, client, origin, info(snapshot, 6) == 0 && options.keepAlive)
+        var length: usize? = if incoming.chunked || incoming.eofDelimited { .none } else { .some(incoming.remaining) }
+        transferred = true
+        return .ok(Response { status: status as uint16, headers, body: Body::fromSource(source, length: length) })
+    }
+}

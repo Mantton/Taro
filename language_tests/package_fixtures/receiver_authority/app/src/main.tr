@@ -1,0 +1,14 @@
+import dep::{Inspect, Project, counter}
+func inspect[T: Inspect](_ value: &T) -> int32 { value.inspect() }
+func project[T: Project](_ value: &T) -> &int32 { value.project() }
+func main() {
+    var value = counter(23_i32)
+    assert(inspect(&value) == 23, "imported receiver authority")
+    var saved: &int32 = project(&value)
+    assert(*saved == 23, "imported projection receiver authority")
+    var erased: any Inspect = value
+    assert(erased.inspect() == 23, "imported erased receiver authority")
+    var erasedProject: any Project = counter(29_i32)
+    var erasedSaved: &int32 = erasedProject.project()
+    assert(*erasedSaved == 29, "imported erased borrowed result")
+}

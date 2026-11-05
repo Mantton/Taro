@@ -1,0 +1,78 @@
+// G57: a Taro function passed to C runs on threads the runtime never created.
+// The callback registers its thread on entry and parks it on return, so a
+// thread that goes back to idling in C (a GCD worker here) cannot stall the
+// next collection. HEAD registered the worker on first allocation and never
+// parked it, so main's collection waited for it forever.
+static var CALLBACK_DONE: int32 = 0
+
+@cfg(os("macos"))
+extern "C" {
+    unsafe func dispatch_get_global_queue(_ priority: int64, _ flags: uint64) -> *mut uint8
+    unsafe func dispatch_async_f(_ queue: *mut uint8, _ context: *mut uint8, _ work: (*mut uint8) -> ())
+}
+
+extern "C" {
+    unsafe func pthread_create(_ thread: *mut uint64, _ attr: *const uint8, _ start: (*mut uint8) -> *mut uint8, _ arg: *mut uint8) -> int32
+    unsafe func usleep(_ micros: uint32) -> int32
+    unsafe func __gc__test_probe_create(_ target: *const uint8) -> *mut uint8
+    unsafe func __gc__test_collect_probe_is_live(_ probe: *mut uint8) -> bool
+}
+
+// Main parks while it joins: the thread's collections must not wait for it.
+extern "blocking" {
+    unsafe func pthread_join(_ thread: uint64, _ result: *mut *mut uint8) -> int32
+}
+
+func buildLabels(_ prefix: string) -> int32 {
+    var labels = std::collections::List[string]::new()
+    var i = 0
+    while i < 50 {
+        labels.append(std::sprintf("%s-%d", prefix, i))
+        i += 1
+    }
+    return labels.count() as int32
+}
+
+func work(_ context: *mut uint8) {
+    std::printf("callback built %d labels\n", buildLabels("worker"))
+    CALLBACK_DONE = 1
+}
+
+func threadEntry(_ arg: *mut uint8) -> *mut uint8 {
+    std::printf("thread built %d labels\n", buildLabels("thread"))
+    return arg
+}
+
+@cfg(os("macos"))
+func runIdleCallback() {
+    unsafe { dispatch_async_f(dispatch_get_global_queue(0, 0), 0 as *mut uint8, work) }
+}
+
+@cfg(os("linux"))
+func runIdleCallback() {
+    unsafe { work(0 as *mut uint8) }
+}
+
+// Each forced collection waits for every registered thread to park.
+func churn() -> int32 {
+    var rounds: int32 = 0
+    while rounds < 3 {
+        probe := unsafe { __gc__test_probe_create(0 as *const uint8) }
+        var _ = unsafe { __gc__test_collect_probe_is_live(probe) }
+        rounds += buildLabels("main") / 50
+    }
+    return rounds
+}
+
+func main() {
+    runIdleCallback()
+    while CALLBACK_DONE == 0 { var _ = unsafe { usleep(1000) } }
+    var _ = unsafe { usleep(20000) }
+    std::printf("main collected through %d rounds\n", churn())
+
+    var thread: uint64 = 0
+    var _ = unsafe { pthread_create(&thread as *mut uint64, 0 as *const uint8, threadEntry, 0 as *mut uint8) }
+    rounds := churn()
+    var _ = unsafe { pthread_join(thread, 0 as *mut *mut uint8) }
+    std::printf("main collected through %d more rounds\n", rounds)
+}

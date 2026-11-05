@@ -22,10 +22,10 @@ Taro is a statically-typed systems programming language with:
 - Algebraic data types (enums with associated values)
 - Pattern matching
 - Interfaces for polymorphism
-- References, raw pointers, and automatic garbage collection (GC)
+- Ordinary value copies, shared collection/class handles, writable GC references, and unsafe raw pointers
 - Automatic semicolon insertion (ASI)
 - `printf`/`sprintf`-style formatted output (`%d`, `%s`, `%v`, `%%`) with compile-time checks for literal format strings
-- Python-style f-strings: `f"Hello, {name}"` (desugared to `std.sprintf`)
+- Python-style f-strings: `f"Hello, {name}"` (desugared to `std::sprintf`)
 
 ### Hello World
 
@@ -62,15 +62,15 @@ func handle(_ r: Result[int32, string]) -> int32 {
 
 // Result propagation
 func increment(_ input: Result[int32, string]) -> Result[int32, string] {
-    let value = input!
+    value := input!
     return .ok(value + 1)
 }
 
 func main() {
-    let point = Point { x: 3, y: 4 }
-    let double = |x: int32| x * 2
-    let user: User? = .some(User { profile: .some(Profile { name: "Taro" }) })
-    let name = user?.profile?.name ?? "Unknown"
+    point := Point { x: 3, y: 4 }
+    double := (x: int32) => x * 2
+    var user: User? = .some(User { profile: .some(Profile { name: "Taro" }) })
+    name := user?.profile?.name ?? "Unknown"
     println(name)
     assert(double(point.x) == 6, "closure result")
     assert(handle(increment(.ok(41))) == 42, "propagated result")

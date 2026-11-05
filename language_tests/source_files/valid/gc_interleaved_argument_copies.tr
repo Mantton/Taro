@@ -1,0 +1,47 @@
+// ENV: TARO_GC_STRESS=1 TARO_WORKERS=4
+enum Choice {
+    case some([&int32; 4])
+    case none
+}
+
+@noinline
+func fresh(_ number: int32) -> &int32 {
+    var value = number
+    std::runtime::collect()
+    return &value
+}
+
+@inline
+unsafe func forward(_ destination: *mut Choice, _ value: Choice) {
+    unsafe { destination.write(value) }
+}
+
+func total(_ value: Choice) -> int32 {
+    match value {
+        case .some(values) => *values[0] + *values[1] + *values[2] + *values[3]
+        case .none => 0
+    }
+}
+
+func main() {
+    var slots: [Choice; 4] = [Choice::none; 4]
+    var index: usize = 0
+    while index < slots.len() {
+        payload := Choice::some([fresh(10), fresh(11), fresh(12), fresh(13)])
+        unsafe { forward(&slots[index] as *mut Choice, payload) }
+        std::runtime::collect()
+        assert(total(slots[index]) == 46, "copied inline argument keeps its references")
+
+        // Argument evaluation must snapshot the source before an aliased write.
+        unsafe { forward(&slots[index] as *mut Choice, slots[index]) }
+        std::runtime::collect()
+        assert(total(slots[index]) == 46, "source/destination alias preserves the value")
+
+        unsafe { forward(&slots[index] as *mut Choice, .none) }
+        std::runtime::collect()
+        assert(total(slots[index]) == 0, "empty variant overwrites the live value")
+        assert(total(payload) == 46, "writing the destination leaves the source intact")
+        index += 1
+    }
+    print("PASS: interleaved argument copies preserve GC values\n")
+}

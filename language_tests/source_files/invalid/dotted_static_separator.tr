@@ -1,0 +1,7 @@
+namespace Tools {
+    func answer() -> int32 { 42 }
+}
+
+func main() {
+    print(Tools.answer())
+}

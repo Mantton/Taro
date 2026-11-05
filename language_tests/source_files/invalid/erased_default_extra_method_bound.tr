@@ -1,0 +1,10 @@
+interface Extra[Rhs = Self] { func known() -> int32 where Rhs: Clone; }
+struct Counter: Clone { value: int32 }
+conform Counter to Extra {
+    func known() -> int32 { self.value }
+}
+func main() {
+    var boxed: any Extra = Counter { value: 7 }
+    var result: int32 = boxed.known() // Extra does not promise its hidden Rhs is Clone.
+    var _ = result
+}

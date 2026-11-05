@@ -1,0 +1,8 @@
+error: a module cannot be used as a value
+ -> language_tests/source_files/invalid/module_used_as_value.tr:2:4
+	    std::panic("calling a module") // Error: a module is not a value.
+	    ^^^^^^^^^^
+error: a module cannot be used as a value
+ -> language_tests/source_files/invalid/module_used_as_value.tr:3:12
+	    var _ = std::collections // Error: nor is it one here.
+	            ^^^^^^^^^^^^^^^^

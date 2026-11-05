@@ -1,0 +1,9 @@
+public interface Combine[Rhs] { func combine(_ rhs: &Rhs) -> int32; }
+public interface Marker[First, Second] {}
+public interface Tag { func tag() -> int32; }
+public interface AnyMarker[Arg] {}
+conform[T, Arg] T to AnyMarker[Arg] {}
+public struct Envelope[T] { public value: T }
+public type EnvelopeAlias[T] = Envelope[T]
+public func wrap[T](_ value: T) -> Envelope[T] { Envelope[T] { value } }
+public interface ConstMarker[const N: usize, Rhs] {}

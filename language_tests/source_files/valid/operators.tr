@@ -10,48 +10,48 @@ struct AssignNumber {
     value: int32
 }
 
-impl std.ops.AddAssign[int32] for AssignNumber {
-    func addAssign(&mut self, rhs: int32) { self.value += rhs }
+conform &AssignNumber to std::ops::AddAssign[int32] {
+    func addAssign( _ rhs: int32) { self.value += rhs }
 }
 
-impl std.ops.SubAssign[int32] for AssignNumber {
-    func subAssign(&mut self, rhs: int32) { self.value -= rhs }
+conform &AssignNumber to std::ops::SubAssign[int32] {
+    func subAssign( _ rhs: int32) { self.value -= rhs }
 }
 
-impl std.ops.MulAssign[int32] for AssignNumber {
-    func mulAssign(&mut self, rhs: int32) { self.value *= rhs }
+conform &AssignNumber to std::ops::MulAssign[int32] {
+    func mulAssign( _ rhs: int32) { self.value *= rhs }
 }
 
-impl std.ops.DivAssign[int32] for AssignNumber {
-    func divAssign(&mut self, rhs: int32) { self.value /= rhs }
+conform &AssignNumber to std::ops::DivAssign[int32] {
+    func divAssign( _ rhs: int32) { self.value /= rhs }
 }
 
-impl std.ops.RemAssign[int32] for AssignNumber {
-    func remAssign(&mut self, rhs: int32) { self.value %= rhs }
+conform &AssignNumber to std::ops::RemAssign[int32] {
+    func remAssign( _ rhs: int32) { self.value %= rhs }
 }
 
-impl std.ops.BitAndAssign[int32] for AssignNumber {
-    func bitandAssign(&mut self, rhs: int32) { self.value &= rhs }
+conform &AssignNumber to std::ops::BitAndAssign[int32] {
+    func bitandAssign( _ rhs: int32) { self.value &= rhs }
 }
 
-impl std.ops.BitOrAssign[int32] for AssignNumber {
-    func bitorAssign(&mut self, rhs: int32) { self.value |= rhs }
+conform &AssignNumber to std::ops::BitOrAssign[int32] {
+    func bitorAssign( _ rhs: int32) { self.value |= rhs }
 }
 
-impl std.ops.BitXorAssign[int32] for AssignNumber {
-    func bitxorAssign(&mut self, rhs: int32) { self.value ^= rhs }
+conform &AssignNumber to std::ops::BitXorAssign[int32] {
+    func bitxorAssign( _ rhs: int32) { self.value ^= rhs }
 }
 
-impl std.ops.ShlAssign[int32] for AssignNumber {
-    func shlAssign(&mut self, rhs: int32) { self.value <<= rhs }
+conform &AssignNumber to std::ops::ShlAssign[int32] {
+    func shlAssign( _ rhs: int32) { self.value <<= rhs }
 }
 
-impl std.ops.ShrAssign[int32] for AssignNumber {
-    func shrAssign(&mut self, rhs: int32) { self.value >>= rhs }
+conform &AssignNumber to std::ops::ShrAssign[int32] {
+    func shrAssign( _ rhs: int32) { self.value >>= rhs }
 }
 
 func testBitwiseIntegerMatrix() {
-    let x: uint8 = 10
+    var x: uint8 = 10
 
     assert((x | 4) == 14, "bitwise or")
     assert((x ^ 15) == 5, "bitwise xor")
@@ -104,32 +104,32 @@ func testOverloadedCompoundAssignmentMatrix() {
 }
 
 func testShortCircuitSideEffects() {
-    let a = false && mustNotCall()
+    a := false && mustNotCall()
     assert(a == false, "&& with false lhs should be false")
 
-    let b = true || mustNotCall()
+    b := true || mustNotCall()
     assert(b == true, "|| with true lhs should be true")
 
-    let c = true && identity(false)
+    c := true && identity(false)
     assert(c == false, "&& true,false should be false")
 
-    let d = true && identity(true)
+    d := true && identity(true)
     assert(d == true, "&& true,true should be true")
 
-    let e = false || identity(true)
+    e := false || identity(true)
     assert(e == true, "|| false,true should be true")
 
-    let f = false || identity(false)
+    f := false || identity(false)
     assert(f == false, "|| false,false should be false")
 }
 
 func testTernaryPrecedenceBasic() {
-    let a = true ? 1 : 2
-    let b = false ? 10 : 20
+    a := true ? 1 : 2
+    b := false ? 10 : 20
     assert(a == 1, "true branch should be selected")
     assert(b == 20, "false branch should be selected")
 
-    let c = false ? 1 : 2 + 3
+    c := false ? 1 : 2 + 3
     assert(c == 5, "ternary else expression should evaluate fully")
 }
 
@@ -140,5 +140,5 @@ func main() {
     testShortCircuitSideEffects()
     testTernaryPrecedenceBasic()
 
-    std.print("PASS: operators\n")
+    std::print("PASS: operators\n")
 }

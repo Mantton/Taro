@@ -1,0 +1,16 @@
+error: `await` is not allowed inside a defer block
+ -> language_tests/source_files/invalid/defer_expression_control_flow.tr:2:30
+	func badAwait() async { defer await asyncValue() }
+	                              ^^^^^^^^^^^^^^^^^^
+error: `break` is not allowed inside a defer block
+ -> language_tests/source_files/invalid/defer_expression_control_flow.tr:4:10
+	    defer break
+	          ^^^^^
+error: `continue` is not allowed inside a defer block
+ -> language_tests/source_files/invalid/defer_expression_control_flow.tr:5:10
+	    defer continue
+	          ^^^^^^^^
+error: `return` is not allowed inside a defer block
+ -> language_tests/source_files/invalid/defer_expression_control_flow.tr:6:10
+	    defer return
+	          ^^^^^^

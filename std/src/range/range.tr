@@ -1,50 +1,50 @@
-import std.iter.{Iterator, Iterable}
-import std.optional.Optional
-import std.cmp.Ord
+import std::iter::{Iterator, Iterable}
+import std::optional::Optional
+import std::cmp::Ord
 
 /// Values that can advance one step at a time for range iteration.
 public interface Step: Ord {
-    func stepForward(&self) -> Self
+    func stepForward() -> Self
 }
 
-impl Step for int8 {
-    public func stepForward(&self) -> int8 { *self + 1 }
+conform int8 to Step {
+    public func stepForward() -> int8 { self + 1 }
 }
 
-impl Step for int16 {
-    public func stepForward(&self) -> int16 { *self + 1 }
+conform int16 to Step {
+    public func stepForward() -> int16 { self + 1 }
 }
 
-impl Step for int32 {
-    public func stepForward(&self) -> int32 { *self + 1 }
+conform int32 to Step {
+    public func stepForward() -> int32 { self + 1 }
 }
 
-impl Step for int64 {
-    public func stepForward(&self) -> int64 { *self + 1 }
+conform int64 to Step {
+    public func stepForward() -> int64 { self + 1 }
 }
 
-impl Step for uint8 {
-    public func stepForward(&self) -> uint8 { *self + 1 }
+conform uint8 to Step {
+    public func stepForward() -> uint8 { self + 1 }
 }
 
-impl Step for uint16 {
-    public func stepForward(&self) -> uint16 { *self + 1 }
+conform uint16 to Step {
+    public func stepForward() -> uint16 { self + 1 }
 }
 
-impl Step for uint32 {
-    public func stepForward(&self) -> uint32 { *self + 1 }
+conform uint32 to Step {
+    public func stepForward() -> uint32 { self + 1 }
 }
 
-impl Step for uint64 {
-    public func stepForward(&self) -> uint64 { *self + 1 }
+conform uint64 to Step {
+    public func stepForward() -> uint64 { self + 1 }
 }
 
-impl Step for isize {
-    public func stepForward(&self) -> isize { *self + 1 }
+conform isize to Step {
+    public func stepForward() -> isize { self + 1 }
 }
 
-impl Step for usize {
-    public func stepForward(&self) -> usize { *self + 1 }
+conform usize to Step {
+    public func stepForward() -> usize { self + 1 }
 }
 
 /// A half-open range from `start` to `end` (exclusive).
@@ -55,37 +55,45 @@ public struct Range[Bound: Step] {
     end: Bound
 }
 
-impl[Bound: Step] Range[Bound] {
-    public func new(_ start: Bound, _ end: Bound) -> Self {
+extend[Bound: Step] Range[Bound] {
+    public static func new(_ start: Bound, _ end: Bound) -> Self {
         Range[Bound] { start: start, end: end }
     }
 }
 
-public struct RangeIterator[Bound: Step] {
+public final class RangeIterator[Bound: Step] {
     current: Bound
     end: Bound
 }
 
-impl[Bound: Step] Iterator for RangeIterator[Bound] {
+extend[Bound: Step] RangeIterator[Bound] {
+    init(current: Bound, end: Bound) {
+        self.current = current
+        self.end = end
+    }
+}
+
+conform[Bound: Step] RangeIterator[Bound] to Iterator {
     type Element = Bound
 
-    public func next(&mut self) -> Optional[Self.Element] {
+    public func next() -> Optional[Self::Element] {
         if self.current >= self.end {
             return .none
         }
 
-        let next = self.current.stepForward()
-        let value = std.mem.replace(&mut self.current, next)
+        next := self.current.stepForward()
+        value := self.current
+        self.current = next
         return .some(value)
     }
 }
 
-impl[Bound: Step] Iterable for Range[Bound] {
+conform[Bound: Step] Range[Bound] to Iterable {
     type Iterator = RangeIterator[Bound]
     type Element = Bound
 
-    public func iter(self) -> Self.Iterator {
-        RangeIterator[Bound] { current: self.start, end: self.end }
+    public func iter() -> Self::Iterator {
+        RangeIterator[Bound] ( current: self.start, end: self.end )
     }
 }
 
@@ -97,48 +105,68 @@ public struct ClosedRange[Bound: Step] {
     end: Bound
 }
 
-impl[Bound: Step] ClosedRange[Bound] {
-    public func new(_ start: Bound, _ end: Bound) -> Self {
+extend[Bound: Step] ClosedRange[Bound] {
+    public static func new(_ start: Bound, _ end: Bound) -> Self {
         ClosedRange[Bound] { start: start, end: end }
     }
 }
 
-public struct ClosedRangeIterator[Bound: Step] {
+public final class ClosedRangeIterator[Bound: Step] {
     current: Optional[Bound]
     end: Bound
 }
 
-impl[Bound: Step] Iterator for ClosedRangeIterator[Bound] {
+extend[Bound: Step] ClosedRangeIterator[Bound] {
+    init(current: Optional[Bound], end: Bound) {
+        self.current = current
+        self.end = end
+    }
+}
+
+conform[Bound: Step] ClosedRangeIterator[Bound] to Iterator {
     type Element = Bound
 
-    public func next(&mut self) -> Optional[Self.Element] {
-        match &self.current {
+    public func next() -> Optional[Self::Element] {
+        match self.current {
             case .none => .none
             case .some(current) => {
-                if *current > self.end {
+                if current > self.end {
                     self.current = .none
                     return .none
                 }
 
-                let next: Optional[Bound] = if *current < self.end {
+                var next: Optional[Bound] = if current < self.end {
                     .some(current.stepForward())
                 } else {
                     .none
                 }
-                std.mem.replace(&mut self.current, next)
+                self.current = next
+                return .some(current)
             }
         }
     }
 }
 
-impl[Bound: Step] Iterable for ClosedRange[Bound] {
+conform[Bound: Step] ClosedRange[Bound] to Iterable {
     type Iterator = ClosedRangeIterator[Bound]
     type Element = Bound
 
-    public func iter(self) -> Self.Iterator {
-        ClosedRangeIterator[Bound] {
+    public func iter() -> Self::Iterator {
+        ClosedRangeIterator[Bound] (
             current: .some(self.start),
             end: self.end,
-        }
+        )
     }
+}
+
+conform[Bound: Step] RangeIterator[Bound] to Iterable {
+    type Element = Bound
+    type Iterator = RangeIterator[Bound]
+    public func iter() -> Self::Iterator { self }
+}
+
+conform[Bound: Step] ClosedRangeIterator[Bound] to Iterable {
+    type Element = Bound
+    type Iterator = ClosedRangeIterator[Bound]
+    public func iter() -> Self::Iterator { self }
 }

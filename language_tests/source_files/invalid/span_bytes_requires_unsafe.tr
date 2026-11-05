@@ -1,0 +1,4 @@
+func bytes(_ slice: std::mem::Span[int32]) -> std::mem::Span[uint8] {
+    slice.asBytes()
+}
+func main() {}

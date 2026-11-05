@@ -1,0 +1,9 @@
+struct Source { value: int32 }
+struct Target { value: int32 }
+conform Target to From[Source] {
+    static func from(_ value: Source) -> Target { Target { value: value.value } }
+}
+conform Source to Into[Target] {
+    func into() -> Target { Target { value: self.value } }
+}
+func main() {}

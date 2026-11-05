@@ -1,0 +1,102 @@
+// TEST
+import std::encoding::{Encodable, Encoder}
+
+class EncodingBase[T]: Encodable {
+    value: T
+}
+
+extend[T] EncodingBase[T] {
+    public required init(_ value: T) { self.value = value }
+}
+
+final class EncodingChild[T]: EncodingBase[List[T]] {
+    extra: int32 = 9
+}
+
+@test
+func inheritedClassEncoderKeepsItsOriginalFieldsAndGenericOwner() {
+    var child = EncodingChild[int32]([1, 2])
+    child.extra = 13
+    var base: EncodingBase[List[int32]] = child
+    assert(std::json::encode(&child).unwrap() == "{\"value\":[1,2]}", "inherited codec does not synthesize child fields")
+    assert(std::json::encode(&base).unwrap() == "{\"value\":[1,2]}", "base upcast retains the same encoder")
+    std::runtime::collect()
+    assert(child.extra == 13, "encoding does not modify subclass storage")
+}
+
+class EncodingOverride: EncodingBase[string] {
+    extra: int32 = 7
+}
+
+conform EncodingOverride to Encodable {
+    public override func encode[E: Encoder](into encoder: E) -> Result[(), E::Error] {
+        var count: usize? = .some(2)
+        encoder.beginObject(count)!
+        encoder.beginField("super")!
+        super.encode(into: encoder)!
+        encoder.beginField("extra")!
+        encoder.encodeInt32(self.extra)!
+        encoder.endObject()
+    }
+}
+
+@test
+func classEncoderOverridesDispatchThroughBaseHandles() {
+    child := EncodingOverride("Ada")
+    var base: EncodingBase[string] = child
+    expected := "{\"super\":{\"value\":\"Ada\"},\"extra\":7}"
+    assert(std::json::encode(&child).unwrap() == expected, "direct subclass override")
+    assert(std::json::encode(&base).unwrap() == expected, "virtual generic encoder override")
+}
+
+struct NotEncodable {}
+class NonEncodingBase {
+    ignored: NotEncodable
+}
+
+extend NonEncodingBase {
+    init() { self.ignored = NotEncodable {} }
+}
+
+final class NewlyEncoding: NonEncodingBase, Encodable {
+    name: string
+}
+
+extend NewlyEncoding {
+    init(_ name: string) { super.init(); self.name = name }
+}
+
+@test
+func derivedClassEncoderSkipsNonconformingBaseStorage() {
+    value := NewlyEncoding("Ada")
+    assert(std::json::encode(&value).unwrap() == "{\"name\":\"Ada\"}", "new conformance encodes only declared fields")
+}
+
+class EncodingNode[T]: Encodable {
+    value: T
+    children: List[EncodingNode[T]]
+}
+
+extend[T] EncodingNode[T] {
+    init(_ value: T, _ children: List[EncodingNode[T]]) {
+        self.value = value
+        self.children = children
+    }
+}
+
+@test
+func recursiveClassEncoderKeepsPayloadsRooted() {
+    leaf := EncodingNode[string]("leaf", List[EncodingNode[string]]::new())
+    root := EncodingNode[string]("root", [leaf])
+    std::runtime::collect()
+    assert(std::json::encode(&root).unwrap() == "{\"value\":\"root\",\"children\":[{\"value\":\"leaf\",\"children\":[]}]}", "recursive generic class codec")
+}
+
+@test
+func conditionalClassEncoderDoesNotRestrictOrdinaryConstruction() {
+    plain := EncodingBase[NotEncodable](NotEncodable {})
+    valid := EncodingBase[int32](7)
+    std::runtime::collect()
+    assert(std::json::encode(&valid).unwrap() == "{\"value\":7}", "publish only available codec instances")
+    var _ = plain.value
+}

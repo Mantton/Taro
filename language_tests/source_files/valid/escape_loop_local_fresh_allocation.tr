@@ -1,15 +1,20 @@
-struct EscapeLoopNode {
+// Owned ARC links preserve allocation identity across loops and closures.
+final class EscapeLoopNode {
     value: int64
-    next: Optional[&EscapeLoopNode]
+    next: Optional[EscapeLoopNode]
 }
 
-func dumpEscapeLoopChain(_ initial: Optional[&EscapeLoopNode], _ limit: int64) {
+extend EscapeLoopNode {
+    init(_ value: int64, _ next: Self?) { self.value = value; self.next = next }
+}
+
+func dumpEscapeLoopChain(_ initial: Optional[EscapeLoopNode], _ limit: int64) {
     var cursor = initial
     var steps = 0 as int64
     while steps < limit {
         match cursor {
             case .some(node) => {
-                std.printf(" %v", node.value)
+                std::printf(" %v", node.value)
                 cursor = node.next
             }
             case .none => break
@@ -18,33 +23,30 @@ func dumpEscapeLoopChain(_ initial: Optional[&EscapeLoopNode], _ limit: int64) {
     }
 
     match cursor {
-        case .none => std.printf(" end\n")
-        case .some(_) => std.printf(" cycle\n")
+        case .none => std::printf(" end\n")
+        case .some(_) => std::printf(" cycle\n")
     }
 }
 
-func buildEscapeLoopChain() -> Optional[&EscapeLoopNode] {
-    var head: Optional[&EscapeLoopNode] = .none
+func buildEscapeLoopChain() -> Optional[EscapeLoopNode] {
+    var head: Optional[EscapeLoopNode] = .none
     var i = 0 as int64
     while i < 4 {
-        let node = EscapeLoopNode { value: i, next: head }
-        head = .some(&node)
+        var node: EscapeLoopNode = EscapeLoopNode(i, head)
+        head = .some(node)
         i += 1
     }
     return head
 }
 
-func buildNestedEscapeLoopChain() -> Optional[&EscapeLoopNode] {
-    var head: Optional[&EscapeLoopNode] = .none
+func buildNestedEscapeLoopChain() -> Optional[EscapeLoopNode] {
+    var head: Optional[EscapeLoopNode] = .none
     var outer = 0 as int64
     while outer < 2 {
         var inner = 0 as int64
         while inner < 2 {
-            let node = EscapeLoopNode {
-                value: outer * 10 + inner,
-                next: head,
-            }
-            head = .some(&node)
+            var node: EscapeLoopNode = EscapeLoopNode(outer * 10 + inner, head)
+            head = .some(node)
             inner += 1
         }
         outer += 1
@@ -52,32 +54,31 @@ func buildNestedEscapeLoopChain() -> Optional[&EscapeLoopNode] {
     return head
 }
 
-func mutateEscapingLocalAfterBorrow() -> &int64 {
-    var value = 1 as int64
-    let borrowed = &value
-    value = 2
-    return borrowed
+func mutateBeforeBorrow(_ value: &int64) -> &int64 {
+    *value = 2
+    return &*value
 }
 
 func main() {
-    std.printf("loop:")
+    std::printf("loop:")
     dumpEscapeLoopChain(buildEscapeLoopChain(), 10)
 
-    std.printf("nested:")
+    std::printf("nested:")
     dumpEscapeLoopChain(buildNestedEscapeLoopChain(), 10)
 
-    let buildInClosure = || -> Optional[&EscapeLoopNode] {
-        var head: Optional[&EscapeLoopNode] = .none
+    buildInClosure := () -> Optional[EscapeLoopNode] => {
+        var head: Optional[EscapeLoopNode] = .none
         var i = 0 as int64
         while i < 3 {
-            let node = EscapeLoopNode { value: i, next: head }
-            head = .some(&node)
+            var node: EscapeLoopNode = EscapeLoopNode(i, head)
+            head = .some(node)
             i += 1
         }
         return head
     }
-    std.printf("closure:")
+    std::printf("closure:")
     dumpEscapeLoopChain(buildInClosure(), 10)
 
-    std.printf("mutation: %v\n", *mutateEscapingLocalAfterBorrow())
+    var value: int64 = 1
+    std::printf("mutation: %v\n", *mutateBeforeBorrow(&value))
 }

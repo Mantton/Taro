@@ -1,0 +1,4 @@
+// PACKAGE: existential_self_defaults
+// The library owns the conformances and defaults; the application imports its
+// encoded bound Self types and dispatches through its compiled witness tables.
+func main() {}

@@ -1,0 +1,4 @@
+error: shorthand declarations do not take type annotations; use `var name: Type = value`
+ -> language_tests/source_files/invalid/typed_short_declaration.tr:2:11
+	    value: int32 := 1
+	           ^^^^^

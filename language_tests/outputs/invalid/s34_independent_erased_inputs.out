@@ -1,0 +1,4 @@
+error: type 'any Readable' does not conform to interface 'Readable'
+ -> language_tests/source_files/invalid/s34_independent_erased_inputs.tr:8:23
+	    var result: bool = same(&left, &right) // Error: matching public container types do not establish equal hidden T.
+	                       ^^^^

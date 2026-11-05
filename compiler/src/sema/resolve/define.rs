@@ -109,6 +109,12 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
         if !matches!(context, AssocContext::Interface(..)) {
             return;
         }
+        // Native descriptors have no callable value name. Their accessor
+        // methods form ordinary overload groups in the interface scope.
+        if matches!(&node.kind, ast::AssociatedDeclarationKind::Subscript(_)) {
+            ast::walk_assoc_declaration(self, node, context);
+            return;
+        }
 
         self.define_named_declaration(node.id, &node.identifier);
         ast::walk_assoc_declaration(self, node, context)
@@ -210,7 +216,6 @@ impl<'r, 'a> Actor<'r, 'a> {
             | DefinitionKind::ModuleVariable
             | DefinitionKind::Constant
             | DefinitionKind::AssociatedFunction
-            | DefinitionKind::AssociatedOperator
             | DefinitionKind::AssociatedConstant
             | DefinitionKind::AssociatedProperty => (ScopeNamespace::Value, false),
             _ => unreachable!("non-declaration kind in named declaration: {kind:?}"),

@@ -1,0 +1,56 @@
+// A field reference reaches the class object, so returning it must not allocate
+// a box for the copied class handle (or an inline struct holding that handle).
+final class Cell[T] { value: T }
+extend[T] Cell[T] { init(_ value: T) { self.value = value } }
+struct Holder { cell: Cell[int64] }
+
+@noinline
+func field[T](_ cell: Cell[T]) -> &T { &cell.value }
+
+@noinline
+func nested(_ holder: Holder) -> &int64 { &holder.cell.value }
+
+@noinline
+func escaped() -> &int64 {
+    cell := Cell[int64](73)
+    return &cell.value
+}
+
+@noinline
+func handleSlot(_ cell: Cell[int64]) -> &Cell[int64] {
+    var copy = cell
+    return &copy
+}
+
+func main() {
+    cell := Cell[int64](41)
+    holder := Holder { cell }
+    before := std::runtime::gcStats().allocatedBytes
+    var total: int64 = 0
+    var index = 0
+    while index < 1000 {
+        total += *field(cell) + *nested(holder)
+        index += 1
+    }
+    after := std::runtime::gcStats().allocatedBytes
+    assert(total == 82000, "both field paths read the selected object")
+    assert(after == before, "field references need no temporary handle boxes")
+
+    reference := escaped()
+    std::runtime::collect()
+    assert(*reference == 73, "the escaped field keeps its object alive")
+    *reference = 79
+    std::runtime::collect()
+    assert(*reference == 79, "the retained field stays writable")
+
+    var selected = Cell[int64](11)
+    held := field(selected)
+    selected = Cell[int64](22)
+    std::runtime::collect()
+    assert(*held == 11 && selected.value == 22, "field references retain the selected object")
+
+    slot := handleSlot(cell)
+    *slot = selected
+    std::runtime::collect()
+    assert((*slot).value == 22 && cell.value == 41, "a handle-slot reference still owns separate writable storage")
+}

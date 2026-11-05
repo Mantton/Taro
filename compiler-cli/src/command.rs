@@ -60,6 +60,7 @@ pub fn handle(arguments: Cli) -> CommandResult {
             ()
         }
         CliCommand::Check(arguments) => check::run(arguments)?,
+        CliCommand::Vet(arguments) => check::run_vet(arguments)?,
         CliCommand::New(arguments) => new::run(arguments)?,
         CliCommand::Run(arguments) => return run::run(arguments),
         CliCommand::RuntimeManifest(arguments) => {

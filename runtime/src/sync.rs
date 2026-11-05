@@ -1,10 +1,16 @@
-use crate::garbage_collector::{__gc__alloc, GcDesc, trace_desc_or_abort, with_gc};
-use crate::gc_layout::TraceMode;
+use crate::executor::{TaskIdentity, TaskWake};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::mem::{align_of, size_of};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex, OnceLock};
 
-type TaskToken = u64;
+mod channel_value;
+#[cfg(test)]
+mod identity_tests;
+use channel_value::{ChannelLayout, QueuedValue};
+
+// Process-wide registry IDs, distinct from scheduler-local executor tokens.
+// They are interned from TaskIdentity and are never reused.
+type SyncTaskId = u64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WaitKind {
@@ -19,39 +25,51 @@ pub(crate) enum WaitKind {
 struct SyncState {
     channels: Vec<Option<ChannelState>>,
     free_channels: Vec<usize>,
+    // Every handle/wait/ownership entry carries a never-reused family identity,
+    // independently of reusable vector storage. Delayed native operations
+    // cannot act on a replacement that happens to reuse a slot.
+    channel_slots: HashMap<usize, usize>,
+    next_channel_id: usize,
     mutexes: Vec<Option<MutexState>>,
     free_mutexes: Vec<usize>,
+    mutex_slots: HashMap<usize, usize>,
+    next_mutex_id: usize,
     rwlocks: Vec<Option<RwLockState>>,
     free_rwlocks: Vec<usize>,
-    ownership: HashMap<TaskToken, TaskOwnership>,
+    rwlock_slots: HashMap<usize, usize>,
+    next_rwlock_id: usize,
+    ownership: HashMap<SyncTaskId, TaskOwnership>,
+    // A low-level lock may outlive its last source handle while a task still
+    // holds logical ownership. That native task lease, not tracing, keeps the
+    // registry entry until task finalization releases it.
+    retired_mutexes: HashSet<usize>,
+    retired_rwlocks: HashSet<usize>,
+    next_task_id: SyncTaskId,
+    task_bindings: HashMap<TaskIdentity, SyncTaskId>,
+    wake_targets: HashMap<SyncTaskId, TaskWake>,
 }
 
 struct ChannelState {
     elem_size: usize,
-    elem_desc: usize,
+    layout: Arc<ChannelLayout>,
     capacity: Option<usize>,
     closed: bool,
     queue: VecDeque<QueuedValue>,
-    send_waiters: VecDeque<TaskToken>,
-    recv_waiters: VecDeque<TaskToken>,
-}
-
-struct QueuedValue {
-    bytes: Vec<u8>,
-    roots: Vec<usize>,
+    send_waiters: VecDeque<SyncTaskId>,
+    recv_waiters: VecDeque<SyncTaskId>,
 }
 
 struct MutexState {
-    owner: Option<TaskToken>,
-    waiters: VecDeque<TaskToken>,
+    owner: Option<SyncTaskId>,
+    waiters: VecDeque<SyncTaskId>,
 }
 
 struct RwLockState {
-    writer: Option<TaskToken>,
-    readers: HashMap<TaskToken, usize>,
+    writer: Option<SyncTaskId>,
+    readers: HashMap<SyncTaskId, usize>,
     total_readers: usize,
-    reader_waiters: VecDeque<TaskToken>,
-    writer_waiters: VecDeque<TaskToken>,
+    reader_waiters: VecDeque<SyncTaskId>,
+    writer_waiters: VecDeque<SyncTaskId>,
 }
 
 #[derive(Default)]
@@ -75,13 +93,6 @@ struct SyncHandle {
     kind: SyncHandleKind,
 }
 
-static SYNC_HANDLE_DESC: GcDesc = GcDesc {
-    size: size_of::<SyncHandle>(),
-    align: align_of::<SyncHandle>(),
-    nodes: std::ptr::null(),
-    node_count: 0,
-};
-
 fn handle_id(handle: *const u8, expected: SyncHandleKind) -> Result<usize, i32> {
     let Some(handle) = (unsafe { (handle as *const SyncHandle).as_ref() }) else {
         return Err(err_invalid());
@@ -92,64 +103,42 @@ fn handle_id(handle: *const u8, expected: SyncHandleKind) -> Result<usize, i32> 
     Ok(handle.id)
 }
 
-fn allocate_handle(
-    id: usize,
-    kind: SyncHandleKind,
-    reclaimer: crate::garbage_collector::GcReclaimerFn,
-) -> *mut u8 {
-    let ptr = __gc__alloc(size_of::<SyncHandle>(), &SYNC_HANDLE_DESC);
-    if ptr.is_null() {
-        return ptr;
+// `SyncState::task_bindings.len()`, readable without the registry's lock.
+static TASK_BINDINGS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static LIVE_SYNC_HANDLES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn allocate_handle(id: usize, kind: SyncHandleKind) -> *mut u8 {
+    LIVE_SYNC_HANDLES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // A GC native-owner object releases this opaque box when unreachable.
+    // Copied endpoints share that owner, never duplicate the box.
+    Box::into_raw(Box::new(SyncHandle { id, kind })).cast()
+}
+
+/// Release the unique opaque handle when its GC owner is reclaimed. Explicit
+/// destroy only retires registry state, so copied handles remain valid closed
+/// identities until the owner is reclaimed. The Box is freed on unwind too.
+///
+/// # Safety
+/// handle is null or one live allocation returned by allocate_handle; this
+/// function consumes its sole native ownership obligation exactly once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn __rt__sync_handle_release(handle: *mut u8) {
+    if handle.is_null() {
+        return;
     }
-    unsafe { (ptr as *mut SyncHandle).write(SyncHandle { id, kind }) };
-    with_gc(|gc| gc.register_reclaimer(ptr, reclaimer, id));
-    ptr
-}
-
-fn unregister_handle_reclaimer(handle: *const u8) {
-    with_gc(|gc| gc.unregister_reclaimer(handle));
-}
-
-fn add_value_roots(roots: &[usize]) {
-    with_gc(|gc| {
-        for root in roots {
-            gc.add_persistent_root(*root as *const u8);
+    let handle = unsafe { Box::from_raw(handle.cast::<SyncHandle>()) };
+    LIVE_SYNC_HANDLES.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    match handle.kind {
+        SyncHandleKind::Channel => {
+            let _ = finish_channel_destroy(handle.id);
         }
-    });
-}
-
-fn remove_value_roots(roots: &[usize]) {
-    with_gc(|gc| {
-        for root in roots {
-            gc.remove_persistent_root(*root as *const u8);
+        SyncHandleKind::Mutex => {
+            state_cell().lock().unwrap().retire_mutex(handle.id);
         }
-    });
-}
-
-fn queued_value(
-    elem_size: usize,
-    elem_desc: *const GcDesc,
-    value_ptr: *const u8,
-) -> Result<QueuedValue, i32> {
-    if elem_size > 0 && value_ptr.is_null() {
-        return Err(libc::EINVAL);
+        SyncHandleKind::RwLock => {
+            state_cell().lock().unwrap().retire_rwlock(handle.id);
+        }
     }
-
-    let mut bytes = vec![0u8; elem_size];
-    if elem_size > 0 {
-        unsafe { std::ptr::copy_nonoverlapping(value_ptr, bytes.as_mut_ptr(), elem_size) };
-    }
-
-    let mut roots = Vec::new();
-    if let Some(desc) = unsafe { elem_desc.as_ref() } {
-        trace_desc_or_abort(desc, value_ptr, elem_size, TraceMode::Heap, |root| {
-            roots.push(root as usize)
-        });
-    }
-    roots.sort_unstable();
-    roots.dedup();
-    add_value_roots(&roots);
-    Ok(QueuedValue { bytes, roots })
 }
 
 impl TaskOwnership {
@@ -183,38 +172,39 @@ fn err_perm() -> i32 {
     libc::EPERM
 }
 
-fn push_unique(waiters: &mut Vec<TaskToken>, task_token: TaskToken) {
+fn push_unique(waiters: &mut Vec<SyncTaskId>, task_token: SyncTaskId) {
     if !waiters.contains(&task_token) {
         waiters.push(task_token);
     }
 }
 
-fn extend_unique(waiters: &mut Vec<TaskToken>, tasks: impl IntoIterator<Item = TaskToken>) {
+fn extend_unique(waiters: &mut Vec<SyncTaskId>, tasks: impl IntoIterator<Item = SyncTaskId>) {
     for task in tasks {
         push_unique(waiters, task);
     }
 }
 
-fn queue_waiter(queue: &mut VecDeque<TaskToken>, task_token: TaskToken) {
+fn queue_waiter(queue: &mut VecDeque<SyncTaskId>, task_token: SyncTaskId) {
     if !queue.contains(&task_token) {
         queue.push_back(task_token);
     }
 }
 
-fn remove_waiter(queue: &mut VecDeque<TaskToken>, task_token: TaskToken) {
+fn remove_waiter(queue: &mut VecDeque<SyncTaskId>, task_token: SyncTaskId) {
     queue.retain(|entry| *entry != task_token);
 }
 
-fn pop_waiter(queue: &mut VecDeque<TaskToken>) -> Option<TaskToken> {
+fn pop_waiter(queue: &mut VecDeque<SyncTaskId>) -> Option<SyncTaskId> {
     queue.pop_front()
 }
 
-fn front_waiter(queue: &VecDeque<TaskToken>) -> Option<TaskToken> {
+fn front_waiter(queue: &VecDeque<SyncTaskId>) -> Option<SyncTaskId> {
     queue.front().copied()
 }
 
-fn current_task_token() -> Result<TaskToken, i32> {
-    crate::executor::current_task_token().ok_or_else(err_perm)
+fn current_task_token() -> Result<SyncTaskId, i32> {
+    let target = crate::executor::current_task_wake().ok_or_else(err_perm)?;
+    Ok(state_cell().lock().unwrap().bind_task(target))
 }
 
 pub(crate) fn wait_handle_id(handle: *const u8, kind: WaitKind) -> Result<usize, i32> {
@@ -227,6 +217,23 @@ pub(crate) fn wait_handle_id(handle: *const u8, kind: WaitKind) -> Result<usize,
 }
 
 impl SyncState {
+    fn bind_task(&mut self, target: TaskWake) -> SyncTaskId {
+        let identity = target.identity();
+        let id = if let Some(&id) = self.task_bindings.get(&identity) {
+            id
+        } else {
+            self.next_task_id = self
+                .next_task_id
+                .checked_add(1)
+                .expect("synchronization task identity space exhausted");
+            self.task_bindings.insert(identity, self.next_task_id);
+            TASK_BINDINGS.fetch_add(1, Ordering::Release);
+            self.next_task_id
+        };
+        self.wake_targets.insert(id, target);
+        id
+    }
+
     fn alloc_slot<T>(slots: &mut Vec<Option<T>>, free: &mut Vec<usize>, value: T) -> usize {
         if let Some(id) = free.pop() {
             slots[id] = Some(value);
@@ -242,55 +249,67 @@ impl SyncState {
         id
     }
 
-    fn channel_create(
+    fn channel(&self, id: usize) -> Option<&ChannelState> {
+        let slot = *self.channel_slots.get(&id)?;
+        self.channels.get(slot)?.as_ref()
+    }
+
+    fn channel_mut(&mut self, id: usize) -> Option<&mut ChannelState> {
+        let slot = *self.channel_slots.get(&id)?;
+        self.channels.get_mut(slot)?.as_mut()
+    }
+
+    fn channel_create_with_layout(
         &mut self,
-        elem_size: usize,
-        elem_desc: *const GcDesc,
+        layout: Arc<ChannelLayout>,
         capacity: usize,
         bounded: bool,
     ) -> usize {
-        if (bounded && capacity == 0) || elem_desc.is_null() {
+        if bounded && capacity == 0 {
             return 0;
         }
-
-        Self::alloc_slot(
+        let elem_size = layout.size;
+        let Some(id) = self.next_channel_id.checked_add(1) else {
+            return 0;
+        };
+        let slot = Self::alloc_slot(
             &mut self.channels,
             &mut self.free_channels,
             ChannelState {
                 elem_size,
-                elem_desc: elem_desc as usize,
+                layout,
                 capacity: bounded.then_some(capacity),
                 closed: false,
                 queue: VecDeque::new(),
                 send_waiters: VecDeque::new(),
                 recv_waiters: VecDeque::new(),
             },
-        )
+        );
+        self.next_channel_id = id;
+        self.channel_slots.insert(id, slot);
+        id
     }
 
-    fn channel_destroy(&mut self, channel_id: usize) -> (i32, Vec<TaskToken>, Vec<usize>) {
-        let Some(slot) = self.channels.get_mut(channel_id) else {
-            return (err_invalid(), Vec::new(), Vec::new());
+    fn channel_destroy(
+        &mut self,
+        channel_id: usize,
+    ) -> (i32, Vec<SyncTaskId>, VecDeque<QueuedValue>) {
+        let Some(slot) = self.channel_slots.remove(&channel_id) else {
+            return (err_invalid(), Vec::new(), VecDeque::new());
         };
-        let Some(channel) = slot.take() else {
-            return (err_invalid(), Vec::new(), Vec::new());
-        };
-
-        self.free_channels.push(channel_id);
+        let channel = self.channels[slot].take().expect("live channel identity");
+        self.free_channels.push(slot);
 
         let mut wake = Vec::new();
         extend_unique(&mut wake, channel.send_waiters);
         extend_unique(&mut wake, channel.recv_waiters);
-        let roots = channel
-            .queue
-            .into_iter()
-            .flat_map(|value| value.roots)
-            .collect();
-        (0, wake, roots)
+        // Move the complete queue out. Payload code runs only after the caller
+        // releases the registry lock and wakes waiters.
+        (0, wake, channel.queue)
     }
 
-    fn channel_close(&mut self, channel_id: usize) -> (i32, Vec<TaskToken>) {
-        let Some(channel) = self.channels.get_mut(channel_id).and_then(Option::as_mut) else {
+    fn channel_close(&mut self, channel_id: usize) -> (i32, Vec<SyncTaskId>) {
+        let Some(channel) = self.channel_mut(channel_id) else {
             return (err_invalid(), Vec::new());
         };
 
@@ -306,7 +325,7 @@ impl SyncState {
     }
 
     fn channel_send_status(&self, channel_id: usize) -> i32 {
-        let Some(channel) = self.channels.get(channel_id).and_then(Option::as_ref) else {
+        let Some(channel) = self.channel(channel_id) else {
             return err_invalid();
         };
         if channel.closed {
@@ -324,9 +343,9 @@ impl SyncState {
     fn channel_try_send_value(
         &mut self,
         channel_id: usize,
-        value: QueuedValue,
-    ) -> (i32, Vec<TaskToken>, Option<QueuedValue>) {
-        let Some(channel) = self.channels.get_mut(channel_id).and_then(Option::as_mut) else {
+        mut value: QueuedValue,
+    ) -> (i32, Vec<SyncTaskId>, Option<QueuedValue>) {
+        let Some(channel) = self.channel_mut(channel_id) else {
             return (err_invalid(), Vec::new(), Some(value));
         };
 
@@ -340,6 +359,7 @@ impl SyncState {
             }
         }
 
+        value.commit();
         channel.queue.push_back(value);
 
         let mut wake = Vec::new();
@@ -355,19 +375,13 @@ impl SyncState {
         &mut self,
         channel_id: usize,
         value_ptr: *const u8,
-    ) -> (i32, Vec<TaskToken>) {
-        let Some(channel) = self.channels.get(channel_id).and_then(Option::as_ref) else {
+    ) -> (i32, Vec<SyncTaskId>) {
+        let Some(channel) = self.channel(channel_id) else {
             return (err_invalid(), Vec::new());
         };
-        let value = QueuedValue {
-            bytes: if channel.elem_size == 0 {
-                Vec::new()
-            } else if value_ptr.is_null() {
-                return (libc::EINVAL, Vec::new());
-            } else {
-                unsafe { std::slice::from_raw_parts(value_ptr, channel.elem_size) }.to_vec()
-            },
-            roots: Vec::new(),
+        let value = match unsafe { QueuedValue::prepare(&channel.layout, value_ptr) } {
+            Ok(value) => value,
+            Err(error) => return (error, Vec::new()),
         };
         let (status, wake, _) = self.channel_try_send_value(channel_id, value);
         (status, wake)
@@ -377,27 +391,23 @@ impl SyncState {
         &mut self,
         channel_id: usize,
         out_ptr: *mut u8,
-    ) -> (i32, Vec<TaskToken>, Vec<usize>) {
-        let Some(channel) = self.channels.get_mut(channel_id).and_then(Option::as_mut) else {
-            return (err_invalid(), Vec::new(), Vec::new());
+    ) -> (i32, Vec<SyncTaskId>, Option<QueuedValue>) {
+        let Some(channel) = self.channel_mut(channel_id) else {
+            return (err_invalid(), Vec::new(), None);
         };
 
         if channel.elem_size > 0 && out_ptr.is_null() {
-            return (libc::EINVAL, Vec::new(), Vec::new());
+            return (libc::EINVAL, Vec::new(), None);
         }
 
-        let Some(value) = channel.queue.pop_front() else {
+        let Some(mut value) = channel.queue.pop_front() else {
             if channel.closed {
-                return (err_closed(), Vec::new(), Vec::new());
+                return (err_closed(), Vec::new(), None);
             }
-            return (err_would_block(), Vec::new(), Vec::new());
+            return (err_would_block(), Vec::new(), None);
         };
 
-        if channel.elem_size > 0 {
-            unsafe {
-                std::ptr::copy_nonoverlapping(value.bytes.as_ptr(), out_ptr, channel.elem_size);
-            }
-        }
+        unsafe { value.move_into(out_ptr) };
 
         let mut wake = Vec::new();
         if channel.capacity.is_some() {
@@ -406,22 +416,50 @@ impl SyncState {
             }
         }
 
-        (0, wake, value.roots)
+        (0, wake, Some(value))
     }
 
     fn mutex_create(&mut self) -> usize {
-        Self::alloc_slot(
+        let Some(id) = self.next_mutex_id.checked_add(1) else {
+            return 0;
+        };
+        let slot = Self::alloc_slot(
             &mut self.mutexes,
             &mut self.free_mutexes,
             MutexState {
                 owner: None,
                 waiters: VecDeque::new(),
             },
-        )
+        );
+        self.next_mutex_id = id;
+        self.mutex_slots.insert(id, slot);
+        id
+    }
+
+    fn retire_mutex(&mut self, id: usize) {
+        if self.mutex_destroy(id) == err_busy() {
+            self.retired_mutexes.insert(id);
+        }
+    }
+    fn retire_rwlock(&mut self, id: usize) {
+        if self.rwlock_destroy(id) == err_busy() {
+            self.retired_rwlocks.insert(id);
+        }
+    }
+    fn collect_retired_locks(&mut self) {
+        for id in std::mem::take(&mut self.retired_mutexes) {
+            self.retire_mutex(id);
+        }
+        for id in std::mem::take(&mut self.retired_rwlocks) {
+            self.retire_rwlock(id);
+        }
     }
 
     fn mutex_destroy(&mut self, mutex_id: usize) -> i32 {
-        let Some(slot) = self.mutexes.get_mut(mutex_id) else {
+        let Some(&slot_id) = self.mutex_slots.get(&mutex_id) else {
+            return err_invalid();
+        };
+        let Some(slot) = self.mutexes.get_mut(slot_id) else {
             return err_invalid();
         };
         let Some(mutex) = slot.as_ref() else {
@@ -433,12 +471,17 @@ impl SyncState {
         }
 
         *slot = None;
-        self.free_mutexes.push(mutex_id);
+        self.mutex_slots.remove(&mutex_id);
+        self.retired_mutexes.remove(&mutex_id);
+        self.free_mutexes.push(slot_id);
         0
     }
 
-    fn mutex_try_lock(&mut self, mutex_id: usize, task_token: TaskToken) -> i32 {
-        let Some(mutex) = self.mutexes.get_mut(mutex_id).and_then(Option::as_mut) else {
+    fn mutex_try_lock(&mut self, mutex_id: usize, task_token: SyncTaskId) -> i32 {
+        let Some(&slot_id) = self.mutex_slots.get(&mutex_id) else {
+            return err_invalid();
+        };
+        let Some(mutex) = self.mutexes.get_mut(slot_id).and_then(Option::as_mut) else {
             return err_invalid();
         };
 
@@ -462,8 +505,11 @@ impl SyncState {
         0
     }
 
-    fn mutex_unlock(&mut self, mutex_id: usize, task_token: TaskToken) -> (i32, Vec<TaskToken>) {
-        let Some(mutex) = self.mutexes.get_mut(mutex_id).and_then(Option::as_mut) else {
+    fn mutex_unlock(&mut self, mutex_id: usize, task_token: SyncTaskId) -> (i32, Vec<SyncTaskId>) {
+        let Some(&slot_id) = self.mutex_slots.get(&mutex_id) else {
+            return (err_invalid(), Vec::new());
+        };
+        let Some(mutex) = self.mutexes.get_mut(slot_id).and_then(Option::as_mut) else {
             return (err_invalid(), Vec::new());
         };
 
@@ -489,7 +535,10 @@ impl SyncState {
     }
 
     fn rwlock_create(&mut self) -> usize {
-        Self::alloc_slot(
+        let Some(id) = self.next_rwlock_id.checked_add(1) else {
+            return 0;
+        };
+        let slot = Self::alloc_slot(
             &mut self.rwlocks,
             &mut self.free_rwlocks,
             RwLockState {
@@ -499,11 +548,17 @@ impl SyncState {
                 reader_waiters: VecDeque::new(),
                 writer_waiters: VecDeque::new(),
             },
-        )
+        );
+        self.next_rwlock_id = id;
+        self.rwlock_slots.insert(id, slot);
+        id
     }
 
     fn rwlock_destroy(&mut self, lock_id: usize) -> i32 {
-        let Some(slot) = self.rwlocks.get_mut(lock_id) else {
+        let Some(&slot_id) = self.rwlock_slots.get(&lock_id) else {
+            return err_invalid();
+        };
+        let Some(slot) = self.rwlocks.get_mut(slot_id) else {
             return err_invalid();
         };
         let Some(lock) = slot.as_ref() else {
@@ -519,12 +574,17 @@ impl SyncState {
         }
 
         *slot = None;
-        self.free_rwlocks.push(lock_id);
+        self.rwlock_slots.remove(&lock_id);
+        self.retired_rwlocks.remove(&lock_id);
+        self.free_rwlocks.push(slot_id);
         0
     }
 
-    fn rwlock_try_read(&mut self, lock_id: usize, task_token: TaskToken) -> i32 {
-        let Some(lock) = self.rwlocks.get_mut(lock_id).and_then(Option::as_mut) else {
+    fn rwlock_try_read(&mut self, lock_id: usize, task_token: SyncTaskId) -> i32 {
+        let Some(&slot_id) = self.rwlock_slots.get(&lock_id) else {
+            return err_invalid();
+        };
+        let Some(lock) = self.rwlocks.get_mut(slot_id).and_then(Option::as_mut) else {
             return err_invalid();
         };
 
@@ -548,8 +608,11 @@ impl SyncState {
         0
     }
 
-    fn rwlock_try_write(&mut self, lock_id: usize, task_token: TaskToken) -> i32 {
-        let Some(lock) = self.rwlocks.get_mut(lock_id).and_then(Option::as_mut) else {
+    fn rwlock_try_write(&mut self, lock_id: usize, task_token: SyncTaskId) -> i32 {
+        let Some(&slot_id) = self.rwlock_slots.get(&lock_id) else {
+            return err_invalid();
+        };
+        let Some(lock) = self.rwlocks.get_mut(slot_id).and_then(Option::as_mut) else {
             return err_invalid();
         };
 
@@ -582,9 +645,12 @@ impl SyncState {
     fn rwlock_unlock_read(
         &mut self,
         lock_id: usize,
-        task_token: TaskToken,
-    ) -> (i32, Vec<TaskToken>) {
-        let Some(lock) = self.rwlocks.get_mut(lock_id).and_then(Option::as_mut) else {
+        task_token: SyncTaskId,
+    ) -> (i32, Vec<SyncTaskId>) {
+        let Some(&slot_id) = self.rwlock_slots.get(&lock_id) else {
+            return (err_invalid(), Vec::new());
+        };
+        let Some(lock) = self.rwlocks.get_mut(slot_id).and_then(Option::as_mut) else {
             return (err_invalid(), Vec::new());
         };
 
@@ -625,9 +691,12 @@ impl SyncState {
     fn rwlock_unlock_write(
         &mut self,
         lock_id: usize,
-        task_token: TaskToken,
-    ) -> (i32, Vec<TaskToken>) {
-        let Some(lock) = self.rwlocks.get_mut(lock_id).and_then(Option::as_mut) else {
+        task_token: SyncTaskId,
+    ) -> (i32, Vec<SyncTaskId>) {
+        let Some(&slot_id) = self.rwlock_slots.get(&lock_id) else {
+            return (err_invalid(), Vec::new());
+        };
+        let Some(lock) = self.rwlocks.get_mut(slot_id).and_then(Option::as_mut) else {
             return (err_invalid(), Vec::new());
         };
 
@@ -661,15 +730,15 @@ impl SyncState {
 
     fn register_wait(
         &mut self,
-        task_token: TaskToken,
+        task_token: SyncTaskId,
         id: usize,
         kind: WaitKind,
-    ) -> Result<Vec<TaskToken>, i32> {
+    ) -> Result<Vec<SyncTaskId>, i32> {
         let mut wake = Vec::new();
 
         match kind {
             WaitKind::ChannelSend => {
-                let Some(channel) = self.channels.get_mut(id).and_then(Option::as_mut) else {
+                let Some(channel) = self.channel_mut(id) else {
                     return Err(err_invalid());
                 };
                 queue_waiter(&mut channel.send_waiters, task_token);
@@ -688,7 +757,7 @@ impl SyncState {
                 }
             }
             WaitKind::ChannelRecv => {
-                let Some(channel) = self.channels.get_mut(id).and_then(Option::as_mut) else {
+                let Some(channel) = self.channel_mut(id) else {
                     return Err(err_invalid());
                 };
                 queue_waiter(&mut channel.recv_waiters, task_token);
@@ -698,7 +767,10 @@ impl SyncState {
                 }
             }
             WaitKind::Mutex => {
-                let Some(mutex) = self.mutexes.get_mut(id).and_then(Option::as_mut) else {
+                let Some(&slot_id) = self.mutex_slots.get(&id) else {
+                    return Err(err_invalid());
+                };
+                let Some(mutex) = self.mutexes.get_mut(slot_id).and_then(Option::as_mut) else {
                     return Err(err_invalid());
                 };
                 queue_waiter(&mut mutex.waiters, task_token);
@@ -707,7 +779,10 @@ impl SyncState {
                 }
             }
             WaitKind::RwRead => {
-                let Some(lock) = self.rwlocks.get_mut(id).and_then(Option::as_mut) else {
+                let Some(&slot_id) = self.rwlock_slots.get(&id) else {
+                    return Err(err_invalid());
+                };
+                let Some(lock) = self.rwlocks.get_mut(slot_id).and_then(Option::as_mut) else {
                     return Err(err_invalid());
                 };
                 queue_waiter(&mut lock.reader_waiters, task_token);
@@ -716,7 +791,10 @@ impl SyncState {
                 }
             }
             WaitKind::RwWrite => {
-                let Some(lock) = self.rwlocks.get_mut(id).and_then(Option::as_mut) else {
+                let Some(&slot_id) = self.rwlock_slots.get(&id) else {
+                    return Err(err_invalid());
+                };
+                let Some(lock) = self.rwlocks.get_mut(slot_id).and_then(Option::as_mut) else {
                     return Err(err_invalid());
                 };
                 queue_waiter(&mut lock.writer_waiters, task_token);
@@ -737,7 +815,7 @@ impl SyncState {
         Ok(wake)
     }
 
-    fn collect_ready_waiters(&mut self, wake: &mut Vec<TaskToken>) {
+    fn collect_ready_waiters(&mut self, wake: &mut Vec<SyncTaskId>) {
         // This pass runs after state changes such as unlock, close, or task
         // finalization. It wakes waiters made ready by the new state while
         // preserving one wake per task token.
@@ -787,7 +865,7 @@ impl SyncState {
         }
     }
 
-    fn task_finalized(&mut self, task_token: TaskToken) -> Vec<TaskToken> {
+    fn task_finalized(&mut self, task_token: SyncTaskId) -> Vec<SyncTaskId> {
         let mut wake = Vec::new();
 
         for channel in self.channels.iter_mut().flatten() {
@@ -806,7 +884,10 @@ impl SyncState {
 
         if let Some(owned) = self.ownership.remove(&task_token) {
             for mutex_id in owned.mutexes {
-                let Some(mutex) = self.mutexes.get_mut(mutex_id).and_then(Option::as_mut) else {
+                let Some(&slot_id) = self.mutex_slots.get(&mutex_id) else {
+                    continue;
+                };
+                let Some(mutex) = self.mutexes.get_mut(slot_id).and_then(Option::as_mut) else {
                     continue;
                 };
                 if mutex.owner == Some(task_token) {
@@ -820,7 +901,10 @@ impl SyncState {
             }
 
             for (lock_id, _) in owned.rw_read {
-                let Some(lock) = self.rwlocks.get_mut(lock_id).and_then(Option::as_mut) else {
+                let Some(&slot_id) = self.rwlock_slots.get(&lock_id) else {
+                    continue;
+                };
+                let Some(lock) = self.rwlocks.get_mut(slot_id).and_then(Option::as_mut) else {
                     continue;
                 };
                 if let Some(count) = lock.readers.remove(&task_token) {
@@ -836,7 +920,10 @@ impl SyncState {
             }
 
             for (lock_id, _) in owned.rw_write {
-                let Some(lock) = self.rwlocks.get_mut(lock_id).and_then(Option::as_mut) else {
+                let Some(&slot_id) = self.rwlock_slots.get(&lock_id) else {
+                    continue;
+                };
+                let Some(lock) = self.rwlocks.get_mut(slot_id).and_then(Option::as_mut) else {
                     continue;
                 };
                 if lock.writer == Some(task_token) {
@@ -853,13 +940,14 @@ impl SyncState {
         }
 
         self.collect_ready_waiters(&mut wake);
+        self.collect_retired_locks();
         debug_assert_unique_tasks(&wake);
 
         wake
     }
 }
 
-fn debug_assert_unique_tasks(_tasks: &[TaskToken]) {
+fn debug_assert_unique_tasks(_tasks: &[SyncTaskId]) {
     #[cfg(debug_assertions)]
     for (index, task) in _tasks.iter().enumerate() {
         debug_assert!(
@@ -869,13 +957,22 @@ fn debug_assert_unique_tasks(_tasks: &[TaskToken]) {
     }
 }
 
-pub(crate) fn register_wait(task_token: TaskToken, id: usize, kind: WaitKind) -> Result<(), i32> {
+fn capture_wakes(state: &SyncState, tokens: &[SyncTaskId]) -> Vec<TaskWake> {
+    tokens
+        .iter()
+        .filter_map(|token| state.wake_targets.get(token).cloned())
+        .collect()
+}
+
+pub(crate) fn register_wait(target: TaskWake, id: usize, kind: WaitKind) -> Result<(), i32> {
     let mut state = state_cell().lock().unwrap();
+    let task_token = state.bind_task(target);
     let wake = state.register_wait(task_token, id, kind)?;
+    let wake = capture_wakes(&state, &wake);
     drop(state);
 
-    if !wake.is_empty() {
-        crate::executor::wake_tasks(&wake);
+    for target in wake {
+        target.wake();
     }
 
     Ok(())
@@ -884,38 +981,37 @@ pub(crate) fn register_wait(task_token: TaskToken, id: usize, kind: WaitKind) ->
 /// Return task-to-task dependencies for a blocked synchronization operation.
 /// External state (for example a future channel sender that does not exist yet)
 /// intentionally has no edge and therefore cannot be classified as a cycle.
-pub(crate) fn wait_dependencies(id: usize, kind: WaitKind) -> Vec<TaskToken> {
+pub(crate) fn wait_dependencies(scheduler: u64, id: usize, kind: WaitKind) -> Vec<u64> {
     let state = state_cell().lock().unwrap();
-    let mut dependencies: Vec<TaskToken> = match kind {
+    let mut dependencies: Vec<SyncTaskId> = match kind {
         WaitKind::ChannelSend => state
-            .channels
-            .get(id)
-            .and_then(Option::as_ref)
+            .channel(id)
             .map(|channel| channel.recv_waiters.iter().copied().collect())
             .unwrap_or_default(),
         WaitKind::ChannelRecv => state
-            .channels
-            .get(id)
-            .and_then(Option::as_ref)
+            .channel(id)
             .map(|channel| channel.send_waiters.iter().copied().collect())
             .unwrap_or_default(),
         WaitKind::Mutex => state
-            .mutexes
-            .get(id)
+            .mutex_slots
+            .get(&id)
+            .and_then(|slot| state.mutexes.get(*slot))
             .and_then(Option::as_ref)
             .and_then(|mutex| mutex.owner)
             .into_iter()
             .collect(),
         WaitKind::RwRead => state
-            .rwlocks
-            .get(id)
+            .rwlock_slots
+            .get(&id)
+            .and_then(|slot| state.rwlocks.get(*slot))
             .and_then(Option::as_ref)
             .and_then(|lock| lock.writer)
             .into_iter()
             .collect(),
         WaitKind::RwWrite => state
-            .rwlocks
-            .get(id)
+            .rwlock_slots
+            .get(&id)
+            .and_then(|slot| state.rwlocks.get(*slot))
             .and_then(Option::as_ref)
             .map(|lock| {
                 let mut owners: Vec<_> = lock.readers.keys().copied().collect();
@@ -924,61 +1020,93 @@ pub(crate) fn wait_dependencies(id: usize, kind: WaitKind) -> Vec<TaskToken> {
             })
             .unwrap_or_default(),
     };
+    let mut dependencies: Vec<u64> = dependencies
+        .drain(..)
+        .filter_map(|id| state.wake_targets.get(&id))
+        .filter(|target| target.identity().belongs_to(scheduler))
+        .map(TaskWake::token)
+        .collect();
     dependencies.sort_unstable();
     dependencies.dedup();
     dependencies
 }
 
-pub(crate) fn task_finalized(task_token: TaskToken) {
+pub(crate) fn task_finalized(identity: TaskIdentity) {
+    // Binding happens in one of the task's own polls, and its finalization is
+    // ordered after them. So a task that bound can't see zero, and programs and
+    // periods using no sync primitive skip the registry's global lock per task.
+    if TASK_BINDINGS.load(Ordering::Acquire) == 0 {
+        return;
+    }
     let mut state = state_cell().lock().unwrap();
+    let Some(task_token) = state.task_bindings.remove(&identity) else {
+        return;
+    };
+    TASK_BINDINGS.fetch_sub(1, Ordering::Release);
     let wake = state.task_finalized(task_token);
+    let wake = capture_wakes(&state, &wake);
+    state.wake_targets.remove(&task_token);
     drop(state);
 
-    if !wake.is_empty() {
-        crate::executor::wake_tasks(&wake);
+    for target in wake {
+        target.wake();
     }
 }
 
 fn finish_channel_destroy(channel_id: usize) -> i32 {
     let mut state = state_cell().lock().unwrap();
-    let (status, wake, roots) = state.channel_destroy(channel_id);
+    let (status, wake, queued) = state.channel_destroy(channel_id);
+    let wake = capture_wakes(&state, &wake);
     drop(state);
-
-    remove_value_roots(&roots);
-    if !wake.is_empty() {
-        crate::executor::wake_tasks(&wake);
+    for target in wake {
+        target.wake();
     }
+    // Synchronous source destruction runs in its caller's context. Every
+    // queued owner is destroyed outside the registry lock, including on panic.
+    drop(queued);
     status
 }
 
-fn finalize_channel(channel_id: usize) {
-    let _ = finish_channel_destroy(channel_id);
+fn release_collected_handle(handle: usize) {
+    unsafe { __rt__sync_handle_release(handle as *mut u8) };
 }
 
-fn finalize_mutex(mutex_id: usize) {
-    let _ = state_cell().lock().unwrap().mutex_destroy(mutex_id);
-}
-
-fn finalize_rwlock(lock_id: usize) {
-    let _ = state_cell().lock().unwrap().rwlock_destroy(lock_id);
-}
-
+/// Wrap a sync handle box in a collected owner; copies of the source handle
+/// share it, and the box is released once no copy can reach it.
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__sync_channel_create(
-    elem_size: usize,
+pub extern "C-unwind" fn __gc__sync_owner_new(handle: *mut u8) -> *mut u8 {
+    crate::garbage_collector::gc_native_new(handle, release_collected_handle)
+}
+
+/// Private oracle for tests: sync handle boxes not yet released.
+#[unsafe(no_mangle)]
+pub extern "C" fn __gc__test_live_sync_handles() -> usize {
+    LIVE_SYNC_HANDLES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Create a channel whose queued messages are rooted collected copies.
+///
+/// # Safety
+/// element is a process-long compiler GC value descriptor of the exact
+/// element type.
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn __gc__sync_channel_create(
     capacity: usize,
     bounded: u8,
-    elem_desc: *const GcDesc,
+    element: *const crate::gc_existentials::GcValueDescriptor,
 ) -> *mut u8 {
+    let Some(layout) = (unsafe { ChannelLayout::new(element) }) else {
+        return std::ptr::null_mut();
+    };
     let id =
         state_cell()
             .lock()
             .unwrap()
-            .channel_create(elem_size, elem_desc, capacity, bounded != 0);
+            .channel_create_with_layout(layout, capacity, bounded != 0);
     if id == 0 {
         return std::ptr::null_mut();
     }
-    let handle = allocate_handle(id, SyncHandleKind::Channel, finalize_channel);
+    let handle = allocate_handle(id, SyncHandleKind::Channel);
     if handle.is_null() {
         let _ = finish_channel_destroy(id);
     }
@@ -986,16 +1114,14 @@ pub extern "C" fn __rt__sync_channel_create(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__sync_channel_destroy(handle: *mut u8) -> i32 {
+pub extern "C-unwind" fn __rt__sync_channel_destroy(handle: *mut u8) -> i32 {
     let channel_id = match handle_id(handle, SyncHandleKind::Channel) {
         Ok(id) => id,
         Err(error) => return error,
     };
-    let status = finish_channel_destroy(channel_id);
-    if status == 0 {
-        unregister_handle_reclaimer(handle);
-    }
-    status
+    // The opaque box remains live in copied source handles; only the registry
+    // entry is retired. GC reclamation frees the box independently.
+    finish_channel_destroy(channel_id)
 }
 
 #[unsafe(no_mangle)]
@@ -1006,45 +1132,46 @@ pub extern "C" fn __rt__sync_channel_close(handle: *mut u8) -> i32 {
     };
     let mut state = state_cell().lock().unwrap();
     let (status, wake) = state.channel_close(channel_id);
+    let wake = capture_wakes(&state, &wake);
     drop(state);
 
-    if !wake.is_empty() {
-        crate::executor::wake_tasks(&wake);
+    for target in wake {
+        target.wake();
     }
 
     status
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__sync_channel_try_send(handle: *mut u8, value_ptr: *const u8) -> i32 {
+pub extern "C-unwind" fn __rt__sync_channel_try_send(handle: *mut u8, value_ptr: *const u8) -> i32 {
     let channel_id = match handle_id(handle, SyncHandleKind::Channel) {
         Ok(id) => id,
         Err(error) => return error,
     };
-    let (elem_size, elem_desc) = {
+    let layout = {
         let state = state_cell().lock().unwrap();
         let status = state.channel_send_status(channel_id);
         if status != 0 {
             return status;
         }
-        let channel = state.channels[channel_id]
-            .as_ref()
+        let channel = state
+            .channel(channel_id)
             .expect("validated channel disappeared");
-        (channel.elem_size, channel.elem_desc as *const GcDesc)
+        channel.layout.clone()
     };
-    let value = match queued_value(elem_size, elem_desc, value_ptr) {
+    let value = match unsafe { QueuedValue::prepare(&layout, value_ptr) } {
         Ok(value) => value,
         Err(error) => return error,
     };
     let mut state = state_cell().lock().unwrap();
     let (status, wake, rejected) = state.channel_try_send_value(channel_id, value);
+    let wake = capture_wakes(&state, &wake);
     drop(state);
 
-    if let Some(value) = rejected {
-        remove_value_roots(&value.roots);
-    }
-    if !wake.is_empty() {
-        crate::executor::wake_tasks(&wake);
+    // A raced close/full result rolls staging ownership back, without cleanup.
+    drop(rejected);
+    for target in wake {
+        target.wake();
     }
 
     status
@@ -1057,12 +1184,13 @@ pub extern "C" fn __rt__sync_channel_try_recv(handle: *mut u8, out_ptr: *mut u8)
         Err(error) => return error,
     };
     let mut state = state_cell().lock().unwrap();
-    let (status, wake, roots) = state.channel_try_recv(channel_id, out_ptr);
+    let (status, wake, received) = state.channel_try_recv(channel_id, out_ptr);
+    let wake = capture_wakes(&state, &wake);
     drop(state);
 
-    remove_value_roots(&roots);
-    if !wake.is_empty() {
-        crate::executor::wake_tasks(&wake);
+    drop(received);
+    for target in wake {
+        target.wake();
     }
 
     status
@@ -1071,7 +1199,10 @@ pub extern "C" fn __rt__sync_channel_try_recv(handle: *mut u8, out_ptr: *mut u8)
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt__sync_mutex_create() -> *mut u8 {
     let id = state_cell().lock().unwrap().mutex_create();
-    let handle = allocate_handle(id, SyncHandleKind::Mutex, finalize_mutex);
+    if id == 0 {
+        return std::ptr::null_mut();
+    }
+    let handle = allocate_handle(id, SyncHandleKind::Mutex);
     if handle.is_null() {
         let _ = state_cell().lock().unwrap().mutex_destroy(id);
     }
@@ -1085,9 +1216,6 @@ pub extern "C" fn __rt__sync_mutex_destroy(handle: *mut u8) -> i32 {
         Err(error) => return error,
     };
     let status = state_cell().lock().unwrap().mutex_destroy(mutex_id);
-    if status == 0 {
-        unregister_handle_reclaimer(handle);
-    }
     status
 }
 
@@ -1121,10 +1249,11 @@ pub extern "C" fn __rt__sync_mutex_unlock(handle: *mut u8) -> i32 {
 
     let mut state = state_cell().lock().unwrap();
     let (status, wake) = state.mutex_unlock(mutex_id, task_token);
+    let wake = capture_wakes(&state, &wake);
     drop(state);
 
-    if !wake.is_empty() {
-        crate::executor::wake_tasks(&wake);
+    for target in wake {
+        target.wake();
     }
 
     status
@@ -1133,7 +1262,10 @@ pub extern "C" fn __rt__sync_mutex_unlock(handle: *mut u8) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt__sync_rwlock_create() -> *mut u8 {
     let id = state_cell().lock().unwrap().rwlock_create();
-    let handle = allocate_handle(id, SyncHandleKind::RwLock, finalize_rwlock);
+    if id == 0 {
+        return std::ptr::null_mut();
+    }
+    let handle = allocate_handle(id, SyncHandleKind::RwLock);
     if handle.is_null() {
         let _ = state_cell().lock().unwrap().rwlock_destroy(id);
     }
@@ -1147,9 +1279,6 @@ pub extern "C" fn __rt__sync_rwlock_destroy(handle: *mut u8) -> i32 {
         Err(error) => return error,
     };
     let status = state_cell().lock().unwrap().rwlock_destroy(lock_id);
-    if status == 0 {
-        unregister_handle_reclaimer(handle);
-    }
     status
 }
 
@@ -1200,10 +1329,11 @@ pub extern "C" fn __rt__sync_rwlock_unlock_read(handle: *mut u8) -> i32 {
 
     let mut state = state_cell().lock().unwrap();
     let (status, wake) = state.rwlock_unlock_read(lock_id, task_token);
+    let wake = capture_wakes(&state, &wake);
     drop(state);
 
-    if !wake.is_empty() {
-        crate::executor::wake_tasks(&wake);
+    for target in wake {
+        target.wake();
     }
 
     status
@@ -1222,10 +1352,11 @@ pub extern "C" fn __rt__sync_rwlock_unlock_write(handle: *mut u8) -> i32 {
 
     let mut state = state_cell().lock().unwrap();
     let (status, wake) = state.rwlock_unlock_write(lock_id, task_token);
+    let wake = capture_wakes(&state, &wake);
     drop(state);
 
-    if !wake.is_empty() {
-        crate::executor::wake_tasks(&wake);
+    for target in wake {
+        target.wake();
     }
 
     status
@@ -1235,15 +1366,90 @@ pub extern "C" fn __rt__sync_rwlock_unlock_write(handle: *mut u8) -> i32 {
 mod tests {
     use super::*;
 
-    static U32_DESC: GcDesc = GcDesc {
-        size: size_of::<u32>(),
-        align: align_of::<u32>(),
-        nodes: std::ptr::null(),
-        node_count: 0,
-    };
-
     fn create_u32_channel(state: &mut SyncState, capacity: usize) -> usize {
-        state.channel_create(size_of::<u32>(), &U32_DESC, capacity, true)
+        let layout = unsafe { ChannelLayout::new(crate::test_layout::value::<u32>()) }.unwrap();
+        state.channel_create_with_layout(layout, capacity, true)
+    }
+
+    #[test]
+    fn retired_native_locks_follow_the_remaining_task_ownership_lease() {
+        let mut state = SyncState::default();
+        let mutex = state.mutex_create();
+        assert_eq!(state.mutex_try_lock(mutex, 71), 0);
+        state.retire_mutex(mutex);
+        assert!(state.retired_mutexes.contains(&mutex));
+        assert!(state.mutex_slots.contains_key(&mutex));
+        state.task_finalized(71);
+        assert!(!state.mutex_slots.contains_key(&mutex));
+        assert!(state.retired_mutexes.is_empty());
+
+        let reader = state.rwlock_create();
+        assert_eq!(state.rwlock_try_read(reader, 72), 0);
+        state.retire_rwlock(reader);
+        assert!(state.retired_rwlocks.contains(&reader));
+        state.task_finalized(72);
+        assert!(!state.rwlock_slots.contains_key(&reader));
+        assert!(state.retired_rwlocks.is_empty());
+
+        let writer = state.rwlock_create();
+        assert_eq!(state.rwlock_try_write(writer, 73), 0);
+        state.retire_rwlock(writer);
+        state.task_finalized(73);
+        assert!(!state.rwlock_slots.contains_key(&writer));
+        assert!(state.retired_rwlocks.is_empty());
+    }
+
+    #[test]
+    fn explicit_native_destroy_keeps_the_opaque_box_live_until_final_release() {
+        let id = state_cell().lock().unwrap().mutex_create();
+        let handle = allocate_handle(id, SyncHandleKind::Mutex);
+        assert_eq!(__rt__sync_mutex_destroy(handle), 0);
+        assert_eq!(handle_id(handle, SyncHandleKind::Mutex), Ok(id));
+        assert_eq!(__rt__sync_mutex_destroy(handle), err_invalid());
+        // No reclaimer can subsequently retire a reused registry slot.
+        unsafe { __rt__sync_handle_release(handle) };
+        assert!(!state_cell().lock().unwrap().mutex_slots.contains_key(&id));
+    }
+
+    #[test]
+    fn stale_channel_identity_cannot_target_reused_storage() {
+        let mut state = SyncState::default();
+        let old = create_u32_channel(&mut state, 1);
+        drop(state.channel_destroy(old));
+        let replacement = create_u32_channel(&mut state, 1);
+        let value = 37_u32;
+        let (status, _) = state.channel_try_send(old, (&value as *const u32).cast());
+        assert_eq!(
+            status,
+            err_invalid(),
+            "an old operation cannot enqueue into a replacement channel"
+        );
+        let mut output = 0_u32;
+        assert_eq!(
+            state
+                .channel_try_recv(replacement, (&mut output as *mut u32).cast())
+                .0,
+            err_would_block()
+        );
+    }
+
+    #[test]
+    fn staged_messages_cannot_commit_after_destroy_and_identity_exhaustion_never_wraps() {
+        let mut state = SyncState::default();
+        let old = create_u32_channel(&mut state, 1);
+        let layout = state.channel(old).unwrap().layout.clone();
+        let value = 41_u32;
+        let staged =
+            unsafe { QueuedValue::prepare(&layout, (&value as *const u32).cast()) }.unwrap();
+        drop(state.channel_destroy(old));
+        let replacement = create_u32_channel(&mut state, 1);
+        let (status, _, rejected) = state.channel_try_send_value(old, staged);
+        assert_eq!(status, err_invalid());
+        drop(rejected);
+        assert!(state.channel(replacement).unwrap().queue.is_empty());
+        state.next_channel_id = usize::MAX;
+        assert_eq!(create_u32_channel(&mut state, 1), 0);
+        assert_eq!(state.next_channel_id, usize::MAX);
     }
 
     #[test]
@@ -1296,16 +1502,25 @@ mod tests {
         let mut state = SyncState::default();
 
         let channel_id = create_u32_channel(&mut state, 1);
+        let old_slot = state.channel_slots[&channel_id];
         assert_eq!(state.channel_destroy(channel_id).0, 0);
-        assert_eq!(create_u32_channel(&mut state, 1), channel_id);
+        let replacement = create_u32_channel(&mut state, 1);
+        assert_ne!(replacement, channel_id);
+        assert_eq!(state.channel_slots[&replacement], old_slot);
 
         let mutex_id = state.mutex_create();
+        let old_slot = state.mutex_slots[&mutex_id];
         assert_eq!(state.mutex_destroy(mutex_id), 0);
-        assert_eq!(state.mutex_create(), mutex_id);
+        let replacement = state.mutex_create();
+        assert_ne!(replacement, mutex_id);
+        assert_eq!(state.mutex_slots[&replacement], old_slot);
 
         let rwlock_id = state.rwlock_create();
+        let old_slot = state.rwlock_slots[&rwlock_id];
         assert_eq!(state.rwlock_destroy(rwlock_id), 0);
-        assert_eq!(state.rwlock_create(), rwlock_id);
+        let replacement = state.rwlock_create();
+        assert_ne!(replacement, rwlock_id);
+        assert_eq!(state.rwlock_slots[&replacement], old_slot);
     }
 
     #[test]
@@ -1390,9 +1605,9 @@ mod tests {
         let wake = state.task_finalized(44);
         assert!(wake.is_empty());
 
-        let send_channel = state.channels[send_id].as_ref().unwrap();
+        let send_channel = state.channel(send_id).unwrap();
         assert!(!send_channel.send_waiters.contains(&44));
-        let recv_channel = state.channels[recv_id].as_ref().unwrap();
+        let recv_channel = state.channel(recv_id).unwrap();
         assert!(!recv_channel.recv_waiters.contains(&44));
     }
 
@@ -1401,7 +1616,7 @@ mod tests {
         let mut state = SyncState::default();
         let id = create_u32_channel(&mut state, 1);
         {
-            let channel = state.channels[id].as_mut().unwrap();
+            let channel = state.channel_mut(id).unwrap();
             queue_waiter(&mut channel.send_waiters, 7);
             queue_waiter(&mut channel.send_waiters, 11);
             queue_waiter(&mut channel.recv_waiters, 7);
@@ -1480,14 +1695,14 @@ mod tests {
         let wake = state.task_finalized(1);
         assert_eq!(wake, vec![2, 3]);
 
-        let lock = state.rwlocks[id].as_ref().unwrap();
+        let lock = state.rwlocks[state.rwlock_slots[&id]].as_ref().unwrap();
         assert_eq!(lock.writer, None);
         assert!(lock.reader_waiters.contains(&2));
         assert!(lock.reader_waiters.contains(&3));
 
         assert_eq!(state.rwlock_try_read(id, 2), 0);
         assert_eq!(state.rwlock_try_read(id, 3), 0);
-        let lock = state.rwlocks[id].as_ref().unwrap();
+        let lock = state.rwlocks[state.rwlock_slots[&id]].as_ref().unwrap();
         assert!(lock.reader_waiters.is_empty());
     }
 
@@ -1510,12 +1725,12 @@ mod tests {
         let second_wake = state.task_finalized(2);
         assert_eq!(second_wake, vec![3]);
 
-        let lock = state.rwlocks[id].as_ref().unwrap();
+        let lock = state.rwlocks[state.rwlock_slots[&id]].as_ref().unwrap();
         assert_eq!(lock.total_readers, 0);
         assert!(lock.writer_waiters.contains(&3));
 
         assert_eq!(state.rwlock_try_write(id, 3), 0);
-        let lock = state.rwlocks[id].as_ref().unwrap();
+        let lock = state.rwlocks[state.rwlock_slots[&id]].as_ref().unwrap();
         assert!(lock.writer_waiters.is_empty());
     }
 

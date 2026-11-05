@@ -1,0 +1,25 @@
+public interface Duplicate {
+    func duplicate() -> Self
+}
+public interface Number {
+    func number() -> int32
+}
+struct Record {
+    padding: [int64; 16]
+    text: string
+    value: int32
+}
+conform Record to Duplicate {
+    func duplicate() -> Self {
+        Record { padding: self.padding, text: self.text, value: self.value + 1_i32 }
+    }
+}
+conform Record to Number {
+    func number() -> int32 { self.value }
+}
+public func make() -> any Duplicate & Number {
+    Record { padding: [3_i64; 16], text: "library payload", value: 40_i32 }
+}
+public func copyGeneric[T: Duplicate](_ value: &T) -> any Duplicate {
+    value.duplicate()
+}

@@ -1,25 +1,43 @@
-import std.marker.Sendable
-import std.mem.{GcDesc, MaybeUninit}
-import std.ops.{AsyncFnOnce, FnOnce}
-import std.result.Result
+import std::collections::List
+import std::marker::AnyObject
+import std::mem::MaybeUninit
+import std::ops::{AsyncFn, Fn}
+import std::result::Result
 
 extern "taro_intrinsic" {
+    // SC scalar atomics. T must be a native integer or raw pointer. Slots must
+    // be initialized, naturally aligned and accessed atomically while shared.
+    unsafe func __intrinsic_atomic_load[T](_ slot: *const T) -> T
+    unsafe func __intrinsic_atomic_store[T](_ slot: *mut T, _ value: T)
+    unsafe func __intrinsic_atomic_swap[T](_ slot: *mut T, _ value: T) -> T
+    unsafe func __intrinsic_atomic_compare_exchange[T](_ slot: *mut T, _ expected: T, _ desired: T) -> bool
+    unsafe func __intrinsic_atomic_add[T](_ slot: *mut T, _ delta: T) -> T
+
+    // Internal projection primitives. Callers guarantee initialized, aligned
+    // storage; GC references/pointers retain their managed allocation.
+    unsafe func __intrinsic_ref_project[T, U](_ source: &T, _ data: *const U) -> &U
+    unsafe func __intrinsic_ref_project_mut[T, U](_ source: &T, _ data: *mut U) -> &U
+
     func __intrinsic_ptr_add[T](_ ptr: *T, _ count: usize) -> *T
     func __intrinsic_ptr_sub[T](_ ptr: *T, _ count: usize) -> *T
     func __intrinsic_ptr_offset[T](_ ptr: *T, _ count: isize) -> *T
     func __intrinsic_ptr_byte_add[T](_ ptr: *T, _ count: usize) -> *T
     func __intrinsic_ptr_byte_sub[T](_ ptr: *T, _ count: usize) -> *T
-    func __intrinsic_ptr_read[T](_ ptr: *T) -> T
-    func __intrinsic_ptr_write[T](_ ptr: *T, _ val: T)
-    func __intrinsic_list_read_unchecked[T](_ buffer: *mut uint8, _ index: usize) -> &T
-    func __intrinsic_list_read_mut_unchecked[T](_ buffer: *mut uint8, _ index: usize) -> &mut T
-    func __intrinsic_memcpy[T](_ dst: *mut T, _ src: *T, _ count: usize)
-    func __intrinsic_memmove[T](_ dst: *mut T, _ src: *T, _ count: usize)
-    func __intrinsic_memset[T](_ dst: *T, _ val: uint8, _ count: usize)
+    unsafe func __intrinsic_ptr_read[T](_ ptr: *T) -> T
+    unsafe func __intrinsic_ptr_write[T](_ ptr: *T, _ val: T)
+    // Counts are BYTES. Storage must contain whole, initialized, aligned T
+    // elements. For pointer-bearing T, count must be a multiple of the native
+    // pointer word; partial pointer copies are invalid. The caller guarantees
+    // this for dynamic counts. memcpy also requires nonoverlapping ranges.
+    unsafe func __intrinsic_memcpy[T](_ dst: *mut T, _ src: *T, _ count: usize)
+    unsafe func __intrinsic_memmove[T](_ dst: *mut T, _ src: *T, _ count: usize)
+    unsafe func __intrinsic_memset[T](_ dst: *T, _ val: uint8, _ count: usize)
     func __intrinsic_size_of[T]() -> usize
     func __intrinsic_align_of[T]() -> usize
     func __intrinsic_maybe_uninit[T]() -> MaybeUninit[T]
     func __intrinsic_black_box[T](_ value: T) -> T
+    // A liveness use with no runtime effect; see std::runtime::keepAlive.
+    func __intrinsic_keep_alive[T](_ value: T)
 
     // Checked integer arithmetic. The compiler emits calls to these when
     // overflow checks are enabled; they panic (unwinding, so defers run)
@@ -104,30 +122,47 @@ extern "taro_intrinsic" {
     func __intrinsic_minimumnum_f64(_ x: double, _ y: double) -> double
     func __intrinsic_maximumnum_f64(_ x: double, _ y: double) -> double
 
-    func __intrinsic_string_from_parts(_ data: *const uint8, _ len: usize) -> string
-    func __intrinsic_string_data(_ s: string) -> *const uint8
-    func __intrinsic_string_len(_ s: string) -> usize
+    // Wrap immutable GC/static storage as {data, len}, without allocating.
+    // The source must remain valid and immutable while the string is used.
+    unsafe func __intrinsic_string_from_parts(_ data: *const uint8, _ len: usize) -> string
+    unsafe func __intrinsic_string_slice(_ s: &string, _ start: usize, _ count: usize) -> string
+    func __intrinsic_string_data(_ s: &string) -> *const uint8
+    func __intrinsic_string_len(_ s: &string) -> usize
     func __intrinsic_env_argc() -> usize
     func __intrinsic_env_argv() -> *const *const uint8
     func __intrinsic_rune_from_u32_unchecked(_ value: uint32) -> rune
-    func __intrinsic_gc_desc[T]() -> *const GcDesc
-    func __intrinsic_spawn_async[T, F: AsyncFnOnce() -> T](_ thunk: F) -> std.task.Task[T]
-    func __intrinsic_cancel_task[T](_ task: &std.task.Task[T])
-    func __intrinsic_detach_task[T](_ task: std.task.Task[T])
+    // Traced value-copy metadata for collected sequence storage.
+    unsafe func __intrinsic_gc_value_descriptor[T]() -> *const uint8
+    unsafe func __intrinsic_class_owner[T: AnyObject](_ value: &T) -> *const uint8
+    unsafe func __intrinsic_class_from_owner[T: AnyObject](_ owner: *const uint8) -> T
+    // Publish a nominal class value from its compiler-private GC handle.
+    unsafe func __intrinsic_class_from_handle[T: AnyObject](_ handle: std::runtime::ClassHandle) -> T
+    // Compiler-generated constant field paths. Storage references point into
+    // and retain the GC object independently of its handle variable.
+    unsafe func __intrinsic_class_field_reference[C: AnyObject, F](_ slot: &C, _ path: string) -> &F
+    unsafe func __intrinsic_class_field_read[C: AnyObject, F](_ slot: &C, _ path: string) -> F
+    unsafe func __intrinsic_class_field_write[C: AnyObject, F](_ slot: &C, _ path: string, _ value: F)
+    unsafe func __intrinsic_class_field_modify[C: AnyObject, F](_ slot: &C, _ path: string, _ op: string, _ rhs: F)
+    // Cleanup-only witness for existing source allocation families (channels).
+    // This authorizes no raw-pointer adoption or native Copy operation.
+    // Compiler-only output bridge. Cleanup must be the generated, typed
+    // SourceDropGlue constant, discovered through the MIR operand.
+    unsafe func __intrinsic_task_output_descriptor[T]() -> *const uint8
+    func __intrinsic_spawn_async[T, F: AsyncFn() -> T](_ thunk: F) -> std::task::Task[T]
+    func __intrinsic_cancel_task[T](_ task: &std::task::Task[T])
     func __intrinsic_dump_tasks()
-    func __intrinsic_select_tasks[A, B](_ first: &std.task.Task[A], _ second: &std.task.Task[B]) async -> uint8
-    func __intrinsic_task_timeout[T](_ task: &std.task.Task[T], _ duration: std.time.Duration) async -> uint8
-    func __intrinsic_blocking[T: Sendable, F: FnOnce() -> T & Sendable](_ thunk: F) async -> T
-    func __intrinsic_add_cleanup[T, State: Sendable, F: FnOnce(State) -> () & Sendable](_ owner: &T, _ state: State, _ cleanup: F) -> usize
+    func __intrinsic_select_tasks[A, B](_ first: &std::task::Task[A], _ second: &std::task::Task[B]) async -> uint8
+    func __intrinsic_task_timeout[T](_ task: &std::task::Task[T], _ duration: std::time::Duration) async -> uint8
+    func __intrinsic_blocking[T, F: Fn() -> T](_ thunk: F) async -> T
     func __intrinsic_is_task_cancelled() -> bool
-    func __intrinsic_task_result[T](_ task: std.task.Task[T]) async -> Result[T, std.task.TaskError]
-    func __intrinsic_task_group_create[T](_ cancel_on_panic: bool) -> usize
-    func __intrinsic_task_group_spawn[T, F: AsyncFnOnce() -> T](_ group: usize, _ thunk: F)
-    func __intrinsic_task_group_next[T](_ group: usize) async -> T?
-    func __intrinsic_task_group_close(_ group: usize)
-    func __intrinsic_task_group_cancel(_ group: usize)
-    func __intrinsic_task_group_destroy(_ group: usize)
-    func __intrinsic_task_group_destroy_and_rethrow(_ group: usize)
+    func __intrinsic_task_result[T](_ task: &std::task::Task[T]) async -> Result[T, std::task::TaskError]
+    unsafe func __intrinsic_task_group_create[T](_ cancel_on_panic: bool) -> usize
+    unsafe func __intrinsic_task_group_spawn[T, F: AsyncFn() -> T](_ group: usize, _ thunk: F)
+    unsafe func __intrinsic_task_group_next[T](_ group: usize) async -> T?
+    unsafe func __intrinsic_task_group_close(_ group: usize)
+    unsafe func __intrinsic_task_group_cancel(_ group: usize)
+    unsafe func __intrinsic_task_group_destroy(_ group: usize)
+    unsafe func __intrinsic_task_group_destroy_and_rethrow(_ group: usize)
     func __intrinsic_wait_readable(_ source_id: usize) async -> int32
     func __intrinsic_wait_writable(_ source_id: usize) async -> int32
     func __intrinsic_channel_wait_send(_ handle: *mut uint8) async -> int32
@@ -135,5 +170,5 @@ extern "taro_intrinsic" {
     func __intrinsic_mutex_lock(_ handle: *mut uint8) async -> int32
     func __intrinsic_rwlock_read(_ handle: *mut uint8) async -> int32
     func __intrinsic_rwlock_write(_ handle: *mut uint8) async -> int32
-    func __intrinsic_sleep(_ duration: std.time.Duration) async -> ()
+    func __intrinsic_sleep(_ duration: std::time::Duration) async -> ()
 }

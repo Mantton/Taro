@@ -1,38 +1,38 @@
 @test
 func testInt32Arithmetic() {
-    let a: int32 = 10
-    let b: int32 = 4
+    var a: int32 = 10
+    var b: int32 = 4
 
-    let add_expected: int32 = 14
-    let sub_expected: int32 = 6
-    let mul_expected: int32 = 40
-    let div_expected: int32 = 2
-    let rem_expected: int32 = 2
+    var add_expected: int32 = 14
+    var sub_expected: int32 = 6
+    var mul_expected: int32 = 40
+    var div_expected: int32 = 2
+    var rem_expected: int32 = 2
 
-    std.testing.assertEqual(a + b, add_expected, "int32 addition failed")
-    std.testing.assertEqual(a - b, sub_expected, "int32 subtraction failed")
-    std.testing.assertEqual(a * b, mul_expected, "int32 multiplication failed")
-    std.testing.assertEqual(a / b, div_expected, "int32 division failed")
-    std.testing.assertEqual(a % b, rem_expected, "int32 remainder failed")
+    std::testing::assertEqual(a + b, add_expected, "int32 addition failed")
+    std::testing::assertEqual(a - b, sub_expected, "int32 subtraction failed")
+    std::testing::assertEqual(a * b, mul_expected, "int32 multiplication failed")
+    std::testing::assertEqual(a / b, div_expected, "int32 division failed")
+    std::testing::assertEqual(a % b, rem_expected, "int32 remainder failed")
 }
 
 @test
 func testUsizeCheckedArithmetic() {
-    let max = 0xffffffffffffffff_u64 as usize
-    let one = 1 as usize
+    max := 0xffffffffffffffff_u64 as usize
+    one := 1 as usize
 
-    let addOk = (max - one).checkedAdd(one)
-    std.testing.assertTrue(addOk.isSome(), "usize checkedAdd should succeed in range")
-    std.testing.assertEqual(addOk.unwrap(), max, "usize checkedAdd in-range value mismatch")
-    std.testing.assertTrue(max.checkedAdd(one).isNone(), "usize checkedAdd should reject overflow")
+    addOk := (max - one).checkedAdd(one)
+    std::testing::assertTrue(addOk.isSome(), "usize checkedAdd should succeed in range")
+    std::testing::assertEqual(addOk.unwrap(), max, "usize checkedAdd in-range value mismatch")
+    std::testing::assertTrue(max.checkedAdd(one).isNone(), "usize checkedAdd should reject overflow")
 
-    let subOk = one.checkedSub(one)
-    std.testing.assertTrue(subOk.isSome(), "usize checkedSub should succeed in range")
-    std.testing.assertEqual(subOk.unwrap(), 0 as usize, "usize checkedSub in-range value mismatch")
-    std.testing.assertTrue((0 as usize).checkedSub(one).isNone(), "usize checkedSub should reject underflow")
+    subOk := one.checkedSub(one)
+    std::testing::assertTrue(subOk.isSome(), "usize checkedSub should succeed in range")
+    std::testing::assertEqual(subOk.unwrap(), 0 as usize, "usize checkedSub in-range value mismatch")
+    std::testing::assertTrue((0 as usize).checkedSub(one).isNone(), "usize checkedSub should reject underflow")
 
-    let mulOk = (max / (2 as usize)).checkedMul(2 as usize)
-    std.testing.assertTrue(mulOk.isSome(), "usize checkedMul should succeed in range")
-    std.testing.assertEqual(mulOk.unwrap(), max - one, "usize checkedMul in-range value mismatch")
-    std.testing.assertTrue(((max / (2 as usize)) + one).checkedMul(2 as usize).isNone(), "usize checkedMul should reject overflow")
+    mulOk := (max / (2 as usize)).checkedMul(2 as usize)
+    std::testing::assertTrue(mulOk.isSome(), "usize checkedMul should succeed in range")
+    std::testing::assertEqual(mulOk.unwrap(), max - one, "usize checkedMul in-range value mismatch")
+    std::testing::assertTrue(((max / (2 as usize)) + one).checkedMul(2 as usize).isNone(), "usize checkedMul should reject overflow")
 }

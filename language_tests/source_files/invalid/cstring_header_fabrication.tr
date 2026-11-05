@@ -1,0 +1,4 @@
+func forge(_ pointer: *mut uint8) -> std::ffi::CString {
+    std::ffi::CString { storage: pointer }
+}
+func main() {}

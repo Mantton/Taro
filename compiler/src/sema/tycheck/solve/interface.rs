@@ -16,7 +16,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
             match arg {
                 GenericArgument::Type(ty) => {
                     let resolved = self.structurally_resolve(*ty);
-                    if resolved.is_infer() {
+                    if crate::sema::tycheck::utils::unresolved::ty_contains_unresolved_inference(
+                        resolved,
+                    ) {
                         has_infer = true;
                     }
                     new_args.push(GenericArgument::Type(resolved));
@@ -34,7 +36,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let mut new_bindings = Vec::with_capacity(interface.bindings.len());
         for binding in interface.bindings {
             let resolved_ty = self.structurally_resolve(binding.ty);
-            if resolved_ty.is_infer() {
+            if crate::sema::tycheck::utils::unresolved::ty_contains_unresolved_inference(
+                resolved_ty,
+            ) {
                 has_infer = true;
             }
             new_bindings.push(crate::sema::models::AssociatedTypeBinding {

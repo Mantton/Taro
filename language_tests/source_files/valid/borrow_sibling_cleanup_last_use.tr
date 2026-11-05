@@ -1,0 +1,8 @@
+struct View { value: &int32; task: std::task::Task[int32] }
+func main() {
+    var value: int32 = 1
+    var view: View = View { value: &value, task: std::task::spawn(() => 7_i32) }
+    assert(*view.value == 1, "last read of the borrowed field")
+    value = 2
+    assert(value == 2, "task cleanup cannot read its sibling reference")
+}

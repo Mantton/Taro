@@ -1,0 +1,187 @@
+// TEST
+import std::mem::{Span, MaybeUninit, sizeOf}
+import std::hash::Hashable
+
+extern "C" {
+    unsafe func __gc__test_probe_create(_ target: *const uint8) -> *mut uint8
+    unsafe func __gc__test_collect_probe_is_live(_ probe: *mut uint8) -> bool
+}
+
+@noinline
+func returnedArrayView() -> [int32; ..] {
+    var values: [int32; 3] = [11, 22, 33]
+    return values.asSpan().slice(1, 2)
+}
+
+@noinline
+func returnedStringView() -> [uint8; ..] {
+    builder := std::string::Builder::new()
+    builder.writeString("managed string")
+    text := builder.toString()
+    return Span[uint8]::fromString(&text).slice(8, 6)
+}
+
+@noinline
+func oldListView() -> [int32; ..] {
+    var values: [int32] = [1, 2, 3]
+    view := values.asSpan()
+    values.reserve(1024)
+    values.clear()
+    return view
+}
+
+@test
+func viewsHaveTwoWordValueHeadersAndCopyElements() {
+    assert(sizeOf[[int32; ..]]() == 2 * sizeOf[usize](), "span is pointer/length")
+    var values: [int32; 3] = [1, 2, 3]
+    var view = values.asSpan()
+    var copy = view
+    *copy.at(0) = 10
+    assert(*view.at(0) == 10, "mutable span copies alias storage")
+    var sum: int32 = 0
+    for value in view { sum += value }
+    assert(sum == 15, "iteration yields copies")
+    var iterator = view.iter()
+    var alias = iterator
+    assert(iterator.next().unwrap() == 10, "first element")
+    assert(alias.next().unwrap() == 2, "iterator aliases share cursor")
+    assert(iterator.next().unwrap() == 3, "cursor advances through either alias")
+    assert(alias.next().isNone() && iterator.next().isNone(), "exhaustion is stable")
+}
+
+@test
+func escapingInteriorViewsKeepStorageAlive() {
+    array := returnedArrayView()
+    arrayProbe := unsafe { __gc__test_probe_create(array.asPtr() as *const uint8) }
+    assert(unsafe { __gc__test_collect_probe_is_live(arrayProbe) }, "returned array storage survives collection")
+    assert(*array.at(0) == 22 && *array.at(1) == 33, "interior array view reads initialized values")
+    assert(!unsafe { __gc__test_collect_probe_is_live(arrayProbe) }, "dead array view releases storage")
+    text := returnedStringView()
+    textProbe := unsafe { __gc__test_probe_create(text.asPtr()) }
+    assert(unsafe { __gc__test_collect_probe_is_live(textProbe) }, "string bytes survive their source header")
+    assert(std::string::stringFromBytes(text) == "string", "interior string view remains readable")
+    assert(!unsafe { __gc__test_collect_probe_is_live(textProbe) }, "dead string view releases storage")
+    var old = oldListView()
+    listProbe := unsafe { __gc__test_probe_create(old.asPtr() as *const uint8) }
+    assert(unsafe { __gc__test_collect_probe_is_live(listProbe) }, "old list storage survives growth and clear")
+    *old.at(1) = 20
+    assert(*old.at(0) == 1 && *old.at(1) == 20 && *old.at(2) == 3, "old view retains its original range")
+    assert(!unsafe { __gc__test_collect_probe_is_live(listProbe) }, "dead list view releases storage")
+}
+
+@test
+func maybeUninitPublishesInitializedManagedValues() {
+    var slot = MaybeUninit[[uint8; ..]]::uninit()
+    // Collection before initialization must never inspect arbitrary stack bytes.
+    probe := unsafe { __gc__test_probe_create(returnedStringView().asPtr()) }
+    assert(!unsafe { __gc__test_collect_probe_is_live(probe) }, "uninitialized slot does not retain unrelated storage")
+    var _ = slot.write(returnedStringView())
+    live := unsafe { __gc__test_probe_create(slot.assumeInitRef().asPtr()) }
+    assert(unsafe { __gc__test_collect_probe_is_live(live) }, "initialized slot traces managed pointers")
+    assert(std::string::stringFromBytes(unsafe { slot.assumeInitRead() }) == "string", "initialized value can be copied out")
+    assert(!unsafe { __gc__test_collect_probe_is_live(live) }, "dead initialized slot releases its value")
+}
+
+@test
+func writableStringSlicesAreIndependentSnapshots() {
+    text := "immutable"
+    var bytes: [uint8; ..] = Span[uint8]::fromString(&text)
+    bytes[0] = 73_u8
+    assert(text == "immutable", "writable slice never aliases string bytes")
+    assert(std::string::stringFromBytes(bytes) == "Immutable", "slice indexing writes its backing storage")
+    snapshot := std::string::stringFromBytes(bytes)
+    bytes[1] = 77_u8
+    assert(snapshot == "Immutable", "string snapshots never alias writable slices")
+    var empty: [uint8; ..] = Span[uint8]::fromString(&"")
+    assert(empty.isEmpty() && empty.slice(0, 0).len() == 0, "empty slices allow an empty subrange")
+}
+
+struct ScribblingWriter {}
+conform ScribblingWriter to std::io::Writer {
+    public func write( _ bytes: [uint8; ..]) -> Result[usize, std::io::Error] {
+        if !bytes.isEmpty() { *bytes.at(0) = 88_u8 }
+        return .ok(bytes.len())
+    }
+    public func flush() -> Result[(), std::io::Error] { .ok(()) }
+}
+
+struct ScribblingHasher {}
+conform ScribblingHasher to std::hash::Hasher {
+    public func write( _ bytes: [uint8; ..]) {
+        if !bytes.isEmpty() { *bytes.at(0) = 88_u8 }
+    }
+    public func finish() -> uint64 { 0_u64 }
+}
+
+@test
+func stringCallbacksReceiveIndependentWritableBytes() {
+    builder := std::string::Builder::new()
+    builder.writeString("managed immutable")
+    text := builder.toString()
+    var writer = ScribblingWriter {}
+    std::io::writeString(writer, text).unwrap()
+    assert(text == "managed immutable", "a writer cannot mutate string storage")
+    var hasher = ScribblingHasher {}
+    text.hash(into: hasher)
+    assert(text == "managed immutable", "a hasher cannot mutate string storage")
+}
+
+@noinline
+func retainedVariadic(_ values: int32...) -> [int32; ..] { values }
+
+@test
+func variadicSlicesUseTheSameTwoWordHeader() {
+    values := retainedVariadic(10, 20, 30)
+    probe := unsafe { __gc__test_probe_create(values.asPtr() as *const uint8) }
+    assert(unsafe { __gc__test_collect_probe_is_live(probe) }, "escaped variadic pack survives collection")
+    *values.at(1) = 21
+    assert(values.len() == 3 && *values.at(1) == 21, "variadic slices are ordinary writable values")
+    assert(!unsafe { __gc__test_collect_probe_is_live(probe) }, "dead variadic slice releases its pack")
+    assert(retainedVariadic().isEmpty(), "empty variadic slices need no element pointer")
+}
+
+class SlotPayload { value: int64 }
+extend SlotPayload { init(_ value: int64) { self.value = value } }
+
+@noinline
+func fillSlot(_ slot: &MaybeUninit[SlotPayload?], _ value: int64) -> *mut uint8 {
+    payload := SlotPayload(value)
+    var _ = slot.write(.some(payload))
+    unsafe { __gc__test_probe_create(&payload.value as *const uint8) }
+}
+
+@test
+func initializedEnumSlotsTraceOnlyTheirCurrentValue() {
+    var slot = MaybeUninit[SlotPayload?]::uninit()
+    old := fillSlot(&slot, 7)
+    assert(unsafe { __gc__test_collect_probe_is_live(old) }, "initialized enum payload survives collection")
+    assert(unsafe { slot.assumeInitRef() }.unwrap().value == 7, "initialized enum is readable")
+    replacement := fillSlot(&slot, 9)
+    assert(!unsafe { __gc__test_collect_probe_is_live(old) }, "overwritten slot releases its old value")
+    assert(unsafe { __gc__test_collect_probe_is_live(replacement) }, "replacement enum payload is rooted")
+    assert(unsafe { slot.assumeInitRead() }.unwrap().value == 9, "replacement can be copied out")
+    assert(!unsafe { __gc__test_collect_probe_is_live(replacement) }, "dead slot releases its last value")
+}
+
+@noinline
+func returnedReferenceSlice() -> [&int32; ..] {
+    var value: int32 = 77
+    var references: [&int32; 1] = [&value]
+    return references.asSpan()
+}
+
+class SliceBox { values: [&int32; ..] }
+extend SliceBox { init(_ values: [&int32; ..]) { self.values = values } }
+
+@test
+func objectFieldsRetainSlicesOfReferences() {
+    box := SliceBox(returnedReferenceSlice())
+    probe := unsafe { __gc__test_probe_create(box.values.asPtr() as *const uint8) }
+    assert(unsafe { __gc__test_collect_probe_is_live(probe) }, "an object field traces its slice storage")
+    assert(*box.values[0] == 77, "reference-containing elements support indexing after collection")
+    var alias = box.values
+    var replacement: int32 = 88
+    alias[0] = &replacement
+    assert(*box.values[0] == 88, "reference elements can be replaced through another slice header")
+    assert(!unsafe { __gc__test_collect_probe_is_live(probe) }, "dead object and slice release their backing storage")
+}

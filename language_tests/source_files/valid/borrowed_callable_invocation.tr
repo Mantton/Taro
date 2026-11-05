@@ -1,0 +1,26 @@
+func seven() -> int32 { 7 }
+func borrowed[F: Fn() -> int32](_ callback: &F) -> &F { callback }
+func invoke[F: Fn() -> int32](_ callback: &F) -> int32 { callback() }
+func change[F: Fn() -> int32](_ callback: &F) -> int32 { callback() }
+func asyncBorrowed[F: AsyncFn() -> int32](_ callback: &F) -> &F { callback }
+func tick() async { await std::testing::yieldNow() }
+func main() async {
+    read := () => 7_i32 // Fn.
+    shared := &read // &closure.
+    assert(shared() == 7, "direct borrowed closure")
+    assert(invoke(&read) == 7, "borrowed generic Fn")
+    assert(borrowed(&read)() == 7, "calling an inferred borrowed result")
+    var pointer: () -> int32 = seven
+    pointerRef := &pointer
+    assert(pointerRef() == 7, "borrowed function pointer")
+
+    var count: int32 = 0
+    var increment = () => { count += 1; count } // FnMut.
+    exclusive := &increment
+    assert(exclusive() == 1, "direct exclusive callable reference")
+    assert(change(exclusive) == 2, "generic mutable callable reborrow")
+    assert(count == 2, "captured borrow ends at final use")
+
+    operation := () => { await tick(); 11_i32 } // AsyncFn.
+    assert((await asyncBorrowed(&operation)()) == 11, "asyncness survives returned callback reference")
+}

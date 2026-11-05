@@ -75,6 +75,9 @@ pub extern "C" fn __rt__install_stack_guard() {
 /// every thread that runs Taro code needs this.
 #[cfg(unix)]
 pub(crate) fn guard_current_thread() {
+    if STACK_LOW.with(|low| low.get() != 0) {
+        return;
+    }
     unsafe { install_thread_guard() };
 }
 

@@ -145,7 +145,14 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
         Self {
             gcx,
             func,
-            output_ty: gcx.function_body_output(func.id),
+            output_ty: if func.constructor_self.is_some() {
+                gcx.types.void
+            } else {
+                crate::sema::tycheck::utils::normalize_aliases(
+                    gcx,
+                    gcx.function_body_output(func.id),
+                )
+            },
             local_infos,
             emitted_errors: FxHashSet::default(),
             emitted_warnings: FxHashSet::default(),
@@ -153,7 +160,14 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
     }
 
     fn initialized_params(&self) -> InitSet {
-        self.func.params.iter().map(|param| param.id).collect()
+        // Constructor self is an addressable aggregate whose individual
+        // fields are checked by MIR, rather than this whole-local analysis.
+        self.func
+            .params
+            .iter()
+            .map(|param| param.id)
+            .chain(self.func.constructor_self)
+            .collect()
     }
 
     fn check_function_completion(&mut self, body: BlockId, result: FlowResult) {
@@ -173,7 +187,7 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
 
         if self.output_ty != self.gcx.types.void
             && result.normal.is_some()
-            && self.func.blocks[body].expr.is_none()
+            && !self.block_yields_value(body)
         {
             self.emit_error(
                 format!(
@@ -182,6 +196,20 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
                 ),
                 self.func.span,
             );
+        }
+    }
+
+    /// A closure's body is one tail block, and blocks can nest in tail position,
+    /// so whether the body yields a value is decided by the innermost block.
+    fn block_yields_value(&self, mut block: BlockId) -> bool {
+        loop {
+            let Some(tail) = self.func.blocks[block].expr else {
+                return false;
+            };
+            match self.func.exprs[tail].kind {
+                ExprKind::Block(inner) => block = inner,
+                _ => return true,
+            }
         }
     }
 
@@ -344,6 +372,33 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
                     FlowResult::with_continue(initialized.clone())
                 }
             }
+            StmtKind::Guard {
+                condition,
+                else_block,
+            } => {
+                let mut result =
+                    self.analyze_expr(condition, initialized, loop_depth, check_initialization);
+                let Some(condition_state) = result.normal.take() else {
+                    return result;
+                };
+                let success = self
+                    .pattern_binding_then_state(condition, &condition_state)
+                    .unwrap_or_else(|| condition_state.clone());
+                let failed = self.analyze_block(
+                    else_block,
+                    &condition_state,
+                    loop_depth,
+                    check_initialization,
+                );
+                let branches = FlowResult {
+                    normal: Some(success),
+                    returns: failed.returns,
+                    breaks: failed.breaks,
+                    continues: failed.continues,
+                    poisoned: failed.poisoned,
+                };
+                merge_results(result, branches)
+            }
             StmtKind::Defer(..) => FlowResult::normal(initialized.clone()),
             StmtKind::Loop { block } => {
                 self.analyze_loop(block, initialized, loop_depth, check_initialization)
@@ -433,17 +488,18 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
                 }
                 FlowResult::normal(initialized.clone())
             }
-            ExprKind::Reference { expr, .. } => {
+            ExprKind::Reference { expr } => {
                 self.analyze_expr(expr, initialized, loop_depth, check_initialization)
             }
             ExprKind::Deref(expr)
             | ExprKind::Unary { operand: expr, .. }
             | ExprKind::Cast { value: expr }
+            | ExprKind::ClassUpcast { value: expr, .. }
+            | ExprKind::ClassSelfResult { value: expr }
             | ExprKind::ExistentialTryCast { value: expr, .. }
             | ExprKind::ExistentialTypeIs { value: expr, .. }
             | ExprKind::BoxExistential { value: expr, .. }
             | ExprKind::ExistentialUpcast { value: expr, .. }
-            | ExprKind::Make { value: expr }
             | ExprKind::Field { lhs: expr, .. }
             | ExprKind::ClosureToFnPointer { closure: expr, .. } => {
                 self.analyze_expr(expr, initialized, loop_depth, check_initialization)
@@ -501,23 +557,32 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
             ExprKind::Repeat { element, .. } => {
                 self.analyze_expr(element, initialized, loop_depth, check_initialization)
             }
-            ExprKind::Binary { lhs, rhs, .. } => self.analyze_expr_sequence(
-                [lhs, rhs],
-                initialized,
-                loop_depth,
-                check_initialization,
-            ),
-            ExprKind::Logical { lhs, rhs, .. } => {
-                self.analyze_logical(lhs, rhs, initialized, loop_depth, check_initialization)
+            ExprKind::Binary { lhs, rhs, .. } | ExprKind::ClassIdentity { lhs, rhs, .. } => self
+                .analyze_expr_sequence([lhs, rhs], initialized, loop_depth, check_initialization),
+            ExprKind::Logical { op, lhs, rhs } => {
+                self.analyze_logical(op, lhs, rhs, initialized, loop_depth, check_initialization)
             }
-            ExprKind::Call { callee, args, .. } => {
+            ExprKind::Call {
+                callee,
+                args,
+                argument_evaluation_order,
+                ..
+            } => {
+                let args = if let Some(order) = argument_evaluation_order {
+                    order.into_iter().map(|index| args[index]).collect()
+                } else {
+                    args
+                };
                 self.analyze_call(callee, args, initialized, loop_depth, check_initialization)
             }
             ExprKind::Block(block) => {
                 self.analyze_block(block, initialized, loop_depth, check_initialization)
             }
             ExprKind::Adt(adt) => self.analyze_expr_sequence(
-                adt.fields.into_iter().map(|field| field.expression),
+                adt.fields
+                    .into_iter()
+                    .map(|field| field.expression)
+                    .chain(adt.base),
                 initialized,
                 loop_depth,
                 check_initialization,
@@ -622,6 +687,7 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
 
     fn analyze_logical(
         &mut self,
+        op: crate::mir::LogicalOperator,
         lhs: ExprId,
         rhs: ExprId,
         initialized: &InitSet,
@@ -637,7 +703,15 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
             return result;
         };
 
-        let rhs_result = self.analyze_expr(rhs, &lhs_state, loop_depth, check_initialization);
+        // && evaluates its RHS only after the LHS succeeds. A successful
+        // pattern condition initializes its bindings on precisely that edge.
+        let rhs_input = if matches!(op, crate::mir::LogicalOperator::And) {
+            self.pattern_binding_then_state(lhs, &lhs_state)
+                .unwrap_or_else(|| lhs_state.clone())
+        } else {
+            lhs_state.clone()
+        };
+        let rhs_result = self.analyze_expr(rhs, &rhs_input, loop_depth, check_initialization);
         let branch_result = merge_results(FlowResult::normal(lhs_state), rhs_result);
 
         merge_results(result, branch_result)
@@ -801,9 +875,6 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
                     binding_ids.push(*local);
                 }
             }
-            PatternKind::Deref { pattern } => {
-                self.collect_pattern_bindings(pattern, binding_ids, seen);
-            }
             PatternKind::Leaf { subpatterns } | PatternKind::Variant { subpatterns, .. } => {
                 for field in subpatterns {
                     self.collect_pattern_bindings(&field.pattern, binding_ids, seen);
@@ -827,6 +898,20 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
         cond: ExprId,
         initialized: &InitSet,
     ) -> Option<InitSet> {
+        if let ExprKind::Logical {
+            op: crate::mir::LogicalOperator::And,
+            lhs,
+            rhs,
+        } = self.func.exprs[cond].kind
+        {
+            // A true conjunction proves every conjunct succeeded. This only
+            // adds pattern-binding initialization facts, never facts from an
+            // unexecuted branch or an arbitrary boolean call.
+            let left = self
+                .pattern_binding_then_state(lhs, initialized)
+                .unwrap_or_else(|| initialized.clone());
+            return Some(self.pattern_binding_then_state(rhs, &left).unwrap_or(left));
+        }
         let ExprKind::Match {
             arms,
             binding_condition: true,

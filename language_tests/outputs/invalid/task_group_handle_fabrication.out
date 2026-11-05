@@ -1,0 +1,8 @@
+error: field 'id' of TaskGroup[int32] is not visible here
+ -> language_tests/source_files/invalid/task_group_handle_fabrication.tr:4:28
+	    TaskGroup[string] { id: group.id }
+	                            ^^^^^^^^
+error: field 'id' of TaskGroup[string] is not visible here
+ -> language_tests/source_files/invalid/task_group_handle_fabrication.tr:4:24
+	    TaskGroup[string] { id: group.id }
+	                        ^^^

@@ -3,14 +3,14 @@ struct Node {
 }
 
 func testOptionalReferenceNpoLayout() {
-    let ptr_size = std.mem.sizeOf[usize]()
-    let ref_size = std.mem.sizeOf[&Node]()
-    let optional_ref_size = std.mem.sizeOf[Optional[&Node]]()
-    let optional_int_size = std.mem.sizeOf[Optional[int32]]()
-    let nested_optional_ref_size = std.mem.sizeOf[Optional[Optional[&Node]]]()
-    let tagged_size = ptr_size + ptr_size
+    ptr_size := std::mem::sizeOf[usize]()
+    ref_size := std::mem::sizeOf[&Node]()
+    optional_ref_size := std::mem::sizeOf[Optional[&Node]]()
+    optional_int_size := std::mem::sizeOf[Optional[int32]]()
+    nested_optional_ref_size := std::mem::sizeOf[Optional[Optional[&Node]]]()
+    tagged_size := ref_size + ptr_size
 
-    assert(ref_size == ptr_size, "&T should be pointer-sized")
+    assert(ref_size == ptr_size, "&T is a one-word GC reference")
     assert(
         optional_ref_size == ref_size,
         "Optional[&T] should use null-pointer optimization",
@@ -18,8 +18,8 @@ func testOptionalReferenceNpoLayout() {
     // Still tagged rather than niche-packed, but the tag is sized to the
     // variant count, not to a pointer: one byte, rounded up to the payload's
     // alignment.
-    let int_size = std.mem.sizeOf[int32]()
-    let int_align = std.mem.alignOf[int32]()
+    int_size := std::mem::sizeOf[int32]()
+    int_align := std::mem::alignOf[int32]()
     assert(
         optional_int_size == int_size + int_align,
         "Optional[int32] should keep tagged enum layout",
@@ -31,15 +31,15 @@ func testOptionalReferenceNpoLayout() {
 }
 
 func testOptionalReferenceMatchBehavior() {
-    let node = Node { value: 77 }
+    node := Node { value: 77 }
 
-    let some_ref: Optional[&Node] = Optional.some(&node)
+    var some_ref: Optional[&Node] = Optional::some(&node)
     match some_ref {
         case .some(value) => assert(value.value == 77, "Optional[&T] some payload mismatch")
         case .none => assert(false, "Optional[&T] some should not match none")
     }
 
-    let none_ref: Optional[&Node] = Optional.none
+    var none_ref: Optional[&Node] = Optional::none
     match none_ref {
         case .some(_) => assert(false, "Optional[&T] none should not match some")
         case .none => {}
@@ -49,5 +49,5 @@ func testOptionalReferenceMatchBehavior() {
 func main() {
     testOptionalReferenceNpoLayout()
     testOptionalReferenceMatchBehavior()
-    std.print("optional npo layouts ok\n")
+    std::print("optional npo layouts ok\n")
 }

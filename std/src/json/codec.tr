@@ -1,56 +1,64 @@
-import std.collections.List
-import std.convert.Parse
-import std.fmt.Display
-import std.io.Reader
-import std.marker.Copy
-import std.result.Result
+import std::collections::List
+import std::convert::Parse
+import std::encoding::Decoder
+import std::fmt::Display
+import std::io::Reader
+import std::result::Result
 
 /// Preserve the JSON-facing category name while sharing the format-neutral
 /// categories used by every `std.encoding` codec.
-public type CodecErrorKind = std.encoding.CodingErrorKind
+public type CodecErrorKind = std::encoding::CodingErrorKind
 
-/// A typed value-conversion failure with JSONPath context.
-public struct CodecError {
+struct CodecErrorPayload {
     kindValue: CodecErrorKind
     messageValue: string
     pathValue: string
 }
 
-impl CodecError {
+// A compact header keeps diagnostic storage out of successful Results.
+// Payloads are allocated on errors and never mutated after publication.
+/// A typed value-conversion failure with JSONPath context.
+public struct CodecError {
+    data: &CodecErrorPayload
+}
+
+extend CodecError {
     /// Construct an error at the root value.
-    public func new(_ kind: CodecErrorKind, _ message: string) -> Self {
-        CodecError { kindValue: kind, messageValue: message, pathValue: ROOT_PATH }
+    public static func new(_ kind: CodecErrorKind, _ message: string) -> Self {
+        payload := CodecErrorPayload { kindValue: kind, messageValue: message, pathValue: ROOT_PATH }
+        CodecError { data: &payload }
     }
 
     /// Construct an error at an explicit JSONPath.
-    public func at(_ kind: CodecErrorKind, _ path: string, _ message: string) -> Self {
-        CodecError { kindValue: kind, messageValue: message, pathValue: path }
+    public static func at(_ kind: CodecErrorKind, _ path: string, _ message: string) -> Self {
+        payload := CodecErrorPayload { kindValue: kind, messageValue: message, pathValue: path }
+        CodecError { data: &payload }
     }
 
-    public func kind(&self) -> CodecErrorKind {
-        self.kindValue
+    public func kind() -> CodecErrorKind {
+        self.data.kindValue
     }
 
-    public func message(&self) -> string {
-        self.messageValue
+    public func message() -> string {
+        self.data.messageValue
     }
 
-    public func path(&self) -> string {
-        self.pathValue
+    public func path() -> string {
+        self.data.pathValue
     }
 }
 
-impl std.fmt.Display for CodecError {
-    public func display(&self, _ into: &mut std.fmt.Formatter) {
-        self.kindValue.display(into)
+conform CodecError to std::fmt::Display {
+    public func display(_ into: &std::fmt::Formatter) {
+        self.data.kindValue.display(into)
         into.writeString(" at ")
-        into.writeString(self.pathValue)
+        into.writeString(self.data.pathValue)
         into.writeString(": ")
-        into.writeString(self.messageValue)
+        into.writeString(self.data.messageValue)
     }
 }
 
-impl std.error.Error for CodecError {}
+conform CodecError to std::error::Error {}
 
 /// JSON encoding now reports one concrete output error directly. Value
 /// conversion participates through the encoder's associated error type, so a
@@ -63,8 +71,8 @@ public enum JsonDecodeError {
     case codec(CodecError)
 }
 
-impl std.fmt.Display for JsonDecodeError {
-    public func display(&self, _ into: &mut std.fmt.Formatter) {
+conform JsonDecodeError to std::fmt::Display {
+    public func display(_ into: &std::fmt::Formatter) {
         match self {
             case .syntax(error) => error.display(into)
             case .codec(error) => error.display(into)
@@ -72,177 +80,114 @@ impl std.fmt.Display for JsonDecodeError {
     }
 }
 
-impl std.error.Error for JsonDecodeError {}
+conform JsonDecodeError to std::error::Error {}
 
-enum DecodeContainerKind: Copy {
+enum DecodeContainerKind {
     case sequence
     case object
 }
 
+// Frame addresses never escape ValueDecoder. Its root reference and managed
+// interior pointers retain the selected DOM storage through GC. The decoder
+// reads that storage; readonly protects its field binding, not the referenced
+// DOM. Callers synchronize concurrent access like other shared values.
 struct DecodeFrame {
     kind: DecodeContainerKind
-    value: &Value
-    path: string
+    value: *const Value
+    // Last selected object key. Array positions come from `index - 1`.
+    // Keep components in the existing cursor frames; format only on error.
+    key: string
     index: usize
     valuePending: bool
 }
 
 /// Adapt the stable JSON DOM to the format-neutral decoder contract.
 ///
-/// Keeping this adapter private makes the current parse-then-convert strategy
-/// an implementation detail. A future token-stream decoder can remove the DOM
-/// allocation without changing `Decodable` implementations or derived code.
+/// Reader-backed decoding uses this adapter after reading one bounded value.
+/// Contiguous string decoding uses TokenDecoder directly.
 struct ValueDecoder {
-    current: &Value
-    pathValue: string
+    readonly root: &Value
+    // Private cursor pointers select initialized Value storage. They never
+    // escape this decoder; traversal does not write the source DOM.
+    current: *const Value
     frames: List[DecodeFrame]
     rootValueConsumed: bool
 }
 
-impl ValueDecoder {
-    func new(_ value: &Value) -> Self {
+extend ValueDecoder {
+    static func new(_ value: &Value) -> Self {
         ValueDecoder {
-            current: value,
-            pathValue: ROOT_PATH,
-            frames: List[DecodeFrame](),
+            root: value,
+            current: unsafe { value as *const Value },
+            frames: List[DecodeFrame]::new(),
             rootValueConsumed: false,
-        }
-    }
-
-    /// Mark the selected DOM node as consumed by one scalar, container, or
-    /// explicit skip operation. A direct token decoder will need this same
-    /// cursor invariant, so enforcing it here keeps handwritten codecs honest.
-    func consumeValue(&mut self) -> Result[(), CodecError] {
-        if self.frames.isEmpty() {
-            if self.rootValueConsumed {
-                return .err(CodecError.at(
-                    .invalidState,
-                    self.pathValue,
-                    "decodable value attempted to consume the root more than once",
-                ))
-            }
-            self.rootValueConsumed = true
-            return .ok(())
-        }
-
-        let frame = self.frames.at(self.frames.len() - 1)
-        if !frame.valuePending {
-            return .err(CodecError.at(
-                .invalidState,
-                self.pathValue,
-                "no current container value is available to consume",
-            ))
-        }
-        frame.valuePending = false
-        return .ok(())
-    }
-
-    func requireValue(&self) -> Result[(), CodecError] {
-        let available = if self.frames.isEmpty() {
-            !self.rootValueConsumed
-        } else {
-            self.frames.at(self.frames.len() - 1).valuePending
-        }
-        if !available {
-            return .err(CodecError.at(
-                .invalidState,
-                self.pathValue,
-                "no current value is available to decode",
-            ))
-        }
-        return .ok(())
-    }
-
-    func finish(&self) -> Result[(), CodecError] {
-        if !self.frames.isEmpty() {
-            return .err(CodecError.at(
-                .invalidState,
-                self.pathValue,
-                "decodable value left a container unfinished",
-            ))
-        }
-        if !self.rootValueConsumed {
-            return .err(CodecError.at(
-                .invalidState,
-                ROOT_PATH,
-                "decodable value did not consume the root value",
-            ))
-        }
-        return .ok(())
-    }
-
-    func typeMismatch(&self, _ expected: string) -> CodecError {
-        CodecError.at(
-            .typeMismatch,
-            self.pathValue,
-            "expected JSON ".concat(expected),
-        )
-    }
-
-    func decodeNumberAs[Target: Parse](&mut self, _ expected: string) -> Result[Target, CodecError] {
-        self.requireValue()!
-        let text = match self.current {
-            case .number(number) => number.text()
-            case _ => return .err(self.typeMismatch(expected))
-        }
-        match Target.parse(text) {
-            case .ok(value) => {
-                self.consumeValue()!
-                return .ok(value)
-            }
-            case .err(_) => {
-                return .err(CodecError.at(
-                    .invalidValue,
-                    self.pathValue,
-                    "JSON number is outside the target type or has an incompatible form",
-                ))
-            }
-        }
-    }
-
-    func activeObjectPath(&self) -> string {
-        if self.frames.isEmpty() {
-            return self.pathValue
-        }
-        let frame = self.frames.at(self.frames.len() - 1)
-        match frame.kind {
-            case .object => return frame.path
-            case .sequence => return self.pathValue
         }
     }
 }
 
-impl std.encoding.Decoder for ValueDecoder {
+extend &ValueDecoder {
+    func selectEnumField(_ name: string) -> Result[bool, CodecError] {
+        if self.frames.isEmpty() {
+            return .err(CodecError::at(.invalidState, self.currentPath(), "enum field has no envelope"))
+        }
+        frame := self.frames.at(self.frames.len() - 1)
+        match frame.kind {
+            case .sequence => return .err(CodecError::at(.invalidState, self.currentPath(), "enum envelope is not an object"))
+            case .object => {}
+        }
+        if frame.valuePending {
+            return .err(CodecError::at(.invalidState, self.currentPath(), "previous enum field was not consumed"))
+        }
+        object := match *(unsafe { frame.value as &Value }) {
+            case .object(object) => object
+            case _ => return .err(CodecError::at(.invalidState, self.currentPath(), "enum frame does not contain an object"))
+        }
+        var index: usize = 0
+        while index < object.len() {
+            if object.keyAt(index) == name {
+                frame.key = name
+                frame.index = index + 1
+                frame.valuePending = true
+                self.current = unsafe { object.valueAt(index) as *const Value }
+                return .ok(true)
+            }
+            index += 1
+        }
+        return .ok(false)
+    }
+}
+
+conform &ValueDecoder to std::encoding::Decoder {
     type Error = CodecError
 
-    public func error(&self, _ kind: std.encoding.CodingErrorKind, _ message: string) -> Self.Error {
-        CodecError.at(kind, self.pathValue, message)
+    public func error(_ kind: std::encoding::CodingErrorKind, _ message: string) -> Self::Error {
+        CodecError::at(kind, self.currentPath(), message)
     }
 
-    public func missingField(&self, _ name: string, _ message: string) -> Self.Error {
-        CodecError.at(
+    public func missingField(_ name: string, _ message: string) -> Self::Error {
+        CodecError::at(
             .missingField,
             childPathForKey(self.activeObjectPath(), name),
             message,
         )
     }
 
-    public func peekKind(&self) -> Result[std.encoding.CodingValueKind, Self.Error] {
+    public func peekKind() -> Result[std::encoding::CodingValueKind, Self::Error] {
         self.requireValue()!
-        let kind = match self.current {
-            case .null => std.encoding.CodingValueKind.null
-            case .boolean(_) => std.encoding.CodingValueKind.boolean
-            case .number(_) => std.encoding.CodingValueKind.number
-            case .string(_) => std.encoding.CodingValueKind.string
-            case .array(_) => std.encoding.CodingValueKind.sequence
-            case .object(_) => std.encoding.CodingValueKind.object
+        kind := match *(unsafe { self.current as &Value }) {
+            case .null => std::encoding::CodingValueKind::null
+            case .boolean(_) => std::encoding::CodingValueKind::boolean
+            case .number(_) => std::encoding::CodingValueKind::number
+            case .string(_) => std::encoding::CodingValueKind::string
+            case .array(_) => std::encoding::CodingValueKind::sequence
+            case .object(_) => std::encoding::CodingValueKind::object
         }
         return .ok(kind)
     }
 
-    public func decodeNull(&mut self) -> Result[(), Self.Error] {
+    public func decodeNull() -> Result[(), Self::Error] {
         self.requireValue()!
-        match self.current {
+        match *(unsafe { self.current as &Value }) {
             case .null => {
                 self.consumeValue()!
                 return .ok(())
@@ -251,11 +196,11 @@ impl std.encoding.Decoder for ValueDecoder {
         }
     }
 
-    public func decodeBool(&mut self) -> Result[bool, Self.Error] {
+    public func decodeBool() -> Result[bool, Self::Error] {
         self.requireValue()!
-        match self.current {
+        match *(unsafe { self.current as &Value }) {
             case .boolean(value) => {
-                let result = *value
+                result := value
                 self.consumeValue()!
                 return .ok(result)
             }
@@ -263,24 +208,24 @@ impl std.encoding.Decoder for ValueDecoder {
         }
     }
 
-    public func decodeInt8(&mut self) -> Result[int8, Self.Error] { self.decodeNumberAs("int8") }
-    public func decodeInt16(&mut self) -> Result[int16, Self.Error] { self.decodeNumberAs("int16") }
-    public func decodeInt32(&mut self) -> Result[int32, Self.Error] { self.decodeNumberAs("int32") }
-    public func decodeInt64(&mut self) -> Result[int64, Self.Error] { self.decodeNumberAs("int64") }
-    public func decodeIsize(&mut self) -> Result[isize, Self.Error] { self.decodeNumberAs("isize") }
-    public func decodeUint8(&mut self) -> Result[uint8, Self.Error] { self.decodeNumberAs("uint8") }
-    public func decodeUint16(&mut self) -> Result[uint16, Self.Error] { self.decodeNumberAs("uint16") }
-    public func decodeUint32(&mut self) -> Result[uint32, Self.Error] { self.decodeNumberAs("uint32") }
-    public func decodeUint64(&mut self) -> Result[uint64, Self.Error] { self.decodeNumberAs("uint64") }
-    public func decodeUsize(&mut self) -> Result[usize, Self.Error] { self.decodeNumberAs("usize") }
-    public func decodeFloat(&mut self) -> Result[float, Self.Error] { self.decodeNumberAs("float") }
-    public func decodeDouble(&mut self) -> Result[double, Self.Error] { self.decodeNumberAs("double") }
+    public func decodeInt8() -> Result[int8, Self::Error] { self.decodeNumberAs("int8") }
+    public func decodeInt16() -> Result[int16, Self::Error] { self.decodeNumberAs("int16") }
+    public func decodeInt32() -> Result[int32, Self::Error] { self.decodeNumberAs("int32") }
+    public func decodeInt64() -> Result[int64, Self::Error] { self.decodeNumberAs("int64") }
+    public func decodeIsize() -> Result[isize, Self::Error] { self.decodeNumberAs("isize") }
+    public func decodeUint8() -> Result[uint8, Self::Error] { self.decodeNumberAs("uint8") }
+    public func decodeUint16() -> Result[uint16, Self::Error] { self.decodeNumberAs("uint16") }
+    public func decodeUint32() -> Result[uint32, Self::Error] { self.decodeNumberAs("uint32") }
+    public func decodeUint64() -> Result[uint64, Self::Error] { self.decodeNumberAs("uint64") }
+    public func decodeUsize() -> Result[usize, Self::Error] { self.decodeNumberAs("usize") }
+    public func decodeFloat() -> Result[float, Self::Error] { self.decodeNumberAs("float") }
+    public func decodeDouble() -> Result[double, Self::Error] { self.decodeNumberAs("double") }
 
-    public func decodeDecimal(&mut self) -> Result[string, Self.Error] {
+    public func decodeDecimal() -> Result[string, Self::Error] {
         self.requireValue()!
-        match self.current {
+        match *(unsafe { self.current as &Value }) {
             case .number(number) => {
-                let result = number.text()
+                result := number.text()
                 self.consumeValue()!
                 return .ok(result)
             }
@@ -288,11 +233,11 @@ impl std.encoding.Decoder for ValueDecoder {
         }
     }
 
-    public func decodeString(&mut self) -> Result[string, Self.Error] {
+    public func decodeString() -> Result[string, Self::Error] {
         self.requireValue()!
-        match self.current {
+        match *(unsafe { self.current as &Value }) {
             case .string(value) => {
-                let result = *value
+                result := value
                 self.consumeValue()!
                 return .ok(result)
             }
@@ -300,9 +245,9 @@ impl std.encoding.Decoder for ValueDecoder {
         }
     }
 
-    public func beginSequence(&mut self) -> Result[usize?, Self.Error] {
+    public func beginSequence() -> Result[usize?, Self::Error] {
         self.requireValue()!
-        let length = match self.current {
+        length := match *(unsafe { self.current as &Value }) {
             case .array(values) => values.len()
             case _ => return .err(self.typeMismatch("array"))
         }
@@ -310,84 +255,81 @@ impl std.encoding.Decoder for ValueDecoder {
         self.frames.append(DecodeFrame {
             kind: .sequence,
             value: self.current,
-            path: self.pathValue,
+            key: "",
             index: 0,
             valuePending: false,
         })
-        let result: usize? = .some(length)
+        var result: usize? = .some(length)
         return .ok(result)
     }
 
-    public func nextElement(&mut self) -> Result[bool, Self.Error] {
+    public func nextElement() -> Result[bool, Self::Error] {
         if self.frames.isEmpty() {
-            return .err(CodecError.at(.invalidState, self.pathValue, "sequence element has no containing sequence"))
+            return .err(CodecError::at(.invalidState, self.currentPath(), "sequence element has no containing sequence"))
         }
-        let frame = self.frames.at(self.frames.len() - 1)
+        frame := self.frames.at(self.frames.len() - 1)
         match frame.kind {
-            case .object => return .err(CodecError.at(.invalidState, self.pathValue, "active container is an object"))
+            case .object => return .err(CodecError::at(.invalidState, self.currentPath(), "active container is an object"))
             case .sequence => {}
         }
         if frame.valuePending {
-            return .err(CodecError.at(
+            return .err(CodecError::at(
                 .invalidState,
-                self.pathValue,
+                self.currentPath(),
                 "previous sequence element was not decoded or skipped",
             ))
         }
-        let values = match frame.value {
+        values := match *(unsafe { frame.value as &Value }) {
             case .array(values) => values
-            case _ => return .err(CodecError.at(.invalidState, self.pathValue, "sequence frame does not contain an array"))
+            case _ => return .err(CodecError::at(.invalidState, self.currentPath(), "sequence frame does not contain an array"))
         }
         if frame.index >= values.len() {
             return .ok(false)
         }
-        let index = frame.index
+        index := frame.index
         frame.index += 1
         frame.valuePending = true
-        self.current = values.at(index)
-        self.pathValue = childPathForIndex(frame.path, index)
+        self.current = unsafe { values.at(index) as *const Value }
         return .ok(true)
     }
 
-    public func endSequence(&mut self) -> Result[(), Self.Error] {
+    public func endSequence() -> Result[(), Self::Error] {
         if self.frames.isEmpty() {
-            return .err(CodecError.at(.invalidState, self.pathValue, "sequence end has no containing sequence"))
+            return .err(CodecError::at(.invalidState, self.currentPath(), "sequence end has no containing sequence"))
         }
-        let frame = self.frames.at(self.frames.len() - 1)
+        frame := self.frames.at(self.frames.len() - 1)
         match frame.kind {
-            case .object => return .err(CodecError.at(.invalidState, self.pathValue, "cannot end an object as a sequence"))
+            case .object => return .err(CodecError::at(.invalidState, self.currentPath(), "cannot end an object as a sequence"))
             case .sequence => {}
         }
         if frame.valuePending {
-            return .err(CodecError.at(
+            return .err(CodecError::at(
                 .invalidState,
-                self.pathValue,
+                self.currentPath(),
                 "sequence ended before its current element was decoded or skipped",
             ))
         }
-        let value = frame.value
-        let path = frame.path
-        let index = frame.index
-        let length = match frame.value {
+        value := unsafe { frame.value as &Value }
+        index := frame.index
+        length := match *(unsafe { frame.value as &Value }) {
             case .array(values) => values.len()
             case _ => 0 as usize
         }
         if index != length {
-            return .err(CodecError.at(
+            return .err(CodecError::at(
                 .invalidState,
-                path,
+                self.containerPath(),
                 "sequence decoder ended before consuming every element",
             ))
         }
-        let _ = self.frames.pop()
-        self.current = value
-        self.pathValue = path
+        var _ = self.frames.pop()
+        self.current = unsafe { value as *const Value }
         return .ok(())
     }
 
-    public func beginObject(&mut self) -> Result[usize?, Self.Error] {
+    public func beginObject() -> Result[usize?, Self::Error] {
         self.requireValue()!
-        let length = match self.current {
+        length := match *(unsafe { self.current as &Value }) {
             case .object(object) => object.len()
             case _ => return .err(self.typeMismatch("object"))
         }
@@ -395,147 +337,171 @@ impl std.encoding.Decoder for ValueDecoder {
         self.frames.append(DecodeFrame {
             kind: .object,
             value: self.current,
-            path: self.pathValue,
+            key: "",
             index: 0,
             valuePending: false,
         })
-        let result: usize? = .some(length)
+        var result: usize? = .some(length)
         return .ok(result)
     }
 
-    public func nextField(&mut self) -> Result[string?, Self.Error] {
+    public func nextField() -> Result[string?, Self::Error] {
         if self.frames.isEmpty() {
-            return .err(CodecError.at(.invalidState, self.pathValue, "object field has no containing object"))
+            return .err(CodecError::at(.invalidState, self.currentPath(), "object field has no containing object"))
         }
-        let frame = self.frames.at(self.frames.len() - 1)
+        frame := self.frames.at(self.frames.len() - 1)
         match frame.kind {
-            case .sequence => return .err(CodecError.at(.invalidState, self.pathValue, "active container is a sequence"))
+            case .sequence => return .err(CodecError::at(.invalidState, self.currentPath(), "active container is a sequence"))
             case .object => {}
         }
         if frame.valuePending {
-            return .err(CodecError.at(
+            return .err(CodecError::at(
                 .invalidState,
-                self.pathValue,
+                self.currentPath(),
                 "previous object field was not decoded or skipped",
             ))
         }
-        let object = match frame.value {
+        object := match *(unsafe { frame.value as &Value }) {
             case .object(object) => object
-            case _ => return .err(CodecError.at(.invalidState, self.pathValue, "object frame does not contain an object"))
+            case _ => return .err(CodecError::at(.invalidState, self.currentPath(), "object frame does not contain an object"))
         }
         if frame.index >= object.len() {
-            let result: string? = .none
+            var result: string? = .none
             return .ok(result)
         }
-        let index = frame.index
+        index := frame.index
         frame.index += 1
         frame.valuePending = true
-        let name = object.keyAt(index)
-        self.current = object.valueAt(index)
-        self.pathValue = childPathForKey(frame.path, name)
-        let result: string? = .some(name)
+        name := object.keyAt(index)
+        self.current = unsafe { object.valueAt(index) as *const Value }
+        frame.key = name
+        var result: string? = .some(name)
         return .ok(result)
     }
 
-    public func skipValue(&mut self) -> Result[(), Self.Error] {
+    public func beginEnum() -> Result[string, Self::Error] {
+        var _ = self.beginObject()!
+        if !self.selectEnumField("kind")! {
+            return .err(self.missingField("kind", "enum tag is required"))
+        }
+        self.decodeString()
+    }
+
+    public func beginEnumContent(_ hasPayload: bool) -> Result[(), Self::Error] {
+        found := self.selectEnumField("content")!
+        if hasPayload && !found {
+            return .err(self.missingField("content", "enum payload is required"))
+        }
+        if !hasPayload && found {
+            return .err(self.error(.invalidValue, "unit enum variant cannot have content"))
+        }
+        // All other envelope fields are unknown and skipped. Payload traversal
+        // still consumes the selected value through the normal cursor checks.
+        frame := self.frames.at(self.frames.len() - 1)
+        frame.index = match *(unsafe { frame.value as &Value }) {
+            case .object(object) => object.len()
+            case _ => 0 as usize
+        }
+        return .ok(())
+    }
+
+    public func skipValue() -> Result[(), Self::Error] {
         // The DOM already owns the complete selected node; consuming it is
         // enough here. A token decoder would advance past the same subtree.
         self.consumeValue()
     }
 
-    public func endObject(&mut self) -> Result[(), Self.Error] {
+    public func endObject() -> Result[(), Self::Error] {
         if self.frames.isEmpty() {
-            return .err(CodecError.at(.invalidState, self.pathValue, "object end has no containing object"))
+            return .err(CodecError::at(.invalidState, self.currentPath(), "object end has no containing object"))
         }
-        let frame = self.frames.at(self.frames.len() - 1)
+        frame := self.frames.at(self.frames.len() - 1)
         match frame.kind {
-            case .sequence => return .err(CodecError.at(.invalidState, self.pathValue, "cannot end a sequence as an object"))
+            case .sequence => return .err(CodecError::at(.invalidState, self.currentPath(), "cannot end a sequence as an object"))
             case .object => {}
         }
         if frame.valuePending {
-            return .err(CodecError.at(
+            return .err(CodecError::at(
                 .invalidState,
-                self.pathValue,
+                self.currentPath(),
                 "object ended before its current field was decoded or skipped",
             ))
         }
-        let value = frame.value
-        let path = frame.path
-        let index = frame.index
-        let length = match frame.value {
+        value := unsafe { frame.value as &Value }
+        index := frame.index
+        length := match *(unsafe { frame.value as &Value }) {
             case .object(object) => object.len()
             case _ => 0 as usize
         }
         if index != length {
-            return .err(CodecError.at(
+            return .err(CodecError::at(
                 .invalidState,
-                path,
+                self.containerPath(),
                 "object decoder ended before consuming every field",
             ))
         }
-        let _ = self.frames.pop()
-        self.current = value
-        self.pathValue = path
+        var _ = self.frames.pop()
+        self.current = unsafe { value as *const Value }
         return .ok(())
     }
 }
 
-func decodeTarget[Target: std.encoding.Decodable, D: std.encoding.Decoder](
-    _ decoder: &mut D,
-) -> Result[Target, D.Error] {
-    Target.decode(from: decoder)
+func decodeTarget[Target: std::encoding::Decodable, D: std::encoding::Decoder](
+    _ decoder: D,
+) -> Result[Target, D::Error] {
+    Target::decode(from: decoder)
 }
 
-func decodeFromValue[Target: std.encoding.Decodable](
+func decodeFromValue[Target: std::encoding::Decodable](
     _ value: &Value,
 ) -> Result[Target, CodecError] {
-    var decoder = ValueDecoder(value)
-    let result = decodeTarget[Target, ValueDecoder](&mut decoder)!
+    var decoder = ValueDecoder::new(value)
+    result := decodeTarget[Target, &ValueDecoder](&decoder)!
     decoder.finish()!
     return .ok(result)
 }
 
-impl std.encoding.Encodable for Number {
-    public func encode[E: std.encoding.Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] {
+conform Number to std::encoding::Encodable {
+    public func encode[E: std::encoding::Encoder](into encoder: E) -> Result[(), E::Error] {
         encoder.encodeDecimal(self.text())
     }
 }
 
-impl std.encoding.Decodable for Number {
-    public func decode[D: std.encoding.Decoder](from decoder: &mut D) -> Result[Self, D.Error] {
-        let text = decoder.decodeDecimal()!
-        match Number.parse(text) {
+conform Number to std::encoding::Decodable {
+    public static func decode[D: std::encoding::Decoder](from decoder: D) -> Result[Self, D::Error] {
+        text := decoder.decodeDecimal()!
+        match Number::parse(text) {
             case .ok(number) => return .ok(number)
             case .err(_) => return .err(decoder.error(.invalidValue, "decoder returned an invalid exact decimal"))
         }
     }
 }
 
-impl std.encoding.Encodable for Value {
-    public func encode[E: std.encoding.Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] {
+conform Value to std::encoding::Encodable {
+    public func encode[E: std::encoding::Encoder](into encoder: E) -> Result[(), E::Error] {
         match self {
             case .null => return encoder.encodeNull()
-            case .boolean(value) => return encoder.encodeBool(*value)
+            case .boolean(value) => return encoder.encodeBool(value)
             case .number(value) => return encoder.encodeDecimal(value.text())
-            case .string(value) => return encoder.encodeString(*value)
+            case .string(value) => return encoder.encodeString(value)
             case .array(values) => {
-                let length: usize? = .some(values.len())
+                var length: usize? = .some(values.len())
                 encoder.beginSequence(length)!
                 var index: usize = 0
                 while index < values.len() {
                     encoder.beginElement()!
-                    std.encoding.encode[Value, E](values.at(index), into: encoder)!
+                    std::encoding::encode[Value, E](values.at(index), into: encoder)!
                     index += 1
                 }
                 return encoder.endSequence()
             }
             case .object(object) => {
-                let length: usize? = .some(object.len())
+                var length: usize? = .some(object.len())
                 encoder.beginObject(length)!
                 var index: usize = 0
                 while index < object.len() {
                     encoder.beginField(object.keyAt(index))!
-                    std.encoding.encode[Value, E](object.valueAt(index), into: encoder)!
+                    std::encoding::encode[Value, E](object.valueAt(index), into: encoder)!
                     index += 1
                 }
                 return encoder.endObject()
@@ -544,8 +510,8 @@ impl std.encoding.Encodable for Value {
     }
 }
 
-impl std.encoding.Decodable for Value {
-    public func decode[D: std.encoding.Decoder](from decoder: &mut D) -> Result[Self, D.Error] {
+conform Value to std::encoding::Decodable {
+    public static func decode[D: std::encoding::Decoder](from decoder: D) -> Result[Self, D::Error] {
         match decoder.peekKind()! {
             case .null => {
                 decoder.decodeNull()!
@@ -553,18 +519,18 @@ impl std.encoding.Decodable for Value {
             }
             case .boolean => return .ok(.boolean(decoder.decodeBool()!))
             case .number => {
-                let text = decoder.decodeDecimal()!
-                match Number.parse(text) {
+                text := decoder.decodeDecimal()!
+                match Number::parse(text) {
                     case .ok(number) => return .ok(.number(number))
                     case .err(_) => return .err(decoder.error(.invalidValue, "decoder returned an invalid exact decimal"))
                 }
             }
             case .string => return .ok(.string(decoder.decodeString()!))
             case .sequence => {
-                let length = decoder.beginSequence()!
+                length := decoder.beginSequence()!
                 var values = match length {
-                    case .some(length) => List[Value](withCapacity: length)
-                    case .none => List[Value]()
+                    case .some(length) => List[Value]::new(withCapacity: length)
+                    case .none => List[Value]::new()
                 }
                 while decoder.nextElement()! {
                     values.append(decodeTarget[Value, D](decoder)!)
@@ -573,13 +539,14 @@ impl std.encoding.Decodable for Value {
                 return .ok(.array(values))
             }
             case .object => {
-                let _ = decoder.beginObject()!
-                var object = Object()
+                var _ = decoder.beginObject()!
+                var object = Object::new()
                 loop {
                     match decoder.nextField()! {
                         case .none => break
                         case .some(name) => {
-                            let _ = object.insert(name, decodeTarget[Value, D](decoder)!)
+                            if object.len() == OBJECT_INDEX_THRESHOLD { object = object.indexedForParsing() }
+                            var _ = object.insert(name, decodeTarget[Value, D](decoder)!)
                         }
                     }
                 }
@@ -591,43 +558,104 @@ impl std.encoding.Decodable for Value {
 }
 
 /// Encode any format-neutral value to one compact JSON string.
-public func encode[Source: std.encoding.Encodable](_ source: &Source) -> Result[string, JsonEncodeError] {
-    encodeWithOptions(source, Options())
+public func encode[Source: std::encoding::Encodable](_ source: &Source) -> Result[string, JsonEncodeError] {
+    encodeWithOptions(source, Options::new())
 }
 
 /// Encode any format-neutral value with explicit JSON resource controls.
-public func encodeWithOptions[Source: std.encoding.Encodable](
+public func encodeWithOptions[Source: std::encoding::Encodable](
     _ source: &Source,
     _ options: Options,
 ) -> Result[string, JsonEncodeError] {
-    var encoder = Encoder.withOptions(std.bytes.Buffer(), options)
+    var output = EncodedText::new(ENCODED_INITIAL_CAPACITY)
+    var encoder = Encoder[&EncodedText]::withOptions(&output, options)
     encoder.encode(source)!
-    return .ok(encoder.intoInner().intoString())
+    return .ok(output.takeString())
+}
+
+// What a whole value is encoded into. Nothing shares it, so unlike a Buffer it can
+// live on the encoding call's stack.
+struct EncodedText {
+    storage: std::mem::NativeBytes
+    length: usize
+}
+extend EncodedText {
+    static func new(_ capacity: usize) -> Self {
+        EncodedText { storage: std::mem::NativeBytes::new(capacity), length: 0 }
+    }
+}
+extend &EncodedText {
+    // Hands over the allocation unless too much of it would go to waste.
+    func takeString() -> string {
+        if self.length == 0 { return "" }
+        if self.storage.capacity() > ENCODED_SLACK_LIMIT && self.storage.capacity() / 2 > self.length {
+            return unsafe { self.storage.toString(self.length) }
+        }
+        unsafe { self.storage.publish(self.length) }
+        result := unsafe { std::string::stringFromParts(self.storage.data() as *const uint8, self.length) }
+        self.storage.detach()
+        self.length = 0
+        return result
+    }
+    @noinline
+    func grow(_ count: usize) {
+        required := match self.length.checkedAdd(count) {
+            case .some(value) => value
+            case .none => std::panic::panic("encoded JSON exceeds the maximum string size")
+        }
+        doubled := match self.storage.capacity().checkedMul(2) {
+            case .some(value) => value
+            case .none => required
+        }
+        unsafe { self.storage.reserve(self.length, if doubled > required { doubled } else { required }) }
+    }
+    @inline
+    func destination(_ count: usize) -> *mut uint8 {
+        if count > self.storage.capacity() - self.length { self.grow(count) }
+        return unsafe { self.storage.data().add(self.length) }
+    }
+}
+conform &EncodedText to std::io::Writer {
+    public func write(_ bytes: std::mem::Span[uint8]) -> Result[usize, std::io::Error] {
+        count := bytes.len()
+        if count == 0 { return .ok(0) }
+        unsafe { bytes.asPtr().copyTo(self.destination(count), count) }
+        self.length += count
+        return .ok(count)
+    }
+    @inline
+    public func writeString(_ text: string) -> Result[(), std::io::Error] {
+        count := text.byteLen()
+        if count == 0 { return .ok(()) }
+        destination := self.destination(count)
+        // Encoders emit a lot of single punctuation.
+        if count == 1 {
+            unsafe { destination.write(std::string::stringData(text).read()) }
+        } else {
+            unsafe { std::string::stringData(text).copyTo(destination, count) }
+        }
+        self.length += count
+        return .ok(())
+    }
+    public func flush() -> Result[(), std::io::Error] { return .ok(()) }
 }
 
 /// Decode one complete JSON string into a format-neutral value type.
-public func decode[Target: std.encoding.Decodable](_ input: string) -> Result[Target, JsonDecodeError] {
-    decodeWithOptions[Target](input, Options())
+public func decode[Target: std::encoding::Decodable](_ input: string) -> Result[Target, JsonDecodeError] {
+    decodeWithOptions[Target](input, Options::new())
 }
 
-public func decodeWithOptions[Target: std.encoding.Decodable](
+public func decodeWithOptions[Target: std::encoding::Decodable](
     _ input: string,
     _ options: Options,
 ) -> Result[Target, JsonDecodeError] {
-    let value = match parseWithOptions(input, options) {
-        case .ok(value) => value
-        case .err(error) => return .err(.syntax(error))
-    }
-    match decodeFromValue[Target](&value) {
-        case .ok(result) => return .ok(result)
-        case .err(error) => return .err(.codec(error))
-    }
+    decodeText[Target](input, options)
 }
 
-impl[Source: Reader] Decoder[Source] {
+extend[Source: Reader] std::json::Decoder[Source] {
     /// Decode the next typed value, returning `.none` at clean end of input.
-    public func next[Target: std.encoding.Decodable](&mut self) -> Result[Target?, JsonDecodeError] {
-        let value = match self.nextValue() {
+    public func next[Target: std::encoding::Decodable]() -> Result[Target?, JsonDecodeError] {
+        value := match self.nextValue() {
             case .ok(value) => value
             case .err(error) => return .err(.syntax(error))
         }
@@ -643,14 +671,148 @@ impl[Source: Reader] Decoder[Source] {
     }
 
     /// Decode one required typed value from the stream.
-    public func decode[Target: std.encoding.Decodable](&mut self) -> Result[Target, JsonDecodeError] {
-        let value = match self.decodeValue() {
+    public func decode[Target: std::encoding::Decodable]() -> Result[Target, JsonDecodeError] {
+        value := match self.decodeValue() {
             case .ok(value) => value
             case .err(error) => return .err(.syntax(error))
         }
         match decodeFromValue[Target](&value) {
             case .ok(result) => return .ok(result)
             case .err(error) => return .err(.codec(error))
+        }
+    }
+}
+
+extend &ValueDecoder {
+    /// Each frame selects a child in its container. Empty frames add no path
+    /// component, so opening and closing containers needs no separate path
+    /// stack or success-path string allocation.
+    func pathThrough(_ frameCount: usize) -> string {
+        var path = ROOT_PATH
+        var depth: usize = 0
+        while depth < frameCount {
+            frame := self.frames.at(depth)
+            if frame.index > 0 {
+                path = match frame.kind {
+                    case .sequence => childPathForIndex(path, frame.index - 1)
+                    case .object => childPathForKey(path, frame.key)
+                }
+            }
+            depth += 1
+        }
+        return path
+    }
+
+    func currentPath() -> string {
+        self.pathThrough(self.frames.len())
+    }
+
+    func containerPath() -> string {
+        if self.frames.isEmpty() {
+            return ROOT_PATH
+        }
+        self.pathThrough(self.frames.len() - 1)
+    }
+
+    /// Mark the selected DOM node as consumed by one scalar, container, or
+    /// explicit skip operation. A direct token decoder will need this same
+    /// cursor invariant, so enforcing it here keeps handwritten codecs honest.
+    func consumeValue() -> Result[(), CodecError] {
+        if self.frames.isEmpty() {
+            if self.rootValueConsumed {
+                return .err(CodecError::at(
+                    .invalidState,
+                    self.currentPath(),
+                    "decodable value attempted to consume the root more than once",
+                ))
+            }
+            self.rootValueConsumed = true
+            return .ok(())
+        }
+
+        frame := self.frames.at(self.frames.len() - 1)
+        if !frame.valuePending {
+            return .err(CodecError::at(
+                .invalidState,
+                self.currentPath(),
+                "no current container value is available to consume",
+            ))
+        }
+        frame.valuePending = false
+        return .ok(())
+    }
+
+    func requireValue() -> Result[(), CodecError] {
+        available := if self.frames.isEmpty() {
+            !self.rootValueConsumed
+        } else {
+            self.frames.at(self.frames.len() - 1).valuePending
+        }
+        if !available {
+            return .err(CodecError::at(
+                .invalidState,
+                self.currentPath(),
+                "no current value is available to decode",
+            ))
+        }
+        return .ok(())
+    }
+
+    func finish() -> Result[(), CodecError] {
+        if !self.frames.isEmpty() {
+            return .err(CodecError::at(
+                .invalidState,
+                self.currentPath(),
+                "decodable value left a container unfinished",
+            ))
+        }
+        if !self.rootValueConsumed {
+            return .err(CodecError::at(
+                .invalidState,
+                ROOT_PATH,
+                "decodable value did not consume the root value",
+            ))
+        }
+        return .ok(())
+    }
+
+    func typeMismatch(_ expected: string) -> CodecError {
+        CodecError::at(
+            .typeMismatch,
+            self.currentPath(),
+            "expected JSON ".concat(expected),
+        )
+    }
+
+    func decodeNumberAs[Target: Parse](_ expected: string) -> Result[Target, CodecError] {
+        self.requireValue()!
+        text := match *(unsafe { self.current as &Value }) {
+            case .number(number) => number.text()
+            case _ => return .err(self.typeMismatch(expected))
+        }
+        match Target::parse(text) {
+            case .ok(value) => {
+                self.consumeValue()!
+                return .ok(value)
+            }
+            case .err(_) => {
+                return .err(CodecError::at(
+                    .invalidValue,
+                    self.currentPath(),
+                    "JSON number is outside the target type or has an incompatible form",
+                ))
+            }
+        }
+    }
+
+    func activeObjectPath() -> string {
+        if self.frames.isEmpty() {
+            return self.currentPath()
+        }
+        frame := self.frames.at(self.frames.len() - 1)
+        match frame.kind {
+            case .object => return self.containerPath()
+            case .sequence => return self.currentPath()
         }
     }
 }

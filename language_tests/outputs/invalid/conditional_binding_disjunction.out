@@ -1,0 +1,4 @@
+error: binding conditions must be standalone or joined with `&&`
+ -> language_tests/source_files/invalid/conditional_binding_disjunction.tr:3:7
+	    if var value = maybe || true { print(value) }
+	       ^^^^^^^^^^^^^^^^^

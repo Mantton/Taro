@@ -1,0 +1,7 @@
+class Base {}
+class Derived: Base {}
+extend Base { func echo[T](_ value: T) -> T { value }
+}
+extend Derived { override func echo[U: Clone](_ value: U) -> U { value }
+}
+func main() {}

@@ -10,11 +10,11 @@ func callTwice[F: Fn() -> int32](_ operation: F) -> int32 {
 }
 
 func main() {
-    let holder = Holder {
+    holder := Holder {
         value: 21_i32,
         marker: "owned",
     }
-    let result = callTwice(|| -> int32 { holder.value })
+    result := callTwice(() -> int32 => { holder.value })
     assert(result == 42_i32, "generic Fn adapter should preserve reusable owned captures")
     print("PASS: generic Fn closure adapter\n")
 }

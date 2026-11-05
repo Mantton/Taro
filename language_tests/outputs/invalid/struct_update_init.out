@@ -1,0 +1,4 @@
+error: a struct declaring init must be constructed by calling its initializer
+ -> language_tests/source_files/invalid/struct_update_init.tr:3:38
+	func update(_ base: Point) -> Point { Point { x: 3, ..base } }
+	                                      ^^^^^^^^^^^^^^^^^^^^^^

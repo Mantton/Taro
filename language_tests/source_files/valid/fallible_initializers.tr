@@ -1,0 +1,132 @@
+// TEST
+type ConstructionResult[T] = Result[T, string]
+struct CheckedRecord {
+    text: string
+    number: int32
+    stamp: int32 = 9
+}
+
+func checkNumber(_ value: int32) -> ConstructionResult[int32] {
+    if value == 0 { return .err("zero") }
+    return .ok(value)
+}
+
+extend CheckedRecord {
+    init(_ value: int32) -> ConstructionResult[Self] {
+        if value < 0 { return .err("negative") }
+        self.text = "kept ".concat("alive")
+        std::runtime::collect()
+        self.number = checkNumber(value)!
+    }
+}
+
+@test
+func fallibleValueInitializerReturnsOnlyInitializedSuccess() {
+    value := CheckedRecord(7).unwrap()
+    std::runtime::collect()
+    assert(value.text == "kept alive" && value.number == 7 && value.stamp == 9, "success wraps initialized storage once")
+    match CheckedRecord(-1) {
+        case .err(error) => assert(error == "negative", "failure before any fields are initialized")
+        case _ => panic("failure expected")
+    }
+    match CheckedRecord(0) {
+        case .err(error) => assert(error == "zero", "propagation discards partially initialized storage")
+        case _ => panic("failure expected")
+    }
+}
+
+struct EarlySuccess { value: int32 }
+extend EarlySuccess {
+    init() -> Result[Self, string] {
+        self.value = 42
+        return
+    }
+}
+
+@test
+func fallibleValueInitializerSupportsBareSuccessfulReturn() {
+    assert(EarlySuccess().unwrap().value == 42, "bare return wraps initialized self")
+}
+
+
+class CheckedObject { text: string; number: int32 }
+extend CheckedObject {
+    public required init(_ value: int32) -> Result[Self, string] {
+        if value < 0 { return .err("negative") }
+        self.text = "object ".concat("root")
+        std::runtime::collect()
+        self.number = checkNumber(value)!
+    }
+}
+class CheckedChild: CheckedObject { extra: string = "child ".concat("default") }
+class ExplicitChild: CheckedObject { extra: string }
+extend ExplicitChild {
+    public required override init(_ value: int32) -> Result[Self, string] {
+        super.init(value)!
+        std::runtime::collect()
+        self.extra = "explicit ".concat("child")
+    }
+}
+
+@test
+func fallibleClassInitializersPublishOnlySuccessfulObjects() {
+    root := CheckedObject(7).unwrap()
+    child := CheckedChild(8).unwrap()
+    explicit := ExplicitChild(9).unwrap()
+    std::runtime::collect()
+    assert(root.number == 7 && root.text == "object root", "root initialized")
+    assert(child.number == 8 && child.extra == "child default", "inherited construction")
+    assert(explicit.number == 9 && explicit.extra == "explicit child", "fallible superclass delegation")
+    match CheckedChild(0) {
+        case .err(error) => assert(error == "zero", "inherited error")
+        case _ => panic("expected inherited error")
+    }
+    match ExplicitChild(-1) {
+        case .err(error) => assert(error == "negative", "super error")
+        case _ => panic("expected super error")
+    }
+}
+
+
+extend CheckedObject {
+    public convenience init(flag: bool) -> Result[Self, string] {
+        if !flag { return .err("disabled") }
+        self.init(42)!
+        self.number += 1
+    }
+}
+
+@test
+func fallibleConvenienceDelegationForwardsIndirectResults() {
+    value := CheckedObject(flag: true).unwrap()
+    std::runtime::collect()
+    assert(value.number == 43, "convenience delegates through Result's native ABI")
+    match CheckedObject(flag: false) {
+        case .err(error) => assert(error == "disabled", "error may precede convenience delegation")
+        case _ => panic("expected convenience error")
+    }
+}
+
+class DirectResultObject { value: int32 }
+extend DirectResultObject {
+    public required init(_ value: int32) -> Result[Self, int32] {
+        if value < 0 { return .err(value) }
+        self.value = value
+    }
+    public convenience init(flag: bool) -> Result[Self, int32] {
+        if !flag { return .err(-1) }
+        self.init(42)!
+    }
+}
+final class DirectResultChild: DirectResultObject { extra: int32 = 13 }
+
+@test
+func fallibleConvenienceDelegationAlsoForwardsDirectResults() {
+    value := DirectResultChild(flag: true).unwrap()
+    std::runtime::collect()
+    assert(value.value == 42 && value.extra == 13, "small Result returns preserve subclass storage")
+    match DirectResultChild(flag: false) {
+        case .err(error) => assert(error == -1, "small error returns preserve their payload")
+        case _ => panic("expected direct Result error")
+    }
+}

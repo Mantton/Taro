@@ -1,0 +1,7 @@
+struct Inner { count: int32 }
+struct Outer { readonly inner: Inner }
+
+func main() {
+    var outer = Outer { inner: Inner { count: 3 } }
+    outer.inner.count = 4
+}

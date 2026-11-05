@@ -1,0 +1,32 @@
+import std::ops::PartialEq
+
+interface Produce[T] { func produce() -> T; }
+interface Associated { type Output; func produce() -> Self::Output; }
+interface Sized[const N: usize, const M: usize = N] { func size() -> usize; }
+struct Source {}
+struct Wrapper[T] { value: T }
+conform[T] Wrapper[T] to Produce[T] {
+    func produce() -> T { self.value }
+}
+conform Source to Produce[int32] { func produce() -> int32 { 7 }; }
+conform Source to Associated { type Output = int32; func produce() -> int32 { 9 }; }
+conform Source to Sized[3] { func size() -> usize { 3 }; }
+func inspect[T](_ value: any Produce[T]) -> int32 { var _ = value.produce(); 7 }
+func inspectAssociated[T](_ value: any Associated[Output = T]) -> int32 { var _ = value.produce(); 9 }
+func inspectSize[const N: usize](_ value: any Sized[N]) -> usize { value.size() }
+func forward[T](_ value: Wrapper[T]) -> int32 { inspect(value) }
+func inspectPrimitive[T](_ value: any PartialEq[T]) -> int32 { 7 }
+func main() {
+    var primitive: int32 = inspectPrimitive(7_i32)
+    assert(primitive == 7, "builtin primitive witnesses also infer their operand type")
+    var generic: int32 = inspect(Source {})
+    assert(generic == 7, "infer a generic argument from a proved concrete conformance")
+    var wrapped: int32 = forward(Wrapper[int32] { value: 13 })
+    assert(wrapped == 7, "conditional inference keeps caller bounds in generic forwarding")
+    var associated: int32 = inspectAssociated(Source {})
+    assert(associated == 9, "infer an associated binding from its witness")
+    var size: usize = inspectSize(Source {})
+    assert(size == 3, "infer const arguments while preserving dependent defaults")
+    var sized: any Sized[3] = Source {}
+    assert(sized is any Sized[3, 3], "omitted const defaults use preceding arguments")
+}

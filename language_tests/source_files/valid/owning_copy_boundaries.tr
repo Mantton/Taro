@@ -1,0 +1,30 @@
+// Native ownership regression.
+import std::marker::Clone
+struct Label: Clone { text: string; code: int32 }
+enum State: Clone { case empty; case open(Label) }
+func duplicate[T](_ value: T) -> (T, T) { (value, value) }
+func text(_ state: &State) -> string {
+    match *state {
+        case .empty => "empty"
+        case .open(value) => value.text
+    }
+}
+func main() {
+    var named: Label = Label { text: "dra" + "ft", code: 7_i32 }
+    var original: State = .open(named)
+    var pair: (State, State) = duplicate(original)
+    original = .empty
+    var cloned: State = pair.0.clone()
+    {
+        var repeated: [State; 32] = [cloned; 32]
+        assert(text(&repeated[0]) == "draft", "a repeated element owns its copied payload")
+        assert(text(&repeated[31]) == "draft", "the complete repeated extent is initialized")
+    }
+    assert(text(&pair.0) == "draft" && text(&pair.1) == "draft", "generic copies survive replacement and sibling destruction")
+    assert(text(&cloned) == "draft", "Clone retains independent ownership of immutable bytes")
+    assert(named.text == "draft", "copying a struct never transfers its original field owner")
+    assert(text(&original) == "empty", "case replacement updates only the original inline value")
+    escaped := () => cloned
+    var returned: State = escaped()
+    assert(text(&returned) == "draft", "owned closure captures and results transfer their copies")
+}

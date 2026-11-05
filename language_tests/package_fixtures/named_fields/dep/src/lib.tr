@@ -1,0 +1,7 @@
+public enum Packet[T] {
+    case value { readonly item: T; serial: int32 }
+    case empty {}
+    case tuple(item: T)
+}
+public struct Pair[T] { public left: T; public right: T }
+public func packet() -> Packet[string] { .value { item: "from " + "dependency", serial: 42 } }

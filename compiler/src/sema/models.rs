@@ -76,6 +76,10 @@ impl<'arena> Ty<'arena> {
         let output = signature.output;
 
         let kind = TyKind::FnPointer {
+            effects: FunctionPointerEffects {
+                abi: signature.abi,
+                ..Default::default()
+            },
             inputs: gcx.store.interners.intern_ty_list(inputs),
             output,
         };
@@ -123,7 +127,7 @@ impl<'arena> Ty<'arena> {
 
     pub fn dereference(self) -> Option<Ty<'arena>> {
         match self.kind() {
-            TyKind::Reference(ty, _) | TyKind::Pointer(ty, _) => Some(ty),
+            TyKind::Reference(ty) | TyKind::Pointer(ty, _) => Some(ty),
             _ => None,
         }
     }
@@ -156,8 +160,8 @@ impl<'arena> Ty<'arena> {
             TyKind::Pointer(inner, mt) => {
                 format!("*{}{}", mt.display_str(), inner.format(gcx))
             }
-            TyKind::Reference(inner, mt) => {
-                format!("&{}{}", mt.display_str(), inner.format(gcx))
+            TyKind::Reference(inner) => {
+                format!("&{}", inner.format(gcx))
             }
             TyKind::Tuple(items) => {
                 let mut out = "(".to_owned();
@@ -173,8 +177,21 @@ impl<'arena> Ty<'arena> {
                 out.push(')');
                 out
             }
-            TyKind::FnPointer { inputs, output } => {
+            TyKind::FnPointer {
+                inputs,
+                output,
+                effects,
+            } => {
                 let mut out = String::new();
+                if effects.is_unsafe {
+                    out.push_str("unsafe ");
+                }
+                if effects.kind == ClosureKind::AsyncFn {
+                    out.push_str("async ");
+                }
+                if let Some(abi) = effects.abi {
+                    out.push_str(&format!("extern {abi:?} "));
+                }
                 out.push('(');
                 for (i, input) in inputs.iter().enumerate() {
                     if i > 0 {
@@ -203,6 +220,7 @@ impl<'arena> Ty<'arena> {
                 InferTy::FreshTy(id) => format!("{{fresh({})}}", id),
             },
             TyKind::Parameter(p) => gcx.symbol_text(p.name).to_string(),
+            TyKind::ExistentialSelf(_) => "Self".into(),
             TyKind::Alias { kind, def_id, args } => {
                 if kind == AliasKind::Opaque {
                     let mut bounds = gcx
@@ -261,11 +279,7 @@ impl<'arena> Ty<'arena> {
             } => {
                 let kind_name = match kind {
                     ClosureKind::Fn => "Fn",
-                    ClosureKind::FnMut => "FnMut",
-                    ClosureKind::FnOnce => "FnOnce",
                     ClosureKind::AsyncFn => "AsyncFn",
-                    ClosureKind::AsyncFnMut => "AsyncFnMut",
-                    ClosureKind::AsyncFnOnce => "AsyncFnOnce",
                 };
                 let mut out = format!("closure<{kind_name}>((");
                 for (i, input) in inputs.iter().enumerate() {
@@ -320,11 +334,12 @@ pub enum TyKind<'arena> {
     Float(FloatTy),
     Adt(AdtDef, GenericArguments<'arena>),
     Pointer(Ty<'arena>, Mutability),
-    Reference(Ty<'arena>, Mutability),
+    Reference(Ty<'arena>),
     Tuple(TyList<'arena>),
     FnPointer {
         inputs: TyList<'arena>,
         output: Ty<'arena>,
+        effects: FunctionPointerEffects,
     },
     BoxedExistential {
         interfaces: &'arena [InterfaceReference<'arena>],
@@ -336,6 +351,8 @@ pub enum TyKind<'arena> {
     },
     Infer(InferTy),
     Parameter(GenericParameter),
+    /// Self bound by an erased interface, independent of outer generic indices.
+    ExistentialSelf(u32),
     /// Anonymous closure type with captured environment
     Closure {
         /// Unique ID for this closure definition
@@ -355,6 +372,24 @@ pub enum TyKind<'arena> {
     Never,
 }
 
+/// Function values preserve async, safety and ABI identity through inference
+/// and metadata. Only safe Taro pointers implement the safe callable traits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FunctionPointerEffects {
+    pub kind: ClosureKind,
+    pub is_unsafe: bool,
+    pub abi: Option<crate::hir::Abi>,
+}
+impl Default for FunctionPointerEffects {
+    fn default() -> Self {
+        Self {
+            kind: ClosureKind::Fn,
+            is_unsafe: false,
+            abi: None,
+        }
+    }
+}
+
 /// Kind of type alias
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AliasKind {
@@ -371,29 +406,17 @@ pub enum AliasKind {
 /// Classification of a closure's callable behavior
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClosureKind {
-    /// Can be called multiple times with shared access to captures (&self)
+    /// Repeatable synchronous invocation over a persistent environment.
     Fn,
-    /// Can be called multiple times with exclusive access to captures (&mut self)
-    FnMut,
-    /// Can be called at most once, consuming the closure (self)
-    FnOnce,
-    /// Async closure whose call result must be awaited.
+    /// Repeatable asynchronous invocation; each call produces its own future.
     AsyncFn,
-    /// Async closure requiring exclusive access while its future is alive.
-    AsyncFnMut,
-    /// Async closure whose environment is consumed by the call.
-    AsyncFnOnce,
 }
 
 /// Identify the built-in callable interfaces independently of their source spelling.
 pub fn callable_kind(gcx: Gcx<'_>, interface_id: DefinitionID) -> Option<ClosureKind> {
     [
         (hir::StdItem::Fn, ClosureKind::Fn),
-        (hir::StdItem::FnMut, ClosureKind::FnMut),
-        (hir::StdItem::FnOnce, ClosureKind::FnOnce),
         (hir::StdItem::AsyncFn, ClosureKind::AsyncFn),
-        (hir::StdItem::AsyncFnMut, ClosureKind::AsyncFnMut),
-        (hir::StdItem::AsyncFnOnce, ClosureKind::AsyncFnOnce),
     ]
     .into_iter()
     .find_map(|(item, kind)| (gcx.std_item_def(item) == Some(interface_id)).then_some(kind))
@@ -404,27 +427,33 @@ pub fn callable_args_ty<'ctx>(gcx: Gcx<'ctx>, inputs: TyList<'ctx>) -> Ty<'ctx> 
     Ty::new(TyKind::Tuple(inputs), gcx)
 }
 
-/// The strongest callable interface implemented by a concrete closure.
-pub fn closure_interface_ref<'ctx>(
+/// Safe callable signature shared by closures and Taro function pointers.
+pub fn callable_signature<'ctx>(ty: Ty<'ctx>) -> Option<(ClosureKind, TyList<'ctx>, Ty<'ctx>)> {
+    match ty.kind() {
+        TyKind::Closure {
+            kind,
+            inputs,
+            output,
+            ..
+        } => Some((kind, inputs, output)),
+        TyKind::FnPointer {
+            inputs,
+            output,
+            effects,
+        } if !effects.is_unsafe && effects.abi.is_none() => Some((effects.kind, inputs, output)),
+        _ => None,
+    }
+}
+
+/// The callable interface implemented by a concrete callable value.
+pub fn callable_interface_ref<'ctx>(
     gcx: Gcx<'ctx>,
     ty: Ty<'ctx>,
 ) -> Option<InterfaceReference<'ctx>> {
-    let TyKind::Closure {
-        kind,
-        inputs,
-        output,
-        ..
-    } = ty.kind()
-    else {
-        return None;
-    };
+    let (kind, inputs, output) = callable_signature(ty)?;
     let item = match kind {
         ClosureKind::Fn => hir::StdItem::Fn,
-        ClosureKind::FnMut => hir::StdItem::FnMut,
-        ClosureKind::FnOnce => hir::StdItem::FnOnce,
         ClosureKind::AsyncFn => hir::StdItem::AsyncFn,
-        ClosureKind::AsyncFnMut => hir::StdItem::AsyncFnMut,
-        ClosureKind::AsyncFnOnce => hir::StdItem::AsyncFnOnce,
     };
     Some(InterfaceReference {
         id: gcx.std_item_def(item)?,
@@ -440,7 +469,7 @@ pub fn closure_interface_ref<'ctx>(
 /// Expand a callable argument pack. Abstract tuple parameters remain opaque until
 /// instantiated; they can still be forwarded to the explicit call methods.
 pub fn callable_inputs<'ctx>(gcx: Gcx<'ctx>, args_ty: Ty<'ctx>) -> TyList<'ctx> {
-    match args_ty.kind() {
+    match crate::sema::tycheck::utils::normalize_aliases(gcx, args_ty).kind() {
         TyKind::Tuple(inputs) => inputs,
         _ => gcx.store.interners.intern_ty_list(vec![args_ty]),
     }
@@ -450,33 +479,50 @@ pub fn callable_inputs<'ctx>(gcx: Gcx<'ctx>, args_ty: Ty<'ctx>) -> TyList<'ctx> 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CaptureKind {
     ByCopy,
-    ByRef { mutable: bool },
-    ByMove,
-}
-
-/// How a closure body uses a captured variable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CaptureAccessKind {
-    Read,
-    Mutate,
-    Move,
+    /// The closure and its enclosing scope share one variable.
+    ByRef,
 }
 
 /// A variable captured by a closure
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureProjection<'arena> {
+    pub field: crate::thir::FieldIndex,
+    /// Instantiated type after selecting this stored field.
+    pub ty: Ty<'arena>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct CapturedVar<'arena> {
     /// The NodeID of the captured variable in the enclosing scope
     pub source_id: hir::NodeID,
+    /// Original local type, used only to construct the projected source place.
+    pub root_ty: Ty<'arena>,
+    /// Named inline fields from source_id to the actual captured value.
+    pub projection: &'arena [CaptureProjection<'arena>],
     /// Name of the captured variable
     pub name: Symbol,
     /// Type of the captured value (original type, not ref type)
     pub ty: Ty<'arena>,
     /// How this variable is captured.
     pub capture_kind: CaptureKind,
-    /// How this variable is used by the closure body.
-    pub access_kind: CaptureAccessKind,
+    /// The source binding can't change after this closure captures it.
+    pub source_immutable: bool,
     /// Field index in the environment struct
     pub field_index: crate::thir::FieldIndex,
+}
+
+impl<'ctx> CapturedVar<'ctx> {
+    /// The actual environment field type, rather than the type of the value
+    /// seen inside the closure body. Borrow captures store a reference slot.
+    pub fn storage_ty(self, gcx: Gcx<'ctx>, arguments: GenericArguments<'ctx>) -> Ty<'ctx> {
+        let value = crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args(
+            gcx, self.ty, arguments,
+        );
+        match self.capture_kind {
+            CaptureKind::ByCopy => value,
+            CaptureKind::ByRef => Ty::new(TyKind::Reference(value), gcx),
+        }
+    }
 }
 
 /// Information about a closure's captured environment
@@ -502,6 +548,7 @@ pub struct AdtDef {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StructField<'arena> {
+    pub default_provider: Option<DefinitionID>,
     pub name: Symbol,
     pub ty: Ty<'arena>,
     pub mutability: Mutability,
@@ -521,9 +568,80 @@ impl Default for StructRepr {
     }
 }
 
+/// Reference-class metadata is separate from an inline value's lifecycle.
+/// The declaration's fields describe object payload storage; the value itself
+/// contains one native ClassHandle. Inheritance is added by S29.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClassInfo<'ctx> {
+    pub base: Option<Ty<'ctx>>,
+    pub methods: &'ctx [ClassMethod<'ctx>],
+    pub initializers: &'ctx [ClassInitializer<'ctx>],
+    /// Hidden, uniquely owned value layout used for construction and cleanup.
+    pub payload: Option<DefinitionID>,
+    pub is_final: bool,
+}
+
+/// Constructor categories and families survive package boundaries. A later
+/// inherited entry point keeps the designated family's identity but constructs
+/// the requested subclass, rather than forwarding a base-object allocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClassInitializer<'ctx> {
+    pub definition: DefinitionID,
+    pub family: DefinitionID,
+    pub implementation: DefinitionID,
+    pub owner: Ty<'ctx>,
+    pub is_convenience: bool,
+    pub is_required: bool,
+    pub is_inherited: bool,
+    /// Resolved self.init targets of a source convenience body. Inherited
+    /// entries recover their source body instead of copying stale local facts.
+    pub delegations: &'ctx [DefinitionID],
+}
+
+/// Conditional facts proved on an interface default or a blanket receiver
+/// implementation before lowering. They restrict class instantiations, never
+/// the body's ordinary struct callers. The historical name remains internal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ClassDefaultContract {
+    pub preserves_dynamic_self: Option<bool>,
+}
+
+/// A virtual family keeps its original declaration identity across overrides.
+/// owner is the implementation's class expressed in this class's parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClassMethod<'ctx> {
+    /// Owned result preserves the receiver's actual dynamic class. Bodies are
+    /// checked before inherited calls may refine this result to their receiver.
+    pub returns_self: bool,
+    pub family: DefinitionID,
+    pub implementation: DefinitionID,
+    pub owner: Ty<'ctx>,
+    pub is_final: bool,
+}
+
+/// Conformance-owned class families may be introduced after the class's package
+/// was compiled. Keep them separate from its immutable nominal descriptor.
+#[derive(Debug, Clone, Copy)]
+pub struct ClassAdoption<'ctx> {
+    pub conformance: ConformanceRecordId,
+    pub methods: &'ctx [ClassWitnessMethod<'ctx>],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClassWitnessMethod<'ctx> {
+    pub requirement: DefinitionID,
+    pub slot: ClassMethod<'ctx>,
+    /// True for a late family registered through the nonnull argument-key
+    /// registry, even when it has no own generic arguments. False reuses an
+    /// already published inherent family and its original descriptor table.
+    pub is_registered: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct StructDefinition<'arena> {
     pub adt_def: AdtDef,
+    pub class_info: Option<ClassInfo<'arena>>,
+    pub has_initializer: bool,
     pub repr: StructRepr,
     pub fields: &'arena [StructField<'arena>],
 }
@@ -532,12 +650,14 @@ pub struct StructDefinition<'arena> {
 pub struct EnumVariantField<'arena> {
     pub label: Option<Symbol>,
     pub ty: Ty<'arena>,
+    pub mutability: Mutability,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EnumVariantKind<'arena> {
     Unit,
     Tuple(&'arena [EnumVariantField<'arena>]),
+    Struct(&'arena [EnumVariantField<'arena>]),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -729,10 +849,6 @@ index_vec::define_index_type! {
     pub struct ConstVarID = u32;
 }
 
-index_vec::define_index_type! {
-    pub struct FnVarID = u32;
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InferTy {
     TyVar(TyVarID),
@@ -880,7 +996,7 @@ impl Generics {
         let mut count = 0;
         for param in self.parameters.iter() {
             match &param.kind {
-                GenericParameterDefinitionKind::Type { default } => {
+                GenericParameterDefinitionKind::Type { default, .. } => {
                     if default.is_some() {
                         count += 1;
                     }
@@ -919,7 +1035,7 @@ pub enum GenericParameterDefinitionKind {
 impl GenericParameterDefinitionKind {
     pub fn has_default(&self) -> bool {
         match self {
-            GenericParameterDefinitionKind::Type { default } => default.is_some(),
+            GenericParameterDefinitionKind::Type { default, .. } => default.is_some(),
             GenericParameterDefinitionKind::Const { default, .. } => default.is_some(),
         }
     }
@@ -956,8 +1072,6 @@ pub struct InterfacePropertyRequirement<'ctx> {
     pub ty: Ty<'ctx>,
     pub getter_id: DefinitionID,
     pub getter_is_required: bool,
-    pub setter_id: Option<DefinitionID>,
-    pub setter_is_required: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -989,11 +1103,7 @@ fn format_callable_interface<'ctx>(
 ) -> Option<String> {
     let kind = match callable_kind(gcx, interface_id)? {
         ClosureKind::Fn => "Fn",
-        ClosureKind::FnMut => "FnMut",
-        ClosureKind::FnOnce => "FnOnce",
         ClosureKind::AsyncFn => "AsyncFn",
-        ClosureKind::AsyncFnMut => "AsyncFnMut",
-        ClosureKind::AsyncFnOnce => "AsyncFnOnce",
     };
 
     if args.len() != 2 {
@@ -1146,7 +1256,6 @@ impl ConformanceRecordId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SelectionMode {
     Typecheck,
-    Coherence,
     Codegen,
 }
 
@@ -1155,10 +1264,10 @@ pub enum CandidateSource {
     Impl(ConformanceRecordId),
     ParamEnv,
     BuiltinTuple,
-    BuiltinClosure,
+    BuiltinCallable,
     BuiltinClone,
-    BuiltinCopy,
-    BuiltinSendable,
+    BuiltinAnyObject,
+    BuiltinOperator,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1251,8 +1360,6 @@ pub enum SelectionError<'ctx> {
 pub struct ConformanceWitness<'ctx> {
     /// Maps interface method → implementing method
     pub method_witnesses: FxHashMap<DefinitionID, MethodWitness<'ctx>>,
-    /// Maps interface operator kind → implementing operator
-    pub operator_witnesses: FxHashMap<hir::OperatorKind, DefinitionID>,
     /// Maps interface constant → implementing constant
     pub constant_witnesses: FxHashMap<DefinitionID, DefinitionID>,
     /// Maps interface associated type → concrete type
@@ -1286,18 +1393,175 @@ impl MethodImplementation {
 
 #[derive(Debug, Clone)]
 pub struct SyntheticDefinition<'arena> {
+    pub kind: SyntheticDefinitionKind,
     pub name: crate::span::Symbol,
     pub generics: &'arena Generics,
     pub signature: &'arena LabeledFunctionSignature<'arena>,
     pub span: crate::span::Span,
 }
 
+/// Code-generation behavior of a compiler-generated declaration. Drop glue has
+/// no shared MIR body: its concrete value layout is known at instantiation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyntheticDefinitionKind {
+    /// Ordinary derived codec body with a nominal class method environment.
+    ClassEncoder {
+        class: DefinitionID,
+    },
+    /// Decodable's factory forwards to a checked decoding initializer family.
+    ClassDecoder {
+        class: DefinitionID,
+        initializer: DefinitionID,
+    },
+    /// Required designated decoder synthesized for this exact class level.
+    ClassDecodingInitializer {
+        class: DefinitionID,
+    },
+    /// A nominal value type, not a callable declaration. Its fields are the
+    /// class's object storage; the public class value remains a GC object handle.
+    ClassPayload {
+        class: DefinitionID,
+    },
+    /// Checked initializer body returning initialized object storage.
+    ClassPayloadInitializer {
+        class: DefinitionID,
+        initializer: DefinitionID,
+    },
+    /// Concrete subclass constructor forwarding an inherited designated entry.
+    /// Its body builds a nested base payload; it never allocates a base object.
+    InheritedClassInitializer {
+        class: DefinitionID,
+        initializer: DefinitionID,
+    },
+    /// Non-callable generic scope: nominal parameters precede the base
+    /// constructor's parent parameters; init-own generics stay separate.
+    InitializerEnvironment {
+        class: DefinitionID,
+        initializer: DefinitionID,
+    },
+    /// A default argument needs the inherited constructor's substitution, not
+    /// the source extension's original parameter positions.
+    InheritedInitializerDefault {
+        initializer: DefinitionID,
+        provider: DefinitionID,
+    },
+    /// Native forwarding stub: the private descriptor selects the concrete
+    /// constructor family, while remaining arguments keep the source ABI.
+    ClassInitializerDispatch {
+        initializer: DefinitionID,
+    },
+    /// Private body of a source convenience initializer. Its context input is
+    /// forwarded through delegation; self is an ordinary initialized handle.
+    ClassConvenienceInitializer {
+        initializer: DefinitionID,
+    },
+    /// Zero-argument factory for immutable, process-long class metadata.
+    ClassConstructionDescriptor {
+        class: DefinitionID,
+    },
+    /// Consume a copied strong class handle and return its process-long actual
+    /// class descriptor. Used by dynamic Self factories, never a source API.
+    ClassObjectDescriptor {
+        class: DefinitionID,
+    },
+    /// Exact generic default body, outside its interface's witness lookup.
+    /// A class adoption forwards here; ordinary calls within the body still
+    /// use normal interface/virtual dispatch. Its generic coordinates are
+    /// identical to source, so checked MIR can be reused without type rebasing.
+    ClassDefaultBody {
+        source: DefinitionID,
+    },
+    /// An overridable, conformance-owned entry forwarding to an exact default
+    /// body. Generic coordinates belong to the adopting extension, not P.
+    AdoptedClassDefault {
+        conformance: ConformanceRecordId,
+        source: DefinitionID,
+    },
+    /// Rebase a default argument into its adopted entry's generic environment.
+    AdoptedClassDefaultArgument {
+        method: DefinitionID,
+        provider: DefinitionID,
+    },
+    /// Exact checked extraction; ordinary checked MIR owns both result arms.
+    ErasedTakeAs {
+        context: DefinitionID,
+    },
+    /// Checked optional view of the exact stored concrete type.
+    ErasedAsRef {
+        context: DefinitionID,
+    },
+    /// Private Native projection used only after an exact stored-type test.
+    ErasedPayloadReference {
+        context: DefinitionID,
+    },
+    /// Evaluate a default provider with the concrete generic type selected
+    /// from one borrowed, already prepared call argument.
+    StaticInitializer {
+        storage: DefinitionID,
+    },
+    StaticReference {
+        storage: DefinitionID,
+    },
+    ErasedAsyncSelf {
+        context: DefinitionID,
+        method: DefinitionID,
+    },
+    ErasedAsyncSelfDefault {
+        adapter: DefinitionID,
+        provider: DefinitionID,
+    },
+    ErasedDefault {
+        source: DefinitionID,
+        provider: DefinitionID,
+        parameter: usize,
+    },
+    Ordinary,
+    /// Compiler-generated C-unwind callback used by the runtime async driver.
+    /// Its three raw pointer inputs / u8 status have a C ABI, not a public
+    /// source-call ownership contract or a suspension-safety certificate.
+    AsyncPoll,
+    /// Generic intrinsic Clone, materialized for each full concrete type.
+    BuiltinCopyClone,
+    /// Pack-adapting witness instantiated for a safe function-pointer signature.
+    FunctionPointerCall {
+        is_async: bool,
+    },
+    /// Ordered element-wise tuple Clone with initialized-prefix cleanup.
+    TupleClone,
+    /// Ordered fixed-array element Clone with initialized-prefix cleanup.
+    ArrayClone,
+    /// Owned closure environment Clone in first lexical capture order.
+    ClosureClone,
+    /// Primitive operator witnesses are instantiated in the consuming package
+    /// so checked arithmetic follows that package's compilation profile.
+    PrimitiveOperator(crate::hir::StdItem),
+}
+
+impl SyntheticDefinitionKind {
+    pub fn is_instance_generated(self) -> bool {
+        self.is_builtin_clone()
+            || self.is_primitive_operator()
+            || matches!(self, Self::FunctionPointerCall { .. })
+    }
+
+    pub fn is_builtin_clone(self) -> bool {
+        matches!(
+            self,
+            Self::BuiltinCopyClone | Self::TupleClone | Self::ArrayClone | Self::ClosureClone
+        )
+    }
+
+    pub fn is_primitive_operator(self) -> bool {
+        matches!(self, Self::PrimitiveOperator(_))
+    }
+}
+
 /// Kind of synthesized method for code generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyntheticMethodKind {
-    /// Clone for Copy types: just dereference self (`*self`)
+    /// Intrinsic Clone whose specified operation is a copy (`*self`).
     CopyClone,
-    /// Clone for non-Copy types: memberwise clone each field.
+    /// Nominal Clone: call Clone on each field, regardless of Copy.
     MemberwiseClone,
     /// Hashable.hash: hash each field
     MemberwiseHash,
@@ -1305,14 +1569,12 @@ pub enum SyntheticMethodKind {
     MemberwiseEquality,
     /// Fn.call: invoke closure with shared access.
     ClosureCall,
-    /// FnMut/AsyncFnMut.callMut: invoke closure with exclusive access.
-    ClosureCallMut,
-    /// FnOnce/AsyncFnOnce.callOnce: invoke closure consuming self.
-    ClosureCallOnce,
+    /// Struct fields encoded through the format-neutral codec.
+    MemberwiseEncode,
+    /// Struct fields decoded through the format-neutral codec.
+    MemberwiseDecode,
     /// Getter synthesized from a stored field.
     PropertyFieldGetter(usize),
-    /// Setter synthesized from a mutable stored field.
-    PropertyFieldSetter(usize),
 }
 
 /// Mapping from an interface method to its implementation and instantiation template.

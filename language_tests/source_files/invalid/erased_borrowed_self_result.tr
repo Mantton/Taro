@@ -1,0 +1,7 @@
+interface View {
+    func view() -> &Self
+}
+func inspect(_ value: &any View) {
+    saved := value.view()
+}
+func main() {}

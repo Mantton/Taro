@@ -83,11 +83,7 @@ fn generic_args_key<'gcx>(gcx: GlobalContext<'gcx>, args: &[GenericArgument<'gcx
 fn closure_kind_key(kind: ClosureKind) -> &'static str {
     match kind {
         ClosureKind::Fn => "fn",
-        ClosureKind::FnMut => "fnmut",
-        ClosureKind::FnOnce => "fnonce",
         ClosureKind::AsyncFn => "asyncfn",
-        ClosureKind::AsyncFnMut => "asyncfnmut",
-        ClosureKind::AsyncFnOnce => "asyncfnonce",
     }
 }
 
@@ -184,8 +180,8 @@ pub(crate) fn ty_key<'gcx>(gcx: GlobalContext<'gcx>, ty: Ty<'gcx>) -> String {
         TyKind::Pointer(inner, mt) => {
             format!("ty:pointer:{}:{}", mt.display_str(), ty_key(gcx, inner))
         }
-        TyKind::Reference(inner, mt) => {
-            format!("ty:reference:{}:{}", mt.display_str(), ty_key(gcx, inner))
+        TyKind::Reference(inner) => {
+            format!("ty:reference:{}", ty_key(gcx, inner))
         }
         TyKind::Adt(def, args) => {
             format!(
@@ -209,7 +205,11 @@ pub(crate) fn ty_key<'gcx>(gcx: GlobalContext<'gcx>, ty: Ty<'gcx>) -> String {
                 .join(",");
             format!("ty:tuple[{}]({parts})", items.len())
         }
-        TyKind::FnPointer { inputs, output } => {
+        TyKind::FnPointer {
+            inputs,
+            output,
+            effects,
+        } => {
             let input_count = inputs.len();
             let inputs = inputs
                 .iter()
@@ -217,7 +217,7 @@ pub(crate) fn ty_key<'gcx>(gcx: GlobalContext<'gcx>, ty: Ty<'gcx>) -> String {
                 .collect::<Vec<_>>()
                 .join(",");
             format!(
-                "ty:fnptr<inputs[{}]=({inputs});output={}>",
+                "ty:fnptr<effects={effects:?};inputs[{}]=({inputs});output={}>",
                 input_count,
                 ty_key(gcx, output)
             )
@@ -263,6 +263,7 @@ pub(crate) fn ty_key<'gcx>(gcx: GlobalContext<'gcx>, ty: Ty<'gcx>) -> String {
         TyKind::Opaque(def_id) => format!("ty:opaque:{}", definition_key(def_id)),
         TyKind::Error => panic!("ICE: error type reached codegen mangling"),
         TyKind::Infer(_) => panic!("ICE: unresolved inferred type reached codegen mangling"),
+        TyKind::ExistentialSelf(depth) => format!("ty:existential-self:{depth}"),
         TyKind::Never => "ty:never".into(),
     }
 }
@@ -277,7 +278,7 @@ fn ty_symbol_with<'gcx>(gcx: GlobalContext<'gcx>, ty: Ty<'gcx>) -> String {
         TyKind::UInt(u) => u.name_str().into(),
         TyKind::Float(f) => f.name_str().into(),
         TyKind::Pointer(_, mt) => symbol_with_key(format!("ptr{}", mt.display_str()), &key),
-        TyKind::Reference(_, mt) => symbol_with_key(format!("ref{}", mt.display_str()), &key),
+        TyKind::Reference(_) => symbol_with_key("ref", &key),
         TyKind::Adt(def, _) => {
             let ident = gcx.definition_ident(def.id);
             symbol_with_key(gcx.symbol_text(ident.symbol).as_ref(), &key)
@@ -302,6 +303,7 @@ fn ty_symbol_with<'gcx>(gcx: GlobalContext<'gcx>, ty: Ty<'gcx>) -> String {
         TyKind::Closure { .. } => symbol_with_key("closure", &key),
         TyKind::Opaque(_) => symbol_with_key("opaque", &key),
         TyKind::Error | TyKind::Infer(_) => unreachable!("ty_key panics before symbol formatting"),
+        TyKind::ExistentialSelf(depth) => format!("erased-self-{depth}"),
         TyKind::Never => "never".into(),
     }
 }
@@ -317,7 +319,7 @@ pub(crate) fn type_head_key(_gcx: GlobalContext<'_>, head: TypeHead) -> String {
         TypeHead::Nominal(def_id) => format!("head:nominal:{}", definition_key(def_id)),
         TypeHead::Parameter(def_id) => format!("head:parameter:{}", definition_key(def_id)),
         TypeHead::Closure(def_id) => format!("head:closure:{}", definition_key(def_id)),
-        TypeHead::Reference(mt) => format!("head:reference:{}", mt.display_str()),
+        TypeHead::Reference => "head:reference".into(),
         TypeHead::Pointer(mt) => format!("head:pointer:{}", mt.display_str()),
         TypeHead::Tuple(len) => format!("head:tuple:{len}"),
         TypeHead::Array => "head:array".into(),
@@ -342,7 +344,7 @@ fn type_head_symbol(gcx: GlobalContext<'_>, head: TypeHead) -> String {
             symbol_with_key(gcx.symbol_text(ident.symbol).as_ref(), &key)
         }
         TypeHead::Closure(_) => symbol_with_key("closure", &key),
-        TypeHead::Reference(mt) => symbol_with_key(format!("ref{}", mt.display_str()), &key),
+        TypeHead::Reference => symbol_with_key("ref", &key),
         TypeHead::Pointer(mt) => symbol_with_key(format!("ptr{}", mt.display_str()), &key),
         TypeHead::Tuple(len) => symbol_with_key(format!("tuple{len}"), &key),
         TypeHead::Array => symbol_with_key("array", &key),

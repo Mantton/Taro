@@ -1,0 +1,12 @@
+error: type '&Owned' does not conform to interface 'Iterable'
+ -> language_tests/source_files/invalid/for_reference_source_requires_iterable.tr:19:4
+	    for value in &source {}
+	    ^^^^^^^^^^^^^^^^^^^^^^^
+error: type '&[int32; 2]' does not conform to interface 'Iterable'
+ -> language_tests/source_files/invalid/for_reference_source_requires_iterable.tr:23:4
+	    for value in values {}
+	    ^^^^^^^^^^^^^^^^^^^^^^
+error: type '&List[int32]' does not conform to interface 'Iterable'
+ -> language_tests/source_files/invalid/for_reference_source_requires_iterable.tr:26:4
+	    for value in values {}
+	    ^^^^^^^^^^^^^^^^^^^^^^

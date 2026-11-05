@@ -1,12 +1,12 @@
-import std.ffi.CString
-import std.io.Error
-import std.libc
-import std.result.Result
+import std::ffi::CString
+import std::io::Error
+import std::libc
+import std::result::Result
 
 extern "blocking" {
-    func __rt__open2(_ path: *const uint8, _ oflags: int32) -> int32
-    func __rt__open3(_ path: *const uint8, _ oflags: int32, _ mode: int32) -> int32
-    func __rt__fs_metadata(
+    unsafe func __rt__open2(_ path: *const uint8, _ oflags: int32) -> int32
+    unsafe func __rt__open3(_ path: *const uint8, _ oflags: int32, _ mode: int32) -> int32
+    unsafe func __rt__fs_metadata(
         _ path: string,
         _ followSymlinks: bool,
         _ fileTypeOut: *mut uint8,
@@ -16,18 +16,18 @@ extern "blocking" {
         _ accessedSecsOut: *mut int64,
         _ accessedNanosOut: *mut uint32,
     ) -> int32
-    func __rt__fs_dir_open(_ path: string, _ errorOut: *mut int32) -> usize
-    func __rt__fs_dir_read(
+    unsafe func __rt__fs_dir_open(_ path: string, _ errorOut: *mut int32) -> usize
+    unsafe func __rt__fs_dir_read(
         _ handle: usize,
         _ nameOut: *mut *mut uint8,
         _ lenOut: *mut usize,
         _ fileTypeOut: *mut uint8,
     ) -> int32
-    func __rt__fs_dir_close(_ handle: usize) -> int32
-    func __rt__fs_remove_dir_all(_ path: string) -> int32
-    func __rt__fs_copy(_ from: string, _ to: string, _ copiedOut: *mut uint64) -> int32
-    func __rt__fs_canonicalize(_ path: string, _ dataOut: *mut *mut uint8, _ lenOut: *mut usize) -> int32
-    func __rt__fs_create_temp_dir(
+    unsafe func __rt__fs_dir_close(_ handle: usize) -> int32
+    unsafe func __rt__fs_remove_dir_all(_ path: string) -> int32
+    unsafe func __rt__fs_copy(_ from: string, _ to: string, _ copiedOut: *mut uint64) -> int32
+    unsafe func __rt__fs_canonicalize(_ path: string, _ dataOut: *mut *mut uint8, _ lenOut: *mut usize) -> int32
+    unsafe func __rt__fs_create_temp_dir(
         _ parent: string,
         _ prefix: string,
         _ dataOut: *mut *mut uint8,
@@ -36,15 +36,16 @@ extern "blocking" {
 }
 
 extern "taro_rt" {
-    func __rt__fs_owned_bytes_free(_ data: *mut uint8)
+    unsafe func __rt__fs_owned_bytes_free(_ data: *mut uint8)
 }
 
+/// Copies share the descriptor through one lease; see `std::sys::io::unix`.
 public struct PlatformFile {
-    fd: int32
+    internal lease: uint64
 }
 
 public struct PlatformDir {
-    handle: usize
+    internal handle: usize
 }
 
 public const FILE_TYPE_REGULAR: uint8 = 1_u8
@@ -65,13 +66,13 @@ public struct RawMetadata {
     accessedNanosValue: uint32
 }
 
-impl RawMetadata {
-    public func fileType(&self) -> uint8 { self.fileTypeValue }
-    public func len(&self) -> uint64 { self.lenValue }
-    public func modifiedSeconds(&self) -> int64 { self.modifiedSecsValue }
-    public func modifiedNanoseconds(&self) -> uint32 { self.modifiedNanosValue }
-    public func accessedSeconds(&self) -> int64 { self.accessedSecsValue }
-    public func accessedNanoseconds(&self) -> uint32 { self.accessedNanosValue }
+extend RawMetadata {
+    public func fileType() -> uint8 { self.fileTypeValue }
+    public func len() -> uint64 { self.lenValue }
+    public func modifiedSeconds() -> int64 { self.modifiedSecsValue }
+    public func modifiedNanoseconds() -> uint32 { self.modifiedNanosValue }
+    public func accessedSeconds() -> int64 { self.accessedSecsValue }
+    public func accessedNanoseconds() -> uint32 { self.accessedNanosValue }
 }
 
 public struct RawDirEntry {
@@ -79,20 +80,20 @@ public struct RawDirEntry {
     fileTypeValue: uint8
 }
 
-impl RawDirEntry {
-    public func name(&self) -> string { self.nameValue }
-    public func fileType(&self) -> uint8 { self.fileTypeValue }
+extend RawDirEntry {
+    public func name() -> string { self.nameValue }
+    public func fileType() -> uint8 { self.fileTypeValue }
 }
 
 const DEFAULT_FILE_MODE: int32 = 438
 const DEFAULT_DIR_MODE: int32 = 511
 
 func invalidPathError(_ operation: string, _ path: string) -> Error {
-    Error(.invalidInput).withOperation(operation).withPath(path)
+    Error::new(.invalidInput).withOperation(operation).withPath(path)
 }
 
 func checkedPath(_ path: string, _ operation: string) -> Result[CString, Error] {
-    match CString.tryNew(path) {
+    match CString::tryNew(path) {
         case .some(value) => return .ok(value)
         case .none => return .err(invalidPathError(operation, path))
     }
@@ -126,181 +127,209 @@ func openFile(
     _ truncate: bool,
 ) -> Result[PlatformFile, Error] {
     if !read && !write && !append {
-        return .err(Error(.invalidInput).withOperation("open").withPath(path))
+        return .err(Error::new(.invalidInput).withOperation("open").withPath(path))
     }
 
     if create && !write && !append {
-        return .err(Error(.invalidInput).withOperation("open").withPath(path))
+        return .err(Error::new(.invalidInput).withOperation("open").withPath(path))
     }
 
     if truncate && !write && !append {
-        return .err(Error(.invalidInput).withOperation("open").withPath(path))
+        return .err(Error::new(.invalidInput).withOperation("open").withPath(path))
     }
 
     if append && truncate {
-        return .err(Error(.invalidInput).withOperation("open").withPath(path))
+        return .err(Error::new(.invalidInput).withOperation("open").withPath(path))
     }
 
-    var access = std.libc.O_RDONLY
+    var access = std::libc::O_RDONLY
     if append {
-        access = if read { std.libc.O_RDWR } else { std.libc.O_WRONLY }
+        access = if read { std::libc::O_RDWR } else { std::libc::O_WRONLY }
     } else if read && write {
-        access = std.libc.O_RDWR
+        access = std::libc::O_RDWR
     } else if write {
-        access = std.libc.O_WRONLY
+        access = std::libc::O_WRONLY
     } else {
-        access = std.libc.O_RDONLY
+        access = std::libc::O_RDONLY
     }
 
     var flags = access
     if append {
-        flags = flags | std.libc.O_APPEND
+        flags = flags | std::libc::O_APPEND
     }
     if create {
-        flags = flags | std.libc.O_CREAT
+        flags = flags | std::libc::O_CREAT
     }
     if truncate {
-        flags = flags | std.libc.O_TRUNC
+        flags = flags | std::libc::O_TRUNC
     }
 
-    let cpath = match checkedPath(path, "open") {
+    cpath := match checkedPath(path, "open") {
         case .ok(value) => value
         case .err(err) => return .err(err)
     }
-    let fd = if create {
-        __rt__open3(cpath.asPtr(), flags, DEFAULT_FILE_MODE)
+    fd := if create {
+        unsafe { __rt__open3(cpath.asPtr(), flags, DEFAULT_FILE_MODE) }
     } else {
-        __rt__open2(cpath.asPtr(), flags)
+        unsafe { __rt__open2(cpath.asPtr(), flags) }
     }
     if fd < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("open").withPath(path))
+        return .err(std::sys::io::unix::lastError().withOperation("open").withPath(path))
     }
 
-    return .ok(PlatformFile { fd })
+    return .ok(PlatformFile { lease: std::sys::io::unix::leaseOpen(fd) })
 }
 
 public func symlink(_ target: string, _ linkPath: string) -> Result[(), Error] {
-    let ctarget = match CString.tryNew(target) {
+    ctarget := match CString::tryNew(target) {
         case .some(value) => value
-        case .none => return .err(Error(.invalidInput).withOperation("symlink").withPaths(target, linkPath))
+        case .none => return .err(Error::new(.invalidInput).withOperation("symlink").withPaths(target, linkPath))
     }
-    let clink = match CString.tryNew(linkPath) {
+    clink := match CString::tryNew(linkPath) {
         case .some(value) => value
-        case .none => return .err(Error(.invalidInput).withOperation("symlink").withPaths(target, linkPath))
+        case .none => return .err(Error::new(.invalidInput).withOperation("symlink").withPaths(target, linkPath))
     }
-    let res = std.libc.symlink(ctarget.asPtr(), clink.asPtr())
+    res := unsafe { std::libc::symlink(ctarget.asPtr(), clink.asPtr()) }
     if res < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("symlink").withPaths(target, linkPath))
+        return .err(std::sys::io::unix::lastError().withOperation("symlink").withPaths(target, linkPath))
     }
     return .ok(())
 }
 
-public func close(_ file: &mut PlatformFile) -> Result[(), Error] {
-    if file.fd < 0 {
+/// Close the descriptor once no read, write or seek is using it. The file is
+/// invalid afterwards even when the deferred close reports an error.
+public func close(_ file: &PlatformFile) -> Result[(), Error] {
+    if file.lease == 0 {
         return .ok(())
     }
 
-    let res = std.libc.close(file.fd)
-    if res < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("close"))
-    }
-    file.fd = -1
-    return .ok(())
+    lease := file.lease
+    file.lease = 0
+    std::sys::io::unix::leaseClose(lease, "close")
 }
 
 public func isValid(_ file: &PlatformFile) -> bool {
-    file.fd >= 0
+    file.lease != 0
 }
 
 /// Move the descriptor out of `file`, leaving it permanently invalid.
-public func take(_ file: &mut PlatformFile) -> PlatformFile {
-    let fd = file.fd
-    file.fd = -1
-    return PlatformFile { fd }
+public func take(_ file: &PlatformFile) -> PlatformFile {
+    lease := file.lease
+    file.lease = 0
+    return PlatformFile { lease }
 }
 
 public func read(_ file: &PlatformFile, _ buf: *mut uint8, _ len: usize) -> Result[usize, Error] {
-    let res = std.libc.read(file.fd, buf, len)
-    if res < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("read"))
-    }
-    return .ok(res as usize)
-}
-
-public func write(_ file: &PlatformFile, _ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
-    let res = std.libc.write(file.fd, buf, len)
-    if res < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("write"))
-    }
-    return .ok(res as usize)
-}
-
-public func seek(_ file: &PlatformFile, _ offset: isize, _ whence: int32) -> Result[isize, Error] {
-    let res = std.libc.lseek(file.fd, offset, whence)
-    if res < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("seek"))
-    }
-    return .ok(res)
-}
-
-public func intoAsyncStream(_ file: &mut PlatformFile) -> Result[std.sys.io.RawAsyncStream, Error] {
-    if file.fd < 0 {
-        return .err(Error(.invalidInput).withOperation("adopt file stream"))
-    }
-
-    let fd = file.fd
-    file.fd = -1
-    std.sys.io.adoptFd(fd)
-}
-
-public func createDir(_ path: string) -> Result[(), Error] {
-    let cpath = match checkedPath(path, "create directory") {
+    lease := file.lease
+    fd := match std::sys::io::unix::leaseAcquire(lease, "read") {
         case .ok(value) => value
         case .err(err) => return .err(err)
     }
-    let res = std.libc.mkdir(cpath.asPtr(), DEFAULT_DIR_MODE)
+    res := unsafe { std::libc::read(fd, buf, len) }
+    var result: Result[usize, Error] = if res < 0 {
+        .err(std::sys::io::unix::lastError().withOperation("read"))
+    } else {
+        .ok(res as usize)
+    }
+    std::sys::io::unix::leaseRelease(lease)
+    return result
+}
+
+public func write(_ file: &PlatformFile, _ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
+    lease := file.lease
+    fd := match std::sys::io::unix::leaseAcquire(lease, "write") {
+        case .ok(value) => value
+        case .err(err) => return .err(err)
+    }
+    res := unsafe { std::libc::write(fd, buf, len) }
+    var result: Result[usize, Error] = if res < 0 {
+        .err(std::sys::io::unix::lastError().withOperation("write"))
+    } else {
+        .ok(res as usize)
+    }
+    std::sys::io::unix::leaseRelease(lease)
+    return result
+}
+
+public func seek(_ file: &PlatformFile, _ offset: isize, _ whence: int32) -> Result[isize, Error] {
+    lease := file.lease
+    fd := match std::sys::io::unix::leaseAcquire(lease, "seek") {
+        case .ok(value) => value
+        case .err(err) => return .err(err)
+    }
+    res := std::libc::lseek(fd, offset, whence)
+    var result: Result[isize, Error] = if res < 0 {
+        .err(std::sys::io::unix::lastError().withOperation("seek"))
+    } else {
+        .ok(res)
+    }
+    std::sys::io::unix::leaseRelease(lease)
+    return result
+}
+
+/// Transfer the descriptor to the async reactor. Fails while another copy of
+/// the file has an operation in flight.
+public func intoAsyncStream(_ file: &PlatformFile) -> Result[std::sys::io::RawAsyncStream, Error] {
+    if file.lease == 0 {
+        return .err(Error::new(.invalidInput).withOperation("adopt file stream"))
+    }
+
+    fd := match std::sys::io::unix::leaseTake(file.lease, "adopt file stream") {
+        case .ok(value) => value
+        case .err(err) => return .err(err)
+    }
+    file.lease = 0
+    std::sys::io::adoptFd(fd)
+}
+
+public func createDir(_ path: string) -> Result[(), Error] {
+    cpath := match checkedPath(path, "create directory") {
+        case .ok(value) => value
+        case .err(err) => return .err(err)
+    }
+    res := unsafe { std::libc::mkdir(cpath.asPtr(), DEFAULT_DIR_MODE as std::libc::mode_t) }
     if res < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("create directory").withPath(path))
+        return .err(std::sys::io::unix::lastError().withOperation("create directory").withPath(path))
     }
     return .ok(())
 }
 
 public func removeDir(_ path: string) -> Result[(), Error] {
-    let cpath = match checkedPath(path, "remove directory") {
+    cpath := match checkedPath(path, "remove directory") {
         case .ok(value) => value
         case .err(err) => return .err(err)
     }
-    let res = std.libc.rmdir(cpath.asPtr())
+    res := unsafe { std::libc::rmdir(cpath.asPtr()) }
     if res < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("remove directory").withPath(path))
+        return .err(std::sys::io::unix::lastError().withOperation("remove directory").withPath(path))
     }
     return .ok(())
 }
 
 public func removeFile(_ path: string) -> Result[(), Error] {
-    let cpath = match checkedPath(path, "remove file") {
+    cpath := match checkedPath(path, "remove file") {
         case .ok(value) => value
         case .err(err) => return .err(err)
     }
-    let res = std.libc.unlink(cpath.asPtr())
+    res := unsafe { std::libc::unlink(cpath.asPtr()) }
     if res < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("remove file").withPath(path))
+        return .err(std::sys::io::unix::lastError().withOperation("remove file").withPath(path))
     }
     return .ok(())
 }
 
 public func rename(_ from: string, _ to: string) -> Result[(), Error] {
-    let cfrom = match CString.tryNew(from) {
+    cfrom := match CString::tryNew(from) {
         case .some(value) => value
-        case .none => return .err(Error(.invalidInput).withOperation("rename").withPaths(from, to))
+        case .none => return .err(Error::new(.invalidInput).withOperation("rename").withPaths(from, to))
     }
-    let cto = match CString.tryNew(to) {
+    cto := match CString::tryNew(to) {
         case .some(value) => value
-        case .none => return .err(Error(.invalidInput).withOperation("rename").withPaths(from, to))
+        case .none => return .err(Error::new(.invalidInput).withOperation("rename").withPaths(from, to))
     }
-    let res = std.libc.rename(cfrom.asPtr(), cto.asPtr())
+    res := unsafe { std::libc::rename(cfrom.asPtr(), cto.asPtr()) }
     if res < 0 {
-        return .err(std.sys.io.unix.lastError().withOperation("rename").withPaths(from, to))
+        return .err(std::sys::io::unix::lastError().withOperation("rename").withPaths(from, to))
     }
     return .ok(())
 }
@@ -313,19 +342,19 @@ public func metadata(_ path: string, _ followSymlinks: bool) -> Result[RawMetada
     var modifiedNanos: uint32 = 0_u32
     var accessedSecs: int64 = 0_i64
     var accessedNanos: uint32 = 0_u32
-    let code = __rt__fs_metadata(
+    code := unsafe { __rt__fs_metadata(
         path,
         followSymlinks,
-        unsafe { &mut fileType as *mut uint8 },
-        unsafe { &mut len as *mut uint64 },
-        unsafe { &mut modifiedSecs as *mut int64 },
-        unsafe { &mut modifiedNanos as *mut uint32 },
-        unsafe { &mut accessedSecs as *mut int64 },
-        unsafe { &mut accessedNanos as *mut uint32 },
-    )
+        unsafe { &fileType as *mut uint8 },
+        unsafe { &len as *mut uint64 },
+        unsafe { &modifiedSecs as *mut int64 },
+        unsafe { &modifiedNanos as *mut uint32 },
+        unsafe { &accessedSecs as *mut int64 },
+        unsafe { &accessedNanos as *mut uint32 },
+    ) }
     if code != 0 {
-        let operation = if followSymlinks { "metadata" } else { "symlink metadata" }
-        return .err(std.sys.io.unix.mapErrno(code).withOperation(operation).withPath(path))
+        operation := if followSymlinks { "metadata" } else { "symlink metadata" }
+        return .err(std::sys::io::unix::mapErrno(code).withOperation(operation).withPath(path))
     }
     return .ok(RawMetadata {
         fileTypeValue: fileType,
@@ -339,12 +368,12 @@ public func metadata(_ path: string, _ followSymlinks: bool) -> Result[RawMetada
 
 public func openDir(_ path: string) -> Result[PlatformDir, Error] {
     var code: int32 = 0
-    let handle = __rt__fs_dir_open(path, unsafe { &mut code as *mut int32 })
+    handle := unsafe { __rt__fs_dir_open(path, unsafe { &code as *mut int32 }) }
     if handle == 0 {
         if code == 0 {
-            return .err(Error(.unexpected).withOperation("open directory").withPath(path))
+            return .err(Error::new(.unexpected).withOperation("open directory").withPath(path))
         }
-        return .err(std.sys.io.unix.mapErrno(code).withOperation("open directory").withPath(path))
+        return .err(std::sys::io::unix::mapErrno(code).withOperation("open directory").withPath(path))
     }
     return .ok(PlatformDir { handle })
 }
@@ -354,54 +383,54 @@ public func isDirValid(_ dir: &PlatformDir) -> bool {
 }
 
 /// Move the directory handle out, leaving `dir` permanently invalid.
-public func takeDir(_ dir: &mut PlatformDir) -> PlatformDir {
-    let handle = dir.handle
+public func takeDir(_ dir: &PlatformDir) -> PlatformDir {
+    handle := dir.handle
     dir.handle = 0
     return PlatformDir { handle }
 }
 
-public func closeDir(_ dir: &mut PlatformDir) -> Result[(), Error] {
+public func closeDir(_ dir: &PlatformDir) -> Result[(), Error] {
     if dir.handle == 0 {
         return .ok(())
     }
-    let handle = dir.handle
+    handle := dir.handle
     dir.handle = 0
-    let code = __rt__fs_dir_close(handle)
+    code := unsafe { __rt__fs_dir_close(handle) }
     if code != 0 {
-        return .err(std.sys.io.unix.mapErrno(code).withOperation("close directory"))
+        return .err(std::sys::io::unix::mapErrno(code).withOperation("close directory"))
     }
     return .ok(())
 }
 
+// The runtime serializes the shared native cursor and returns an owned name
+// copy, so copies of a directory handle may read and close concurrently.
 public func readDir(_ dir: &PlatformDir) -> Result[RawDirEntry?, Error] {
     if dir.handle == 0 {
-        return .err(Error(.closed).withOperation("read directory"))
+        return .err(Error::new(.closed).withOperation("read directory"))
     }
 
     var nameData: *mut uint8 = unsafe { 0 as *mut uint8 }
     var nameLen: usize = 0
     var fileType: uint8 = 0_u8
-    let code = __rt__fs_dir_read(
+    code := unsafe { __rt__fs_dir_read(
         dir.handle,
-        unsafe { &mut nameData as *mut *mut uint8 },
-        unsafe { &mut nameLen as *mut usize },
-        unsafe { &mut fileType as *mut uint8 },
-    )
+        unsafe { &nameData as *mut *mut uint8 },
+        unsafe { &nameLen as *mut usize },
+        unsafe { &fileType as *mut uint8 },
+    ) }
     if code == -1_i32 {
         return .ok(.none)
     }
     if code != 0 {
-        return .err(std.sys.io.unix.mapErrno(code).withOperation("read directory"))
+        return .err(std::sys::io::unix::mapErrno(code).withOperation("read directory"))
     }
 
-    let name = if nameLen == 0 {
+    name := if nameLen == 0 {
         ""
     } else {
-        let data = std.mem.allocBytes(nameLen)
-        let source = unsafe { nameData as *const uint8 }
-        source.readBytes(data, nameLen)
-        std.string.stringFromParts(data, nameLen)
+        std::string::stringFromBytes(unsafe { std::mem::Span[uint8]::from(nameData as *const uint8, nameLen) })
     }
+    unsafe { __rt__fs_owned_bytes_free(nameData) }
     return .ok(.some(RawDirEntry {
         nameValue: name,
         fileTypeValue: fileType,
@@ -409,45 +438,42 @@ public func readDir(_ dir: &PlatformDir) -> Result[RawDirEntry?, Error] {
 }
 
 public func removeDirAll(_ path: string) -> Result[(), Error] {
-    let code = __rt__fs_remove_dir_all(path)
+    code := unsafe { __rt__fs_remove_dir_all(path) }
     if code != 0 {
-        return .err(std.sys.io.unix.mapErrno(code).withOperation("remove directory recursively").withPath(path))
+        return .err(std::sys::io::unix::mapErrno(code).withOperation("remove directory recursively").withPath(path))
     }
     return .ok(())
 }
 
 public func copy(_ from: string, _ to: string) -> Result[uint64, Error] {
     var copied: uint64 = 0_u64
-    let code = __rt__fs_copy(from, to, unsafe { &mut copied as *mut uint64 })
+    code := unsafe { __rt__fs_copy(from, to, unsafe { &copied as *mut uint64 }) }
     if code != 0 {
-        return .err(std.sys.io.unix.mapErrno(code).withOperation("copy").withPaths(from, to))
+        return .err(std::sys::io::unix::mapErrno(code).withOperation("copy").withPaths(from, to))
     }
     return .ok(copied)
 }
 
 func takeOwnedString(_ data: *mut uint8, _ len: usize) -> string {
+    defer { unsafe { __rt__fs_owned_bytes_free(data) } }
     if len == 0 {
-        __rt__fs_owned_bytes_free(data)
         return ""
     }
 
-    let managed = std.mem.allocBytes(len)
-    let source = unsafe { data as *const uint8 }
-    source.readBytes(managed, len)
-    __rt__fs_owned_bytes_free(data)
-    return std.string.stringFromParts(managed, len)
+    value := std::string::stringFromBytes(unsafe { std::mem::Span[uint8]::from(data as *const uint8, len) })
+    return value
 }
 
 public func canonicalize(_ path: string) -> Result[string, Error] {
     var data: *mut uint8 = unsafe { 0 as *mut uint8 }
     var len: usize = 0
-    let code = __rt__fs_canonicalize(
+    code := unsafe { __rt__fs_canonicalize(
         path,
-        unsafe { &mut data as *mut *mut uint8 },
-        unsafe { &mut len as *mut usize },
-    )
+        unsafe { &data as *mut *mut uint8 },
+        unsafe { &len as *mut usize },
+    ) }
     if code != 0 {
-        return .err(std.sys.io.unix.mapErrno(code).withOperation("canonicalize").withPath(path))
+        return .err(std::sys::io::unix::mapErrno(code).withOperation("canonicalize").withPath(path))
     }
     return .ok(takeOwnedString(data, len))
 }
@@ -455,14 +481,14 @@ public func canonicalize(_ path: string) -> Result[string, Error] {
 public func createTempDir(_ parent: string, _ prefix: string) -> Result[string, Error] {
     var data: *mut uint8 = unsafe { 0 as *mut uint8 }
     var len: usize = 0
-    let code = __rt__fs_create_temp_dir(
+    code := unsafe { __rt__fs_create_temp_dir(
         parent,
         prefix,
-        unsafe { &mut data as *mut *mut uint8 },
-        unsafe { &mut len as *mut usize },
-    )
+        unsafe { &data as *mut *mut uint8 },
+        unsafe { &len as *mut usize },
+    ) }
     if code != 0 {
-        return .err(std.sys.io.unix.mapErrno(code).withOperation("create temporary directory").withPath(parent))
+        return .err(std::sys::io::unix::mapErrno(code).withOperation("create temporary directory").withPath(parent))
     }
     return .ok(takeOwnedString(data, len))
 }

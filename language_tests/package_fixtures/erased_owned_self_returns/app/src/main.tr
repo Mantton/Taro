@@ -1,0 +1,10 @@
+import dep
+func main() {
+    var original: any dep::Duplicate & dep::Number = dep::make()
+    var copy: any dep::Duplicate & dep::Number = original.duplicate()
+    assert(original.number() == 40_i32, "library receiver remains initialized")
+    assert(copy.number() == 41_i32, "library thunk returns an owned indirect payload")
+    var forwarded: any dep::Duplicate = dep::copyGeneric(&copy)
+    var projected: any dep::Number = (forwarded as? any dep::Number).unwrap()
+    assert(projected.number() == 42_i32, "generic return preserves unrelated library metadata")
+}

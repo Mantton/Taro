@@ -127,10 +127,23 @@ fn build_link_plan(
             .map(|path| path.as_os_str().to_owned()),
     );
 
+    if target_platform == LinkPlatform::Darwin {
+        // The HTTP runtime uses system certificate trust through rustls's
+        // platform verifier. Rust static archives do not propagate framework
+        // linker arguments into the Taro executable link.
+        args.extend(["-framework", "Security", "-framework", "CoreFoundation"].map(OsString::from));
+    }
+
     if target_platform == LinkPlatform::Linux {
-        // Some math intrinsics lower to libm, while panic unwinding and the
-        // runtime's dynamic-loader support require libunwind and libdl.
-        args.extend(["-lm", "-lunwind", "-ldl"].map(OsString::from));
+        // LLVM's default ELF relocation mode emits position-dependent objects.
+        // Distro compiler drivers may default to PIE; link consistently with
+        // the emitted objects instead of depending on the driver's build flags.
+        args.push(OsString::from("-no-pie"));
+        // Keep the compiler driver's matching unwind runtime. Forcing
+        // libunwind here interposes its _Unwind_* symbols ahead of libgcc on
+        // GNU targets, adding costly memory validation to GC stack walks.
+        // Both providers remain supported by the runtime's CFA probe.
+        args.extend(["-lm", "-ldl"].map(OsString::from));
     }
 
     args.push(OsString::from("-o"));
@@ -380,6 +393,12 @@ mod tests {
                 < args.iter().position(|arg| arg == "libtaro_runtime.a")
         );
         assert!(!args.contains(&"-lm".into()));
+        for framework in ["Security", "CoreFoundation"] {
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair == ["-framework", framework])
+            );
+        }
     }
 
     #[test]
@@ -401,9 +420,12 @@ mod tests {
         assert_eq!(plan.program, PathBuf::from("/cross/bin/clang"));
         assert!(args.contains(&"--target=aarch64-unknown-linux-gnu".into()));
         assert!(args.contains(&"--sysroot=/cross/sysroot".into()));
+        assert!(args.contains(&"-no-pie".into()));
         assert!(args.contains(&"-lm".into()));
-        assert!(args.contains(&"-lunwind".into()));
+        assert!(!args.contains(&"-lunwind".into()));
+        assert!(!args.contains(&"-lgcc_s".into()));
         assert!(args.contains(&"-ldl".into()));
+        assert!(!args.contains(&"-framework".into()));
     }
 
     #[test]

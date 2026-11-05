@@ -14,10 +14,9 @@ use crate::{
             lower::lowerer::TypeLowerer,
             solve::{
                 Adjustment, ApplyArgument, ApplyGoalData, AssignOpGoalData, BinOpGoalData,
-                BindOverloadGoalData, CompilerCallContext, ConstraintSystem, DerefGoalData,
-                DisjunctionBranch, Goal, InferredStaticMemberGoalData, MemberGoalData,
-                MethodCallData, StructLiteralField, StructLiteralGoalData, TupleAccessGoalData,
-                UnOpGoalData,
+                BindOverloadGoalData, ConstraintSystem, DerefGoalData, DisjunctionBranch, Goal,
+                InferredStaticMemberGoalData, MemberGoalData, MethodCallData, StructLiteralField,
+                StructLiteralGoalData, TupleAccessGoalData, UnOpGoalData,
             },
             utils::{
                 arguments::{match_arguments_to_parameters, validate_arity},
@@ -43,14 +42,36 @@ use std::rc::Rc;
 
 #[path = "async_surface.rs"]
 mod async_surface;
+#[cfg(test)]
+#[path = "await_scope_tests.rs"]
+mod await_scope_tests;
+#[path = "bound_method.rs"]
+mod bound_method;
+#[path = "brackets.rs"]
+mod brackets;
+#[path = "class_init.rs"]
+mod class_init;
 #[path = "closure.rs"]
 mod closure;
+#[cfg(test)]
+#[path = "collection_tests.rs"]
+mod collection_tests;
 #[path = "expr.rs"]
 mod expr;
+#[path = "index.rs"]
+mod index;
 #[path = "path.rs"]
 mod path;
 #[path = "pattern.rs"]
 mod pattern;
+#[cfg(test)]
+#[path = "property_tests.rs"]
+mod property_tests;
+#[path = "raw_pointer.rs"]
+mod raw_pointer;
+#[cfg(test)]
+#[path = "result_conversion_tests.rs"]
+mod result_conversion_tests;
 #[path = "stmt.rs"]
 mod stmt;
 
@@ -111,34 +132,14 @@ impl<'ctx> Checker<'ctx> {
             return;
         }
 
-        let value = match self.results.borrow().value_resolution(node.initializer.id) {
-            Some(hir::Resolution::Definition(
-                ctor_id,
-                DefinitionKind::VariantConstructor(VariantCtorKind::Constant),
-            )) => Some(ConstValue::EnumUnitVariant(ctor_id)),
-            _ => {
-                let results = self.results.borrow();
-                eval_const_expression_with_type_results(gcx, &node.initializer, &results)
-            }
-        };
-        let Some(value) = value else {
-            return;
-        };
-
-        gcx.cache_static_initializer(
-            id,
-            Const {
-                ty: expected,
-                kind: ConstKind::Value(value),
-            },
-        );
+        gcx.static_initializer_function(id);
     }
 
     pub fn check_function(
         &mut self,
         id: DefinitionID,
         node: &hir::Function,
-        _: hir::FunctionContext,
+        function_context: hir::FunctionContext,
     ) {
         let gcx = self.gcx();
         let signature = gcx.get_signature(id);
@@ -150,13 +151,42 @@ impl<'ctx> Checker<'ctx> {
             _ => unreachable!("function signature must be of function pointer type"),
         };
 
-        let body_return_ty = if node.is_async {
+        let body_return_ty = if matches!(function_context, hir::FunctionContext::Initializer(_)) {
+            gcx.types.void
+        } else if node.is_async {
             gcx.function_body_output(id)
         } else {
             return_ty
         };
 
-        self.return_ty.set(Some(body_return_ty));
+        let fallible_initializer = matches!(function_context, hir::FunctionContext::Initializer(_))
+            && gcx.result_parts(return_ty).is_some();
+        self.return_ty.set(Some(if fallible_initializer {
+            return_ty
+        } else {
+            body_return_ty
+        }));
+        if matches!(function_context, hir::FunctionContext::Initializer(_)) {
+            let binding = &node.block.as_ref().expect("initializer body").statements[0];
+            let hir::StatementKind::Variable(local) = &binding.kind else {
+                unreachable!("constructor self binding")
+            };
+            self.constructor_self.set(Some(local.pattern.id));
+            let convenience = node
+                .initializer_kind
+                .is_some_and(|kind| kind.is_convenience);
+            self.constructor_convenience.set(convenience);
+            let target = gcx.constructor_value(return_ty);
+            if gcx.is_class_type(target) && !convenience {
+                self.constructor_payload
+                    .set(gcx.ensure_class_payload(target));
+                if fallible_initializer {
+                    self.return_ty.set(Some(
+                        gcx.constructor_result(return_ty, self.constructor_payload.get().unwrap()),
+                    ));
+                }
+            }
+        }
 
         let param_ids: Vec<NodeID> = node
             .signature
@@ -185,7 +215,9 @@ impl<'ctx> Checker<'ctx> {
                 parameter.id,
                 crate::sema::tycheck::check::checker::LocalBinding {
                     ty: parameter_ty,
-                    mutable: false,
+                    // A value receiver is a writable local copy. A reference
+                    // receiver already carries access to its target storage.
+                    mutable: gcx.symbol_eq(parameter.name.symbol, "self"),
                 },
             );
 
@@ -218,30 +250,29 @@ impl<'ctx> Checker<'ctx> {
             self.async_depth.set(1);
         }
 
-        if let Some(body) = hir::is_expression_bodied(body) {
+        if body_return_ty == gcx.types.void {
+            // Unit destinations deliberately evaluate and discard their tail
+            // in MIR. Only explicit return expressions promise a value here.
+            self.check_block(body, None);
+        } else if let Some(body) = hir::is_expression_bodied(body) {
             // --- single-expression body ---
             self.check_return(Some(body), body.span, None);
         } else {
             // --- regular block body ---
-            self.check_block(body, None);
-            if matches!(
-                body_return_ty.kind(),
-                TyKind::Alias {
-                    kind: crate::sema::models::AliasKind::Opaque,
-                    def_id,
-                    ..
-                } if def_id == id
-            ) && let Some(tail) = body.tail.as_deref()
-                && !matches!(tail.kind, hir::ExpressionKind::Return { .. })
-                && let Some(ty) = self.results.borrow().try_node_type(tail.id)
-            {
-                self.opaque_return_candidates.borrow_mut().push(
-                    crate::sema::tycheck::check::checker::OpaqueReturnCandidate {
-                        ty,
-                        infer_cx: None,
-                        span: tail.span,
-                    },
-                );
+            for statement in &body.statements {
+                self.check_statement(statement, None);
+            }
+            if let Some(tail) = body.tail.as_deref() {
+                if matches!(tail.kind, hir::ExpressionKind::Return { .. }) {
+                    // Explicit return checks its own value; do not register
+                    // its Never expression as another opaque return candidate.
+                    self.top_level_check(tail, None);
+                } else {
+                    // A function tail is a return site, even after statements.
+                    // This records packing/wrapping adjustments on the value,
+                    // and rejects mismatches before MIR construction.
+                    self.check_return(Some(tail), tail.span, None);
+                }
             }
         }
 
@@ -363,7 +394,7 @@ impl<'ctx> Checker<'ctx> {
 }
 
 impl<'ctx> Checker<'ctx> {
-    fn top_level_check(
+    pub(super) fn top_level_check(
         &self,
         expression: &hir::Expression,
         expectation: Option<Ty<'ctx>>,
@@ -384,7 +415,7 @@ impl<'ctx> Checker<'ctx> {
             }
             cs.solve_all();
 
-            self.commit_constraint_results(&cs);
+            self.commit_constraint_results(&mut cs);
 
             let provided = cs.infer_cx.resolve_vars_if_possible(provided);
             if provided.is_infer() {
@@ -415,17 +446,69 @@ impl<'ctx> Checker<'ctx> {
 
     /// Commits all resolved results from a constraint system to the checker's results.
     /// Used when solving sub-expressions in separate constraint systems (e.g., match scrutinee).
-    fn commit_constraint_results(&self, cs: &Cs<'ctx>) {
-        for (id, ty) in cs.resolved_expr_types() {
+    fn commit_constraint_results(&self, cs: &mut Cs<'ctx>) {
+        self.finalize_compound_assignments(cs);
+        self.finalize_index_accesses(cs);
+        let expression_types = cs.resolved_expr_types();
+
+        // A generic default can finish resolving after method binding. Hidden
+        // payload types are legal only under their existential binder, never as
+        // independently usable expression storage. Diagnose before codegen.
+        if !self.gcx().dcx().has_error()
+            && let Some((&id, _)) = expression_types
+                .iter()
+                .filter(|(_, ty)| {
+                    crate::sema::tycheck::utils::erased_self::has_free_self(
+                        cs.infer_cx.resolve_vars_if_possible(**ty),
+                    )
+                })
+                .min_by_key(|(id, _)| **id)
+        {
+            let span = self
+                .expression_contexts
+                .borrow()
+                .get(&id)
+                .map(|(span, _)| *span);
+            self.gcx().dcx().emit_error(
+                crate::sema::error::TypeError::ErasedMethodUsesHiddenType.format(self.gcx()),
+                span,
+            );
+        }
+        // Diagnose concrete snapshot representation limits at the source use,
+        // before release inlining can move or erase the corresponding local.
+        let mut expression_types: Vec<_> = expression_types.into_iter().collect();
+        expression_types.sort_by_key(|(id, _)| *id);
+        for (id, ty) in expression_types {
             let ty = cs.infer_cx.resolve_vars_or_error(ty);
+            let ty = if crate::sema::tycheck::utils::erased_self::has_free_self(ty) {
+                Ty::error(self.gcx())
+            } else {
+                ty
+            };
+            if !self.gcx().dcx().has_error()
+                && let Some((span, _)) = self.expression_contexts.borrow().get(&id)
+            {
+                let _ = crate::sema::tycheck::utils::atomic_handle::validate(self.gcx(), ty, *span);
+            }
             self.results.borrow_mut().record_node_type(id, ty);
 
-            // FIX: Update closure signature with resolved types to ensure codegen sees concrete types
+            // Resolve the environment as well as the signature. Capture types
+            // can depend on numeric/range inference completed after synthesis.
             if let TyKind::Closure { closure_def_id, .. } = ty.kind() {
+                let gcx = self.gcx();
+                if gcx.generics_of(closure_def_id).parent == Some(self.current_def)
+                    && let Some(mut captures) = gcx.get_closure_captures(closure_def_id)
+                {
+                    for capture in &mut captures.captures {
+                        capture.ty = cs.infer_cx.resolve_vars_if_possible(capture.ty);
+                    }
+                    gcx.cache_closure_captures(closure_def_id, captures);
+                }
                 self.update_closure_signature(closure_def_id, ty);
             }
         }
         for (id, adjustments) in cs.resolved_adjustments() {
+            self.validate_raw_deref_adjustments(id, &adjustments, cs);
             let adjustments: Vec<_> = adjustments
                 .into_iter()
                 .map(|adjustment| self.resolve_adjustment(cs, adjustment))
@@ -451,9 +534,6 @@ impl<'ctx> Checker<'ctx> {
         for (id, info) in cs.resolved_property_reads() {
             self.results.borrow_mut().record_property_read(id, info);
         }
-        for (id, info) in cs.resolved_property_writes() {
-            self.results.borrow_mut().record_property_write(id, info);
-        }
         for (id, args) in cs.resolved_instantiations() {
             let resolved_args = cs.infer_cx.resolve_args_if_possible(args);
             self.results
@@ -467,14 +547,28 @@ impl<'ctx> Checker<'ctx> {
         }
 
         self.finalize_deferred_async_call_surface_checks(cs);
-        self.finalize_deferred_async_property_surface_checks(cs);
     }
 
     fn resolve_adjustment(&self, cs: &Cs<'ctx>, adjustment: Adjustment<'ctx>) -> Adjustment<'ctx> {
         match adjustment {
+            Adjustment::DerefCall {
+                method,
+                arguments,
+                result,
+            } => Adjustment::DerefCall {
+                method,
+                arguments: self.resolve_generic_args_or_error(cs, arguments),
+                result: cs.structurally_resolve(result),
+            },
             Adjustment::BoxExistential { from, interfaces } => Adjustment::BoxExistential {
                 from: cs.infer_cx.resolve_vars_or_error(from),
                 interfaces: self.resolve_interface_refs_for_adjustment(cs, interfaces),
+            },
+            Adjustment::ClassUpcast { to } => Adjustment::ClassUpcast {
+                to: cs.infer_cx.resolve_vars_or_error(to),
+            },
+            Adjustment::NullPointer { to } => Adjustment::NullPointer {
+                to: cs.infer_cx.resolve_vars_or_error(to),
             },
             Adjustment::ExistentialUpcast { from, to } => Adjustment::ExistentialUpcast {
                 from: cs.infer_cx.resolve_vars_or_error(from),
@@ -485,6 +579,9 @@ impl<'ctx> Checker<'ctx> {
                 generic_args,
             } => Adjustment::OptionalWrap {
                 is_some,
+                generic_args: self.resolve_generic_args_or_error(cs, generic_args),
+            },
+            Adjustment::ResultOkWrap { generic_args } => Adjustment::ResultOkWrap {
                 generic_args: self.resolve_generic_args_or_error(cs, generic_args),
             },
             other => other,
@@ -580,5 +677,70 @@ impl<'a> hir::HirVisitor for DefaultParamRefChecker<'a> {
             }
         }
         hir::walk_resolved_path(self, node)
+    }
+}
+
+#[cfg(test)]
+mod block_tail_tests {
+    #[test]
+    fn implicit_unit_tails_discard_values_but_explicit_returns_do_not() {
+        let errors = crate::test_support::analyze_script_mir_diagnostics(
+            "func single() { 7_i32 }\nfunc block() { var value: int32 = 9; value }\nfunc main() { single(); block() }",
+        );
+        assert!(errors.is_empty(), "{errors:#?}");
+        let errors = crate::test_support::analyze_script_mir_diagnostics(
+            "func explicit() { return 7_i32 }\nfunc main() {}",
+        );
+        assert!(!errors.is_empty(), "explicit return must match unit result");
+        assert!(
+            errors
+                .iter()
+                .all(|error| !error.message.contains("internal error")),
+            "{errors:#?}"
+        );
+    }
+
+    #[test]
+    fn contextual_match_with_a_unit_path_is_not_classified_as_diverging() {
+        let errors = crate::test_support::analyze_script_mir_diagnostics(
+            "func select(_ flag: bool) -> int32 { loop { match flag { case true => return 7\ncase false => { match flag { case true => {}\ncase false => return 9\n} }\n} } }\nfunc main() {}",
+        );
+        assert!(errors.is_empty(), "{errors:#?}");
+    }
+
+    #[test]
+    fn declared_return_context_coerces_conditional_and_match_arms() {
+        for tail in [
+            "if flag { first } else { second }",
+            "match flag { case true => first\ncase false => second\n}",
+        ] {
+            let source = format!(
+                "interface Read {{ func read() -> int32; }}\nstruct First {{ value: int32 }}\nstruct Second {{ value: int32 }}\nconform First to Read {{ func read() -> int32 {{ self.value }}\n}}\nconform Second to Read {{ func read() -> int32 {{ self.value }}\n}}\nfunc choose(_ flag: bool) -> any Read {{ first := First {{ value: 7 }}; second := Second {{ value: 9 }}; {tail} }}\nfunc main() {{}}"
+            );
+            let errors = crate::test_support::analyze_script_mir_diagnostics(&source);
+            assert!(errors.is_empty(), "{tail}\n{errors:#?}");
+        }
+    }
+
+    #[test]
+    fn regular_block_tails_apply_declared_return_coercions() {
+        let errors = crate::test_support::analyze_script_mir_diagnostics(
+            "interface Read { func read() -> int32; }\nstruct Value { value: int32 }\nconform Value to Read { func read() -> int32 { self.value }\n}\nfunc boxed() -> any Read { value := Value { value: 7 }; value }\nfunc main() { value := boxed(); observed := value.read() }",
+        );
+        assert!(errors.is_empty(), "{errors:#?}");
+    }
+
+    #[test]
+    fn regular_block_tail_mismatches_are_source_diagnostics() {
+        let errors = crate::test_support::analyze_script_mir_diagnostics(
+            "func wrong() -> int32 { var value: bool = true; value }\nfunc main() {}",
+        );
+        assert!(!errors.is_empty(), "invalid tail must be rejected");
+        assert!(
+            errors
+                .iter()
+                .all(|error| !error.message.contains("internal error")),
+            "{errors:#?}"
+        );
     }
 }

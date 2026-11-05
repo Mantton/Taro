@@ -1,0 +1,8 @@
+struct Receipt {}
+func forbidden(_ receipt: Receipt) async {
+    panic("sync main's unfinished task entered its body during shutdown")
+}
+func main() {
+    var receipt: Receipt = Receipt {}
+    std::task::detached(() => await forbidden(receipt))
+}

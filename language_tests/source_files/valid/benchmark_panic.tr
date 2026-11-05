@@ -4,7 +4,7 @@
 // EXPECT_STDOUT_CONTAINS: "error": "benchmark panicked"
 
 @bench
-func benchmarkPanic(benchmark: &mut std.bench.Benchmark) {
-    let _ = benchmark.next()
+func benchmarkPanic(benchmark: &std::bench::Benchmark) {
+    var _ = benchmark.next()
     panic("benchmark panic fixture")
 }

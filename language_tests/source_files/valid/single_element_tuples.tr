@@ -4,27 +4,27 @@
 
 func main() {
     // `(x,)` is a one-element tuple, `(x)` is a parenthesized expression.
-    let t: (int32,) = (1,)
+    var t: (int32,) = (1,)
     assert(t.0 == 1, "single-element tuple access")
 
     // `(x)` behaves exactly like `x`.
-    let plain: int32 = (1)
+    var plain: int32 = (1)
     assert(plain == 1, "parenthesized expression unwraps")
 
     // Destructuring a one-element tuple.
-    let (x,) = (42,)
+    var (x,) = (42,)
     assert(x == 42, "single-element tuple destructure")
 
     // Nested one-element tuple inside a two-tuple.
-    let nested = ((1,), 2)
-    let inner = nested.0
+    nested := ((1,), 2)
+    inner := nested.0
     assert(inner.0 == 1, "nested single-element tuple access")
     assert(nested.1 == 2, "outer tuple second element")
 
-    let pair = (1, (2, 3))
-    let (first, (second, _)) = pair
+    pair := (1, (2, 3))
+    var (first, (second, _)) = pair
     assert(first == 1, "nested tuple outer binding")
     assert(second == 2, "nested tuple inner binding")
 
-    std.print("PASS: Single-element tuples\n")
+    std::print("PASS: Single-element tuples\n")
 }

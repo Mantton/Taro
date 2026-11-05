@@ -1,31 +1,31 @@
-import std.hash.{Hashable, Hasher}
-import std.ops.PartialEq
-import std.cmp.{Ordering, PartialOrd, Ord}
-import std.optional.Optional
-import std.convert.{Parse, ParseError}
-import std.result.Result
+import std::hash::{Hashable, Hasher}
+import std::ops::PartialEq
+import std::cmp::{Ordering, PartialOrd, Ord}
+import std::optional::Optional
+import std::convert::{Parse, ParseError}
+import std::result::Result
 
 func parseRune(_ input: string) -> Result[rune, ParseError] {
-    let len = std.string.stringLen(input)
+    len := std::string::stringLen(input)
     if len == 0 {
-        return .err(ParseError(.empty, 0 as usize))
+        return .err(ParseError::new(.empty, 0 as usize))
     }
 
-    let (value, width) = std.string.decodeRune(input, 0 as usize)
-    let first = std.string.stringData(input).read()
+    var (value, width) = std::string::decodeRune(input, 0 as usize)
+    first := unsafe { std::string::stringData(input).read() }
     if width == 1 && first >= 0x80_u8 {
-        return .err(ParseError(.invalidFormat, 0 as usize))
+        return .err(ParseError::new(.invalidFormat, 0 as usize))
     }
     if width != len {
-        return .err(ParseError(.invalidFormat, width))
+        return .err(ParseError::new(.invalidFormat, width))
     }
     return .ok(value)
 }
 
-impl Hashable for rune {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {
-        let value: uint32 = *self as uint32
-        let bytes: [uint8; 4] = [
+conform rune to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
+        var value: uint32 = self as uint32
+        var bytes: [uint8; 4] = [
             (value & 0xff_u32) as uint8,
             ((value >> 8) & 0xff_u32) as uint8,
             ((value >> 16) & 0xff_u32) as uint8,
@@ -35,21 +35,21 @@ impl Hashable for rune {
     }
 }
 
-impl PartialEq for rune {
-    public func eq(&self, _ other: &rune) -> bool { *self == *other }
+conform rune to PartialEq {
+    public func eq(_ other: rune) -> bool { self == other }
 }
 
-impl PartialOrd for rune {
-    public func partialCmp(&self, _ other: &rune) -> Optional[Ordering] {
+conform rune to PartialOrd {
+    public func partialCmp(_ other: rune) -> Optional[Ordering] {
         .some(self.cmp(other))
     }
 }
 
-impl Ord for rune {
-    public func cmp(&self, _ other: &rune) -> Ordering {
-        if *self < *other {
+conform rune to Ord {
+    public func cmp(_ other: rune) -> Ordering {
+        if self < other {
             .less
-        } else if *self == *other {
+        } else if self == other {
             .equal
         } else {
             .greater
@@ -57,15 +57,15 @@ impl Ord for rune {
     }
 }
 
-impl Parse for rune {
-    public func parse(_ input: string) -> Result[rune, ParseError] {
+conform rune to Parse {
+    public static func parse(_ input: string) -> Result[rune, ParseError] {
         parseRune(input)
     }
 }
 
-impl rune {
+extend rune {
     /// Parse exactly one valid UTF-8 scalar value.
-    public func parse(_ input: string) -> Result[rune, ParseError] {
+    public static func parse(_ input: string) -> Result[rune, ParseError] {
         parseRune(input)
     }
 }

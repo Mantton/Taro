@@ -1,9 +1,9 @@
-import std.hash.{Hashable, Hasher}
-import std.ops.PartialEq
-import std.cmp.{Ordering, PartialOrd, Ord}
-import std.optional.Optional
-import std.convert.{Parse, ParseError, ParseErrorKind}
-import std.result.Result
+import std::hash::{Hashable, Hasher}
+import std::ops::PartialEq
+import std::cmp::{Ordering, PartialOrd, Ord}
+import std::optional::Optional
+import std::convert::{Parse, ParseError, ParseErrorKind}
+import std::result::Result
 
 func usizeMax() -> usize {
     0xffffffffffffffff_u64 as usize
@@ -33,21 +33,21 @@ func parseIntegerMagnitude(
     _ limit: uint64,
     _ rangeKind: ParseErrorKind,
 ) -> Result[uint64, ParseError] {
-    let len = std.string.stringLen(input)
-    let data = std.string.stringData(input)
-    let base = radix as uint64
+    len := std::string::stringLen(input)
+    data := std::string::stringData(input)
+    base := radix as uint64
     var value: uint64 = 0
     var index = start
 
     while index < len {
-        let digit = integerDigitValue(data.add(index).read())
+        digit := integerDigitValue(unsafe { data.add(index).read() })
         if digit >= radix {
-            return .err(ParseError(.invalidDigit, index))
+            return .err(ParseError::new(.invalidDigit, index))
         }
 
-        let digitValue = digit as uint64
+        digitValue := digit as uint64
         if digitValue > limit || value > (limit - digitValue) / base {
-            return .err(ParseError(rangeKind, index))
+            return .err(ParseError::new(rangeKind, index))
         }
 
         value = value * base + digitValue
@@ -73,28 +73,28 @@ func parseSignedInteger(
     _ negativeLimit: uint64,
 ) -> Result[int64, ParseError] {
     if !validIntegerRadix(radix) {
-        return .err(ParseError(.invalidFormat, 0 as usize))
+        return .err(ParseError::new(.invalidFormat, 0 as usize))
     }
 
-    let len = std.string.stringLen(input)
+    len := std::string::stringLen(input)
     if len == 0 {
-        return .err(ParseError(.empty, 0 as usize))
+        return .err(ParseError::new(.empty, 0 as usize))
     }
 
-    let data = std.string.stringData(input)
+    data := std::string::stringData(input)
     var index: usize = 0
     var negative = false
-    let first = data.read()
+    first := unsafe { data.read() }
     if first == ('+' as uint8) || first == ('-' as uint8) {
         negative = first == ('-' as uint8)
         index = 1
         if index == len {
-            return .err(ParseError(.invalidFormat, index))
+            return .err(ParseError::new(.invalidFormat, index))
         }
     }
 
-    let limit = if negative { negativeLimit } else { positiveLimit }
-    let rangeKind: ParseErrorKind = if negative { .underflow } else { .overflow }
+    limit := if negative { negativeLimit } else { positiveLimit }
+    var rangeKind: ParseErrorKind = if negative { .underflow } else { .overflow }
     match parseIntegerMagnitude(input, index, radix, limit, rangeKind) {
         case .ok(magnitude) => {
             if negative {
@@ -112,38 +112,38 @@ func parseUnsignedInteger(
     _ limit: uint64,
 ) -> Result[uint64, ParseError] {
     if !validIntegerRadix(radix) {
-        return .err(ParseError(.invalidFormat, 0 as usize))
+        return .err(ParseError::new(.invalidFormat, 0 as usize))
     }
 
-    let len = std.string.stringLen(input)
+    len := std::string::stringLen(input)
     if len == 0 {
-        return .err(ParseError(.empty, 0 as usize))
+        return .err(ParseError::new(.empty, 0 as usize))
     }
 
-    let first = std.string.stringData(input).read()
+    first := unsafe { std::string::stringData(input).read() }
     if first == ('+' as uint8) || first == ('-' as uint8) {
-        return .err(ParseError(.invalidFormat, 0 as usize))
+        return .err(ParseError::new(.invalidFormat, 0 as usize))
     }
 
     return parseIntegerMagnitude(input, 0 as usize, radix, limit, .overflow)
 }
 
 // Hash integers as little-endian bytes for stable, explicit byte feeds.
-func hashU8[H: Hasher](_ hasher: &mut H, _ value: uint8) {
-    let bytes: [uint8; 1] = [value]
+func hashU8[H: Hasher](_ hasher: H, _ value: uint8) {
+    var bytes: [uint8; 1] = [value]
     hasher.write(bytes.asSpan())
 }
 
-func hashU16[H: Hasher](_ hasher: &mut H, _ value: uint16) {
-    let bytes: [uint8; 2] = [
+func hashU16[H: Hasher](_ hasher: H, _ value: uint16) {
+    var bytes: [uint8; 2] = [
         (value & 0xff_u16) as uint8,
         ((value >> 8) & 0xff_u16) as uint8,
     ]
     hasher.write(bytes.asSpan())
 }
 
-func hashU32[H: Hasher](_ hasher: &mut H, _ value: uint32) {
-    let bytes: [uint8; 4] = [
+internal func hashU32[H: Hasher](_ hasher: H, _ value: uint32) {
+    var bytes: [uint8; 4] = [
         (value & 0xff_u32) as uint8,
         ((value >> 8) & 0xff_u32) as uint8,
         ((value >> 16) & 0xff_u32) as uint8,
@@ -152,8 +152,8 @@ func hashU32[H: Hasher](_ hasher: &mut H, _ value: uint32) {
     hasher.write(bytes.asSpan())
 }
 
-func hashU64[H: Hasher](_ hasher: &mut H, _ value: uint64) {
-    let bytes: [uint8; 8] = [
+internal func hashU64[H: Hasher](_ hasher: H, _ value: uint64) {
+    var bytes: [uint8; 8] = [
         (value & 0xff_u64) as uint8,
         ((value >> 8) & 0xff_u64) as uint8,
         ((value >> 16) & 0xff_u64) as uint8,
@@ -167,27 +167,27 @@ func hashU64[H: Hasher](_ hasher: &mut H, _ value: uint64) {
 }
 
 // int8
-impl Hashable for int8 {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {
-        hashU8(hasher, *self as uint8)
+conform int8 to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
+        hashU8(hasher, self as uint8)
     }
 }
 
-impl PartialEq for int8 {
-    public func eq(&self, _ other: &int8) -> bool { *self == *other }
+conform int8 to PartialEq {
+    public func eq(_ other: int8) -> bool { self == other }
 }
 
-impl PartialOrd for int8 {
-    public func partialCmp(&self, _ other: &int8) -> Optional[Ordering] {
+conform int8 to PartialOrd {
+    public func partialCmp(_ other: int8) -> Optional[Ordering] {
         .some(self.cmp(other))
     }
 }
 
-impl Ord for int8 {
-    public func cmp(&self, _ other: &int8) -> Ordering {
-        if *self < *other {
+conform int8 to Ord {
+    public func cmp(_ other: int8) -> Ordering {
+        if self < other {
             .less
-        } else if *self == *other {
+        } else if self == other {
             .equal
         } else {
             .greater
@@ -196,27 +196,27 @@ impl Ord for int8 {
 }
 
 // int16
-impl Hashable for int16 {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {
-        hashU16(hasher, *self as uint16)
+conform int16 to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
+        hashU16(hasher, self as uint16)
     }
 }
 
-impl PartialEq for int16 {
-    public func eq(&self, _ other: &int16) -> bool { *self == *other }
+conform int16 to PartialEq {
+    public func eq(_ other: int16) -> bool { self == other }
 }
 
-impl PartialOrd for int16 {
-    public func partialCmp(&self, _ other: &int16) -> Optional[Ordering] {
+conform int16 to PartialOrd {
+    public func partialCmp(_ other: int16) -> Optional[Ordering] {
         .some(self.cmp(other))
     }
 }
 
-impl Ord for int16 {
-    public func cmp(&self, _ other: &int16) -> Ordering {
-        if *self < *other {
+conform int16 to Ord {
+    public func cmp(_ other: int16) -> Ordering {
+        if self < other {
             .less
-        } else if *self == *other {
+        } else if self == other {
             .equal
         } else {
             .greater
@@ -225,27 +225,27 @@ impl Ord for int16 {
 }
 
 // int32
-impl Hashable for int32 {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {
-        hashU32(hasher, *self as uint32)
+conform int32 to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
+        hashU32(hasher, self as uint32)
     }
 }
 
-impl PartialEq for int32 {
-    public func eq(&self, _ other: &int32) -> bool { *self == *other }
+conform int32 to PartialEq {
+    public func eq(_ other: int32) -> bool { self == other }
 }
 
-impl PartialOrd for int32 {
-    public func partialCmp(&self, _ other: &int32) -> Optional[Ordering] {
+conform int32 to PartialOrd {
+    public func partialCmp(_ other: int32) -> Optional[Ordering] {
         .some(self.cmp(other))
     }
 }
 
-impl Ord for int32 {
-    public func cmp(&self, _ other: &int32) -> Ordering {
-        if *self < *other {
+conform int32 to Ord {
+    public func cmp(_ other: int32) -> Ordering {
+        if self < other {
             .less
-        } else if *self == *other {
+        } else if self == other {
             .equal
         } else {
             .greater
@@ -254,27 +254,27 @@ impl Ord for int32 {
 }
 
 // int64
-impl Hashable for int64 {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {
-        hashU64(hasher, *self as uint64)
+conform int64 to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
+        hashU64(hasher, self as uint64)
     }
 }
 
-impl PartialEq for int64 {
-    public func eq(&self, _ other: &int64) -> bool { *self == *other }
+conform int64 to PartialEq {
+    public func eq(_ other: int64) -> bool { self == other }
 }
 
-impl PartialOrd for int64 {
-    public func partialCmp(&self, _ other: &int64) -> Optional[Ordering] {
+conform int64 to PartialOrd {
+    public func partialCmp(_ other: int64) -> Optional[Ordering] {
         .some(self.cmp(other))
     }
 }
 
-impl Ord for int64 {
-    public func cmp(&self, _ other: &int64) -> Ordering {
-        if *self < *other {
+conform int64 to Ord {
+    public func cmp(_ other: int64) -> Ordering {
+        if self < other {
             .less
-        } else if *self == *other {
+        } else if self == other {
             .equal
         } else {
             .greater
@@ -283,27 +283,27 @@ impl Ord for int64 {
 }
 
 // uint8
-impl Hashable for uint8 {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {
-        hashU8(hasher, *self)
+conform uint8 to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
+        hashU8(hasher, self)
     }
 }
 
-impl PartialEq for uint8 {
-    public func eq(&self, _ other: &uint8) -> bool { *self == *other }
+conform uint8 to PartialEq {
+    public func eq(_ other: uint8) -> bool { self == other }
 }
 
-impl PartialOrd for uint8 {
-    public func partialCmp(&self, _ other: &uint8) -> Optional[Ordering] {
+conform uint8 to PartialOrd {
+    public func partialCmp(_ other: uint8) -> Optional[Ordering] {
         .some(self.cmp(other))
     }
 }
 
-impl Ord for uint8 {
-    public func cmp(&self, _ other: &uint8) -> Ordering {
-        if *self < *other {
+conform uint8 to Ord {
+    public func cmp(_ other: uint8) -> Ordering {
+        if self < other {
             .less
-        } else if *self == *other {
+        } else if self == other {
             .equal
         } else {
             .greater
@@ -312,27 +312,27 @@ impl Ord for uint8 {
 }
 
 // uint16
-impl Hashable for uint16 {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {
-        hashU16(hasher, *self)
+conform uint16 to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
+        hashU16(hasher, self)
     }
 }
 
-impl PartialEq for uint16 {
-    public func eq(&self, _ other: &uint16) -> bool { *self == *other }
+conform uint16 to PartialEq {
+    public func eq(_ other: uint16) -> bool { self == other }
 }
 
-impl PartialOrd for uint16 {
-    public func partialCmp(&self, _ other: &uint16) -> Optional[Ordering] {
+conform uint16 to PartialOrd {
+    public func partialCmp(_ other: uint16) -> Optional[Ordering] {
         .some(self.cmp(other))
     }
 }
 
-impl Ord for uint16 {
-    public func cmp(&self, _ other: &uint16) -> Ordering {
-        if *self < *other {
+conform uint16 to Ord {
+    public func cmp(_ other: uint16) -> Ordering {
+        if self < other {
             .less
-        } else if *self == *other {
+        } else if self == other {
             .equal
         } else {
             .greater
@@ -341,27 +341,27 @@ impl Ord for uint16 {
 }
 
 // uint32
-impl Hashable for uint32 {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {
-        hashU32(hasher, *self)
+conform uint32 to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
+        hashU32(hasher, self)
     }
 }
 
-impl PartialEq for uint32 {
-    public func eq(&self, _ other: &uint32) -> bool { *self == *other }
+conform uint32 to PartialEq {
+    public func eq(_ other: uint32) -> bool { self == other }
 }
 
-impl PartialOrd for uint32 {
-    public func partialCmp(&self, _ other: &uint32) -> Optional[Ordering] {
+conform uint32 to PartialOrd {
+    public func partialCmp(_ other: uint32) -> Optional[Ordering] {
         .some(self.cmp(other))
     }
 }
 
-impl Ord for uint32 {
-    public func cmp(&self, _ other: &uint32) -> Ordering {
-        if *self < *other {
+conform uint32 to Ord {
+    public func cmp(_ other: uint32) -> Ordering {
+        if self < other {
             .less
-        } else if *self == *other {
+        } else if self == other {
             .equal
         } else {
             .greater
@@ -370,27 +370,27 @@ impl Ord for uint32 {
 }
 
 // uint64
-impl Hashable for uint64 {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {
-        hashU64(hasher, *self)
+conform uint64 to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
+        hashU64(hasher, self)
     }
 }
 
-impl PartialEq for uint64 {
-    public func eq(&self, _ other: &uint64) -> bool { *self == *other }
+conform uint64 to PartialEq {
+    public func eq(_ other: uint64) -> bool { self == other }
 }
 
-impl PartialOrd for uint64 {
-    public func partialCmp(&self, _ other: &uint64) -> Optional[Ordering] {
+conform uint64 to PartialOrd {
+    public func partialCmp(_ other: uint64) -> Optional[Ordering] {
         .some(self.cmp(other))
     }
 }
 
-impl Ord for uint64 {
-    public func cmp(&self, _ other: &uint64) -> Ordering {
-        if *self < *other {
+conform uint64 to Ord {
+    public func cmp(_ other: uint64) -> Ordering {
+        if self < other {
             .less
-        } else if *self == *other {
+        } else if self == other {
             .equal
         } else {
             .greater
@@ -399,27 +399,27 @@ impl Ord for uint64 {
 }
 
 // isize
-impl Hashable for isize {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {
-        hashU64(hasher, *self as uint64)
+conform isize to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
+        hashU64(hasher, self as uint64)
     }
 }
 
-impl PartialEq for isize {
-    public func eq(&self, _ other: &isize) -> bool { *self == *other }
+conform isize to PartialEq {
+    public func eq(_ other: isize) -> bool { self == other }
 }
 
-impl PartialOrd for isize {
-    public func partialCmp(&self, _ other: &isize) -> Optional[Ordering] {
+conform isize to PartialOrd {
+    public func partialCmp(_ other: isize) -> Optional[Ordering] {
         .some(self.cmp(other))
     }
 }
 
-impl Ord for isize {
-    public func cmp(&self, _ other: &isize) -> Ordering {
-        if *self < *other {
+conform isize to Ord {
+    public func cmp(_ other: isize) -> Ordering {
+        if self < other {
             .less
-        } else if *self == *other {
+        } else if self == other {
             .equal
         } else {
             .greater
@@ -428,27 +428,27 @@ impl Ord for isize {
 }
 
 // usize
-impl Hashable for usize {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {
-        hashU64(hasher, *self as uint64)
+conform usize to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
+        hashU64(hasher, self as uint64)
     }
 }
 
-impl PartialEq for usize {
-    public func eq(&self, _ other: &usize) -> bool { *self == *other }
+conform usize to PartialEq {
+    public func eq(_ other: usize) -> bool { self == other }
 }
 
-impl PartialOrd for usize {
-    public func partialCmp(&self, _ other: &usize) -> Optional[Ordering] {
+conform usize to PartialOrd {
+    public func partialCmp(_ other: usize) -> Optional[Ordering] {
         .some(self.cmp(other))
     }
 }
 
-impl Ord for usize {
-    public func cmp(&self, _ other: &usize) -> Ordering {
-        if *self < *other {
+conform usize to Ord {
+    public func cmp(_ other: usize) -> Ordering {
+        if self < other {
             .less
-        } else if *self == *other {
+        } else if self == other {
             .equal
         } else {
             .greater
@@ -456,22 +456,22 @@ impl Ord for usize {
     }
 }
 
-impl usize {
-    public func checkedAdd(self, _ rhs: usize) -> usize? {
+extend usize {
+    public func checkedAdd(_ rhs: usize) -> usize? {
         if self > usizeMax() - rhs {
             return .none
         }
         return .some(self + rhs)
     }
 
-    public func checkedSub(self, _ rhs: usize) -> usize? {
+    public func checkedSub(_ rhs: usize) -> usize? {
         if self < rhs {
             return .none
         }
         return .some(self - rhs)
     }
 
-    public func checkedMul(self, _ rhs: usize) -> usize? {
+    public func checkedMul(_ rhs: usize) -> usize? {
         if self == 0 || rhs == 0 {
             return .some(0 as usize)
         }
@@ -482,20 +482,20 @@ impl usize {
     }
 }
 
-impl Parse for int8 {
-    public func parse(_ input: string) -> Result[int8, ParseError] {
-        int8.parseRadix(input, 10_u32)
+conform int8 to Parse {
+    public static func parse(_ input: string) -> Result[int8, ParseError] {
+        int8::parseRadix(input, 10_u32)
     }
 }
 
-impl int8 {
+extend int8 {
     /// Parse a signed decimal integer.
-    public func parse(_ input: string) -> Result[int8, ParseError] {
-        int8.parseRadix(input, 10_u32)
+    public static func parse(_ input: string) -> Result[int8, ParseError] {
+        int8::parseRadix(input, 10_u32)
     }
 
     /// Parse a signed integer using an explicit radix from 2 through 36.
-    public func parseRadix(_ input: string, _ radix: uint32) -> Result[int8, ParseError] {
+    public static func parseRadix(_ input: string, _ radix: uint32) -> Result[int8, ParseError] {
         match parseSignedInteger(input, radix, 0x7f_u64, 0x80_u64) {
             case .ok(value) => .ok(value as int8)
             case .err(error) => .err(error)
@@ -503,20 +503,20 @@ impl int8 {
     }
 }
 
-impl Parse for int16 {
-    public func parse(_ input: string) -> Result[int16, ParseError] {
-        int16.parseRadix(input, 10_u32)
+conform int16 to Parse {
+    public static func parse(_ input: string) -> Result[int16, ParseError] {
+        int16::parseRadix(input, 10_u32)
     }
 }
 
-impl int16 {
+extend int16 {
     /// Parse a signed decimal integer.
-    public func parse(_ input: string) -> Result[int16, ParseError] {
-        int16.parseRadix(input, 10_u32)
+    public static func parse(_ input: string) -> Result[int16, ParseError] {
+        int16::parseRadix(input, 10_u32)
     }
 
     /// Parse a signed integer using an explicit radix from 2 through 36.
-    public func parseRadix(_ input: string, _ radix: uint32) -> Result[int16, ParseError] {
+    public static func parseRadix(_ input: string, _ radix: uint32) -> Result[int16, ParseError] {
         match parseSignedInteger(input, radix, 0x7fff_u64, 0x8000_u64) {
             case .ok(value) => .ok(value as int16)
             case .err(error) => .err(error)
@@ -524,20 +524,20 @@ impl int16 {
     }
 }
 
-impl Parse for int32 {
-    public func parse(_ input: string) -> Result[int32, ParseError] {
-        int32.parseRadix(input, 10_u32)
+conform int32 to Parse {
+    public static func parse(_ input: string) -> Result[int32, ParseError] {
+        int32::parseRadix(input, 10_u32)
     }
 }
 
-impl int32 {
+extend int32 {
     /// Parse a signed decimal integer.
-    public func parse(_ input: string) -> Result[int32, ParseError] {
-        int32.parseRadix(input, 10_u32)
+    public static func parse(_ input: string) -> Result[int32, ParseError] {
+        int32::parseRadix(input, 10_u32)
     }
 
     /// Parse a signed integer using an explicit radix from 2 through 36.
-    public func parseRadix(_ input: string, _ radix: uint32) -> Result[int32, ParseError] {
+    public static func parseRadix(_ input: string, _ radix: uint32) -> Result[int32, ParseError] {
         match parseSignedInteger(input, radix, 0x7fffffff_u64, 0x80000000_u64) {
             case .ok(value) => .ok(value as int32)
             case .err(error) => .err(error)
@@ -545,38 +545,38 @@ impl int32 {
     }
 }
 
-impl Parse for int64 {
-    public func parse(_ input: string) -> Result[int64, ParseError] {
-        int64.parseRadix(input, 10_u32)
+conform int64 to Parse {
+    public static func parse(_ input: string) -> Result[int64, ParseError] {
+        int64::parseRadix(input, 10_u32)
     }
 }
 
-impl int64 {
+extend int64 {
     /// Parse a signed decimal integer.
-    public func parse(_ input: string) -> Result[int64, ParseError] {
-        int64.parseRadix(input, 10_u32)
+    public static func parse(_ input: string) -> Result[int64, ParseError] {
+        int64::parseRadix(input, 10_u32)
     }
 
     /// Parse a signed integer using an explicit radix from 2 through 36.
-    public func parseRadix(_ input: string, _ radix: uint32) -> Result[int64, ParseError] {
+    public static func parseRadix(_ input: string, _ radix: uint32) -> Result[int64, ParseError] {
         parseSignedInteger(input, radix, 0x7fffffffffffffff_u64, 0x8000000000000000_u64)
     }
 }
 
-impl Parse for isize {
-    public func parse(_ input: string) -> Result[isize, ParseError] {
-        isize.parseRadix(input, 10_u32)
+conform isize to Parse {
+    public static func parse(_ input: string) -> Result[isize, ParseError] {
+        isize::parseRadix(input, 10_u32)
     }
 }
 
-impl isize {
+extend isize {
     /// Parse a signed decimal integer.
-    public func parse(_ input: string) -> Result[isize, ParseError] {
-        isize.parseRadix(input, 10_u32)
+    public static func parse(_ input: string) -> Result[isize, ParseError] {
+        isize::parseRadix(input, 10_u32)
     }
 
     /// Parse a signed pointer-sized integer using an explicit radix from 2 through 36.
-    public func parseRadix(_ input: string, _ radix: uint32) -> Result[isize, ParseError] {
+    public static func parseRadix(_ input: string, _ radix: uint32) -> Result[isize, ParseError] {
         match parseSignedInteger(input, radix, 0x7fffffffffffffff_u64, 0x8000000000000000_u64) {
             case .ok(value) => .ok(value as isize)
             case .err(error) => .err(error)
@@ -584,20 +584,20 @@ impl isize {
     }
 }
 
-impl Parse for uint8 {
-    public func parse(_ input: string) -> Result[uint8, ParseError] {
-        uint8.parseRadix(input, 10_u32)
+conform uint8 to Parse {
+    public static func parse(_ input: string) -> Result[uint8, ParseError] {
+        uint8::parseRadix(input, 10_u32)
     }
 }
 
-impl uint8 {
+extend uint8 {
     /// Parse an unsigned decimal integer.
-    public func parse(_ input: string) -> Result[uint8, ParseError] {
-        uint8.parseRadix(input, 10_u32)
+    public static func parse(_ input: string) -> Result[uint8, ParseError] {
+        uint8::parseRadix(input, 10_u32)
     }
 
     /// Parse an unsigned integer using an explicit radix from 2 through 36.
-    public func parseRadix(_ input: string, _ radix: uint32) -> Result[uint8, ParseError] {
+    public static func parseRadix(_ input: string, _ radix: uint32) -> Result[uint8, ParseError] {
         match parseUnsignedInteger(input, radix, 0xff_u64) {
             case .ok(value) => .ok(value as uint8)
             case .err(error) => .err(error)
@@ -605,20 +605,20 @@ impl uint8 {
     }
 }
 
-impl Parse for uint16 {
-    public func parse(_ input: string) -> Result[uint16, ParseError] {
-        uint16.parseRadix(input, 10_u32)
+conform uint16 to Parse {
+    public static func parse(_ input: string) -> Result[uint16, ParseError] {
+        uint16::parseRadix(input, 10_u32)
     }
 }
 
-impl uint16 {
+extend uint16 {
     /// Parse an unsigned decimal integer.
-    public func parse(_ input: string) -> Result[uint16, ParseError] {
-        uint16.parseRadix(input, 10_u32)
+    public static func parse(_ input: string) -> Result[uint16, ParseError] {
+        uint16::parseRadix(input, 10_u32)
     }
 
     /// Parse an unsigned integer using an explicit radix from 2 through 36.
-    public func parseRadix(_ input: string, _ radix: uint32) -> Result[uint16, ParseError] {
+    public static func parseRadix(_ input: string, _ radix: uint32) -> Result[uint16, ParseError] {
         match parseUnsignedInteger(input, radix, 0xffff_u64) {
             case .ok(value) => .ok(value as uint16)
             case .err(error) => .err(error)
@@ -626,20 +626,20 @@ impl uint16 {
     }
 }
 
-impl Parse for uint32 {
-    public func parse(_ input: string) -> Result[uint32, ParseError] {
-        uint32.parseRadix(input, 10_u32)
+conform uint32 to Parse {
+    public static func parse(_ input: string) -> Result[uint32, ParseError] {
+        uint32::parseRadix(input, 10_u32)
     }
 }
 
-impl uint32 {
+extend uint32 {
     /// Parse an unsigned decimal integer.
-    public func parse(_ input: string) -> Result[uint32, ParseError] {
-        uint32.parseRadix(input, 10_u32)
+    public static func parse(_ input: string) -> Result[uint32, ParseError] {
+        uint32::parseRadix(input, 10_u32)
     }
 
     /// Parse an unsigned integer using an explicit radix from 2 through 36.
-    public func parseRadix(_ input: string, _ radix: uint32) -> Result[uint32, ParseError] {
+    public static func parseRadix(_ input: string, _ radix: uint32) -> Result[uint32, ParseError] {
         match parseUnsignedInteger(input, radix, 0xffffffff_u64) {
             case .ok(value) => .ok(value as uint32)
             case .err(error) => .err(error)
@@ -647,38 +647,38 @@ impl uint32 {
     }
 }
 
-impl Parse for uint64 {
-    public func parse(_ input: string) -> Result[uint64, ParseError] {
-        uint64.parseRadix(input, 10_u32)
+conform uint64 to Parse {
+    public static func parse(_ input: string) -> Result[uint64, ParseError] {
+        uint64::parseRadix(input, 10_u32)
     }
 }
 
-impl uint64 {
+extend uint64 {
     /// Parse an unsigned decimal integer.
-    public func parse(_ input: string) -> Result[uint64, ParseError] {
-        uint64.parseRadix(input, 10_u32)
+    public static func parse(_ input: string) -> Result[uint64, ParseError] {
+        uint64::parseRadix(input, 10_u32)
     }
 
     /// Parse an unsigned integer using an explicit radix from 2 through 36.
-    public func parseRadix(_ input: string, _ radix: uint32) -> Result[uint64, ParseError] {
+    public static func parseRadix(_ input: string, _ radix: uint32) -> Result[uint64, ParseError] {
         parseUnsignedInteger(input, radix, 0xffffffffffffffff_u64)
     }
 }
 
-impl Parse for usize {
-    public func parse(_ input: string) -> Result[usize, ParseError] {
-        usize.parseRadix(input, 10_u32)
+conform usize to Parse {
+    public static func parse(_ input: string) -> Result[usize, ParseError] {
+        usize::parseRadix(input, 10_u32)
     }
 }
 
-impl usize {
+extend usize {
     /// Parse an unsigned decimal integer.
-    public func parse(_ input: string) -> Result[usize, ParseError] {
-        usize.parseRadix(input, 10_u32)
+    public static func parse(_ input: string) -> Result[usize, ParseError] {
+        usize::parseRadix(input, 10_u32)
     }
 
     /// Parse an unsigned pointer-sized integer using an explicit radix from 2 through 36.
-    public func parseRadix(_ input: string, _ radix: uint32) -> Result[usize, ParseError] {
+    public static func parseRadix(_ input: string, _ radix: uint32) -> Result[usize, ParseError] {
         match parseUnsignedInteger(input, radix, 0xffffffffffffffff_u64) {
             case .ok(value) => .ok(value as usize)
             case .err(error) => .err(error)

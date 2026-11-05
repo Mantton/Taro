@@ -1,0 +1,29 @@
+// ENV: TARO_WORKERS=2
+import std::mem::MaybeUninit
+import std::task::Task
+func main() async {
+    var (sender, receiver) = match std::sync::bounded[int32](1) {
+        case .ok(pair) => pair
+        case .err(_) => panic("channel")
+    }
+    var initial: Task[int32] = std::task::spawn(() => {
+        var _ = await receiver.recv()
+        return 7_i32
+    })
+    var storage: MaybeUninit[Task[int32]] = MaybeUninit[Task[int32]]::new(initial)
+    // Move ownership out through the raw pointer. MaybeUninit must not destroy
+    // these stale bytes when a new initialized value is written over them.
+    var first: Task[int32] = unsafe { storage.asPtr().read() }
+    var replacement: Task[int32] = std::task::spawn(() => 8_i32)
+    var _ = storage.write(replacement)
+    var _ = await sender.send(1_i32)
+    match await first.result() {
+        case .ok(value) => assert(value == 7_i32, "original owner survived raw move")
+        case _ => panic("MaybeUninit.write destroyed stale moved-out storage")
+    }
+    var second: Task[int32] = unsafe { storage.assumeInit() }
+    match await second.result() {
+        case .ok(value) => assert(value == 8_i32, "replacement is owned once")
+        case _ => panic("replacement lost")
+    }
+}

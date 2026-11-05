@@ -1,0 +1,334 @@
+import std::collections::List
+import std::encoding::{Decodable}
+import std::fmt::{Display, Formatter}
+import std::ops::PartialEq
+import std::result::Result
+
+public const DEFAULT_MAX_BODY_BYTES: usize = 16 * 1024 * 1024
+
+/// Finite limits for HTTP messages. Bodies are bytes, not UTF-8 text.
+public struct Options {
+    public maxHeaderBytes: usize
+    public maxHeaders: usize
+    public maxBodyBytes: usize
+    /// Time budget for I/O operations, client sends and server handlers.
+    /// Expiring sends/handlers request cancellation and drain their cleanup
+    /// before returning. Non-cooperative work can therefore exceed this budget.
+    public timeoutMillis: uint64
+    /// Connections a server serves at once. By default only the process's file
+    /// descriptor limit applies, and accepting resumes as descriptors free up.
+    public maxConnections: usize?
+    /// Idle connections a client keeps for reuse.
+    public maxIdleConnections: usize
+    public keepAlive: bool
+}
+
+extend Options {
+    public static func new() -> Self {
+        Options {
+            maxHeaderBytes: 16384,
+            maxHeaders: 128,
+            maxBodyBytes: DEFAULT_MAX_BODY_BYTES,
+            timeoutMillis: 30000_u64,
+            maxConnections: .none,
+            maxIdleConnections: 128,
+            keepAlive: true,
+        }
+    }
+    func valid() -> bool {
+        (self.maxConnections.isNone() || self.maxConnections.unwrap() > 0) && self.maxIdleConnections > 0 && self.maxHeaderBytes > 0 && self.maxHeaders > 0 && self.maxHeaders <= 1024
+            && self.maxBodyBytes < 0x7fffffff && self.timeoutMillis > 0_u64
+            && self.timeoutMillis <= 0xffffffff_u64
+    }
+}
+
+public enum ErrorKind: PartialEq {
+    case invalidInput
+    case protocol
+    case transport
+    case limit
+    case closed
+    case timeout
+}
+
+/// Transport failures retain a human-readable explanation; HTTP error status
+/// codes such as 404 are ordinary successful responses.
+public struct Error {
+    public kind: ErrorKind
+    public message: string
+}
+conform Error to Display {
+    public func display(_ into: &Formatter) { into.writeString(self.message) }
+}
+conform Error to std::error::Error {}
+
+func failure(_ kind: ErrorKind, _ message: string) -> Error { Error { kind, message } }
+func ioFailure(_ error: std::io::Error) -> Error {
+    kind := if error.kind() == std::io::ErrorKind::closed { ErrorKind::closed } else if error.kind() == std::io::ErrorKind::timedOut { ErrorKind::timeout } else { ErrorKind::transport }
+    return failure(kind, std::sprintf("%v", error))
+}
+
+public struct Header {
+    public name: string
+    public value: string
+}
+
+const HEADERS_READY: uint8 = 0
+const HEADERS_UNREAD: uint8 = 1
+const HEADERS_READING: uint8 = 2
+// The parser's own limit, above any it was first given.
+const HEADERS_MOST: usize = 1024
+
+// What every copy of a Headers shares. The first entry needs no list of its own,
+// and a parsed request's entries aren't read out of its head until someone asks.
+final class HeaderStore {
+    first: Header
+    rest: List[Header]?
+    count: usize
+    head: string
+    state: std::sync::atomic::Uint8
+}
+extend HeaderStore {
+    init(head: string, state: uint8) {
+        self.first = Header { name: "", value: "" }
+        self.rest = .none
+        self.count = 0
+        self.head = head
+        self.state = std::sync::atomic::Uint8::new(state)
+    }
+    func ready() {
+        if self.state.load() != HEADERS_READY { self.readHead() }
+    }
+    // Requests are read concurrently like any other immutable value, so more than
+    // one task can get here. This never suspends: the rest wait a moment for it.
+    func readHead() {
+        if !self.state.compareExchange(HEADERS_UNREAD, HEADERS_READING) {
+            while self.state.load() != HEADERS_READY {}
+            return
+        }
+        head := self.head
+        bytes := unsafe { std::mem::Span[uint8]::from(std::string::stringData(head), head.byteLen()) }
+        // These bytes passed the configured limits, and the parser is deterministic.
+        snapshot := unsafe { __rt__http_parse_head(bytes.asPtr(), bytes.len(), HEADERS_MOST, ~(0 as usize)) }
+        defer { unsafe { __rt__http_snapshot_close(snapshot) } }
+        std::assert(info(snapshot, 0) == 0, "a validated HTTP head parses again")
+        appendSnapshotHeaders(self, snapshot, bytes, head)
+        self.head = ""
+        self.state.store(HEADERS_READY)
+    }
+    func append(_ header: Header) {
+        if self.count == 0 {
+            self.first = header
+        } else {
+            match self.rest {
+                case .some(rest) => rest.append(header)
+                case .none => {
+                    rest := List[Header]::new()
+                    rest.append(header)
+                    self.rest = .some(rest)
+                }
+            }
+        }
+        self.count += 1
+    }
+    func at(_ index: usize) -> Header {
+        if index >= self.count { std::panic::panic("header index out of bounds") }
+        if index == 0 { return self.first }
+        return self.rest.unwrap()[index - 1]
+    }
+}
+
+/// Ordered, case-insensitive header names; repeated values are preserved.
+/// Copying Headers shares its entries, as with other Taro collections.
+public struct Headers {
+    store: HeaderStore
+}
+extend Headers {
+    public static func new() -> Self { Headers { store: HeaderStore(head: "", state: HEADERS_READY) } }
+    // The headers of a head that parsed successfully, read from it on first use.
+    static func unread(_ head: string) -> Self { Headers { store: HeaderStore(head: head, state: HEADERS_UNREAD) } }
+    public func len() -> usize {
+        self.store.ready()
+        return self.store.count
+    }
+    public func at(_ index: usize) -> Header {
+        self.store.ready()
+        return self.store.at(index)
+    }
+    public func add(_ name: string, _ value: string) -> Result[(), Error] {
+        if !unsafe { __rt__http_header_valid(name, value) } { return .err(failure(.invalidInput, "invalid HTTP header")) }
+        self.store.ready()
+        self.store.append(Header { name, value })
+        return .ok(())
+    }
+    // A header whose name and value are this module's own, known valid.
+    func addValid(_ name: string, _ value: string) { self.store.append(Header { name, value }) }
+    public func get(_ name: string) -> string? {
+        self.store.ready()
+        var index: usize = 0
+        while index < self.store.count {
+            header := self.store.at(index)
+            if equalName(header.name, name) { return .some(header.value) }
+            index += 1
+        }
+        return .none
+    }
+    public func copy() -> Self {
+        self.store.ready()
+        store := HeaderStore(head: "", state: HEADERS_READY)
+        var index: usize = 0
+        while index < self.store.count {
+            store.append(self.store.at(index))
+            index += 1
+        }
+        return Headers { store }
+    }
+    func wire(_ maximum: usize) -> Result[string, Error] {
+        var output = std::string::Builder::new()
+        self.writeWire(&output, maximum)!
+        return .ok(output.toString())
+    }
+    /// Appends header lines, which `add` and the head parsers have validated.
+    /// `maximum` bounds only the bytes written here, whatever `output` holds.
+    func writeWire(_ output: &std::string::Builder, _ maximum: usize) -> Result[(), Error] {
+        start := output.len()
+        self.store.ready()
+        var index: usize = 0
+        while index < self.store.count {
+            header := self.store.at(index)
+            index += 1
+            if header.name.byteLen() > maximum || header.value.byteLen() > maximum || output.len() - start > maximum - header.name.byteLen() { return .err(failure(.limit, "HTTP headers exceed configured limit")) }
+            output.writeString(header.name)
+            output.writeString(":")
+            output.writeString(header.value)
+            output.writeString("\r\n")
+            if output.len() - start > maximum { return .err(failure(.limit, "HTTP headers exceed configured limit")) }
+        }
+        return .ok(())
+    }
+}
+func equalName(_ left: string, _ right: string) -> bool {
+    if left.byteLen() != right.byteLen() { return false }
+    var index: usize = 0
+    while index < left.byteLen() {
+        var a = left.byteAt(index)
+        var b = right.byteAt(index)
+        if a >= 65_u8 && a <= 90_u8 { a += 32_u8 }
+        if b >= 65_u8 && b <= 90_u8 { b += 32_u8 }
+        if a != b { return false }
+        index += 1
+    }
+    return true
+}
+
+/// Client requests use an absolute HTTP(S) URL. Server requests expose the
+/// origin-form target (path and optional query) in url.
+public struct Request {
+    public method: string
+    public url: string
+    public headers: Headers
+    public body: Body
+}
+extend Request {
+    public static func new(_ method: string, _ url: string) -> Self {
+        Request { method, url, headers: Headers::new(), body: Body::empty() }
+    }
+    public func close() -> Result[(), std::io::Error] { self.body.close() }
+    public func json[T: Decodable](options: std::json::Options = std::json::Options::new()) async -> Result[T, JsonError] {
+        return await decodeBody[T](self.body, options)
+    }
+}
+
+public struct Response {
+    public status: uint16
+    public headers: Headers
+    public body: Body
+}
+extend Response {
+    public static func new(_ status: uint16) -> Self { Response { status, headers: Headers::new(), body: Body::empty() } }
+    public static func text(_ status: uint16, _ text: string) -> Self {
+        headers := Headers::new()
+        headers.addValid("content-type", "text/plain; charset=utf-8")
+        return Response { status, headers, body: Body::fromString(text) }
+    }
+    public func close() -> Result[(), std::io::Error] { self.body.close() }
+    public func json[T: Decodable](options: std::json::Options = std::json::Options::new()) async -> Result[T, JsonError] {
+        return await decodeBody[T](self.body, options)
+    }
+}
+
+/// Preserve structured JSON diagnostics separately from body transport failures.
+public enum JsonError {
+    case body(Error)
+    case decode(std::json::JsonDecodeError)
+}
+conform JsonError to Display {
+    public func display(_ into: &Formatter) {
+        match self {
+            case .body(error) => error.display(into)
+            case .decode(error) => error.display(into)
+        }
+    }
+}
+conform JsonError to std::error::Error {}
+func decodeBody[T: Decodable](_ body: Body, _ options: std::json::Options) async -> Result[T, JsonError] {
+    text := match await body.readToString(maxBytes: options.maxInputBytes()) {
+        case .ok(text) => text
+        case .err(error) => return .err(.body(error))
+    }
+    match std::json::decodeWithOptions[T](text, options) {
+        case .ok(value) => return .ok(value)
+        case .err(error) => return .err(.decode(error))
+    }
+}
+
+/// Copies share connection pool, configuration and close state.
+public struct Client { state: ClientState }
+extend Client {
+    public static func new() -> Result[Self, Error] { Client::withOptions(Options::new()) }
+    public static func withOptions(_ options: Options) -> Result[Self, Error] {
+        if !options.valid() { return .err(failure(.invalidInput, "invalid HTTP options")) }
+        config := match std::tls::ClientConfig::new() {
+            case .ok(config) => config
+            case .err(error) => return .err(ioFailure(error))
+        }
+        return .ok(Client { state: ClientState(options, .some(config), true, .none) })
+    }
+    /// Borrows a verified private-service TLS configuration.
+    public static func withTLSConfig(_ config: std::tls::ClientConfig, options: Options = Options::new()) -> Result[Self, Error] {
+        if !options.valid() { return .err(failure(.invalidInput, "invalid HTTP options")) }
+        return .ok(Client { state: ClientState(options, .some(config), false, .none) })
+    }
+    public static func withTransport[T: Transport](_ transport: T) -> Self {
+        Client { state: ClientState(Options::new(), .none, false, .some(transport)) }
+    }
+    public func close() { self.state.close() }
+    public func get(_ url: string) async -> Result[Response, Error] {
+        request := Request::new("GET", url)
+        return await self.send(&request)
+    }
+    /// Consumes and closes the original request body on every exit. The
+    /// deadline covers dialing, TLS, upload and headers. Returned response
+    /// streams apply the same finite timeout to each read.
+    public func send(_ request: &Request) async -> Result[Response, Error] {
+        originalBody := request.body
+        defer { var _ = originalBody.close() }
+        if self.state.closed.load() { return .err(failure(.closed, "HTTP client is closed")) }
+        if originalBody.isSpent() { return .err(failure(.closed, "HTTP request body was already consumed or closed")) }
+        result := await std::task::withTimeout(std::time::Duration::fromMillis(self.state.options.timeoutMillis), () async => {
+            match self.state.custom {
+                case .some(transport) => return await transport.roundTrip(request)
+                case .none => return await sendStreaming(self.state, request, originalBody)
+            }
+        })
+        match result {
+            case .ok(value) => return value
+            case .err(error) => return .err(timeoutFailure(error))
+        }
+    }
+}
+conform Client to Transport {
+    public func roundTrip(_ request: &Request) async -> Result[Response, Error] {
+        return await self.send(request)
+    }
+}

@@ -1,0 +1,8 @@
+error: reference patterns were removed; bind values in matches or dereference local initializers
+ -> language_tests/source_files/invalid/reference_patterns_removed.tr:3:8
+	    var &copy = &value
+	        ^
+error: reference patterns were removed; bind values in matches or dereference local initializers
+ -> language_tests/source_files/invalid/reference_patterns_removed.tr:5:13
+	        case &bound => {}
+	             ^

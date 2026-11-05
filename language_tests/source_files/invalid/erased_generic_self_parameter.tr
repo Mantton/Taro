@@ -1,0 +1,20 @@
+interface Same {
+    func same(_ other: &Self) -> bool
+}
+struct Counter { value: int32 }
+conform Counter to Same {
+    func same( _ other: &Self) -> bool { self.value == other.value }
+}
+struct Other { text: string }
+conform Other to Same {
+    func same( _ other: &Self) -> bool { self.text == other.text }
+}
+func compare[T: Same](_ left: &T, _ right: &T) -> bool {
+    left.same(right)
+}
+func main() {
+    var first: any Same = Counter { value: 7_i32 }
+    var second: any Same = Other { text: "different payload" }
+    var equal: bool = compare(&first, &second)
+    var _ = equal
+}

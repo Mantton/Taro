@@ -1,26 +1,24 @@
-import std.optional.Optional
+import std::optional::Optional
 
-func durationToNanos(_ d: std.time.Duration) -> uint64 {
+func durationToNanos(_ d: std::time::Duration) -> uint64 {
     return (d.seconds() * 1000000000_u64) + (d.subsecNanos() as uint64)
 }
 
-func stringBytes(_ s: string) -> std.mem.Span[uint8] {
-    return std.mem.Span[uint8].from(std.string.stringData(s), std.string.stringLen(s))
+func stringBytes(_ s: &string) -> std::mem::Span[uint8] {
+    return std::mem::Span[uint8]::fromString(s)
 }
 
 @cfg(family("unix"))
-static var PIPE_WRITER_STREAM: Optional[std.io.task.AsyncStream] = .none
+static var PIPE_WRITER_STREAM: Optional[std::io::task::AsyncStream] = .none
 
 @cfg(family("unix"))
-static var SHARED_PIPE_READ_STREAM: Optional[std.io.task.AsyncStream] = .none
+static var SHARED_PIPE_READ_STREAM: Optional[std::io::task::AsyncStream] = .none
 
 @cfg(family("unix"))
-static var SHARED_PIPE_WRITE_STREAM: Optional[std.io.task.AsyncStream] = .none
+static var SHARED_PIPE_WRITE_STREAM: Optional[std::io::task::AsyncStream] = .none
 
 static var ASYNC_DEFER_RETURN_COUNT: int32 = 0
 static var ASYNC_CANCEL_DEFER_TRACE: int32 = 0
-static var TASK_SCOPE_CLEANUP_COUNT: int32 = 0
-static var DETACHED_TASK_COMPLETED: int32 = 0
 static var DETACHED_FUNCTION_COMPLETED: int32 = 0
 static var SELECT_LOSER_CLEANUP_COUNT: int32 = 0
 
@@ -29,11 +27,11 @@ func asyncDeferReturnProbe() async -> int32 {
         ASYNC_DEFER_RETURN_COUNT = ASYNC_DEFER_RETURN_COUNT + 1
     }
 
-    await std.testing.yieldNow()
+    await std::testing::yieldNow()
     return 77 as int32
 }
 
-func asyncCancellationCleanupProbe(_ ready: std.sync.Sender[int32]) async -> int32 {
+func asyncCancellationCleanupProbe(_ ready: std::sync::Sender[int32]) async -> int32 {
     defer {
         ASYNC_CANCEL_DEFER_TRACE = (ASYNC_CANCEL_DEFER_TRACE * 10_i32) + 1_i32
     }
@@ -45,37 +43,24 @@ func asyncCancellationCleanupProbe(_ ready: std.sync.Sender[int32]) async -> int
 
         match await ready.send(1_i32) {
             case .ok(_) => {}
-            case .err(_) => std.panic.panic("cancellation cleanup probe should signal readiness")
+            case .err(_) => std::panic::panic("cancellation cleanup probe should signal readiness")
         }
-        await std.task.sleep(std.time.Duration.fromSeconds(5_u64))
+        await std::task::sleep(std::time::Duration::fromSeconds(5_u64))
     }
 
     return 99_i32
 }
 
-func asyncCancellationCleanupPanicProbe(_ ready: std.sync.Sender[int32]) async -> int32 {
+func asyncCancellationCleanupPanicProbe(_ ready: std::sync::Sender[int32]) async -> int32 {
     defer {
-        std.panic.panic("panic from cancellation cleanup")
+        std::panic::panic("panic from cancellation cleanup")
     }
 
     match await ready.send(1_i32) {
         case .ok(_) => {}
-        case .err(_) => std.panic.panic("cancellation panic probe should signal readiness")
+        case .err(_) => std::panic::panic("cancellation panic probe should signal readiness")
     }
-    await std.task.sleep(std.time.Duration.fromSeconds(5_u64))
-    return 1_i32
-}
-
-func taskScopeCleanupProbe(_ ready: std.sync.Sender[int32]) async -> int32 {
-    defer {
-        TASK_SCOPE_CLEANUP_COUNT = TASK_SCOPE_CLEANUP_COUNT + 1_i32
-    }
-
-    match await ready.send(1_i32) {
-        case .ok(_) => {}
-        case .err(_) => std.panic.panic("task scope cleanup probe should signal readiness")
-    }
-    await std.task.sleep(std.time.Duration.fromSeconds(5_u64))
+    await std::task::sleep(std::time::Duration::fromSeconds(5_u64))
     return 1_i32
 }
 
@@ -83,95 +68,87 @@ func selectLoserCleanupProbe() async -> int32 {
     defer {
         SELECT_LOSER_CLEANUP_COUNT = SELECT_LOSER_CLEANUP_COUNT + 1_i32
     }
-    await std.task.sleep(std.time.Duration.fromSeconds(5_u64))
+    await std::task::sleep(std::time::Duration::fromSeconds(5_u64))
     return 1_i32
 }
 
-func selectLoserCleanupPanicProbe() async -> string {
+func selectLoserCleanupPanicProbe(_ started: std::sync::Sender[int32]) async -> string {
     defer {
-        std.panic.panic("select loser cleanup panic")
+        std::panic::panic("select loser cleanup panic")
     }
-    await std.task.sleep(std.time.Duration.fromSeconds(5_u64))
+    started.trySend(1).unwrap()
+    await std::task::sleep(std::time::Duration::fromSeconds(5_u64))
     return "late"
 }
 
-func returnedOwnedTask() -> std.task.Task[int32] {
-    let task = std.task.spawn(|| async {
-        await std.testing.yieldNow()
+func returnedOwnedTask() -> std::task::Task[int32] {
+    task := std::task::spawn(() async => {
+        await std::testing::yieldNow()
         return 73_i32
     })
     return task
 }
 
-func releaseOwnedTaskParameter(_ task: std.task.Task[int32]) {
+func releaseOwnedTaskParameter(_ task: std::task::Task[int32]) {
 }
 
 @cfg(family("unix"))
 func sharedPipeReaderBody() async -> int32 {
-    let reader = match SHARED_PIPE_READ_STREAM {
+    reader := match SHARED_PIPE_READ_STREAM {
         case .some(value) => value
-        case .none => std.panic.panic("shared pipe reader should be seeded before spawning")
+        case .none => std::panic::panic("shared pipe reader should be seeded before spawning")
     }
 
     var byte: uint8 = 0
-    let readRes = await reader.read(std.mem.MutableSpan[uint8].from(unsafe { (&mut byte) as *mut uint8 }, 1))
-    let readCount = match readRes {
+    readRes := await reader.read(unsafe { std::mem::Span[uint8]::from(unsafe { (&byte) as *mut uint8 }, 1) })
+    readCount := match readRes {
         case .ok(count) => count
-        case .err(_) => std.panic.panic("shared pipe reader should succeed")
+        case .err(_) => std::panic::panic("shared pipe reader should succeed")
     }
-    std.testing.assertEqual(readCount, 1, "shared pipe reader should receive one byte")
+    std::testing::assertEqual(readCount, 1, "shared pipe reader should receive one byte")
     return byte as int32
 }
 
 @cfg(family("unix"))
 func sharedPipeWriterBody() async -> int32 {
-    let writer = match SHARED_PIPE_WRITE_STREAM {
+    writer := match SHARED_PIPE_WRITE_STREAM {
         case .some(value) => value
-        case .none => std.panic.panic("shared pipe writer should be seeded before spawning")
+        case .none => std::panic::panic("shared pipe writer should be seeded before spawning")
     }
 
-    await std.testing.yieldNow()
-    let writeRes = await writer.write(stringBytes("ab"))
-    let written = match writeRes {
+    await std::testing::yieldNow()
+    writeRes := await writer.write(stringBytes(&"ab"))
+    written := match writeRes {
         case .ok(count) => count
-        case .err(_) => std.panic.panic("shared pipe writer should succeed")
+        case .err(_) => std::panic::panic("shared pipe writer should succeed")
     }
     match writer.close() {
         case .ok(_) => {}
-        case .err(_) => std.panic.panic("shared pipe writer close should succeed")
+        case .err(_) => std::panic::panic("shared pipe writer close should succeed")
     }
     return written as int32
 }
 
 @cfg(family("unix"))
 func pipeWriterBody() async -> int32 {
-    let seeded = match PIPE_WRITER_STREAM.take() {
+    seeded := match PIPE_WRITER_STREAM.take() {
         case .some(value) => value
-        case .none => std.panic.panic("pipe writer seed should be set before spawning")
+        case .none => std::panic::panic("pipe writer seed should be set before spawning")
     }
 
-    let writer = seeded
-    await std.testing.yieldNow()
-    let writeRes = await writer.write(stringBytes("ping"))
-    let written = match writeRes {
+    writer := seeded
+    await std::testing::yieldNow()
+    writeRes := await writer.write(stringBytes(&"ping"))
+    written := match writeRes {
         case .ok(count) => count
-        case .err(err) => std.panic.panic("pipe writer should succeed")
+        case .err(err) => std::panic::panic("pipe writer should succeed")
     }
-    let closeRes = writer.close()
+    closeRes := writer.close()
     match closeRes {
         case .ok(_) => {}
-        case .err(err) => std.panic.panic("pipe writer close should succeed")
+        case .err(err) => std::panic::panic("pipe writer close should succeed")
     }
     return written as int32
-}
-
-@cfg(family("unix"))
-func pipeReaderWithAbandonedWriter() -> std.io.task.AsyncStream {
-    let pair = match std.io.task.pipe() {
-        case .ok(value) => value
-        case .err(_) => std.panic.panic("pipe() should succeed on unix")
-    }
-    return pair.0
 }
 
 func asyncValue() async -> int32 {
@@ -183,7 +160,7 @@ func asyncAwaitValue() async -> int32 {
 }
 
 func delayedAsyncValue() async -> int32 {
-    await std.testing.yieldNow()
+    await std::testing::yieldNow()
     return 9
 }
 
@@ -192,43 +169,43 @@ func delayedNestedAwaitValue() async -> int32 {
 }
 
 func multiAwaitValue() async -> int32 {
-    await std.testing.yieldNow()
-    await std.testing.yieldNow()
+    await std::testing::yieldNow()
+    await std::testing::yieldNow()
     return 13
 }
 
 @test
 func asyncFunctionsReturnValues() async {
-    let value = await asyncValue()
-    std.testing.assertEqual(value, 7, "async fn should resolve to its declared value")
+    value := await asyncValue()
+    std::testing::assertEqual(value, 7, "async fn should resolve to its declared value")
 }
 
 @test
 func awaitUnwrapsAsyncCalls() async {
-    let value = await asyncAwaitValue()
-    std.testing.assertEqual(value, 7, "await should unwrap async function calls")
+    value := await asyncAwaitValue()
+    std::testing::assertEqual(value, 7, "await should unwrap async function calls")
 }
 
 @test
 func suspendingAsyncFunctionsResumeThroughAwait() async {
-    let value = await delayedAsyncValue()
-    std.testing.assertEqual(value, 9, "async fn should resume after pending")
+    value := await delayedAsyncValue()
+    std::testing::assertEqual(value, 9, "async fn should resume after pending")
 }
 
 @test
 func nestedAwaitsPropagateSuspension() async {
-    let value = await delayedNestedAwaitValue()
-    std.testing.assertEqual(value, 9, "await should resume nested pending async calls")
+    value := await delayedNestedAwaitValue()
+    std::testing::assertEqual(value, 9, "await should resume nested pending async calls")
 }
 
 @test
 func asyncFunctionsHandleMultipleAwaitPoints() async {
-    let value = await multiAwaitValue()
-    std.testing.assertEqual(value, 13, "async fn should handle multiple suspension points")
+    value := await multiAwaitValue()
+    std::testing::assertEqual(value, 13, "async fn should handle multiple suspension points")
 }
 
 func asyncChainC() async -> int32 {
-    await std.testing.yieldNow()
+    await std::testing::yieldNow()
     return 100
 }
 
@@ -242,102 +219,80 @@ func asyncChainA() async -> int32 {
 
 @test
 func deepAwaitChainsResolveCorrectly() async {
-    let value = await asyncChainA()
-    std.testing.assertEqual(value, 102, "A -> B -> C chain should resolve to 102")
+    value := await asyncChainA()
+    std::testing::assertEqual(value, 102, "A -> B -> C chain should resolve to 102")
 }
 
 func asyncAdd(_ x: int32, _ y: int32) async -> int32 {
-    await std.testing.yieldNow()
+    await std::testing::yieldNow()
     return x + y
 }
 
 @test
 func asyncFunctionsPreserveParameters() async {
-    let value = await asyncAdd(13, 29)
-    std.testing.assertEqual(value, 42, "parameters should survive across yield")
+    value := await asyncAdd(13, 29)
+    std::testing::assertEqual(value, 42, "parameters should survive across yield")
 }
 
 func gcSuspendedTaskValue(_ captured: int32) async -> int32 {
-    await std.task.sleep(std.time.Duration.fromMillis(10_u64))
+    await std::task::sleep(std::time::Duration::fromMillis(10_u64))
     return captured
 }
 
-struct GcSuspendedTaskOwner {
+struct NativeSuspendedTaskOwner {
     value: int32
 }
 
-struct GcSuspendedTaskWrapper {
-    owner: &GcSuspendedTaskOwner
+struct NativeSuspendedTaskWrapper {
+    owner: std::runtime::SharedOwner[NativeSuspendedTaskOwner]
 }
 
-func gcSuspendedManagedTaskValue(_ captured: &GcSuspendedTaskOwner) async -> int32 {
-    await std.task.sleep(std.time.Duration.fromMillis(10_u64))
-    return captured.value
+// Carry the shared handle through suspension; create a field borrow only after
+// resumption rather than keeping shared class-field access across await.
+func gcSuspendedManagedTaskValue(_ captured: std::runtime::SharedOwner[NativeSuspendedTaskOwner]) async -> int32 {
+    await std::task::sleep(std::time::Duration::fromMillis(10_u64))
+    return captured.get().value
 }
 
 @test
 func suspendedSpawnedTasksSurviveManualGc() async {
-    let taskCount = 17_i32
-    var tasks = std.collections.List[std.task.Task[int32]]()
+    taskCount := 17_i32
+    var tasks = std::collections::List[std::task::Task[int32]]::new()
 
     var idx: int32 = 0
     while idx < taskCount {
-        let captured = idx + 1_i32
-        let task = std.task.spawn(|| async {
+        captured := idx + 1_i32
+        task := std::task::spawn(() async => {
             return await gcSuspendedTaskValue(captured)
         })
         tasks.append(task)
         idx += 1_i32
     }
 
-    std.runtime.collect()
-
     var sum: int32 = 0
     while !tasks.isEmpty() {
-        let task = match tasks.pop() {
+        task := match tasks.pop() {
             case .some(t) => t
-            case .none => std.panic.panic("task list should not be empty")
+            case .none => std::panic::panic("task list should not be empty")
         }
-        let value = (await task.result()).unwrap()
+        value := (await task.result()).unwrap()
         sum += value
     }
 
-    std.testing.assertEqual(sum, 153_i32, "manual GC should preserve suspended spawned task frames")
+    std::testing::assertEqual(sum, 153_i32, "owned suspended task frames preserve their captures")
 }
 
 @test
 func suspendedSpawnedTaskManagedReferencesSurviveManualGc() async {
-    let owner = make(GcSuspendedTaskOwner { value: 91_i32 })
-    let wrapper = GcSuspendedTaskWrapper { owner }
-    let task = std.task.spawn(|| async {
-        await std.testing.yieldNow()
+    owner := std::runtime::SharedOwner[NativeSuspendedTaskOwner]::new(NativeSuspendedTaskOwner { value: 91_i32 })
+    wrapper := NativeSuspendedTaskWrapper { owner }
+    task := std::task::spawn(() async => {
+        await std::testing::yieldNow()
         return await gcSuspendedManagedTaskValue(wrapper.owner)
     })
 
-    std.runtime.collect()
-
-    let value = (await task.result()).unwrap()
-    std.testing.assertEqual(value, 91_i32, "manual GC should trace managed references in spawned task frames")
-}
-
-@test
-func spawnedTaskCanCancelCleanupForCapturedOwnerAfterManualGc() async {
-    let owner = make(GcSuspendedTaskOwner { value: 37_i32 })
-    let cleanup = match std.runtime.addCleanup(owner, (), |ignored: ()| {}) {
-        case .ok(value) => value
-        case .err(_) => std.panic.panic("captured owner cleanup should register")
-    }
-    let task = std.task.spawn(|| async {
-        await std.testing.yieldNow()
-        let cancelled = cleanup.cancel()
-        std.runtime.keepAlive(owner)
-        return cancelled
-    })
-
-    std.runtime.collect()
-
-    let cancelled = (await task.result()).unwrap()
-    std.testing.assertTrue(cancelled, "captured task owner should remain live until cleanup cancellation")
+    value := (await task.result()).unwrap()
+    std::testing::assertEqual(value, 91_i32, "native owner retains captured values in suspended task frames")
 }
 
 struct AsyncPoint {
@@ -346,38 +301,38 @@ struct AsyncPoint {
 }
 
 func asyncPoint() async -> AsyncPoint {
-    await std.testing.yieldNow()
+    await std::testing::yieldNow()
     return AsyncPoint { x: 3, y: 4 }
 }
 
 @test
 func asyncFunctionsReturnStructs() async {
-    let p = await asyncPoint()
-    std.testing.assertEqual(p.x, 3, "struct x field should be 3")
-    std.testing.assertEqual(p.y, 4, "struct y field should be 4")
+    p := await asyncPoint()
+    std::testing::assertEqual(p.x, 3, "struct x field should be 3")
+    std::testing::assertEqual(p.y, 4, "struct y field should be 4")
 }
 
 func asyncManyLocals() async -> int32 {
-    let a = 1 as int32
-    let b = 2 as int32
-    let c = 3 as int32
-    let d = 4 as int32
-    let e = 5 as int32
-    await std.testing.yieldNow()
-    let f = 6 as int32
-    let g = 7 as int32
-    await std.testing.yieldNow()
+    a := 1 as int32
+    b := 2 as int32
+    c := 3 as int32
+    d := 4 as int32
+    e := 5 as int32
+    await std::testing::yieldNow()
+    f := 6 as int32
+    g := 7 as int32
+    await std::testing::yieldNow()
     return a + b + c + d + e + f + g
 }
 
 @test
 func asyncFunctionsPreserveLocalsAcrossYields() async {
-    let value = await asyncManyLocals()
-    std.testing.assertEqual(value, 28, "all locals should be preserved across multiple yields")
+    value := await asyncManyLocals()
+    std::testing::assertEqual(value, 28, "all locals should be preserved across multiple yields")
 }
 
 func asyncConditional(_ flag: bool) async -> int32 {
-    await std.testing.yieldNow()
+    await std::testing::yieldNow()
     if flag {
         return 42
     }
@@ -386,198 +341,197 @@ func asyncConditional(_ flag: bool) async -> int32 {
 
 @test
 func asyncFunctionsHandleConditionalPaths() async {
-    let a = await asyncConditional(true)
-    let b = await asyncConditional(false)
-    std.testing.assertEqual(a, 42, "true branch should return 42")
-    std.testing.assertEqual(b, 0, "false branch should return 0")
+    a := await asyncConditional(true)
+    b := await asyncConditional(false)
+    std::testing::assertEqual(a, 42, "true branch should return 42")
+    std::testing::assertEqual(b, 0, "false branch should return 0")
 }
 
 func asyncVoid(_ x: *mut int32) async {
-    await std.testing.yieldNow()
+    await std::testing::yieldNow()
     unsafe { x.write(99) }
 }
 
 @test
 func voidAsyncFunctionsComplete() async {
     var sentinel: int32 = 0
-    await asyncVoid(unsafe { (&mut sentinel) as *mut int32 })
-    std.testing.assertEqual(sentinel, 99, "void async fn should complete and apply side effect")
+    await asyncVoid(unsafe { (&sentinel) as *mut int32 })
+    std::testing::assertEqual(sentinel, 99, "void async fn should complete and apply side effect")
 }
 
 func asyncWithStrings() async -> string {
-    let a = "hello"
-    await std.testing.yieldNow()
-    let b = " world"
-    await std.testing.yieldNow()
+    a := "hello"
+    await std::testing::yieldNow()
+    b := " world"
+    await std::testing::yieldNow()
     return a + b
 }
 
 func asyncHoldList() async -> int32 {
-    var items: std.collections.List[int32] = std.collections.List()
+    var items: std::collections::List[int32] = std::collections::List::new()
     items.append(10)
-    await std.testing.yieldNow()
+    await std::testing::yieldNow()
     items.append(20)
-    await std.testing.yieldNow()
+    await std::testing::yieldNow()
     items.append(30)
     return *items.at(0 as usize) + *items.at(1 as usize) + *items.at(2 as usize)
 }
 
-func applyAsyncClosure[F: std.ops.AsyncFnOnce(int32) -> int32](_ f: F, _ x: int32) async -> int32 {
+func applyAsyncClosure[F: std::ops::AsyncFn(int32) -> int32](_ f: F, _ x: int32) async -> int32 {
     return await f(x)
 }
 
-func applyReusableAsyncClosure[F: std.ops.AsyncFn(int32) -> int32](_ f: F, _ x: int32) async -> int32 {
+func applyReusableAsyncClosure[F: std::ops::AsyncFn(int32) -> int32](_ f: F, _ x: int32) async -> int32 {
     return await f(x)
 }
 
 @test
 func stringsSurviveAcrossYields() async {
-    let value = await asyncWithStrings()
-    std.testing.assertEqual(value, "hello world", "strings should survive across yield points")
+    value := await asyncWithStrings()
+    std::testing::assertEqual(value, "hello world", "strings should survive across yield points")
 }
 
 @test
 func listsSurviveAcrossYields() async {
-    let value = await asyncHoldList()
-    std.testing.assertEqual(value, 60, "list should survive across yield points")
+    value := await asyncHoldList()
+    std::testing::assertEqual(value, 60, "list should survive across yield points")
 }
 
 @test
 func asyncClosuresCaptureAcrossYields() async {
-    let captured = 5 as int32
-    let addCaptured = |x: int32| async {
-        await std.testing.yieldNow()
+    captured := 5 as int32
+    addCaptured := (x: int32) async => {
+        await std::testing::yieldNow()
         return x + captured
     }
 
-    let value = await addCaptured(7)
-    std.testing.assertEqual(value, 12, "async closures should capture locals across yields")
+    value := await addCaptured(7)
+    std::testing::assertEqual(value, 12, "async closures should capture locals across yields")
 }
 
 @test
 func asyncClosuresSatisfyAsyncFnOnceBounds() async {
-    let captured = 9 as int32
-    let closure = |x: int32| async {
-        await std.testing.yieldNow()
+    captured := 9 as int32
+    closure := (x: int32) async => {
+        await std::testing::yieldNow()
         return x + captured
     }
 
-    let value = await applyAsyncClosure(closure, 3)
-    std.testing.assertEqual(value, 12, "capturing async closures should satisfy AsyncFnOnce bounds")
+    value := await applyAsyncClosure(closure, 3)
+    std::testing::assertEqual(value, 12, "capturing async closures should satisfy AsyncFnOnce bounds")
 }
 
 @test
 func noncapturingAsyncClosuresSatisfyAsyncFnBounds() async {
-    let closure = |x: int32| async {
-        await std.testing.yieldNow()
+    closure := (x: int32) async => {
+        await std::testing::yieldNow()
         return x + 9
     }
 
-    let value = await applyReusableAsyncClosure(closure, 3)
-    std.testing.assertEqual(value, 12, "noncapturing async closures should satisfy AsyncFn bounds")
+    value := await applyReusableAsyncClosure(closure, 3)
+    std::testing::assertEqual(value, 12, "noncapturing async closures should satisfy AsyncFn bounds")
 }
 
 @test
 func copyCapturingAsyncClosuresAreReusable() async {
-    let captured = 9 as int32
-    let closure = |x: int32| async {
-        await std.testing.yieldNow()
+    captured := 9 as int32
+    closure := (x: int32) async => {
+        await std::testing::yieldNow()
         return x + captured
     }
 
-    let first = await closure(1)
-    let second = await closure(2)
-    let throughFn = await applyReusableAsyncClosure(closure, 3)
+    first := await closure(1)
+    second := await closure(2)
+    throughFn := await applyReusableAsyncClosure(closure, 3)
 
-    std.testing.assertEqual(first, 10, "first call should receive a copied environment")
-    std.testing.assertEqual(second, 11, "second call should receive a copied environment")
-    std.testing.assertEqual(throughFn, 12, "copy-capturing closure should satisfy AsyncFn")
+    std::testing::assertEqual(first, 10, "first call should receive a copied environment")
+    std::testing::assertEqual(second, 11, "second call should receive a copied environment")
+    std::testing::assertEqual(throughFn, 12, "copy-capturing closure should satisfy AsyncFn")
 }
 
 @test
 func movedCopyAsyncClosuresAreReusable() async {
-    let captured = 7 as int32
-    let closure = move || async {
-        await std.testing.yieldNow()
+    captured := 7 as int32
+    closure := () async => {
+        await std::testing::yieldNow()
         return captured
     }
 
-    let first = await closure()
-    let second = await closure()
-    std.testing.assertEqual(first + second, 14, "move over Copy data should remain reusable")
+    first := await closure()
+    second := await closure()
+    std::testing::assertEqual(first + second, 14, "move over Copy data should remain reusable")
 }
 
 @test
 func reusableAsyncClosureCaptureIsGcSafe() async {
-    let captured = "reusable-async-closure"
-    let closure = || async {
-        await std.testing.yieldNow()
-        std.runtime.collect()
+    captured := "reusable-async-closure"
+    closure := () async => {
+        await std::testing::yieldNow()
         return captured
     }
 
-    let first = await closure()
-    let second = await closure()
-    std.testing.assertEqual(first, captured, "first future should retain its copied capture")
-    std.testing.assertEqual(second, captured, "second future should retain its copied capture")
+    first := await closure()
+    second := await closure()
+    std::testing::assertEqual(first, captured, "first future should retain its copied capture")
+    std::testing::assertEqual(second, captured, "second future should retain its copied capture")
 }
 
 @test
 func spawnedTasksComplete() async {
-    let captured = 5 as int32
-    let task = std.task.spawn(|| async {
-        await std.testing.yieldNow()
+    captured := 5 as int32
+    task := std::task::spawn(() async => {
+        await std::testing::yieldNow()
         return captured + 10
     })
 
-    let result = (await task.result()).unwrap()
-    std.testing.assertEqual(result, 15, "spawned task should resolve")
+    result := (await task.result()).unwrap()
+    std::testing::assertEqual(result, 15, "spawned task should resolve")
 }
 
 @test
 func joinReturnsBothTaskValues() async {
-    let intTask = std.task.spawn(|| async {
-        await std.testing.yieldNow()
+    intTask := std::task::spawn(() async => {
+        await std::testing::yieldNow()
         return 17 as int32
     })
-    let stringTask = std.task.spawn(|| async {
+    stringTask := std::task::spawn(() async => {
         return "joined"
     })
 
-    let joined = (await std.task.join(intTask, stringTask)).unwrap()
-    std.testing.assertEqual(joined.0, 17, "join should preserve the left task result")
-    std.testing.assertEqual(joined.1, "joined", "join should preserve the right task result")
+    joined := (await std::task::join(intTask, stringTask)).unwrap()
+    std::testing::assertEqual(joined.0, 17, "join should preserve the left task result")
+    std::testing::assertEqual(joined.1, "joined", "join should preserve the right task result")
 }
 
 @test
 func joinHandlesDifferentCompletionTiming() async {
-    let slow = std.task.spawn(|| async {
-        await std.task.sleep(std.time.Duration.fromMillis(5_u64))
+    slow := std::task::spawn(() async => {
+        await std::task::sleep(std::time::Duration::fromMillis(5_u64))
         return "slow"
     })
-    let fast = std.task.spawn(|| async {
-        await std.testing.yieldNow()
+    fast := std::task::spawn(() async => {
+        await std::testing::yieldNow()
         return 99 as int32
     })
 
-    let joined = (await std.task.join(slow, fast)).unwrap()
-    std.testing.assertEqual(joined.0, "slow", "join should return the slower left task result")
-    std.testing.assertEqual(joined.1, 99, "join should return the faster right task result")
+    joined := (await std::task::join(slow, fast)).unwrap()
+    std::testing::assertEqual(joined.0, "slow", "join should return the slower left task result")
+    std::testing::assertEqual(joined.1, 99, "join should return the faster right task result")
 }
 
 @test
 @expectPanic
 func joinPropagatesTaskPanic() async {
-    let left = std.task.spawn(|| async {
-        await std.testing.yieldNow()
+    left := std::task::spawn(() async => {
+        await std::testing::yieldNow()
         return 7 as int32
     })
-    let right = std.task.spawn(|| async {
-        await std.testing.yieldNow()
-        std.panic.panic("joined task panic should fail the awaiter")
+    right := std::task::spawn(() async => {
+        await std::testing::yieldNow()
+        std::panic::panic("joined task panic should fail the awaiter")
     })
 
-    let _ = (await std.task.join(left, right)).unwrap()
+    var _ = (await std::task::join(left, right)).unwrap()
 }
 
 @test
@@ -585,27 +539,27 @@ func zeroDurationSleepCompletesImmediately() async {
     // With a multi-worker executor both tasks run on separate threads, so
     // comparing wall-clock timestamps across them is non-deterministic.
     // The real invariant is that a zero-duration sleep does not block forever.
-    let sleeper = std.task.spawn(|| async {
-        await std.task.sleep(std.time.Duration.fromNanos(0_u64))
+    sleeper := std::task::spawn(() async => {
+        await std::task::sleep(std::time::Duration::fromNanos(0_u64))
         return 1 as int32
     })
-    let yielded = std.task.spawn(|| async {
-        await std.testing.yieldNow()
+    yielded := std::task::spawn(() async => {
+        await std::testing::yieldNow()
         return 2 as int32
     })
 
-    let sleeperResult = (await sleeper.result()).unwrap()
-    let yieldedResult = (await yielded.result()).unwrap()
-    std.testing.assertEqual(sleeperResult, 1, "zero-duration sleep task should complete")
-    std.testing.assertEqual(yieldedResult, 2, "yielded task should complete")
+    sleeperResult := (await sleeper.result()).unwrap()
+    yieldedResult := (await yielded.result()).unwrap()
+    std::testing::assertEqual(sleeperResult, 1, "zero-duration sleep task should complete")
+    std::testing::assertEqual(yieldedResult, 2, "yielded task should complete")
 }
 
 @test
 func sleepDelaysExecution() async {
-    let start = std.time.Instant.now()
-    await std.task.sleep(std.time.Duration.fromMillis(5_u64))
-    let elapsed = start.elapsed()
-    std.testing.assertTrue(
+    start := std::time::Instant::now()
+    await std::task::sleep(std::time::Duration::fromMillis(5_u64))
+    elapsed := start.elapsed()
+    std::testing::assertTrue(
         durationToNanos(elapsed) >= 1000000_u64,
         "sleep should measurably delay execution",
     )
@@ -613,53 +567,53 @@ func sleepDelaysExecution() async {
 
 @test
 func spawnedSleepersWakeInDeadlineOrder() async {
-    let short = std.task.spawn(|| async {
-        await std.task.sleep(std.time.Duration.fromMillis(1_u64))
-        return std.time.Instant.now()
+    short := std::task::spawn(() async => {
+        await std::task::sleep(std::time::Duration::fromMillis(1_u64))
+        return std::time::Instant::now()
     })
-    let long = std.task.spawn(|| async {
-        await std.task.sleep(std.time.Duration.fromMillis(5_u64))
-        return std.time.Instant.now()
+    long := std::task::spawn(() async => {
+        await std::task::sleep(std::time::Duration::fromMillis(5_u64))
+        return std::time::Instant::now()
     })
 
-    let shortAt = (await short.result()).unwrap()
-    let longAt = (await long.result()).unwrap()
-    let gap = longAt.checkedDurationSince(shortAt)
-    std.testing.assertTrue(gap.isSome(), "shorter sleepers should wake no later than longer sleepers")
-    std.testing.assertTrue(durationToNanos(gap.unwrap()) > 0_u64, "shorter sleepers should wake before longer sleepers")
+    shortAt := (await short.result()).unwrap()
+    longAt := (await long.result()).unwrap()
+    gap := longAt.checkedDurationSince(shortAt)
+    std::testing::assertTrue(gap.isSome(), "shorter sleepers should wake no later than longer sleepers")
+    std::testing::assertTrue(durationToNanos(gap.unwrap()) > 0_u64, "shorter sleepers should wake before longer sleepers")
 }
 
 @test
 func multipleSpawnedTasksInterleave() async {
-    let a = std.task.spawn(|| async {
-        await std.testing.yieldNow()
-        await std.testing.yieldNow()
+    a := std::task::spawn(() async => {
+        await std::testing::yieldNow()
+        await std::testing::yieldNow()
         return 11 as int32
     })
-    let b = std.task.spawn(|| async {
-        await std.testing.yieldNow()
+    b := std::task::spawn(() async => {
+        await std::testing::yieldNow()
         return 12 as int32
     })
 
-    let x = (await a.result()).unwrap()
-    let y = (await b.result()).unwrap()
-    std.testing.assertEqual(x + y, 23, "both spawned tasks should complete")
+    x := (await a.result()).unwrap()
+    y := (await b.result()).unwrap()
+    std::testing::assertEqual(x + y, 23, "both spawned tasks should complete")
 }
 
 @test
 func cancelledTaskResultReturnsCancelledError() async {
-    let task = std.task.spawn(|| async {
-        await std.task.sleep(std.time.Duration.fromMillis(200_u64))
+    task := std::task::spawn(() async => {
+        await std::task::sleep(std::time::Duration::fromMillis(200_u64))
         return 99 as int32
     })
 
     task.cancel()
-    let result = await task.result()
+    result := await task.result()
     match result {
-        case .ok(_) => std.panic.panic("cancelled task should resolve through Task.result() as an error")
+        case .ok(_) => std::panic::panic("cancelled task should resolve through Task.result() as an error")
         case .err(err) => match err {
             case .cancelled => {}
-            case .panicked(_) => std.panic.panic("cancelled task should not report as panicked")
+            case .panicked(_) => std::panic::panic("cancelled task should not report as panicked")
         }
     }
 }
@@ -667,23 +621,23 @@ func cancelledTaskResultReturnsCancelledError() async {
 @test
 @expectPanic
 func taskValuePanicsOnCancelledTask() async {
-    let task = std.task.spawn(|| async {
-        await std.task.sleep(std.time.Duration.fromMillis(200_u64))
+    task := std::task::spawn(() async => {
+        await std::task::sleep(std::time::Duration::fromMillis(200_u64))
         return 7 as int32
     })
 
     task.cancel()
-    let _ = (await task.result()).unwrap()
+    var _ = (await task.result()).unwrap()
 }
 
 @test
 func asyncDeferRunsOnNormalReturnAfterSuspension() async {
     ASYNC_DEFER_RETURN_COUNT = 0
 
-    let value = await asyncDeferReturnProbe()
+    value := await asyncDeferReturnProbe()
 
-    std.testing.assertEqual(value, 77, "async defer probe should return its computed value")
-    std.testing.assertEqual(
+    std::testing::assertEqual(value, 77, "async defer probe should return its computed value")
+    std::testing::assertEqual(
         ASYNC_DEFER_RETURN_COUNT,
         1,
         "async defer should run when an async function returns after suspension",
@@ -693,29 +647,28 @@ func asyncDeferRunsOnNormalReturnAfterSuspension() async {
 @test
 func cancellingSuspendedTaskRunsNestedDefersInLifoOrder() async {
     ASYNC_CANCEL_DEFER_TRACE = 0_i32
-    let (readySender, readyReceiver) = match std.sync.bounded[int32](1) {
+    var (readySender, readyReceiver) = match std::sync::bounded[int32](1) {
         case .ok(value) => value
-        case .err(_) => std.panic.panic("cancellation cleanup channel should be created")
+        case .err(_) => std::panic::panic("cancellation cleanup channel should be created")
     }
-    let childReady = readySender
-    let task = std.task.spawn(|| async {
+    childReady := readySender
+    task := std::task::spawn(() async => {
         return await asyncCancellationCleanupProbe(childReady)
     })
-    std.runtime.collect()
 
     match await readyReceiver.recv() {
         case .some(_) => {}
-        case .none => std.panic.panic("cancellation cleanup probe should become ready")
+        case .none => std::panic::panic("cancellation cleanup probe should become ready")
     }
     task.cancel()
 
     match await task.result() {
-        case .ok(_) => std.panic.panic("cancelled cleanup probe should not complete normally")
+        case .ok(_) => std::panic::panic("cancelled cleanup probe should not complete normally")
         case .err(.cancelled) => {}
-        case .err(.panicked(_)) => std.panic.panic("cancelled cleanup probe should not panic")
+        case .err(.panicked(_)) => std::panic::panic("cancelled cleanup probe should not panic")
     }
 
-    std.testing.assertEqual(
+    std::testing::assertEqual(
         ASYNC_CANCEL_DEFER_TRACE,
         21_i32,
         "cancellation should run active nested defers from inner to outer",
@@ -724,26 +677,26 @@ func cancellingSuspendedTaskRunsNestedDefersInLifoOrder() async {
 
 @test
 func panicDuringCancellationCleanupBecomesTaskPanic() async {
-    let (readySender, readyReceiver) = match std.sync.bounded[int32](1) {
+    var (readySender, readyReceiver) = match std::sync::bounded[int32](1) {
         case .ok(value) => value
-        case .err(_) => std.panic.panic("cancellation panic channel should be created")
+        case .err(_) => std::panic::panic("cancellation panic channel should be created")
     }
-    let childReady = readySender
-    let task = std.task.spawn(|| async {
+    childReady := readySender
+    task := std::task::spawn(() async => {
         return await asyncCancellationCleanupPanicProbe(childReady)
     })
 
     match await readyReceiver.recv() {
         case .some(_) => {}
-        case .none => std.panic.panic("cancellation panic probe should become ready")
+        case .none => std::panic::panic("cancellation panic probe should become ready")
     }
     task.cancel()
 
     match await task.result() {
-        case .ok(_) => std.panic.panic("cancellation cleanup panic should not succeed")
-        case .err(.cancelled) => std.panic.panic("cleanup panic should supersede cancellation")
+        case .ok(_) => std::panic::panic("cancellation cleanup panic should not succeed")
+        case .err(.cancelled) => std::panic::panic("cleanup panic should supersede cancellation")
         case .err(.panicked(payload)) => {
-            std.testing.assertTrue(
+            std::testing::assertTrue(
                 payload.message() == "panic from cancellation cleanup",
                 "cleanup panic payload should preserve its message",
             )
@@ -752,156 +705,129 @@ func panicDuringCancellationCleanupBecomesTaskPanic() async {
 }
 
 @test
-func taskScopeExitCancelsAndReclaimsOwnedWork() async {
-    TASK_SCOPE_CLEANUP_COUNT = 0_i32
-    let (readySender, readyReceiver) = match std.sync.bounded[int32](1) {
-        case .ok(value) => value
-        case .err(_) => std.panic.panic("task scope channel should be created")
-    }
-
+func taskContinuesAfterHandleScopeEnds() async {
+    var (release, wait) = std::sync::bounded[int32](1).unwrap()
+    var (complete, done) = std::sync::bounded[int32](1).unwrap()
     {
-        let childReady = readySender
-        let task = std.task.spawn(|| async {
-            return await taskScopeCleanupProbe(childReady)
+        task := std::task::spawn(() async => {
+            value := (await wait.recv()).unwrap()
+            (await complete.send(value)).unwrap()
+            value
         })
-        match await readyReceiver.recv() {
-            case .some(_) => {}
-            case .none => std.panic.panic("owned task should reach its suspension point")
-        }
     }
-
-    var attempts: int32 = 0_i32
-    while TASK_SCOPE_CLEANUP_COUNT == 0_i32 && attempts < 100_i32 {
-        await std.testing.yieldNow()
-        attempts = attempts + 1_i32
-    }
-    std.testing.assertEqual(
-        TASK_SCOPE_CLEANUP_COUNT,
-        1_i32,
-        "leaving a Task scope should cancel it and run cleanup",
-    )
+    (await release.send(23)).unwrap()
+    std::testing::assertEqual((await done.recv()).unwrap(), 23, "scope exit does not cancel running work")
 }
 
 @test
-func overwritingTaskCancelsAndReclaimsPreviousWork() async {
-    TASK_SCOPE_CLEANUP_COUNT = 0_i32
-    let (readySender, readyReceiver) = match std.sync.bounded[int32](1) {
-        case .ok(value) => value
-        case .err(_) => std.panic.panic("task overwrite channel should be created")
-    }
-    let childReady = readySender
-    var task = std.task.spawn(|| async {
-        return await taskScopeCleanupProbe(childReady)
+func overwritingTaskPreservesPreviousWork() async {
+    var (release, wait) = std::sync::bounded[int32](1).unwrap()
+    var (complete, done) = std::sync::bounded[int32](1).unwrap()
+    var task = std::task::spawn(() async => {
+        value := (await wait.recv()).unwrap()
+        (await complete.send(value)).unwrap()
+        value
     })
-    match await readyReceiver.recv() {
-        case .some(_) => {}
-        case .none => std.panic.panic("overwritten task should reach its suspension point")
-    }
-
-    task = std.task.spawn(|| async { return 29_i32 })
-    match await task.result() {
-        case .ok(value) => std.testing.assertEqual(value, 29_i32, "replacement Task should stay live")
-        case .err(_) => std.panic.panic("replacement Task should complete normally")
-    }
-
-    var attempts: int32 = 0_i32
-    while TASK_SCOPE_CLEANUP_COUNT == 0_i32 && attempts < 100_i32 {
-        await std.testing.yieldNow()
-        attempts = attempts + 1_i32
-    }
-    std.testing.assertEqual(
-        TASK_SCOPE_CLEANUP_COUNT,
-        1_i32,
-        "overwriting a Task should cancel and reclaim the previous handle",
-    )
+    task = std::task::spawn(() async => { 29_i32 })
+    std::testing::assertEqual((await task.result()).unwrap(), 29, "replacement Task completes normally")
+    (await release.send(31)).unwrap()
+    std::testing::assertEqual((await done.recv()).unwrap(), 31, "overwriting a handle does not cancel its previous task")
 }
 
 @test
 func movingAndReturningTasksTransferScopeOwnership() async {
-    let original = std.task.spawn(|| async {
-        await std.testing.yieldNow()
+    original := std::task::spawn(() async => {
+        await std::testing::yieldNow()
         return 41_i32
     })
-    let moved = original
+    moved := original
     match await moved.result() {
-        case .ok(value) => std.testing.assertEqual(value, 41_i32, "moved Task should stay live")
-        case .err(_) => std.panic.panic("moving a Task should not cancel it")
+        case .ok(value) => std::testing::assertEqual(value, 41_i32, "moved Task should stay live")
+        case .err(_) => std::panic::panic("moving a Task should not cancel it")
     }
 
-    let returned = returnedOwnedTask()
+    returned := returnedOwnedTask()
     match await returned.result() {
-        case .ok(value) => std.testing.assertEqual(value, 73_i32, "returned Task should stay live")
-        case .err(_) => std.panic.panic("returning a Task should transfer ownership")
+        case .ok(value) => std::testing::assertEqual(value, 73_i32, "returned Task should stay live")
+        case .err(_) => std::panic::panic("returning a Task should transfer ownership")
     }
 }
 
 @test
-func taskParameterOwnsAndReleasesMovedHandle() async {
-    TASK_SCOPE_CLEANUP_COUNT = 0_i32
-    let (readySender, readyReceiver) = match std.sync.bounded[int32](1) {
-        case .ok(value) => value
-        case .err(_) => std.panic.panic("task parameter channel should be created")
-    }
-    let childReady = readySender
-    let task = std.task.spawn(|| async {
-        return await taskScopeCleanupProbe(childReady)
-    })
-    match await readyReceiver.recv() {
-        case .some(_) => {}
-        case .none => std.panic.panic("task parameter probe should become ready")
-    }
-
+func taskParameterCopiesPreserveCallerAndWork() async {
+    var (release, wait) = std::sync::bounded[int32](1).unwrap()
+    task := std::task::spawn(() async => { (await wait.recv()).unwrap() })
     releaseOwnedTaskParameter(task)
-    var attempts: int32 = 0_i32
-    while TASK_SCOPE_CLEANUP_COUNT == 0_i32 && attempts < 100_i32 {
-        await std.testing.yieldNow()
-        attempts = attempts + 1_i32
-    }
-    std.testing.assertEqual(
-        TASK_SCOPE_CLEANUP_COUNT,
-        1_i32,
-        "a Task parameter should release an unconsumed handle on return",
-    )
+    (await release.send(41)).unwrap()
+    std::testing::assertEqual((await task.result()).unwrap(), 41, "passing a task copies its handle and preserves running work")
 }
 
 @test
-func detachedTaskContinuesAfterHandleScopeEnds() async {
-    DETACHED_TASK_COMPLETED = 0_i32
-    {
-        let task = std.task.spawn(|| async {
-            await std.testing.yieldNow()
-            DETACHED_TASK_COMPLETED = 1_i32
-            return 9_i32
-        })
-        task.detach()
+func taskOutcomeIsObservedRepeatedlyThroughEveryCopy() async {
+    task := std::task::spawn(() async => {
+        await std::testing::yieldNow()
+        return 17_i32
+    })
+    copy := task
+    for _ in 0..3 {
+        std::testing::assertEqual((await task.result()).unwrap(), 17_i32, "repeated observation sees the cached outcome")
+        std::testing::assertEqual((await copy.result()).unwrap(), 17_i32, "a copied handle sees the same outcome")
     }
 
-    var attempts: int32 = 0_i32
-    while DETACHED_TASK_COMPLETED == 0_i32 && attempts < 100_i32 {
-        await std.testing.yieldNow()
-        attempts = attempts + 1_i32
+    failed := std::task::spawn(() async -> int32 => {
+        std::panic::panic("observed twice")
+    })
+    for _ in 0..2 {
+        match await failed.result() {
+            case .err(.panicked(payload)) => std::testing::assertEqual(payload.message(), "observed twice", "every observer gets the payload")
+            case _ => std::panic::panic("expected a cached panic outcome")
+        }
     }
-    std.testing.assertEqual(
-        DETACHED_TASK_COMPLETED,
-        1_i32,
-        "detached Task should continue and discard its result",
-    )
+}
+
+@test
+func concurrentObserversShareOneOutcome() async {
+    var (release, wait) = std::sync::bounded[int32](1).unwrap()
+    task := std::task::spawn(() async => { (await wait.recv()).unwrap() })
+    first := std::task::spawn(() async => { (await task.result()).unwrap() })
+    second := std::task::spawn(() async => { (await task.result()).unwrap() })
+    await std::testing::yieldNow()
+    (await release.send(5)).unwrap()
+    std::testing::assertEqual((await first.result()).unwrap(), 5, "first observer receives the outcome")
+    std::testing::assertEqual((await second.result()).unwrap(), 5, "second observer receives the same outcome")
+}
+
+@test
+func cancellingOneObserverLeavesTheTaskAndOtherObservers() async {
+    var (release, wait) = std::sync::bounded[int32](1).unwrap()
+    task := std::task::spawn(() async => { (await wait.recv()).unwrap() })
+    cancelled := std::task::spawn(() async => { (await task.result()).unwrap() })
+    other := std::task::spawn(() async => { (await task.result()).unwrap() })
+    await std::testing::yieldNow()
+    cancelled.cancel()
+    match await cancelled.result() {
+        case .err(.cancelled) => {}
+        case _ => std::panic::panic("the cancelled observer should report cancellation")
+    }
+    (await release.send(8)).unwrap()
+    std::testing::assertEqual((await other.result()).unwrap(), 8, "other observers still receive the outcome")
+    std::testing::assertEqual((await task.result()).unwrap(), 8, "the observed task was not cancelled")
 }
 
 @test
 func detachedFunctionStartsExplicitFireAndForgetWork() async {
     DETACHED_FUNCTION_COMPLETED = 0_i32
-    std.task.detached(|| async {
-        await std.testing.yieldNow()
+    std::task::detached(() async => {
+        await std::testing::yieldNow()
         DETACHED_FUNCTION_COMPLETED = 1_i32
     })
 
     var attempts: int32 = 0_i32
     while DETACHED_FUNCTION_COMPLETED == 0_i32 && attempts < 100_i32 {
-        await std.testing.yieldNow()
+        await std::testing::yieldNow()
         attempts = attempts + 1_i32
     }
-    std.testing.assertEqual(
+    std::testing::assertEqual(
         DETACHED_FUNCTION_COMPLETED,
         1_i32,
         "std.task.detached work should continue without an owned handle",
@@ -910,42 +836,42 @@ func detachedFunctionStartsExplicitFireAndForgetWork() async {
 
 @test
 func cancellingCompletedTaskIsHarmless() async {
-    let task = std.task.spawn(|| async {
-        await std.task.sleep(std.time.Duration.fromMillis(1_u64))
+    task := std::task::spawn(() async => {
+        await std::task::sleep(std::time::Duration::fromMillis(1_u64))
         return 44 as int32
     })
 
-    await std.task.sleep(std.time.Duration.fromMillis(10_u64))
+    await std::task::sleep(std::time::Duration::fromMillis(10_u64))
     task.cancel()
 
-    let result = await task.result()
+    result := await task.result()
     match result {
-        case .ok(value) => std.testing.assertEqual(value, 44, "cancelling an already completed task should keep its value")
-        case .err(_) => std.panic.panic("completed task should not become cancelled")
+        case .ok(value) => std::testing::assertEqual(value, 44, "cancelling an already completed task should keep its value")
+        case .err(_) => std::panic::panic("completed task should not become cancelled")
     }
 }
 
 @test
 func cancellingSleepingTaskCompletesQuickly() async {
-    let task = std.task.spawn(|| async {
-        await std.task.sleep(std.time.Duration.fromMillis(250_u64))
+    task := std::task::spawn(() async => {
+        await std::task::sleep(std::time::Duration::fromMillis(250_u64))
         return 5 as int32
     })
 
-    let start = std.time.Instant.now()
+    start := std::time::Instant::now()
     task.cancel()
-    let result = await task.result()
-    let elapsed = start.elapsed()
+    result := await task.result()
+    elapsed := start.elapsed()
 
     match result {
-        case .ok(_) => std.panic.panic("cancelled sleeper should not resolve successfully")
+        case .ok(_) => std::panic::panic("cancelled sleeper should not resolve successfully")
         case .err(err) => match err {
             case .cancelled => {}
-            case .panicked(_) => std.panic.panic("cancelled sleeper should not report as panicked")
+            case .panicked(_) => std::panic::panic("cancelled sleeper should not report as panicked")
         }
     }
 
-    std.testing.assertTrue(
+    std::testing::assertTrue(
         durationToNanos(elapsed) < 150000000_u64,
         "cancelling a sleeping task should finish without waiting for the full sleep duration",
     )
@@ -953,11 +879,11 @@ func cancellingSleepingTaskCompletesQuickly() async {
 
 @test
 func taskIsCancelledIsFalseForActiveTask() async {
-    let task = std.task.spawn(|| async {
-        await std.testing.yieldNow()
-        let moduleLevel = std.task.isCancelled()
-        let typeLevel = std.task.Task[int32].isCancelled()
-        std.testing.assertEqual(
+    task := std::task::spawn(() async => {
+        await std::testing::yieldNow()
+        moduleLevel := std::task::isCancelled()
+        typeLevel := std::task::Task[int32]::isCancelled()
+        std::testing::assertEqual(
             moduleLevel,
             typeLevel,
             "module and Task[T] cancellation APIs should agree",
@@ -965,49 +891,55 @@ func taskIsCancelledIsFalseForActiveTask() async {
         return typeLevel
     })
 
-    let result = (await task.result()).unwrap()
-    std.testing.assertFalse(result, "isCancelled() should be false for active, non-cancelled tasks")
+    result := (await task.result()).unwrap()
+    std::testing::assertFalse(result, "isCancelled() should be false for active, non-cancelled tasks")
 }
 
 @test
 func selectReturnsTypedFirstAndSecondBranches() async {
-    let first = await std.task.select(
-        || async { return 7_i32 },
-        || async {
-            await std.task.sleep(std.time.Duration.fromMillis(50_u64))
+    first := await std::task::select(
+        () async => { return 7_i32 },
+        () async => {
+            await std::task::sleep(std::time::Duration::fromMillis(50_u64))
             return "late"
         },
     )
     match first {
-        case .ok(.first(value)) => std.testing.assertEqual(value, 7_i32, "select should preserve the first value")
-        case .ok(.second(_)) => std.panic.panic("the delayed second branch should not win")
-        case .err(_) => std.panic.panic("successful selection should not return a task error")
+        case .ok(.first(value)) => std::testing::assertEqual(value, 7_i32, "select should preserve the first value")
+        case .ok(.second(_)) => std::panic::panic("the delayed second branch should not win")
+        case .err(_) => std::panic::panic("successful selection should not return a task error")
     }
 
-    let second = await std.task.select(
-        || async {
-            await std.task.sleep(std.time.Duration.fromMillis(50_u64))
+    second := await std::task::select(
+        () async => {
+            await std::task::sleep(std::time::Duration::fromMillis(50_u64))
             return 1_i32
         },
-        || async { return "ready" },
+        () async => { return "ready" },
     )
     match second {
-        case .ok(.first(_)) => std.panic.panic("the delayed first branch should not win")
-        case .ok(.second(value)) => std.testing.assertTrue(value == "ready", "select should preserve the second value")
-        case .err(_) => std.panic.panic("successful selection should not return a task error")
+        case .ok(.first(_)) => std::panic::panic("the delayed first branch should not win")
+        case .ok(.second(value)) => std::testing::assertTrue(value == "ready", "select should preserve the second value")
+        case .err(_) => std::panic::panic("successful selection should not return a task error")
     }
 }
 
 @test
 func selectSurfacesLosingCancellationCleanupPanic() async {
-    match await std.task.select(
-        || async { return 5_i32 },
-        || async { return await selectLoserCleanupPanicProbe() },
+    // A loser cancelled before its first poll never runs its body; let the
+    // winner finish only once the loser has registered its defer.
+    var (started, running) = std::sync::bounded[int32](1).unwrap()
+    match await std::task::select(
+        () async => {
+            var _ = await running.recv()
+            return 5_i32
+        },
+        () async => { return await selectLoserCleanupPanicProbe(started) },
     ) {
-        case .ok(_) => std.panic.panic("losing cleanup panic should supersede successful selection")
-        case .err(.cancelled) => std.panic.panic("losing cleanup panic should supersede cancellation")
+        case .ok(_) => std::panic::panic("losing cleanup panic should supersede successful selection")
+        case .err(.cancelled) => std::panic::panic("losing cleanup panic should supersede cancellation")
         case .err(.panicked(payload)) => {
-            std.testing.assertTrue(
+            std::testing::assertTrue(
                 payload.message() == "select loser cleanup panic",
                 "selection should preserve losing cleanup panic payload",
             )
@@ -1016,50 +948,35 @@ func selectSurfacesLosingCancellationCleanupPanic() async {
 }
 
 @test
-func raceUsesStableFirstBranchTieBreak() async {
-    var attempt = 0_i32
-    while attempt < 32_i32 {
-        match await std.task.race(
-            || async { return 1_i32 },
-            || async { return 2_i32 },
-        ) {
-            case .ok(value) => std.testing.assertEqual(value, 1_i32, "simultaneously-ready race should prefer the first branch")
-            case .err(_) => std.panic.panic("ready race branches should not fail")
-        }
-        attempt = attempt + 1_i32
-    }
-}
-
-@test
 func withTimeoutDistinguishesCompletionAndExpiry() async {
-    match await std.task.withTimeout(
-        std.time.Duration.fromMillis(100_u64),
-        || async { return 42_i32 },
+    match await std::task::withTimeout(
+        std::time::Duration::fromMillis(100_u64),
+        () async => { return 42_i32 },
     ) {
-        case .ok(value) => std.testing.assertEqual(value, 42_i32, "operation should complete before its deadline")
-        case .err(_) => std.panic.panic("ready operation should not time out")
+        case .ok(value) => std::testing::assertEqual(value, 42_i32, "operation should complete before its deadline")
+        case .err(_) => std::panic::panic("ready operation should not time out")
     }
 
     // The task/deadline selector yields once before observing a zero deadline,
     // allowing an immediately-ready operation to win deterministically.
-    match await std.task.withTimeout(
-        std.time.Duration.fromMillis(0_u64),
-        || async { return 9_i32 },
+    match await std::task::withTimeout(
+        std::time::Duration::fromMillis(0_u64),
+        () async => { return 9_i32 },
     ) {
-        case .ok(value) => std.testing.assertEqual(value, 9_i32, "ready operation should beat a zero-duration timeout")
-        case .err(_) => std.panic.panic("zero-duration tie should prefer ready work")
+        case .ok(value) => std::testing::assertEqual(value, 9_i32, "ready operation should beat a zero-duration timeout")
+        case .err(_) => std::panic::panic("zero-duration tie should prefer ready work")
     }
 
     SELECT_LOSER_CLEANUP_COUNT = 0_i32
-    match await std.task.withTimeout(
-        std.time.Duration.fromMillis(5_u64),
-        || async { return await selectLoserCleanupProbe() },
+    match await std::task::withTimeout(
+        std::time::Duration::fromMillis(5_u64),
+        () async => { return await selectLoserCleanupProbe() },
     ) {
-        case .ok(_) => std.panic.panic("slow operation should time out")
+        case .ok(_) => std::panic::panic("slow operation should time out")
         case .err(.timedOut) => {}
-        case .err(.operation(_)) => std.panic.panic("ordinary timeout should not be an operation failure")
+        case .err(.operation(_)) => std::panic::panic("ordinary timeout should not be an operation failure")
     }
-    std.testing.assertEqual(
+    std::testing::assertEqual(
         SELECT_LOSER_CLEANUP_COUNT,
         1_i32,
         "timed-out operation should run cancellation cleanup exactly once",
@@ -1068,27 +985,27 @@ func withTimeoutDistinguishesCompletionAndExpiry() async {
 
 @test
 func withTimeoutReturnsOperationPanicAndSupportsNesting() async {
-    match await std.task.withTimeout(
-        std.time.Duration.fromMillis(100_u64),
-        || async -> int32 {
-            std.panic.panic("timeout operation panic")
+    match await std::task::withTimeout(
+        std::time::Duration::fromMillis(100_u64),
+        () async -> int32 => {
+            std::panic::panic("timeout operation panic")
         },
     ) {
-        case .ok(_) => std.panic.panic("panicking operation should not succeed")
-        case .err(.timedOut) => std.panic.panic("panicking operation should not look like timeout")
-        case .err(.operation(.cancelled)) => std.panic.panic("panicking operation should not look cancelled")
+        case .ok(_) => std::panic::panic("panicking operation should not succeed")
+        case .err(.timedOut) => std::panic::panic("panicking operation should not look like timeout")
+        case .err(.operation(.cancelled)) => std::panic::panic("panicking operation should not look cancelled")
         case .err(.operation(.panicked(payload))) => {
-            std.testing.assertTrue(payload.message() == "timeout operation panic", "timeout should preserve operation panic payload")
+            std::testing::assertTrue(payload.message() == "timeout operation panic", "timeout should preserve operation panic payload")
         }
     }
 
-    let nested = await std.task.withTimeout(
-        std.time.Duration.fromMillis(100_u64),
-        || async {
-            return await std.task.withTimeout(
-                std.time.Duration.fromMillis(5_u64),
-                || async {
-                    await std.task.sleep(std.time.Duration.fromMillis(100_u64))
+    nested := await std::task::withTimeout(
+        std::time::Duration::fromMillis(100_u64),
+        () async => {
+            return await std::task::withTimeout(
+                std::time::Duration::fromMillis(5_u64),
+                () async => {
+                    await std::task::sleep(std::time::Duration::fromMillis(100_u64))
                     return 3_i32
                 },
             )
@@ -1096,60 +1013,49 @@ func withTimeoutReturnsOperationPanicAndSupportsNesting() async {
     )
     match nested {
         case .ok(.err(.timedOut)) => {}
-        case .ok(_) => std.panic.panic("inner timeout should remain distinct inside outer success")
-        case .err(_) => std.panic.panic("outer timeout should allow inner timeout to finish")
+        case .ok(_) => std::panic::panic("inner timeout should remain distinct inside outer success")
+        case .err(_) => std::panic::panic("outer timeout should allow inner timeout to finish")
     }
 }
 
 @test
-func selectSupportsChannelAndTaskGroupOperations() async {
-    let (sender, receiver) = match std.sync.bounded[int32](1) {
+func selectSupportsChannelsAndTaskGroupsRemainScoped() async {
+    var (sender, receiver) = match std::sync::bounded[int32](1) {
         case .ok(value) => value
-        case .err(_) => std.panic.panic("select channel should be created")
+        case .err(_) => std::panic::panic("select channel should be created")
     }
     match sender.trySend(17_i32) {
         case .ok(_) => {}
-        case .err(_) => std.panic.panic("select channel should accept its ready value")
+        case .err(_) => std::panic::panic("select channel should accept its ready value")
     }
-    match await std.task.select(
-        || async { return await receiver.recv() },
-        || async {
-            await std.task.sleep(std.time.Duration.fromMillis(100_u64))
+    match await std::task::select(
+        () async => { return await receiver.recv() },
+        () async => {
+            await std::task::sleep(std::time::Duration::fromMillis(100_u64))
             return false
         },
     ) {
-        case .ok(.first(.some(value))) => std.testing.assertEqual(value, 17_i32, "channel receive should participate in select")
-        case .ok(_) => std.panic.panic("ready channel receive should win selection")
-        case .err(_) => std.panic.panic("channel selection should not fail")
+        case .ok(.first(.some(value))) => std::testing::assertEqual(value, 17_i32, "channel receive should participate in select")
+        case .ok(_) => std::panic::panic("ready channel receive should win selection")
+        case .err(_) => std::panic::panic("channel selection should not fail")
     }
-    let groupValue: int32 = await std.task.withTaskGroup(|group: &mut std.task.TaskGroup[int32]| async {
-        group.spawn(|| async { return 23_i32 })
-        match await std.task.select(
-            move || async {
-                var groupRef = group
-                return await groupRef.next()
-            },
-            || async {
-                await std.task.sleep(std.time.Duration.fromMillis(100_u64))
-                return false
-            },
-        ) {
-            case .ok(.first(.some(value))) => return value
-            case .ok(_) => std.panic.panic("ready task-group result should win selection")
-            case .err(_) => std.panic.panic("task-group selection should not fail")
-        }
+    var groupValue: int32 = await std::task::withTaskGroup((group: &std::task::TaskGroup[int32]) async => {
+        group.spawn(() async => { return 23_i32 })
+        // select spawns independent branches. Keep the borrowed group in the
+        // directly awaited scope instead of sending its reference to a child.
+        return (await group.next()).unwrap()
     })
-    std.testing.assertEqual(groupValue, 23_i32, "task group next should participate in select")
+    std::testing::assertEqual(groupValue, 23_i32, "task group next remains in its direct scope")
 }
 
 @test
 func withTaskGroupCollectsResultsViaForAwait() async {
-    let total: int32 = await std.task.withTaskGroup(|group: &mut std.task.TaskGroup[int32]| async {
-        group.spawn(|| async {
-            await std.testing.yieldNow()
+    var total: int32 = await std::task::withTaskGroup((group: &std::task::TaskGroup[int32]) async => {
+        group.spawn(() async => {
+            await std::testing::yieldNow()
             return 11 as int32
         })
-        group.spawn(|| async {
+        group.spawn(() async => {
             return 31 as int32
         })
 
@@ -1159,29 +1065,29 @@ func withTaskGroupCollectsResultsViaForAwait() async {
             sum += value
             seen += 1
         }
-        std.testing.assertEqual(seen, 2, "task group should yield both spawned task results")
+        std::testing::assertEqual(seen, 2, "task group should yield both spawned task results")
 
         return sum
     })
 
-    std.testing.assertEqual(total, 42, "withTaskGroup should surface successful child results through for await")
+    std::testing::assertEqual(total, 42, "withTaskGroup should surface successful child results through for await")
 }
 
 @test
 func withTaskGroupCancelsRemainingTasksWhenBodyReturnsEarly() async {
-    let start = std.time.Instant.now()
-    let value: int32 = await std.task.withTaskGroup(|group: &mut std.task.TaskGroup[int32]| async {
-        group.spawn(|| async {
-            await std.task.sleep(std.time.Duration.fromMillis(250_u64))
+    start := std::time::Instant::now()
+    var value: int32 = await std::task::withTaskGroup((group: &std::task::TaskGroup[int32]) async => {
+        group.spawn(() async => {
+            await std::task::sleep(std::time::Duration::fromMillis(250_u64))
             return 1 as int32
         })
 
         return 9 as int32
     })
-    let elapsed = start.elapsed()
+    elapsed := start.elapsed()
 
-    std.testing.assertEqual(value, 9, "withTaskGroup should return the body result")
-    std.testing.assertTrue(
+    std::testing::assertEqual(value, 9, "withTaskGroup should return the body result")
+    std::testing::assertTrue(
         durationToNanos(elapsed) < 150000000_u64,
         "withTaskGroup should cancel outstanding children when the body returns early",
     )
@@ -1190,18 +1096,18 @@ func withTaskGroupCancelsRemainingTasksWhenBodyReturnsEarly() async {
 @test
 @expectPanic
 func withTaskGroupCancelOnPanicCancelsSiblingsThenRethrows() async {
-    let _ = await std.task.withTaskGroup(policy: .cancelOnPanic, |group: &mut std.task.TaskGroup[int32]| async {
-        group.spawn(|| async {
-            await std.testing.yieldNow()
-            std.panic.panic("child panic should be rethrown after group cleanup")
+    var _ = await std::task::withTaskGroup(policy: .cancelOnPanic, (group: &std::task::TaskGroup[int32]) async => {
+        group.spawn(() async => {
+            await std::testing::yieldNow()
+            std::panic::panic("child panic should be rethrown after group cleanup")
         })
-        group.spawn(|| async {
-            await std.task.sleep(std.time.Duration.fromMillis(250_u64))
+        group.spawn(() async => {
+            await std::task::sleep(std::time::Duration::fromMillis(250_u64))
             return 1 as int32
         })
 
         match await group.next() {
-            case .some(_) => std.panic.panic("cancel-on-panic policy should not yield successful sibling results")
+            case .some(_) => std::panic::panic("cancel-on-panic policy should not yield successful sibling results")
             case .none => {}
         }
 
@@ -1210,40 +1116,53 @@ func withTaskGroupCancelOnPanicCancelsSiblingsThenRethrows() async {
 }
 
 @test
-@expectPanic
 func withTaskGroupIndependentLetsSiblingsContinueBeforeRethrow() async {
-    let _ = await std.task.withTaskGroup(policy: .independent, |group: &mut std.task.TaskGroup[int32]| async {
-        group.spawn(|| async {
-            await std.testing.yieldNow()
-            std.panic.panic("independent group should still rethrow child panic after cleanup")
-        })
-        group.spawn(|| async {
-            await std.testing.yieldNow()
-            await std.testing.yieldNow()
-            return 7 as int32
-        })
+    task := std::task::spawn(() async => {
+        return await std::task::withTaskGroup(policy: .independent, (group: &std::task::TaskGroup[int32]) async => {
+            group.spawn(() async => {
+                await std::testing::yieldNow()
+                std::panic::panic("independent group should still rethrow child panic after cleanup")
+            })
+            group.spawn(() async => {
+                await std::testing::yieldNow()
+                await std::testing::yieldNow()
+                return 7 as int32
+            })
 
-        match await group.next() {
-            case .some(value) => {
-                std.testing.assertEqual(value, 7, "independent policy should let siblings complete after another child panics")
+            match await group.next() {
+                case .some(value) => {
+                    std::testing::assertEqual(value, 7, "independent policy should let siblings complete after another child panics")
+                }
+                case .none => std::panic::panic("independent policy should still yield sibling results before scope cleanup")
             }
-            case .none => std.panic.panic("independent policy should still yield sibling results before scope cleanup")
-        }
 
-        return 0 as int32
+            // The successful sibling may finish first. Drain the remaining child
+            // before returning, so scope-exit cancellation cannot suppress its panic.
+            std::testing::assertTrue((await group.next()).isNone(), "independent group should finish after its successful sibling")
+            return 0 as int32
+        })
     })
+    match await task.result() {
+        case .err(.panicked(payload)) => std::testing::assertEqual(
+            payload.message(),
+            "independent group should still rethrow child panic after cleanup",
+            "scope cleanup should rethrow the original child panic",
+        )
+        case .err(.cancelled) => std::panic::panic("independent group task should not be cancelled")
+        case .ok(_) => std::panic::panic("independent group should rethrow its child's panic")
+    }
 }
 
 @test
 @expectPanic
 func withTaskGroupBodyPanicRemainsVisible() async {
-    let _ = await std.task.withTaskGroup(policy: .independent, |group: &mut std.task.TaskGroup[int32]| async {
-        group.spawn(|| async {
-            await std.testing.yieldNow()
-            std.panic.panic("child panic should not replace the body panic")
+    var _ = await std::task::withTaskGroup(policy: .independent, (group: &std::task::TaskGroup[int32]) async => {
+        group.spawn(() async => {
+            await std::testing::yieldNow()
+            std::panic::panic("child panic should not replace the body panic")
         })
 
-        std.panic.panic("body panic should remain visible after group cleanup")
+        std::panic::panic("body panic should remain visible after group cleanup")
     })
 }
 
@@ -1251,21 +1170,21 @@ func withTaskGroupBodyPanicRemainsVisible() async {
 func spawnedTaskPanicIsolatedFromTest() async {
     // Detached spawned task panics are now isolated: they print to stderr
     // but do not crash the program or fail the test.
-    let task = std.task.spawn(|| async {
-        await std.testing.yieldNow()
-        std.panic.panic("spawned task panic should be isolated")
+    task := std::task::spawn(() async => {
+        await std::testing::yieldNow()
+        std::panic::panic("spawned task panic should be isolated")
     })
-    let result = await task.result()
+    result := await task.result()
     match result {
-        case .ok(_) => std.panic.panic("panicking task should not succeed")
+        case .ok(_) => std::panic::panic("panicking task should not succeed")
         case .err(err) => match err {
             case .panicked(payload) => {
-                std.testing.assertTrue(
+                std::testing::assertTrue(
                     payload.message() == "spawned task panic should be isolated",
                     "panic payload message should match the original panic message",
                 )
             }
-            case .cancelled => std.panic.panic("panicking task should not report as cancelled")
+            case .cancelled => std::panic::panic("panicking task should not report as cancelled")
         }
     }
 }
@@ -1274,135 +1193,112 @@ func spawnedTaskPanicIsolatedFromTest() async {
 func syncSpawnedTaskPanicIsIsolated() {
     // Detached spawned task panics are now isolated: they print to stderr
     // but do not crash the program or fail the test.
-    std.task.detached(|| async {
-        await std.testing.yieldNow()
-        std.panic.panic("spawned task panic should be isolated in sync test")
+    std::task::detached(() async => {
+        await std::testing::yieldNow()
+        std::panic::panic("spawned task panic should be isolated in sync test")
     })
 }
 
 @cfg(family("unix"))
 @test
 func asyncStreamPipeRoundTrip() async {
-    let pipeRes = std.io.task.pipe()
-    let pipePair = match pipeRes {
+    pipeRes := std::io::task::pipe()
+    pipePair := match pipeRes {
         case .ok(value) => value
-        case .err(err) => std.panic.panic("pipe() should succeed on unix")
+        case .err(err) => std::panic::panic("pipe() should succeed on unix")
     }
-    let readEnd = pipePair.0
-    let writeEnd = pipePair.1
+    readEnd := pipePair.0
+    writeEnd := pipePair.1
 
     var writerSeed = writeEnd
     PIPE_WRITER_STREAM = .some(writerSeed)
-    let writerTask = std.task.spawn(|| async {
+    writerTask := std::task::spawn(() async => {
         return await pipeWriterBody()
     })
 
-    let reader = readEnd
+    reader := readEnd
     var storage: [uint8; 4] = [0; 4]
-    let storagePtr = unsafe { (&mut storage as *mut [uint8; 4]) as *mut uint8 }
-    let readRes = await reader.read(std.mem.MutableSpan[uint8].from(storagePtr, 4))
-    let readCount = match readRes {
+    storagePtr := unsafe { (&storage as *mut [uint8; 4]) as *mut uint8 }
+    readRes := await reader.read(unsafe { std::mem::Span[uint8]::from(storagePtr, 4) })
+    readCount := match readRes {
         case .ok(count) => count
-        case .err(err) => std.panic.panic("pipe reader should succeed")
+        case .err(err) => std::panic::panic("pipe reader should succeed")
     }
 
-    std.testing.assertEqual(readCount, 4, "pipe reader should receive the full payload")
-    std.testing.assertEqual(*storage.at(0 as usize), 112_u8, "first byte should be 'p'")
-    std.testing.assertEqual(*storage.at(1 as usize), 105_u8, "second byte should be 'i'")
-    std.testing.assertEqual(*storage.at(2 as usize), 110_u8, "third byte should be 'n'")
-    std.testing.assertEqual(*storage.at(3 as usize), 103_u8, "fourth byte should be 'g'")
+    std::testing::assertEqual(readCount, 4, "pipe reader should receive the full payload")
+    std::testing::assertEqual(*storage.at(0 as usize), 112_u8, "first byte should be 'p'")
+    std::testing::assertEqual(*storage.at(1 as usize), 105_u8, "second byte should be 'i'")
+    std::testing::assertEqual(*storage.at(2 as usize), 110_u8, "third byte should be 'n'")
+    std::testing::assertEqual(*storage.at(3 as usize), 103_u8, "fourth byte should be 'g'")
 
-    let written = (await writerTask.result()).unwrap()
-    std.testing.assertEqual(written, 4, "pipe writer should report the written byte count")
+    written := (await writerTask.result()).unwrap()
+    std::testing::assertEqual(written, 4, "pipe writer should report the written byte count")
 
-    let eofRes = await reader.read(std.mem.MutableSpan[uint8].from(storagePtr, 4))
-    let eofCount = match eofRes {
+    eofRes := await reader.read(unsafe { std::mem::Span[uint8]::from(storagePtr, 4) })
+    eofCount := match eofRes {
         case .ok(count) => count
-        case .err(err) => std.panic.panic("pipe reader should observe EOF after writer close")
+        case .err(err) => std::panic::panic("pipe reader should observe EOF after writer close")
     }
-    std.testing.assertEqual(eofCount, 0, "closing the pipe writer should produce EOF on the reader")
+    std::testing::assertEqual(eofCount, 0, "closing the pipe writer should produce EOF on the reader")
 
-    let closeRes = reader.close()
+    closeRes := reader.close()
     match closeRes {
         case .ok(_) => {}
-        case .err(err) => std.panic.panic("pipe reader close should succeed")
+        case .err(err) => std::panic::panic("pipe reader close should succeed")
     }
-}
-
-@cfg(family("unix"))
-@test
-func asyncStreamCleanupClosesAbandonedPipeWriter() async {
-    let reader = pipeReaderWithAbandonedWriter()
-
-    std.runtime.collect()
-    std.testing.waitForCleanups()
-
-    var byte: uint8 = 0
-    let readRes = await reader.read(
-        std.mem.MutableSpan[uint8].from(unsafe { (&mut byte) as *mut uint8 }, 1),
-    )
-    match readRes {
-        case .ok(count) => std.testing.assertEqual(count, 0 as usize, "abandoned writer cleanup should produce EOF")
-        case .err(_) => std.testing.fail("reader should observe EOF after abandoned writer cleanup")
-    }
-    std.testing.assertTrue(reader.close().isOk(), "pipe reader close should succeed")
 }
 
 @cfg(family("unix"))
 @test
 func copiedAsyncStreamsShareExactlyOnceCloseState() async {
-    let pair = match std.io.task.pipe() {
+    pair := match std::io::task::pipe() {
         case .ok(value) => value
-        case .err(_) => std.panic.panic("pipe() should succeed on unix")
+        case .err(_) => std::panic::panic("pipe() should succeed on unix")
     }
-    let reader = pair.0
+    reader := pair.0
     SHARED_PIPE_WRITE_STREAM = .some(pair.1)
 
-    let first = match SHARED_PIPE_WRITE_STREAM {
+    first := match SHARED_PIPE_WRITE_STREAM {
         case .some(value) => value
-        case .none => std.panic.panic("first copied stream should exist")
+        case .none => std::panic::panic("first copied stream should exist")
     }
-    let second = match SHARED_PIPE_WRITE_STREAM {
+    second := match SHARED_PIPE_WRITE_STREAM {
         case .some(value) => value
-        case .none => std.panic.panic("second copied stream should exist")
+        case .none => std::panic::panic("second copied stream should exist")
     }
 
-    std.runtime.collect()
-    std.testing.assertTrue(first.close().isOk(), "first copied stream close should win")
-    std.runtime.collect()
-    std.testing.waitForCleanups()
+    std::testing::assertTrue(first.close().isOk(), "first copied stream close should win")
 
     match second.close() {
-        case .err(err) => std.testing.assertTrue(err.isKind(.closed), "second copied stream close should return closed")
-        case .ok(_) => std.testing.fail("second copied stream close should fail")
+        case .err(err) => std::testing::assertTrue(err.isKind(.closed), "second copied stream close should return closed")
+        case .ok(_) => std::testing::fail("second copied stream close should fail")
     }
 
     var byte: uint8 = 0
-    let readRes = await reader.read(
-        std.mem.MutableSpan[uint8].from(unsafe { (&mut byte) as *mut uint8 }, 1),
+    readRes := await reader.read(
+        unsafe { std::mem::Span[uint8]::from(unsafe { (&byte) as *mut uint8 }, 1) },
     )
     match readRes {
-        case .ok(count) => std.testing.assertEqual(count, 0 as usize, "exactly one writer close should produce EOF")
-        case .err(_) => std.testing.fail("reader should observe EOF after copied writer closes")
+        case .ok(count) => std::testing::assertEqual(count, 0 as usize, "exactly one writer close should produce EOF")
+        case .err(_) => std::testing::fail("reader should observe EOF after copied writer closes")
     }
 
     SHARED_PIPE_WRITE_STREAM = .none
-    std.testing.assertTrue(reader.close().isOk(), "copied stream test reader should close")
+    std::testing::assertTrue(reader.close().isOk(), "copied stream test reader should close")
 }
 
 @cfg(family("unix"))
 @test
 func localAsyncStreamSurvivesManualGc() async {
-    let pair = match std.io.task.pipe() {
+    pair := match std::io::task::pipe() {
         case .ok(value) => value
-        case .err(_) => std.panic.panic("local-root pipe should open")
+        case .err(_) => std::panic::panic("local-root pipe should open")
     }
-    let reader = pair.0
-    let writer = pair.1
+    reader := pair.0
+    writer := pair.1
 
-    std.runtime.collect()
-    std.testing.assertTrue(writer.close().isOk(), "live local stream should survive collection")
-    std.testing.assertTrue(reader.close().isOk(), "local-root pipe reader should close")
+    std::testing::assertTrue(writer.close().isOk(), "live local stream should survive collection")
+    std::testing::assertTrue(reader.close().isOk(), "local-root pipe reader should close")
 }
 
 @cfg(family("unix"))
@@ -1410,26 +1306,23 @@ func localAsyncStreamSurvivesManualGc() async {
 func explicitAsyncStreamCloseWinsCollectionRace() async {
     var iteration: int32 = 0
     while iteration < 16_i32 {
-        let pair = match std.io.task.pipe() {
+        pair := match std::io::task::pipe() {
             case .ok(value) => value
-            case .err(_) => std.panic.panic("race pipe should open")
+            case .err(_) => std::panic::panic("race pipe should open")
         }
-        let reader = pair.0
-        let writer = pair.1
-        let closeTask = std.task.spawn(|| async {
-            await std.testing.yieldNow()
+        reader := pair.0
+        writer := pair.1
+        closeTask := std::task::spawn(() async => {
+            await std::testing::yieldNow()
             return writer.close().isOk()
         })
 
         // Collect while the resource is live only in another task's frame.
-        // keepAlive in close must keep cancellation ahead of finalization.
-        std.runtime.collect()
-        let closeWon = (await closeTask.result()).unwrap()
-        std.testing.assertTrue(closeWon, "explicit close should cancel cleanup during collection")
+        // The owning close state keeps cancellation ahead of final release.
+        closeWon := (await closeTask.result()).unwrap()
+        std::testing::assertTrue(closeWon, "explicit close should cancel cleanup during collection")
 
-        std.runtime.collect()
-        std.testing.waitForCleanups()
-        std.testing.assertTrue(reader.close().isOk(), "race pipe reader should close")
+        std::testing::assertTrue(reader.close().isOk(), "race pipe reader should close")
         iteration += 1_i32
     }
 }
@@ -1437,30 +1330,30 @@ func explicitAsyncStreamCloseWinsCollectionRace() async {
 @cfg(family("unix"))
 @test
 func asyncStreamSupportsConcurrentReadWaiters() async {
-    let pipeRes = std.io.task.pipe()
-    let pipePair = match pipeRes {
+    pipeRes := std::io::task::pipe()
+    pipePair := match pipeRes {
         case .ok(value) => value
-        case .err(_) => std.panic.panic("pipe() should succeed on unix")
+        case .err(_) => std::panic::panic("pipe() should succeed on unix")
     }
 
     SHARED_PIPE_READ_STREAM = .some(pipePair.0)
     SHARED_PIPE_WRITE_STREAM = .some(pipePair.1)
-    let firstReader = std.task.spawn(|| async {
+    firstReader := std::task::spawn(() async => {
         return await sharedPipeReaderBody()
     })
-    let secondReader = std.task.spawn(|| async {
+    secondReader := std::task::spawn(() async => {
         return await sharedPipeReaderBody()
     })
-    let writer = std.task.spawn(|| async {
+    writer := std::task::spawn(() async => {
         return await sharedPipeWriterBody()
     })
 
-    let firstByte = (await firstReader.result()).unwrap()
-    let secondByte = (await secondReader.result()).unwrap()
-    let written = (await writer.result()).unwrap()
-    std.testing.assertEqual(written, 2, "shared pipe writer should write both bytes")
-    std.testing.assertTrue(firstByte != secondByte, "separate read waiters should each receive one byte")
-    std.testing.assertEqual(firstByte + secondByte, 195, "shared waiters should receive the written byte payload")
+    firstByte := (await firstReader.result()).unwrap()
+    secondByte := (await secondReader.result()).unwrap()
+    written := (await writer.result()).unwrap()
+    std::testing::assertEqual(written, 2, "shared pipe writer should write both bytes")
+    std::testing::assertTrue(firstByte != secondByte, "separate read waiters should each receive one byte")
+    std::testing::assertEqual(firstByte + secondByte, 195, "shared waiters should receive the written byte payload")
     SHARED_PIPE_READ_STREAM = .none
     SHARED_PIPE_WRITE_STREAM = .none
 }
@@ -1468,98 +1361,97 @@ func asyncStreamSupportsConcurrentReadWaiters() async {
 @cfg(family("unix"))
 @test
 func asyncStreamHelperApisRoundTrip() async {
-    let pipeRes = std.io.task.pipe()
-    let pair = match pipeRes {
+    pipeRes := std::io::task::pipe()
+    pair := match pipeRes {
         case .ok(value) => value
-        case .err(_) => std.panic.panic("pipe() should succeed on unix")
+        case .err(_) => std::panic::panic("pipe() should succeed on unix")
     }
 
-    let reader = pair.0
-    let writer = pair.1
+    reader := pair.0
+    writer := pair.1
 
-    let writerTask = std.task.spawn(|| async {
-        let writeRes = await std.io.task.writeString(&writer, "helper-apis")
+    writerTask := std::task::spawn(() async => {
+        writeRes := await std::io::task::writeString(writer, "helper-apis")
         match writeRes {
             case .ok(_) => {}
-            case .err(_) => std.panic.panic("async stream writeString should succeed")
+            case .err(_) => std::panic::panic("async stream writeString should succeed")
         }
         match writer.close() {
             case .ok(_) => {}
-            case .err(_) => std.panic.panic("async stream close should succeed")
+            case .err(_) => std::panic::panic("async stream close should succeed")
         }
         return 1_i32
     })
 
-    let textRes = await std.io.task.readToString(&reader)
-    let text = match textRes {
+    textRes := await std::io::task::readToString(reader)
+    text := match textRes {
         case .ok(value) => value
-        case .err(_) => std.panic.panic("readToString helper should succeed")
+        case .err(_) => std::panic::panic("readToString helper should succeed")
     }
-    std.testing.assertEqual(text, "helper-apis", "async helper readToString should read the full stream")
+    std::testing::assertEqual(text, "helper-apis", "async helper readToString should read the full stream")
 
-    let done = (await writerTask.result()).unwrap()
-    std.testing.assertEqual(done, 1_i32, "writer task should complete")
+    done := (await writerTask.result()).unwrap()
+    std::testing::assertEqual(done, 1_i32, "writer task should complete")
 
     match reader.close() {
         case .ok(_) => {}
-        case .err(_) => std.panic.panic("reader close should succeed")
+        case .err(_) => std::panic::panic("reader close should succeed")
     }
 }
 
-func applyAsyncMut[F: std.ops.AsyncFnMut(int32) -> int32](_ f: F, _ x: int32) async -> int32 {
+func applyAsyncMut[F: std::ops::AsyncFn(int32) -> int32](_ f: F, _ x: int32) async -> int32 {
     var f = f
-    let first = await f(x)
-    let second = await f(x)
+    first := await f(x)
+    second := await f(x)
     return first + second
 }
 
-func applyZeroAsyncMut[F: std.ops.AsyncFnMut() -> int32](_ f: F) async -> int32 {
+func applyZeroAsyncMut[F: std::ops::AsyncFn() -> int32](_ f: F) async -> int32 {
     var f = f
-    let a = await f()
-    let b = await f()
-    let c = await f()
+    a := await f()
+    b := await f()
+    c := await f()
     return a + b + c
 }
 
 @test
 func asyncClosuresSatisfyAsyncFnMutBounds() async {
-    let captured = 2 as int32
-    let closure = |x: int32| async {
-        await std.testing.yieldNow()
+    captured := 2 as int32
+    closure := (x: int32) async => {
+        await std::testing::yieldNow()
         return (x * 3) + captured
     }
-    let value = await applyAsyncMut(closure, 5)
+    value := await applyAsyncMut(closure, 5)
     // (5*3+2) + (5*3+2) = 34
-    std.testing.assertEqual(value, 34, "copy-capturing async closure should satisfy AsyncFnMut and be reusable")
+    std::testing::assertEqual(value, 34, "copy-capturing async closure should satisfy AsyncFnMut and be reusable")
 }
 
 @test
 func asyncClosuresReusedThroughZeroArgAsyncFnMut() async {
-    let closure = || async {
-        await std.testing.yieldNow()
+    closure := () async => {
+        await std::testing::yieldNow()
         return 7 as int32
     }
-    let sum = await applyZeroAsyncMut(closure)
+    sum := await applyZeroAsyncMut(closure)
     // 7 + 7 + 7 = 21
-    std.testing.assertEqual(sum, 21, "non-capturing async closure should be reusable through AsyncFnMut() bound")
+    std::testing::assertEqual(sum, 21, "non-capturing async closure should be reusable through AsyncFnMut() bound")
 }
 
 @test
 func awaitedPanickedTaskResultReturnsPanickedError() async {
-    let task = std.task.spawn(|| async {
-        await std.testing.yieldNow()
-        std.panic.panic("intentional task panic")
+    task := std::task::spawn(() async => {
+        await std::testing::yieldNow()
+        std::panic::panic("intentional task panic")
     })
-    let result = await task.result()
-    let message = match result {
-        case .ok(_) => std.panic.panic("panicking task should not succeed")
+    result := await task.result()
+    message := match result {
+        case .ok(_) => std::panic::panic("panicking task should not succeed")
         case .err(err) => match err {
             case .panicked(payload) => payload.message()
-            case .cancelled => std.panic.panic("panicking task should not report as cancelled")
+            case .cancelled => std::panic::panic("panicking task should not report as cancelled")
         }
     }
-    std.runtime.collect()
-    std.testing.assertTrue(
+    std::testing::assertTrue(
         message == "intentional task panic",
         "panic payload message should survive collection after its payload leaves scope",
     )
@@ -1568,45 +1460,43 @@ func awaitedPanickedTaskResultReturnsPanickedError() async {
 @test
 @expectPanic
 func panicPayloadRethrowReRaisesOriginalPanic() async {
-    let task = std.task.spawn(|| async {
-        await std.testing.yieldNow()
-        std.panic.panic("rethrow test panic")
+    task := std::task::spawn(() async => {
+        await std::testing::yieldNow()
+        std::panic::panic("rethrow test panic")
     })
-    let result = await task.result()
+    result := await task.result()
     match result {
-        case .ok(_) => std.panic.panic("panicking task should not succeed")
+        case .ok(_) => std::panic::panic("panicking task should not succeed")
         case .err(err) => match err {
             case .panicked(payload) => payload.rethrow()
-            case .cancelled => std.panic.panic("panicking task should not report as cancelled")
+            case .cancelled => std::panic::panic("panicking task should not report as cancelled")
         }
     }
 }
 
 @test
 func blockingMovesGcCapturesAndResultsAcrossThreads() async {
-    let captured = "blocking"
-    let result = await std.task.blocking(move || {
-        std.runtime.collect()
+    captured := "blocking"
+    result := await std::task::blocking(() => {
         return captured + "-result"
     })
-    std.runtime.collect()
-    std.testing.assertTrue(
+    std::testing::assertTrue(
         result == "blocking-result",
-        "blocking should preserve GC-backed captures and results",
+        "blocking should preserve owned captures and results",
     )
 }
 
 @test
 func blockingPanicIsDeliveredThroughTaskResult() async {
-    let task = std.task.spawn(|| async -> int32 {
-        return await std.task.blocking(|| -> int32 {
-            std.panic.panic("blocking closure panic")
+    task := std::task::spawn(() async -> int32 => {
+        return await std::task::blocking(() -> int32 => {
+            std::panic::panic("blocking closure panic")
         })
     })
     match await task.result() {
-        case .ok(_) => std.panic.panic("panicking blocking work should not succeed")
-        case .err(.cancelled) => std.panic.panic("panicking blocking work should not look cancelled")
-        case .err(.panicked(payload)) => std.testing.assertTrue(
+        case .ok(_) => std::panic::panic("panicking blocking work should not succeed")
+        case .err(.cancelled) => std::panic::panic("panicking blocking work should not look cancelled")
+        case .err(.panicked(payload)) => std::testing::assertTrue(
             payload.message() == "blocking closure panic",
             "blocking panic should retain its original message",
         )
@@ -1617,40 +1507,78 @@ func blockingPanicIsDeliveredThroughTaskResult() async {
 @test
 func cancelledBlockingWorkAbandonsDeliveryWithoutStoppingThread() async {
     var fds: [int32; 2] = [0_i32, 0_i32]
-    let fdsPtr = unsafe { (&mut fds as *mut [int32; 2]) as *mut int32 }
-    std.testing.assertEqual(std.libc.pipe(fdsPtr), 0_i32, "pipe should be created")
-    let readFd: int32 = *fds.at(0)
-    let writeFd: int32 = *fds.at(1)
+    fdsPtr := unsafe { (&fds as *mut [int32; 2]) as *mut int32 }
+    std::testing::assertEqual(unsafe { std::libc::pipe(fdsPtr) }, 0_i32, "pipe should be created")
+    var readFd: int32 = *fds.at(0)
+    var writeFd: int32 = *fds.at(1)
 
-    let task = std.task.spawn(move || async -> uint8 {
-        return await std.task.blocking(move || -> uint8 {
+    task := std::task::spawn(() async -> uint8 => {
+        return await std::task::blocking(() -> uint8 => {
             var byte: uint8 = 0
-            let read = std.libc.read(readFd, unsafe { (&mut byte) as *mut uint8 }, 1)
+            read := unsafe { std::libc::read(readFd, unsafe { (&byte) as *mut uint8 }, 1) }
             if read != 1 {
-                std.panic.panic("blocking read should receive one byte")
+                std::panic::panic("blocking read should receive one byte")
             }
             return byte
         })
     })
 
-    await std.task.sleep(std.time.Duration.fromMillis(20_u64))
-    // A blocked native call is in a GC safepoint, so collection must not wait
-    // for the pipe to become readable.
-    std.runtime.collect()
+    await std::task::sleep(std::time::Duration::fromMillis(20_u64))
+    // Cancellation can abandon this owned blocking closure without waiting
+    // for the pipe. Its worker retains the frame until the native call returns.
     task.cancel()
     match await task.result() {
         case .err(.cancelled) => {}
-        case .err(.panicked(_)) => std.panic.panic("cancelled blocking work should not panic")
-        case .ok(_) => std.panic.panic("cancelled blocking work should abandon its result")
+        case .err(.panicked(_)) => std::panic::panic("cancelled blocking work should not panic")
+        case .ok(_) => std::panic::panic("cancelled blocking work should abandon its result")
     }
 
     var byte: uint8 = 37
-    std.testing.assertEqual(
-        std.libc.write(writeFd, unsafe { (&byte) as *const uint8 }, 1),
+    std::testing::assertEqual(
+        unsafe { std::libc::write(writeFd, unsafe { (&byte) as *const uint8 }, 1) },
         1,
         "blocked worker should be released normally",
     )
-    await std.task.sleep(std.time.Duration.fromMillis(20_u64))
-    let _ = std.libc.close(readFd)
-    let _ = std.libc.close(writeFd)
+    await std::task::sleep(std::time::Duration::fromMillis(20_u64))
+    var _ = std::libc::close(readFd)
+    var _ = std::libc::close(writeFd)
+}
+
+// With one worker these hang if yieldNow doesn't really suspend.
+@test
+func taskYieldNowRunsOtherTasksAndIsACancellationPoint() async {
+    ran := std::sync::atomic::Bool::new(false)
+    child := std::task::spawn(() async => { ran.store(true) })
+    while !ran.load() { await std::task::yieldNow() }
+    (await child.result()).unwrap()
+
+    spinner := std::task::spawn(() async => {
+        loop { await std::task::yieldNow() }
+    })
+    await std::task::yieldNow()
+    spinner.cancel()
+    match await spinner.result() {
+        case .err(.cancelled) => {}
+        case _ => std::panic::panic("a yielding task is cancellable")
+    }
+}
+
+@test
+func discardingGroupDropsResultsAndStillWaitsForEveryChild() async {
+    finished := std::sync::atomic::Int32::new(0)
+    await std::task::withTaskGroup[int32, ()]((group: &std::task::TaskGroup[int32]) async => {
+        group.discardResults()
+        var index = 0
+        while index < 64 {
+            group.spawn(() async => {
+                await std::task::sleep(std::time::Duration::fromMillis(1_u64))
+                var _ = (&finished).add(1)
+                return 1
+            })
+            index += 1
+        }
+        // No results to hand over: it returns once the last child has finished.
+        std::assert((await group.next()).isNone(), "a discarding group yields no results")
+        std::assert((&finished).load() == 64, "next waits for every child")
+    })
 }

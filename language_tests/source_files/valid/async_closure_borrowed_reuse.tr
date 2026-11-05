@@ -1,64 +1,64 @@
 func callReusable[F: AsyncFn() -> int32](_ f: F) async -> int32 {
-    let first = await f()
-    let second = await f()
+    first := await f()
+    second := await f()
     return first + second
 }
 
-func callMutable[F: AsyncFnMut() -> int32](_ f: F) async -> int32 {
+func callMutable[F: AsyncFn() -> int32](_ f: F) async -> int32 {
     var f = f
-    let first = await f()
-    let second = await f()
+    first := await f()
+    second := await f()
     return first + second
 }
 
-struct CopyProbe: Copy {
+struct CopyProbe {
     value: int32
 }
 
-impl CopyProbe {
-    func read(&self) async -> int32 {
-        await std.testing.yieldNow()
+extend CopyProbe {
+    func read() async -> int32 {
+        await std::testing::yieldNow()
         self.value
     }
 }
 
 func main() async {
-    var values: std.collections.List[int32] = std.collections.List()
+    var values: std::collections::List[int32] = std::collections::List::new()
     values.append(9)
-    let borrowed = || async {
-        await std.testing.yieldNow()
+    borrowed := () async => {
+        await std::testing::yieldNow()
         return values.len() as int32
     }
-    let borrowedResult = await callReusable(borrowed)
+    borrowedResult := await callReusable(borrowed)
     assert(borrowedResult == 2, "borrowed AsyncFn should be reusable")
 
     var count = 0 as int32
-    let mutable = || async {
+    mutable := () async => {
         count += 1
-        await std.testing.yieldNow()
+        await std::testing::yieldNow()
         return count
     }
-    let mutableResult = await callMutable(mutable)
+    mutableResult := await callMutable(mutable)
     assert(mutableResult == 3, "borrowed AsyncFnMut should be sequentially reusable")
 
     var directCount = 0 as int32
-    var direct = || async {
+    var direct = () async => {
         directCount += 1
         return directCount
     }
-    let directFirst = await direct()
-    let directSecond = await direct()
+    directFirst := await direct()
+    directSecond := await direct()
     assert(directFirst == 1, "first direct AsyncFnMut call")
     assert(directSecond == 2, "second direct AsyncFnMut call")
     assert(directCount == 2, "direct AsyncFnMut should update its capture")
 
-    let probe = CopyProbe { value: 17 }
-    let spawned = std.task.spawn(|| async {
-        await std.testing.yieldNow()
+    probe := CopyProbe { value: 17 }
+    spawned := std::task::spawn(() async => {
+        await std::testing::yieldNow()
         return await probe.read()
     })
-    let spawnedValue = (await spawned.result()).unwrap()
+    spawnedValue := (await spawned.result()).unwrap()
     assert(spawnedValue == 17, "spawned async closure should own implicit Copy borrow")
 
-    std.print("PASS: borrowed async closure reuse\n")
+    std::print("PASS: borrowed async closure reuse\n")
 }

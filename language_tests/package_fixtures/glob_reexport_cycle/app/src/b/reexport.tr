@@ -1,1 +1,1 @@
-export globcycle.a.*
+export globcycle::a::*

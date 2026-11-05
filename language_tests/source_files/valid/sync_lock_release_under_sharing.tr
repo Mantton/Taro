@@ -1,0 +1,65 @@
+// G24b/G62: mutex references share storage; explicit/scoped unlock and native
+// task cleanup release ownership without drop-based guards.
+// A panic inside withLock and a cancelled holder both unlock through defer,
+// and a cancelled waiter at the head of the queue does not strand the next.
+// ENV: TARO_WORKERS=4
+// EXPECT_STDERR_COUNT: 1 task panic: body panic
+func describe[T](_ r: Result[T, std::task::TaskError]) -> string {
+    match r {
+        case .ok(_) => return "ok"
+        case .err(.cancelled) => return "cancelled"
+        case .err(.panicked(p)) => return std::sprintf("panicked(%s)", p.message())
+    }
+}
+
+func available(_ mutex: &std::sync::Mutex[int32]) -> string {
+    if mutex.tryLock().unwrap() {
+        mutex.unlock().unwrap()
+        return "unlocked"
+    }
+    return "still locked"
+}
+
+func main() async {
+    mutex := std::sync::Mutex[int32]::new(0_i32).unwrap()
+
+    panicking := std::task::spawn(() async => {
+        var _ = await mutex.withLock((value: &int32) => {
+            *value = 1_i32
+            std::panic::panic("body panic")
+        })
+    })
+    std::printf("withLock panic: %s, mutex %s\n", describe(await panicking.result()), available(&mutex))
+
+    var (started, running) = std::sync::bounded[int32](4).unwrap()
+    holder := std::task::spawn(() async => {
+        (await mutex.lock()).unwrap()
+        defer { mutex.unlock().unwrap() }
+        started.trySend(1).unwrap()
+        await std::task::sleep(std::time::Duration::fromSeconds(30_u64))
+    })
+    var _ = await running.recv()
+    holder.cancel()
+    std::printf("cancelled holder: %s, mutex %s\n", describe(await holder.result()), available(&mutex))
+
+    (await mutex.lock()).unwrap()
+    doomed := std::task::spawn(() async => {
+        started.trySend(1).unwrap()
+        (await mutex.lock()).unwrap()
+        mutex.unlock().unwrap()
+    })
+    var _ = await running.recv()
+    next := std::task::spawn(() async => {
+        started.trySend(1).unwrap()
+        (await mutex.lock()).unwrap()
+        *mutex.value() += 1_i32
+        mutex.unlock().unwrap()
+        return 7_i32
+    })
+    var _ = await running.recv()
+    await std::task::sleep(std::time::Duration::fromMillis(50_u64))
+    doomed.cancel()
+    std::printf("cancelled waiter: %s\n", describe(await doomed.result()))
+    mutex.unlock().unwrap()
+    std::printf("next waiter: %d\n", (await next.result()).unwrap())
+}

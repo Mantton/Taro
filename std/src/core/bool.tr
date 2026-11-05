@@ -1,18 +1,18 @@
-import std.hash.{Hashable, Hasher}
-import std.ops.PartialEq
-import std.cmp.{Ordering, PartialOrd, Ord}
-import std.optional.Optional
-import std.convert.{Parse, ParseError}
-import std.result.Result
+import std::hash::{Hashable, Hasher}
+import std::ops::PartialEq
+import std::cmp::{Ordering, PartialOrd, Ord}
+import std::optional::Optional
+import std::convert::{Parse, ParseError}
+import std::result::Result
 
 func boolLiteralErrorIndex(_ input: string, _ expected: string) -> usize {
-    let inputLen = std.string.stringLen(input)
-    let expectedLen = std.string.stringLen(expected)
-    let inputData = std.string.stringData(input)
-    let expectedData = std.string.stringData(expected)
+    inputLen := std::string::stringLen(input)
+    expectedLen := std::string::stringLen(expected)
+    inputData := std::string::stringData(input)
+    expectedData := std::string::stringData(expected)
     var index: usize = 0
     while index < inputLen && index < expectedLen {
-        if inputData.add(index).read() != expectedData.add(index).read() {
+        if unsafe { inputData.add(index).read() } != unsafe { expectedData.add(index).read() } {
             return index
         }
         index += 1
@@ -21,9 +21,9 @@ func boolLiteralErrorIndex(_ input: string, _ expected: string) -> usize {
 }
 
 func parseBool(_ input: string) -> Result[bool, ParseError] {
-    let len = std.string.stringLen(input)
+    len := std::string::stringLen(input)
     if len == 0 {
-        return .err(ParseError(.empty, 0 as usize))
+        return .err(ParseError::new(.empty, 0 as usize))
     }
     if input == "true" {
         return .ok(true)
@@ -32,41 +32,41 @@ func parseBool(_ input: string) -> Result[bool, ParseError] {
         return .ok(false)
     }
 
-    let first = std.string.stringData(input).read()
-    let index = if first == ('t' as uint8) {
+    first := unsafe { std::string::stringData(input).read() }
+    index := if first == ('t' as uint8) {
         boolLiteralErrorIndex(input, "true")
     } else if first == ('f' as uint8) {
         boolLiteralErrorIndex(input, "false")
     } else {
         0 as usize
     }
-    return .err(ParseError(.invalidFormat, index))
+    return .err(ParseError::new(.invalidFormat, index))
 }
 
-impl Hashable for bool {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {
-        let byte: uint8 = if *self { 1 } else { 0 }
-        let bytes: [uint8; 1] = [byte]
+conform bool to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
+        var byte: uint8 = if self { 1 } else { 0 }
+        var bytes: [uint8; 1] = [byte]
         hasher.write(bytes.asSpan())
     }
 }
 
-impl PartialEq for bool {
-    public func eq(&self, _ other: &bool) -> bool { *self == *other }
+conform bool to PartialEq {
+    public func eq(_ other: bool) -> bool { self == other }
 }
 
-impl PartialOrd for bool {
-    public func partialCmp(&self, _ other: &bool) -> Optional[Ordering] {
+conform bool to PartialOrd {
+    public func partialCmp(_ other: bool) -> Optional[Ordering] {
         .some(self.cmp(other))
     }
 }
 
 // bool ordering: false < true
-impl Ord for bool {
-    public func cmp(&self, _ other: &bool) -> Ordering {
-        if *self == *other {
+conform bool to Ord {
+    public func cmp(_ other: bool) -> Ordering {
+        if self == other {
             .equal
-        } else if !*self {
+        } else if !self {
             .less  // false < true
         } else {
             .greater
@@ -74,15 +74,15 @@ impl Ord for bool {
     }
 }
 
-impl Parse for bool {
-    public func parse(_ input: string) -> Result[bool, ParseError] {
+conform bool to Parse {
+    public static func parse(_ input: string) -> Result[bool, ParseError] {
         parseBool(input)
     }
 }
 
-impl bool {
+extend bool {
     /// Parse the exact lowercase spelling `true` or `false`.
-    public func parse(_ input: string) -> Result[bool, ParseError] {
+    public static func parse(_ input: string) -> Result[bool, ParseError] {
         parseBool(input)
     }
 }

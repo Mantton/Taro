@@ -1,0 +1,11 @@
+interface Same[Other = Self] { func same( _ other: &Other) -> bool; }
+struct Counter { value: int32 }
+conform Counter to Same {
+    func same( _ other: &Counter) -> bool { self.value == other.value }
+}
+func main() {
+    var boxed: any Same = Counter { value: 7 }
+    var other: Counter = Counter { value: 7 }
+    var equal: bool = boxed.same(&other) // The erased Other is not known to be Counter.
+    var _ = equal
+}

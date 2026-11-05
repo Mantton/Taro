@@ -1,0 +1,5 @@
+func wrong() -> int32 {
+    var value: bool = true
+    value
+}
+func main() {}

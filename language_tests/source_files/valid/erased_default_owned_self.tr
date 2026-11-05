@@ -1,0 +1,17 @@
+// Native ownership regression.
+interface Identity {
+    func identity() -> Self { self }
+}
+struct Item { label: string }
+struct Empty {}
+conform Item to Identity {}
+conform Empty to Identity {}
+func main() {
+    var original: any Identity = Item { label: "owned default" }
+    var forwarded: any Identity = original.identity()
+    var value: Item = (forwarded as? Item).unwrap()
+    assert(value.label == "owned default", "default body transfers a noncopyable Self")
+    var empty: any Identity = Empty {}
+    var result: any Identity = empty.identity()
+    assert(result is Empty, "zero-sized Self retains a real owner")
+}

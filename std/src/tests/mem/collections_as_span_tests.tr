@@ -1,38 +1,61 @@
-import std.collections.List
+import std::collections::List
+import std::mem::Span
 
 @test
 func testArrayAsSpanReadWrite() {
     var values: [int32; 4] = [7, 8, 9, 10]
 
-    let view = values.asSpan()
-    std.testing.assertEqual(view.len(), 4 as usize, "Array.asSpan length should match")
-    std.testing.assertEqual(*view.at(1), 8, "Array.asSpan immutable read mismatch")
+    view := values.asSpan()
+    std::testing::assertEqual(view.len(), 4 as usize, "Array.asSpan length should match")
+    std::testing::assertEqual(*view.at(1), 8, "Array.asSpan immutable read mismatch")
 
-    var mutView = values.asSpan()
+    var mutView: std::mem::Span[int32] = values.asSpan()
     *mutView.at(1) = 80
-    std.testing.assertEqual(*values.at(1), 80, "Array.asSpan mutable write mismatch")
+    // Slice copies and the source continue to share their elements.
+    std::testing::assertEqual(*mutView.at(1), 80, "Array.asSpan mutable write mismatch")
 
-    var tail = mutView.slice(1, 2)
+    var tail: std::mem::Span[int32] = mutView.slice(1, 2)
     *tail.at(0) = 81
-    std.testing.assertEqual(*values.at(1), 81, "Array.asSpan mutable slice write mismatch")
+    std::testing::assertEqual(*values.at(1), 81, "Array.asSpan mutable slice write mismatch")
 }
 
 @test
 func testListAsSpanReadWrite() {
-    var values: List[int32] = List()
+    var values: List[int32] = List::new()
     values.append(100)
     values.append(101)
     values.append(102)
 
-    let view = values.asSpan()
-    std.testing.assertEqual(view.len(), 3 as usize, "List.asSpan length should match")
-    std.testing.assertEqual(*view.at(0), 100, "List.asSpan immutable read mismatch")
+    view := values.asSpan()
+    std::testing::assertEqual(view.len(), 3 as usize, "List.asSpan length should match")
+    std::testing::assertEqual(*view.at(0), 100, "List.asSpan immutable read mismatch")
 
-    var mutView = values.asSpan()
+    var mutView: std::mem::Span[int32] = values.asSpan()
     *mutView.at(2) = 1002
-    std.testing.assertEqual(*values.at(2), 1002, "List.asSpan mutable write mismatch")
+    // Slices keep the old allocation alive if the list later grows.
+    std::testing::assertEqual(*mutView.at(2), 1002, "List.asSpan mutable write mismatch")
 
-    var tail = mutView.slice(1, 2)
+    var tail: std::mem::Span[int32] = mutView.slice(1, 2)
     *tail.at(0) = 1001
-    std.testing.assertEqual(*values.at(1), 1001, "List.asSpan mutable slice write mismatch")
+    std::testing::assertEqual(*values.at(2), 1002, "List.asSpan write must reach the original owner")
+    std::testing::assertEqual(*values.at(1), 1001, "List.asSpan mutable slice write mismatch")
+}
+
+@noinline
+func escapingSpanElement(_ span: Span[uint8], _ index: usize) -> &uint8 { span.at(index) }
+
+@test
+func spanAtDoesNotAllocateAnEscapingCopy() {
+    text := "abc"
+    span := Span[uint8]::fromString(&text)
+    var total: uint64 = 0
+    before := std::runtime::gcStats()
+    var index: usize = 0
+    while index < 64 {
+        total += *escapingSpanElement(span, index % 3) as uint64
+        index += 1
+    }
+    after := std::runtime::gcStats()
+    std::testing::assertEqual(total, 6271_u64, "elements read through escaping references")
+    std::testing::assertEqual(after.allocatedBytes - before.allocatedBytes, 0_u64, "Span.at must not heap-allocate a copy of the span")
 }

@@ -20,8 +20,8 @@ use inkwell::{
 use crate::{
     codegen::{
         artifact::ModuleArtifact,
-        pc_metadata,
-        stack_maps::{
+        gc_pc_metadata as pc_metadata,
+        gc_stack_maps::{
             PendingStackMapModule, normalize_object, read_pending_modules, strip_object,
             write_pending_module,
         },
@@ -505,6 +505,7 @@ pub fn emit_full_lto_object(gcx: GlobalContext<'_>) -> CompileResult<ModuleArtif
         );
         crate::error::ReportedError
     })?;
+    super::llvm::gc_root_stores::elide_redundant_root_stores(&merged);
     merged.verify().map_err(|error| {
         gcx.dcx().emit_error(
             format!("full-LTO module verification failed after optimization: {error}"),
@@ -861,6 +862,46 @@ mod tests {
         context::Context, module::Linkage, passes::PassBuilderOptions, values::AnyValue,
     };
     use std::{fs, path::PathBuf};
+
+    #[test]
+    fn merged_lto_descriptors_preserve_gc_roots_and_logical_frames() {
+        use crate::codegen::gc_stack_maps as maps;
+        let directory = TempDir::new("gc-lto-descriptors");
+        let input = directory.join("input.stackmaps");
+        let output = directory.join("merged.stackmaps");
+        let triple = "aarch64-apple-darwin";
+        let record = maps::PendingStackMapRecord {
+            id: 17,
+            emitted_function: "gc_lto_entry".into(),
+            kind: maps::StackMapSiteKind::Allocation,
+            selector_value: 3,
+            roots: vec![maps::PendingRootOperand {
+                storage_deref_depth: 1,
+                nodes: vec![maps::GcLayoutNode {
+                    offset: 0,
+                    stride: 0,
+                    first_child: 0,
+                    child_count: 0,
+                    kind: maps::GcLayoutKind::Reference,
+                    width: 0,
+                }],
+            }],
+            logical_frames: vec![maps::PendingLogicalFrame {
+                function: "gc_lto_entry".into(),
+                file: "fixture.tr".into(),
+                line: 7,
+                column: 2,
+            }],
+        };
+        maps::write_pending_module(
+            &input,
+            &maps::PendingStackMapModule::new(triple.into(), vec![record.clone()]),
+        )
+        .unwrap();
+        super::write_merged_descriptors(&[input], triple, &output).unwrap();
+        let merged = maps::read_pending_modules([output], triple).unwrap();
+        assert_eq!(merged.get(&record.id), Some(&record));
+    }
 
     #[test]
     fn full_lto_pipeline_tracks_optimization_policy() {

@@ -8,6 +8,7 @@ mod full;
 pub mod models;
 mod resolver;
 pub(crate) mod scope_lookup;
+mod syntax_gate;
 mod tag;
 mod usage;
 
@@ -15,6 +16,7 @@ pub fn resolve_package<'a>(
     package: &ast::Package,
     gcx: GlobalContext<'a>,
 ) -> CompileResult<ResolutionOutput<'a>> {
+    syntax_gate::check_package(package, &gcx.dcx())?;
     let mut resolver = Resolver::new(gcx);
     tag::tag_package_symbols(package, &mut resolver)?;
     define::define_package_symbols(package, &mut resolver)?;

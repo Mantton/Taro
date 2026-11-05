@@ -1,0 +1,32 @@
+func nullConst() -> *const int32 { nil }
+func nullMut() -> *mut int32 { nil }
+func nullGeneric[T]() -> *const T { nil }
+func identity[T](_ value: T) -> T { value }
+func main() {
+    var pointer: *const int32 = nil
+    var mutable: *mut int32 = nil
+    assert(unsafe { pointer as usize } == 0, "const local nil")
+    assert(unsafe { mutable as usize } == 0, "mutable local nil")
+    assert(unsafe { nullConst() as usize } == 0, "const return nil")
+    assert(unsafe { nullMut() as usize } == 0, "mutable return nil")
+    assert(unsafe { nullGeneric[bool]() as usize } == 0, "generic null pointer")
+    var wrapped: Optional[*const int32] = .some(nil)
+    assert(unsafe { wrapped.unwrap() as usize } == 0, "nested pointer context")
+    var absent: Optional[*const int32] = nil
+    assert(absent.isNone(), "optional nil remains none")
+    var calls = 0
+    var fromBlock: *const int32 = { calls += 1; nil }
+    var fromCondition: *mut int32 = if true { calls += 1; nil } else { nil }
+    assert(calls == 2, "contextual nil preserves expression side effects")
+    assert(unsafe { fromBlock as usize } == 0, "block nil")
+    assert(unsafe { fromCondition as usize } == 0, "conditional nil")
+    var optionalBlock: Optional[int32] = { calls += 1; nil }
+    var optionalCondition: Optional[int32] = if true { calls += 1; nil } else { nil }
+    assert(calls == 4, "optional nil also preserves block and branch effects")
+    assert(optionalBlock.isNone() && optionalCondition.isNone(), "contextual optional none")
+    var genericBlock: *const int32 = identity({ calls += 1; nil })
+    var nestedBlock: Optional[*const int32] = .some({ calls += 1; nil })
+    assert(calls == 6, "generic and nested nil contexts preserve effects")
+    assert(unsafe { genericBlock as usize } == 0, "generic contextual nil")
+    assert(unsafe { nestedBlock.unwrap() as usize } == 0, "nested contextual nil")
+}

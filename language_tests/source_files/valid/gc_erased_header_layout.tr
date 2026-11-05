@@ -1,0 +1,22 @@
+import std::mem::sizeOf
+
+interface First { func first() -> int32; }
+interface Second { func second() -> int32; }
+struct Value { number: int32 }
+conform Value to First {
+    func first() -> int32 { self.number }
+}
+conform Value to Second {
+    func second() -> int32 { self.number + 1 }
+}
+
+func narrow(_ value: any First & Second) -> any First { value }
+
+func main() {
+    assert(sizeOf[any First]() == 3 * sizeOf[usize](), "erased values contain data, metadata and witnesses")
+    assert(sizeOf[any First & Second]() == 4 * sizeOf[usize](), "each additional interface adds one witness")
+    var original: any First & Second = Value { number: 41 }
+    projected := narrow(original)
+    assert(projected.first() == 41, "projection preserves the GC payload")
+    assert(original.second() == 42, "the original remains usable")
+}

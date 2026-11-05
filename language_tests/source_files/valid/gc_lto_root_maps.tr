@@ -1,0 +1,27 @@
+// Also exercise this fixture with --lto full/thin: roots and logical frames
+// must use the same GC metadata after modules are merged.
+extern "C" {
+    unsafe func __gc__test_request_collection() -> usize
+    unsafe func __gc__test_collection_count() -> usize
+}
+
+@noinline
+func retainedReference() -> &int32 {
+    var value: int32 = 42
+    return &value
+}
+
+final class Noise { value: int32 }
+extend Noise { init() { self.value = 1 } }
+
+@noinline
+func collectionPoint() -> Noise { Noise() }
+
+func main() {
+    reference := retainedReference()
+    before := unsafe { __gc__test_request_collection() }
+    noise := collectionPoint()
+    assert(noise.value == 1, "the collecting allocation remains observable")
+    assert(unsafe { __gc__test_collection_count() } > before, "LTO preserves the collecting call")
+    assert(*reference == 42, "LTO preserves the live GC root")
+}

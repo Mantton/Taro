@@ -1,0 +1,47 @@
+interface Readable {
+    func read() -> int32 { 7 }
+    func twice() -> int32 { self.read() + self.read() }
+    func touch()
+    func step() { self.touch() }
+    func view() -> &int32
+    func borrowed() -> &int32 { self.view() }
+    func identity() -> Self { self }
+    func echo[T](_ value: T, _ count: int32 = 1) -> T { value }
+    func delayed() async -> int32 { self.read() }
+    func asyncIdentity() async -> Self { self }
+}
+class Base { value: int32; events: List[int32] }
+extend Base { init(_ value: int32) { self.value = value; self.events = [] } }
+conform Base to Readable {
+    func touch() { self.value += 1; self.events.append(self.value) }
+    func view() -> &int32 { &self.value }
+}
+class Derived: Base { stamp: int32 = 19 }
+conform Derived to Readable {
+    override func read() -> int32 { super.read() + 10 }
+    override func touch() { super.touch(); self.value += 1 }
+    override func view() -> &int32 { &self.stamp }
+    override func echo[T](_ value: T, _ count: int32 = 1) -> T { super.echo(value, count) }
+}
+func evaluate[T: Readable](_ value: &T) -> int32 { value.twice() }
+func step[T: Readable](_ value: &T) { value.step() }
+func borrowed[T: Readable](_ value: &T) -> &int32 { value.borrowed() }
+func echo[T: Readable, U](_ value: &T, _ input: U) -> U { value.echo(input) }
+func main() async {
+    var derived: Derived = Derived(1) // Derived; strong handle owning a NoCopy list.
+    var base: Base = derived // Base; alias of the same Derived object.
+    step(&base)
+    assert(derived.value == 3 && derived.events[0] == 2, "mutable default dispatches through the adopted touch family")
+    assert(base.twice() == 34 && derived.twice() == 34 && evaluate(&base) == 34 && evaluate(&derived) == 34, "calls inside defaults remain virtual")
+    var same: Derived = derived.identity() // Derived; owned Self from an inherited default.
+    assert(same === derived, "default preserves the actual subclass")
+    var saved: &int32 = borrowed(&base) // &int32; guard protects Derived.stamp.
+    derived.value = 5
+    assert(*saved == 19, "borrowed default transfers the actual override's field guard")
+    var owned: List[int32] = echo(&base, [3, 4]) // List[int32]; moved through a generic virtual default/override.
+    assert(owned.len() == 2 && owned[1] == 4, "generic virtual forwarding keeps unboxed NoCopy ownership")
+    var delayed: int32 = await base.delayed() // int32; result from the async default.
+    assert(delayed == 17, "async default calls the virtual read implementation")
+    var asyncSame: Derived = await derived.asyncIdentity() // Derived; actual-subclass result after an awaited forwarding frame.
+    assert(asyncSame === derived, "async Self default preserves the subclass and strong handle")
+}

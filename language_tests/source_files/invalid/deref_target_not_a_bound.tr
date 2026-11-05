@@ -1,0 +1,10 @@
+interface Read { func read() -> int32; }
+struct Point { value: int32 }
+conform Point to Read { func read() -> int32 { self.value }; }
+struct View { target: &Point }
+conform View to Deref { type Target = Point; func deref() -> &Point { self.target }; }
+func accept[T: Read](_ value: T) {}
+func main() {
+    point := Point { value: 1 }
+    accept(View { target: &point })
+}

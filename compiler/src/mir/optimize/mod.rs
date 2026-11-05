@@ -5,9 +5,10 @@ use crate::mir::{Body, MirPhase};
 pub mod async_transform;
 pub mod coalesce;
 pub mod const_prop;
-pub mod devirtualize;
 pub mod dse;
 pub mod escape_graph;
+pub mod gc_safepoints;
+pub mod gc_storage;
 pub mod inline;
 pub mod passes;
 pub mod propagate;
@@ -28,9 +29,22 @@ pub fn run_passes<'ctx>(
     passes: &mut [Box<dyn MirPass<'ctx>>],
 ) -> CompileResult<()> {
     for pass in passes {
+        let started = gcx.config.debug.timings.then(std::time::Instant::now);
         #[cfg(any(test, debug_assertions))]
         let pass_name = pass.name();
         pass.run(gcx, body)?;
+        if let Some(started) = started
+            && started.elapsed().as_millis() >= 100
+        {
+            eprintln!(
+                "[mir timing] {} {}: {:?} ({} locals, {} blocks)",
+                gcx.definition_symbol_or_fallback(body.owner),
+                pass.name(),
+                started.elapsed(),
+                body.locals.len(),
+                body.basic_blocks.len()
+            );
+        }
         if let Some(next) = pass.phase_change() {
             body.phase = next;
         }
@@ -44,16 +58,17 @@ pub fn run_passes<'ctx>(
 /// These passes don't require other function bodies to be available.
 /// Includes: prune unreachable and simplify CFG.
 pub fn run_local_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
-    let validate_ownership = matches!(body.phase, MirPhase::Built);
+    let built = matches!(body.phase, MirPhase::Built);
+    // Normalize value reads before structural and initialization checks.
+    crate::mir::gc_lowering::lower_for_gc(body);
     let mut passes: Vec<Box<dyn MirPass>> = vec![
         Box::new(validate::ValidateBodyInvariants),
         Box::new(passes::PruneUnreachable),
         Box::new(passes::SimplifyCfg),
     ];
-    if validate_ownership {
+    if built {
         passes.push(Box::new(validate::ValidateMutability));
-        passes.push(Box::new(validate::ValidateMoves));
-        passes.push(Box::new(validate::ValidateBorrows));
+        passes.push(Box::new(validate::ValidateInitialization));
     }
     run_passes(gcx, body, &mut passes)?;
     body.phase = MirPhase::CfgClean;
@@ -73,7 +88,12 @@ pub fn lower_async_for_canonical_mir<'ctx>(
         return Ok(());
     }
 
-    escape_graph::apply_async_bridge(gcx, body)?;
+    // Heapify escaping locals before they become coroutine frame fields;
+    // afterwards a reference would name one frame slot reused by every
+    // iteration rather than a fresh allocation per storage lifetime.
+    {
+        escape_graph::apply_async_bridge(gcx, body)?;
+    }
     let mut passes: Vec<Box<dyn MirPass>> = vec![Box::new(async_transform::AsyncTransform)];
     run_passes(gcx, body, &mut passes)?;
     // AsyncTransform builds a fresh constructor CFG. Canonical MIR always has
@@ -88,11 +108,14 @@ pub fn lower_async_for_canonical_mir<'ctx>(
 /// Escape placement and safepoint insertion therefore run later on an
 /// instance-local clone via [`run_instance_passes`].
 pub fn run_global_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
+    inline::Inline::default().run(gcx, body)?;
+    run_post_inline_passes(gcx, body)
+}
+
+/// Canonical callees may introduce aggregates and temporary scaffolding even
+/// when the caller was already lowered. Use the same cleanup at both boundaries.
+fn run_post_inline_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
     let mut passes: Vec<Box<dyn MirPass>> = vec![
-        Box::new(devirtualize::DevirtualizeStaticCalls),
-        Box::new(inline::Inline::default()),
-        Box::new(passes::LowerKeepAlive),
-        Box::new(passes::LowerExistentialBoxes),
         Box::new(const_prop::ConstantPropagation),
         Box::new(passes::SimplifyCfg), // Clean up after inlining (merges blocks, removes unreachable)
         Box::new(passes::LowerAggregates),
@@ -103,9 +126,8 @@ pub fn run_global_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> Compile
         Box::new(coalesce::TempCoalescing),
         Box::new(coalesce::RepeatFieldForwarding),
         // Instance analysis must see semantic uses, not aggregate-lowering
-        // scaffolding that a later cleanup would discard. In particular, a
-        // dead `move` must not consume provenance before the real return or
-        // capture use is analyzed.
+        // scaffolding that a later cleanup would discard. Dead value reads
+        // must not obscure the real return or capture use being analyzed.
         Box::new(dse::DeadStoreElimination),
         Box::new(passes::DeadLocalElimination),
     ];
@@ -118,18 +140,19 @@ pub fn run_global_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> Compile
 /// The input is a clone of shared, globally optimized MIR. Keeping every
 /// placement and safepoint mutation on this clone lets later analyses consult
 /// concrete generic arguments without contaminating another instantiation of
-/// the same source definition.
+/// the same source definition. Retry inlining with those arguments before
+/// escape summaries and safepoints are computed.
 pub fn run_instance_passes<'ctx>(
     gcx: Gcx<'ctx>,
-    instance: crate::specialize::Instance<'ctx>,
     body: &mut Body<'ctx>,
+    args: crate::sema::models::GenericArguments<'ctx>,
 ) -> CompileResult<()> {
-    escape_graph::apply_instance_placement(gcx, instance, body)?;
+    if inline::inline_instance(gcx, body, args)? {
+        return run_post_inline_passes(gcx, body);
+    }
     let mut passes: Vec<Box<dyn MirPass>> = vec![
         Box::new(dse::DeadStoreElimination),
         Box::new(passes::DeadLocalElimination),
-        Box::new(passes::InsertSafepoints),
-        Box::new(passes::MergeSafepoints), // Clean up redundant consecutive safepoints
     ];
     run_passes(gcx, body, &mut passes)?;
     Ok(())
@@ -256,13 +279,55 @@ mod tests {
             assert!(!after.contains("%2"), "{after}");
             assert!(after.contains("%0 = %1"), "{after}");
             assert_eq!(body.locals.len(), 2);
-            assert_eq!(body.escape_locals.len(), body.locals.len());
             let StatementKind::Assign(_, Rvalue::Use(Operand::Copy(source))) =
                 &body.basic_blocks[body.start_block].statements[0].kind
             else {
                 panic!("expected remapped copy assignment");
             };
             assert_eq!(source.local.index(), 1);
+        });
+    }
+
+    #[test]
+    fn enum_place_matches_only_snapshot_storage_when_guards_need_it() {
+        let source = r#"
+enum Choice { case number(int64); case pair(int64, int64) }
+func change(_ value: &Choice) -> bool { *value = .pair(90, 91); false }
+func plain(_ value: &Choice) -> int64 {
+    match value {
+        case .number(n) => n
+        case .pair(a, b) => a + b
+    }
+}
+func guarded(_ value: &Choice) -> int64 {
+    match value {
+        case .number(n) if change(value) => n
+        case .number(n) => n
+        case .pair(a, _) => a
+    }
+}
+func main() {}
+"#;
+        crate::test_support::analyze_script_built_mir(source, |bodies, gcx| {
+            for body in bodies {
+                let name = gcx.definition_ident(body.owner).symbol;
+                if !matches!(name.as_str(), "plain" | "guarded") {
+                    continue;
+                }
+                let enum_snapshots = body
+                    .locals
+                    .iter()
+                    .filter(|local| {
+                        matches!(local.ty.kind(), crate::sema::models::TyKind::Adt(def, _)
+                        if gcx.definition_ident(def.id).symbol.as_str() == "Choice")
+                    })
+                    .count();
+                assert_eq!(
+                    enum_snapshots == 0,
+                    name.as_str() == "plain",
+                    "{name}: {enum_snapshots} whole-enum temporaries"
+                );
+            }
         });
     }
 

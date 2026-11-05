@@ -1,0 +1,12 @@
+import dep::{make, read, wrap, readWrapped}
+import std::marker::Clone
+func duplicate[T: Clone](_ value: &T) -> T { value.clone() }
+func main() {
+    original := make()
+    cloned := duplicate(&original)
+    assert(read(&original) == 7, "imported source remains intact")
+    assert(read(&cloned) == 17, "imported derivation invokes component Clone")
+    generic := wrap()
+    genericClone := duplicate(&generic)
+    assert(readWrapped(&genericClone) == 19, "imported generic Clone dispatch")
+}

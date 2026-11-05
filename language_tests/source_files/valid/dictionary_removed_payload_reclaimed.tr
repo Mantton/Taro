@@ -1,0 +1,16 @@
+final class Payload { value: int32 }
+extend Payload { init(_ value: int32) { self.value = value } }
+@noinline
+func removedTable() -> (std::collections::Dictionary[int32, Payload], std::weak::Weak[int32]) {
+    payload := Payload(71)
+    weak := std::weak::Weak[int32]::new(&payload.value)
+    var values = std::collections::Dictionary[int32, Payload]::new()
+    values.set(key: 1, value: payload)
+    var _ = values.remove(&1)
+    (values, weak)
+}
+func main() {
+    var (values, weak) = removedTable()
+    std::runtime::collect()
+    assert(values.isEmpty() && weak.value().isNone(), "a live dictionary does not retain its removed payload")
+}

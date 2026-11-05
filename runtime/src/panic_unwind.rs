@@ -45,6 +45,10 @@ const TEST_PANIC_MESSAGE_MISMATCH: u8 = 3;
 #[cfg(all(unix, any(target_arch = "x86_64", target_arch = "aarch64")))]
 const TARO_EXCEPTION_CLASS: u64 = u64::from_be_bytes(*b"TAROPAN!");
 
+/// Two-word native wire, also the GC source string representation. The frozen
+/// native backend adapts its owning three-word source header at call boundaries.
+/// Callers keep input bytes alive for the call; native services must copy any
+/// bytes they retain beyond it or register managed roots explicitly.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct RtString {
@@ -263,6 +267,12 @@ pub(crate) fn in_test_harness() -> bool {
     IN_TEST_HARNESS.with(Cell::get)
 }
 
+/// Cleanup nested inside an existing unwind must not introduce a new catch
+/// boundary which could reset the first panic's state.
+pub(crate) fn is_unwinding() -> bool {
+    std::thread::panicking() || PANIC_ACTIVE.with(Cell::get)
+}
+
 pub(crate) fn set_test_harness_active(active: bool) {
     IN_TEST_HARNESS.with(|flag| flag.set(active));
 }
@@ -318,6 +328,19 @@ pub(crate) fn take_full_panic_report() -> Option<PanicReport> {
     report
 }
 
+/// Logical frames come from the same GC metadata used for root scanning.
+fn capture_logical_stack() -> Vec<LogicalTraceFrame> {
+    crate::gc_stack_walk::capture_logical_frames()
+        .into_iter()
+        .map(|frame| LogicalTraceFrame {
+            function: frame.function,
+            file: frame.file,
+            line: frame.line as usize,
+            column: frame.column as usize,
+        })
+        .collect()
+}
+
 #[inline]
 fn set_panic_report(message: String) {
     set_panic_report_with_location(message, None);
@@ -326,15 +349,7 @@ fn set_panic_report(message: String) {
 #[inline]
 fn set_panic_report_with_location(message: String, location: Option<String>) {
     let backtrace = format!("{:#}", Backtrace::force_capture());
-    let logical_stack = crate::stack_walk::capture_logical_frames()
-        .into_iter()
-        .map(|frame| LogicalTraceFrame {
-            function: frame.function,
-            file: frame.file,
-            line: frame.line as usize,
-            column: frame.column as usize,
-        })
-        .collect();
+    let logical_stack = capture_logical_stack();
     PANIC_REPORT.with(|slot| {
         *slot.borrow_mut() = Some(PanicReport {
             message,
@@ -749,6 +764,13 @@ pub(crate) fn write_unobserved_task_panic(report: &PanicReport) {
     let _ = stderr.flush();
 }
 
+/// Report a spawned task's panic once, when it escapes the task body.
+pub(crate) fn write_task_panic(report: &PanicReport) {
+    let mut stderr = std::io::stderr().lock();
+    write_captured_report(&mut stderr, "task panic", report, backtrace_policy());
+    let _ = stderr.flush();
+}
+
 pub(crate) fn write_unobserved_cleanup_panic(report: &PanicReport) {
     let mut stderr = std::io::stderr().lock();
     write_captured_report(
@@ -757,12 +779,6 @@ pub(crate) fn write_unobserved_cleanup_panic(report: &PanicReport) {
         report,
         backtrace_policy(),
     );
-    let _ = stderr.flush();
-}
-
-pub(crate) fn write_cleanup_warning(message: &str) {
-    let mut stderr = std::io::stderr().lock();
-    let _ = writeln!(stderr, "runtime cleanup warning: {message}");
     let _ = stderr.flush();
 }
 
@@ -801,28 +817,19 @@ fn abort_with_report(default_message: &str) -> ! {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt__panic_abort(message: RtString) -> ! {
-    __rt__panic_abort_at(
-        message,
-        RtString {
-            ptr: std::ptr::null(),
-            len: 0,
-        },
-        0,
-        0,
-    )
+    set_panic_report(message.to_owned_lossy());
+    abort_with_report("panic aborted");
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__panic_abort_at(
-    message: RtString,
-    file: RtString,
-    line: usize,
-    column: usize,
-) -> ! {
-    let msg = message.to_owned_lossy();
-    let location = format_location(file, line, column);
-    set_panic_report_with_location(msg, location);
-    abort_with_report("panic aborted");
+pub extern "C" fn __rt__panic_abort_foreign(exception_ptr: *mut u8) -> ! {
+    // C callbacks have no unwind-capable source ABI. Clean up the mutator
+    // transition in their generated shim, then stop before unwinding into C.
+    let _ = writeln!(
+        std::io::stderr().lock(),
+        "fatal: panic cannot cross a foreign callback boundary"
+    );
+    __rt__panic_abort_unwind(exception_ptr)
 }
 
 #[unsafe(no_mangle)]
@@ -834,49 +841,15 @@ pub extern "C" fn __rt__panic_abort_unwind(exception_ptr: *mut u8) -> ! {
             set_panic_report("foreign unwind reached runtime boundary".to_string());
         }
     }
+    // An uncaught main panic abandons background work just like normal main
+    // return. Rootless draining here could hang, or panic again while an async
+    // main's rooted scheduler is still installed. Only finish diagnostics.
+    let report = take_full_panic_report().expect("boundary panic report");
+    if let Err(cleanup) = catch_executor_panic(|| crate::executor::__rt__executor_finish_main()) {
+        write_unobserved_cleanup_panic(&cleanup);
+    }
+    restore_panic_report(report);
     abort_with_report("panic reached runtime boundary");
-}
-
-/// FFI-safe result type for `__rt__panic_take_report`.
-#[repr(C)]
-pub struct PanicTakeReportResult {
-    pub had_panic: bool,
-    pub message_ptr: *const u8,
-    pub message_len: usize,
-}
-
-/// Take the current panic report, reset panic state, and return whether
-/// a panic was active along with the panic message.
-#[unsafe(no_mangle)]
-pub extern "C" fn __rt__panic_take_report() -> PanicTakeReportResult {
-    let was_active = PANIC_ACTIVE.with(|f| {
-        let v = f.get();
-        f.set(false);
-        v
-    });
-    if !was_active {
-        return PanicTakeReportResult {
-            had_panic: false,
-            message_ptr: std::ptr::null(),
-            message_len: 0,
-        };
-    }
-
-    let msg = PANIC_REPORT.with(|slot| {
-        slot.borrow_mut()
-            .take()
-            .map(|r| r.message)
-            .unwrap_or_default()
-    });
-
-    let ptr = msg.as_ptr();
-    let len = msg.len();
-    std::mem::forget(msg); // Small leak per failed test — acceptable
-    PanicTakeReportResult {
-        had_panic: was_active,
-        message_ptr: ptr,
-        message_len: len,
-    }
 }
 
 fn classify_test_panic(
@@ -965,7 +938,10 @@ pub extern "C" fn __rt__test_panic_finish(
         write_report("test panicked without a recorded message");
     }
 
-    __rt__panic_clear();
+    PANIC_ACTIVE.with(|f| f.set(false));
+    PANIC_REPORT.with(|slot| {
+        slot.borrow_mut().take();
+    });
 }
 
 /// Report and clear a panic caught by a non-test language harness.
@@ -975,18 +951,6 @@ pub extern "C" fn __rt__test_panic_finish(
 /// to this module prevents the benchmark driver from duplicating that ABI.
 pub(crate) fn finish_unexpected_harness_panic() {
     __rt__test_panic_finish(TEST_PANIC_UNEXPECTED, std::ptr::null(), 0);
-}
-
-/// Clears the panic state after a caught panic so the next test can run cleanly.
-///
-/// Called by `__rt__test_panic_finish` and kept as a small public runtime ABI
-/// helper. Returning `void` avoids ARM64 sret ABI complications.
-#[unsafe(no_mangle)]
-pub extern "C" fn __rt__panic_clear() {
-    PANIC_ACTIVE.with(|f| f.set(false));
-    PANIC_REPORT.with(|slot| {
-        slot.borrow_mut().take();
-    });
 }
 
 /// Zero-sized marker type used as the `panic_any` payload for Taro panics
@@ -1022,7 +986,6 @@ pub extern "C" fn __rt__test_call_fn(fn_ptr: extern "C-unwind" fn()) -> bool {
     // executor session detached it. Re-enter managed execution at the callback
     // boundary instead of making every generated safepoint rediscover that
     // state.
-    crate::garbage_collector::__gc__thread_enter_managed();
 
     let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         fn_ptr();
@@ -1104,7 +1067,17 @@ pub extern "C-unwind" fn __rt__panic_unwind_at(
         active
     });
     if already_panicking {
-        set_panic_report("panic while unwinding".to_string());
+        // Name both failures: neither panic is silently discarded.
+        let first =
+            PANIC_REPORT.with(|slot| slot.borrow().as_ref().map(|report| report.message.clone()));
+        let second = message.to_owned_lossy();
+        let report = match first {
+            Some(first) => {
+                format!("panic while unwinding: {second} (while unwinding from: {first})")
+            }
+            None => format!("panic while unwinding: {second}"),
+        };
+        set_panic_report_with_location(report, format_location(file, line, column));
         abort_with_report("panic while unwinding");
     }
 
@@ -1222,6 +1195,43 @@ extern "C" fn forced_unwind_stop(
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(unix)]
+    #[test]
+    fn foreign_abort_with_unwritable_stderr_preserves_exit_status() {
+        const CHILD: &str = "TARO_TEST_FOREIGN_ABORT_STDERR";
+        if let Ok(mode) = std::env::var(CHILD) {
+            unsafe {
+                if mode == "closed" {
+                    libc::close(libc::STDERR_FILENO);
+                } else {
+                    // Rust may suppress EBADF for a closed stderr. A full,
+                    // nonblocking pipe reliably exercises write failure too.
+                    let mut pipe = [0; 2];
+                    assert_eq!(libc::pipe(pipe.as_mut_ptr()), 0);
+                    assert_eq!(libc::fcntl(pipe[1], libc::F_SETFL, libc::O_NONBLOCK), 0);
+                    let bytes = [0u8; 1024];
+                    while libc::write(pipe[1], bytes.as_ptr().cast(), bytes.len()) > 0 {}
+                    assert_eq!(
+                        libc::dup2(pipe[1], libc::STDERR_FILENO),
+                        libc::STDERR_FILENO
+                    );
+                }
+            }
+            super::__rt__panic_abort_foreign(std::ptr::null_mut());
+        }
+        for mode in ["closed", "full"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "panic_unwind::tests::foreign_abort_with_unwritable_stderr_preserves_exit_status", "--nocapture"])
+                .env(CHILD, mode).output().unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(101),
+                "{mode}: foreign abort must not become a Rust FFI abort: {:?}",
+                output.status
+            );
+        }
+    }
     use super::{
         BacktracePolicy, FrameKind, LogicalTraceFrame, PanicReport, TEST_PANIC_MESSAGE_MISMATCH,
         TEST_PANIC_MISSING, TEST_PANIC_PASSED, TEST_PANIC_UNEXPECTED, TaskTraceFrame,

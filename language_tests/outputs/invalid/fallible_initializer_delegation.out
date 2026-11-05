@@ -1,0 +1,4 @@
+error: fallible initializer delegation must propagate its error immediately with !
+ -> language_tests/source_files/invalid/fallible_initializer_delegation.tr:7:53
+	    public override init() -> Result[Self, string] { super.init() }
+	                                                     ^^^^^^^^^^^^

@@ -1,13 +1,13 @@
 public interface Named {
-    public func name(&self) -> string
+    public func name() -> string
 }
 
 struct HiddenName {
     value: string
 }
 
-impl Named for HiddenName {
-    public func name(&self) -> string {
+conform HiddenName to Named {
+    public func name() -> string {
         self.value
     }
 }

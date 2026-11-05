@@ -1,0 +1,35 @@
+// TEST
+@test
+func cancellationRunsInlineCleanupInLifoOrder() async {
+    var trace: List[int32] = []
+    var (ready, running) = std::sync::bounded[int32](1).unwrap()
+    task := std::task::spawn(() async => {
+        defer trace.append(1)
+        {
+            defer trace.append(2)
+            ready.trySend(1).unwrap()
+            await std::task::sleep(std::time::Duration::fromSeconds(60_u64))
+        }
+    })
+    var _ = await running.recv()
+    task.cancel()
+    match await task.result() {
+        case .err(.cancelled) => {}
+        case _ => panic("cleanup probe should be cancelled")
+    }
+    assert(trace.len() == 2 && trace[0] == 2 && trace[1] == 1, "cancellation drains nested inline cleanup")
+}
+@test
+func panicRunsInlineCleanupAndPreservesPayload() async {
+    var trace: List[int32] = []
+    task := std::task::spawn(() async => {
+        defer trace.append(1)
+        defer trace.append(2)
+        panic("original deferred-expression probe panic")
+    })
+    match await task.result() {
+        case .err(.panicked(payload)) => assert(payload.message() == "original deferred-expression probe panic", "original payload survives cleanup")
+        case _ => panic("probe should preserve its original panic")
+    }
+    assert(trace.len() == 2 && trace[0] == 2 && trace[1] == 1, "panic runs inline cleanup in reverse order")
+}

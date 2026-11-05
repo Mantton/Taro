@@ -1,4 +1,4 @@
-import std.io.Reader
+import std::io::Reader
 
 const STREAM_CHUNK_SIZE: usize = 7
 
@@ -8,17 +8,16 @@ struct BenchmarkChunkReader {
     chunkSize: usize
 }
 
-impl BenchmarkChunkReader {
-    func new(_ source: string, _ chunkSize: usize) -> Self {
+extend BenchmarkChunkReader {
+    static func new(_ source: string, _ chunkSize: usize) -> Self {
         BenchmarkChunkReader { source, index: 0, chunkSize }
     }
 }
 
-impl Reader for BenchmarkChunkReader {
+conform &BenchmarkChunkReader to Reader {
     public func read(
-        &mut self,
-        _ destination: std.mem.MutableSpan[uint8],
-    ) -> std.result.Result[usize, std.io.Error] {
+        _ destination: std::mem::Span[uint8],
+    ) -> std::result::Result[usize, std::io::Error] {
         if self.index >= self.source.byteLen() || destination.len() == 0 {
             return .ok(0)
         }
@@ -27,7 +26,7 @@ impl Reader for BenchmarkChunkReader {
         if count > destination.len() {
             count = destination.len()
         }
-        let remaining = self.source.byteLen() - self.index
+        remaining := self.source.byteLen() - self.index
         if count > remaining {
             count = remaining
         }
@@ -43,7 +42,7 @@ impl Reader for BenchmarkChunkReader {
 }
 
 func buildMediumCatalog() -> string {
-    var builder = std.string.Builder()
+    var builder = std::string::Builder::new()
     builder.reserve(16 * 1024)
     builder.writeString("{\"version\":1,\"products\":[")
     var index: usize = 0
@@ -52,9 +51,9 @@ func buildMediumCatalog() -> string {
             builder.writeByte(',' as uint8)
         }
         builder.writeString("{\"id\":")
-        builder.writeString(std.sprintf("%d", index))
+        builder.writeString(std::sprintf("%d", index))
         builder.writeString(",\"name\":\"product-")
-        builder.writeString(std.sprintf("%d", index))
+        builder.writeString(std::sprintf("%d", index))
         builder.writeString(
             "\",\"available\":true,\"price\":19.95,\"tags\":[\"json\",\"benchmark\",\"catalog\"],",
         )
@@ -62,39 +61,39 @@ func buildMediumCatalog() -> string {
         index += 1
     }
     builder.writeString("],\"page\":{\"number\":1,\"count\":64}}")
-    return builder.intoString()
+    return builder.toString()
 }
 
-func buildWideObject() -> string {
-    var builder = std.string.Builder()
+func buildWideObject(_ count: usize) -> string {
+    var builder = std::string::Builder::new()
     builder.reserve(8 * 1024)
     builder.writeByte('{' as uint8)
     var index: usize = 0
-    while index < 256 {
+    while index < count {
         if index > 0 {
             builder.writeByte(',' as uint8)
         }
         builder.writeString("\"field_")
-        builder.writeString(std.sprintf("%d", index))
+        builder.writeString(std::sprintf("%d", index))
         builder.writeString("\":")
-        builder.writeString(std.sprintf("%d", index))
+        builder.writeString(std::sprintf("%d", index))
         index += 1
     }
     builder.writeByte('}' as uint8)
-    return builder.intoString()
+    return builder.toString()
 }
 
 func buildLongAsciiString() -> string {
-    var builder = std.string.Builder()
+    var builder = std::string::Builder::new()
     builder.reserve(64 * 1024 + 2)
     builder.writeByte('"' as uint8)
     builder.writeString("0123456789abcdef".repeat(4096))
     builder.writeByte('"' as uint8)
-    return builder.intoString()
+    return builder.toString()
 }
 
 func buildEscapedUnicodeStrings() -> string {
-    var builder = std.string.Builder()
+    var builder = std::string::Builder::new()
     builder.reserve(16 * 1024)
     builder.writeString("{\"messages\":[")
     var index: usize = 0
@@ -103,93 +102,223 @@ func buildEscapedUnicodeStrings() -> string {
             builder.writeByte(',' as uint8)
         }
         builder.writeString("\"line\\n")
-        builder.writeString(std.sprintf("%d", index))
+        builder.writeString(std::sprintf("%d", index))
         builder.writeString(": \\tquote=\\\" slash=\\\\ snowman=☃ rocket=🚀\"")
         index += 1
     }
     builder.writeString("]}")
-    return builder.intoString()
+    return builder.toString()
 }
 
 func validateFixture(_ input: string, _ label: string) {
-    match std.json.parse(input) {
+    match std::json::parse(input) {
         case .ok(value) => {
             // Stringifying once outside the measured region verifies that the
             // fixture produced a complete, traversable DOM rather than merely
             // reaching an accepting parser prefix.
-            match std.json.stringify(&value) {
+            match std::json::stringify(&value) {
                 case .ok(encoded) => {
-                    let _ = std.hint.blackBox(encoded)
+                    var _ = std::hint::blackBox(encoded)
                 }
                 case .err(error) => {
-                    std.panic.panic(std.sprintf("%s fixture cannot be encoded: %v", label, error))
+                    std::panic::panic(std::sprintf("%s fixture cannot be encoded: %v", label, error))
                 }
             }
         }
         case .err(error) => {
-            std.panic.panic(std.sprintf("%s fixture is invalid: %v", label, error))
+            std::panic::panic(std::sprintf("%s fixture is invalid: %v", label, error))
         }
     }
 }
 
 func measureParse(
-    _ benchmark: &mut std.bench.Benchmark,
+    _ benchmark: &std::bench::Benchmark,
     _ input: string,
     _ label: string,
 ) {
     validateFixture(input, label)
     benchmark.setBytes(input.byteLen())
     while benchmark.next() {
-        let result = std.json.parse(input)
-        std.hint.blackBox(result)
+        result := std::json::parse(input)
+        std::hint::blackBox(result)
     }
 }
 
 @bench
 @tag("json", "parse", "small")
-func parseSmallApplicationObject(benchmark: &mut std.bench.Benchmark) {
-    let input = "{\"user\":{\"id\":42,\"name\":\"Ada\",\"active\":true},\"roles\":[\"admin\",\"author\"],\"score\":98.5}"
+func parseSmallApplicationObject(benchmark: &std::bench::Benchmark) {
+    input := "{\"user\":{\"id\":42,\"name\":\"Ada\",\"active\":true},\"roles\":[\"admin\",\"author\"],\"score\":98.5}"
     measureParse(benchmark, input, "small application object")
 }
 
 @bench
 @tag("json", "parse", "nested")
-func parseMediumNestedCatalog(benchmark: &mut std.bench.Benchmark) {
-    let input = buildMediumCatalog()
+func parseMediumNestedCatalog(benchmark: &std::bench::Benchmark) {
+    input := buildMediumCatalog()
     measureParse(benchmark, input, "medium nested catalog")
 }
 
 @bench
 @tag("json", "parse", "object")
-func parseWideUniqueKeyObject(benchmark: &mut std.bench.Benchmark) {
-    let input = buildWideObject()
+func parseWideUniqueKeyObject(benchmark: &std::bench::Benchmark) {
+    input := buildWideObject(256)
     measureParse(benchmark, input, "wide unique-key object")
+}
+
+// Keep the object shape fixed while changing only its member count. These
+// cases expose duplicate-key detection's scaling independently of nesting.
+@bench
+@tag("json", "parse", "object", "scaling")
+func parseObject16(benchmark: &std::bench::Benchmark) {
+    measureParse(benchmark, buildWideObject(16), "16-member object")
+}
+
+@bench
+@tag("json", "parse", "object", "scaling")
+func parseObject64(benchmark: &std::bench::Benchmark) {
+    measureParse(benchmark, buildWideObject(64), "64-member object")
+}
+
+@bench
+@tag("json", "parse", "object", "scaling")
+func parseObject1024(benchmark: &std::bench::Benchmark) {
+    measureParse(benchmark, buildWideObject(1024), "1024-member object")
+}
+
+func buildIntegerArray() -> string {
+    var builder = std::string::Builder::new()
+    builder.writeByte('[' as uint8)
+    var index: usize = 0
+    while index < 256 {
+        if index > 0 {
+            builder.writeByte(',' as uint8)
+        }
+        builder.writeString(std::sprintf("%d", index))
+        index += 1
+    }
+    builder.writeByte(']' as uint8)
+    return builder.toString()
+}
+
+@bench
+@tag("json", "parse", "array")
+func parseIntegerArray(benchmark: &std::bench::Benchmark) {
+    measureParse(benchmark, buildIntegerArray(), "256-element integer array")
+}
+
+@bench
+@tag("json", "decode", "typed", "array")
+func decodeTypedIntegerArray(benchmark: &std::bench::Benchmark) {
+    input := buildIntegerArray()
+    values := std::json::decode[List[int64]](input).unwrap()
+    assert(values.len() == 256 && values[255] == 255, "typed fixture mismatch")
+    benchmark.setBytes(input.byteLen())
+    while benchmark.next() {
+        std::hint::blackBox(std::json::decode[List[int64]](input))
+    }
+}
+
+@bench
+@tag("json", "encode", "typed", "array")
+func encodeTypedIntegerArray(benchmark: &std::bench::Benchmark) {
+    input := buildIntegerArray()
+    values := std::json::decode[List[int64]](input).unwrap()
+    assert(std::json::encode(&values).unwrap() == input, "typed output mismatch")
+    benchmark.setBytes(input.byteLen())
+    while benchmark.next() {
+        std::hint::blackBox(std::json::encode(&values))
+    }
+}
+
+func measureStringify(_ benchmark: &std::bench::Benchmark, _ input: string) {
+    value := std::json::parse(input).unwrap()
+    encoded := std::json::stringify(&value).unwrap()
+    assert(encoded == input, "DOM output mismatch")
+    benchmark.setBytes(input.byteLen())
+    while benchmark.next() {
+        std::hint::blackBox(std::json::stringify(&value))
+    }
+}
+
+@bench
+@tag("json", "encode", "nested")
+func stringifyMediumNestedCatalog(benchmark: &std::bench::Benchmark) {
+    measureStringify(benchmark, buildMediumCatalog())
+}
+
+@bench
+@tag("json", "encode", "string")
+func stringifyLongUnescapedAsciiString(benchmark: &std::bench::Benchmark) {
+    measureStringify(benchmark, buildLongAsciiString())
+}
+
+func measureLookup(_ benchmark: &std::bench::Benchmark, _ key: string, _ expected: bool) {
+    value := std::json::parse(buildWideObject(256)).unwrap()
+    object := match value {
+        case .object(object) => object
+        case _ => panic("expected object fixture")
+    }
+    assert(object.get(key).isSome() == expected, "lookup fixture mismatch")
+    while benchmark.next() {
+        std::hint::blackBox(object.get(key))
+    }
+}
+
+@bench
+@tag("json", "lookup")
+func lookupFirstMember(benchmark: &std::bench::Benchmark) {
+    measureLookup(benchmark, "field_0", true)
+}
+
+@bench
+@tag("json", "lookup")
+func lookupLastMember(benchmark: &std::bench::Benchmark) {
+    measureLookup(benchmark, "field_255", true)
+}
+
+@bench
+@tag("json", "lookup")
+func lookupMissingMember(benchmark: &std::bench::Benchmark) {
+    measureLookup(benchmark, "missing", false)
+}
+
+@bench
+@tag("json", "parse", "stream")
+func decodeMediumCatalogWithBufferedReader(benchmark: &std::bench::Benchmark) {
+    input := buildMediumCatalog()
+    validateFixture(input, "buffered medium nested catalog")
+    benchmark.setBytes(input.byteLen())
+    while benchmark.next() {
+        var reader = BenchmarkChunkReader::new(input, 4096)
+        var decoder = std::json::Decoder::new(&reader)
+        std::hint::blackBox(decoder.decodeValue())
+    }
 }
 
 @bench
 @tag("json", "parse", "string")
-func parseLongUnescapedAsciiString(benchmark: &mut std.bench.Benchmark) {
-    let input = buildLongAsciiString()
+func parseLongUnescapedAsciiString(benchmark: &std::bench::Benchmark) {
+    input := buildLongAsciiString()
     measureParse(benchmark, input, "long unescaped ASCII string")
 }
 
 @bench
 @tag("json", "parse", "string", "escape", "unicode")
-func parseEscapedUnicodeStrings(benchmark: &mut std.bench.Benchmark) {
-    let input = buildEscapedUnicodeStrings()
+func parseEscapedUnicodeStrings(benchmark: &std::bench::Benchmark) {
+    input := buildEscapedUnicodeStrings()
     measureParse(benchmark, input, "escaped Unicode strings")
 }
 
 @bench
 @tag("json", "parse", "stream")
-func decodeMediumCatalogAcrossBoundaries(benchmark: &mut std.bench.Benchmark) {
-    let input = buildMediumCatalog()
+func decodeMediumCatalogAcrossBoundaries(benchmark: &std::bench::Benchmark) {
+    input := buildMediumCatalog()
     validateFixture(input, "streaming medium nested catalog")
     benchmark.setBytes(input.byteLen())
     while benchmark.next() {
-        let reader = BenchmarkChunkReader(input, STREAM_CHUNK_SIZE)
-        var decoder = std.json.Decoder(reader)
-        let result = decoder.decodeValue()
-        std.hint.blackBox(result)
+        var reader = BenchmarkChunkReader::new(input, STREAM_CHUNK_SIZE)
+        var decoder = std::json::Decoder::new(&reader)
+        result := decoder.decodeValue()
+        std::hint::blackBox(result)
     }
 }

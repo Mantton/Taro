@@ -1,0 +1,17 @@
+// G22: cancellation cleanup that panics once becomes the task failure; a
+// second cleanup panic during that unwind is fatal and names both panics.
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: panic while unwinding: second cleanup panic (while unwinding from: first cleanup panic)
+func main() async {
+    var (started, running) = std::sync::bounded[int32](1).unwrap()
+    task := std::task::spawn(() async => {
+        defer { panic("second cleanup panic") }
+        defer { panic("first cleanup panic") }
+        started.trySend(1).unwrap()
+        await std::task::sleep(std::time::Duration::fromSeconds(60_u64))
+    })
+    var _ = await running.recv()
+    task.cancel()
+    var _ = await task.result()
+    print("unreachable\n")
+}

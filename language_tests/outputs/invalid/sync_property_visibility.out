@@ -1,0 +1,8 @@
+error: type 'Mutex[int32]' does not satisfy requirements for interface 'ReadValue'
+ -> language_tests/source_files/invalid/sync_property_visibility.tr:2:35
+	conform std::sync::Mutex[int32] to ReadValue {}
+	                                   ^^^^^^^^^
+info: missing readable property 'value' of type 'int32'
+ -> language_tests/source_files/invalid/sync_property_visibility.tr:2:35
+	conform std::sync::Mutex[int32] to ReadValue {}
+	                                   ^^^^^^^^^

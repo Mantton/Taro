@@ -122,15 +122,15 @@
             "patterns": [
                 {
                     "name": "keyword.operator.cast.taro",
-                    "match": "\\bas(\\?|!)\\b"
+                    "match": "\\bas(?:\\?|!)(?!\\w)"
                 },
                 {
                     "name": "keyword.control.taro",
-                    "match": "\\b(if|else|for|while|loop|break|continue|return|defer|guard|match|case|in|where)\\b"
+                    "match": "\\b(if|else|for|while|loop|break|continue|return|defer|guard|match|case|in|where|async|await)\\b"
                 },
                 {
                     "name": "keyword.other.taro",
-                    "match": "\\b(import|export|extern|namespace|as|is|any|unsafe)\\b"
+                    "match": "\\b(import|export|extern|namespace|as|is|any|unsafe|to|get|set|address)\\b"
                 },
                 {
                     "name": "keyword.operator.taro",
@@ -142,19 +142,11 @@
             "patterns": [
                 {
                     "name": "storage.type.taro",
-                    "match": "\\b(func|struct|enum|interface|impl|type)\\b"
-                },
-                {
-                    "name": "storage.type.reserved.taro",
-                    "match": "\\b(class)\\b"
+                    "match": "\\b(func|struct|class|enum|interface|extend|conform|type|subscript)\\b"
                 },
                 {
                     "name": "storage.modifier.taro",
-                    "match": "\\b(public|private|static|readonly|mut|const|var|let)\\b"
-                },
-                {
-                    "name": "storage.modifier.reserved.taro",
-                    "match": "\\b(final|override|fileprivate|protected|async|await|ref|init)\\b"
+                    "match": "\\b(public|private|internal|static|readonly|const|var|final|override|init|required|convenience)\\b"
                 }
             ]
         },
@@ -211,6 +203,14 @@
         "types": {
             "patterns": [
                 {
+                    "match": "\\*\\s*(const|mut)\\b",
+                    "captures": {
+                        "1": {
+                            "name": "storage.modifier.pointer.taro"
+                        }
+                    }
+                },
+                {
                     "name": "entity.name.type.taro",
                     "match": "\\b[A-Z][a-zA-Z0-9_]*\\b"
                 },
@@ -220,7 +220,7 @@
                 },
                 {
                     "name": "support.type.builtin.taro",
-                    "match": "\\b(Option|Result|List|Dictionary|Array|Set|Clone|Copy|Hashable|Equatable|GcPtr|Range|ClosedRange|Fn|AsyncFn|Optional)\\b"
+                    "match": "\\b(Option|Result|List|Dictionary|Array|Set|Clone|Hashable|Equatable|GcPtr|Range|ClosedRange|Fn|AsyncFn|Optional)\\b"
                 }
             ]
         },
@@ -259,6 +259,10 @@
         "operators": {
             "patterns": [
                 {
+                    "name": "keyword.operator.assignment.short.taro",
+                    "match": ":="
+                },
+                {
                     "name": "keyword.operator.comparison.taro",
                     "match": "(===|==|!=|<=|>=)"
                 },
@@ -291,8 +295,8 @@
                     "match": "\\|>"
                 },
                 {
-                    "name": "keyword.operator.dotstar.taro",
-                    "match": "\\.\\*"
+                    "name": "keyword.operator.qualified.taro",
+                    "match": "::(?:\\*)?"
                 },
                 {
                     "name": "keyword.operator.taro",

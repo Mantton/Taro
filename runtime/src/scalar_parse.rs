@@ -3,6 +3,12 @@
 //! Taro's standard library validates its public decimal grammar and reports
 //! byte-accurate syntax errors. These shims provide Rust's correctly-rounded
 //! IEEE-754 conversion without inheriting process locale behavior from libc.
+//!
+//! These entries are synchronous and retain neither the input bytes nor the
+//! output pointer. A nonnull output designates one writable aligned scalar for
+//! this call and is written only on PARSE_OK. No request or pointer survives the
+//! return. The canonical ABI records NoCapture for both arguments; that promise
+//! does not make the output memory read-only or grant NoAlias.
 
 use crate::panic_unwind::RtString;
 

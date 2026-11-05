@@ -1,0 +1,120 @@
+import std::ops::{Add, AddAssign, Sub, Mul, Div, Rem, BitAnd, BitOr, BitXor, Shl, Shr}
+
+// Value operands are copied; reference receivers mutate existing storage.
+struct Counter { value: int32 }
+conform Counter to Add {
+    func add( _ rhs: Self) -> Self { Counter { value: self.value + rhs.value } }
+}
+conform Counter to Sub {
+    func sub( _ rhs: Self) -> Self { Counter { value: self.value - rhs.value } }
+}
+conform Counter to Mul {
+    func mul( _ rhs: Self) -> Self { Counter { value: self.value * rhs.value } }
+}
+conform Counter to Div {
+    func div( _ rhs: Self) -> Self { Counter { value: self.value / rhs.value } }
+}
+conform Counter to Rem {
+    func rem( _ rhs: Self) -> Self { Counter { value: self.value % rhs.value } }
+}
+conform Counter to BitAnd {
+    func bitand( _ rhs: Self) -> Self { Counter { value: self.value & rhs.value } }
+}
+conform Counter to BitOr {
+    func bitor( _ rhs: Self) -> Self { Counter { value: self.value | rhs.value } }
+}
+conform Counter to BitXor {
+    func bitxor( _ rhs: Self) -> Self { Counter { value: self.value ^ rhs.value } }
+}
+conform Counter to Shl {
+    func shl( _ rhs: Self) -> Self { Counter { value: self.value << rhs.value } }
+}
+conform Counter to Shr {
+    func shr( _ rhs: Self) -> Self { Counter { value: self.value >> rhs.value } }
+}
+conform &Counter to AddAssign[Counter] {
+    func addAssign( _ rhs: Counter) { self.value += rhs.value }
+}
+
+func combine[T: Add[T, Output = T]](_ first: &T, _ second: &T) -> T { *first + *second }
+func accumulate[Value, Storage: AddAssign[Value]](_ first: Storage, _ second: &Value) { first.addAssign(*second) }
+
+func destination(_ value: &Counter) -> &Counter {
+    value.value = 1
+    value
+}
+func source(_ value: &Counter) -> Counter {
+    value.value = 10
+    Counter { value: 2 }
+}
+
+struct Observer { value: int32 }
+struct Pair { left: Counter; right: Counter }
+enum Amount { case empty; case value(int32) }
+conform Amount to Add {
+    func add( _ rhs: Self) -> Self {
+        var left: int32 = match self {
+            case .empty => 0_i32
+            case .value(value) => value
+        }
+        var right: int32 = match rhs {
+            case .empty => 0_i32
+            case .value(value) => value
+        }
+        Amount::value(left + right)
+    }
+}
+conform &Observer to AddAssign[Observer] {
+    // An explicit reference target receives the original destination storage.
+    func addAssign( _ rhs: Observer) {}
+}
+
+func main() {
+    var first: Counter = Counter { value: 12 }
+    var second: Counter = Counter { value: 2 }
+    assert((first + second).value == 14, "value addition")
+    assert((first - second).value == 10, "value subtraction")
+    assert((first * second).value == 24, "value multiplication")
+    assert((first / second).value == 6, "value division")
+    assert((first % second).value == 0, "value remainder")
+    assert((first & second).value == 0, "value bitwise and")
+    assert((first | second).value == 14, "value bitwise or")
+    assert((first ^ second).value == 14, "value bitwise xor")
+    assert((first << second).value == 48, "value left shift")
+    assert((first >> second).value == 3, "value right shift")
+    assert(combine(&first, &second).value == 14, "generic value arithmetic")
+    first += second
+    accumulate(&first, &second)
+    assert(first.value == 16 && second.value == 2, "compound assignment does not consume its RHS")
+    *destination(&first) += source(&first)
+    assert(first.value == 3, "overloaded assignment resolves destination after RHS")
+
+    var observed: Observer = Observer { value: 17 }
+    var other: Observer = Observer { value: 19 }
+    observed += other
+    accumulate(&observed, &other)
+    assert(observed.value == 17 && other.value == 19, "shared witness preserves both owners")
+
+    var pair: Pair = Pair { left: Counter { value: 1 }, right: Counter { value: 2 } }
+    pair.left += pair.right
+    assert(pair.left.value == 3 && pair.right.value == 2, "disjoint field operands can coexist")
+
+    var amounts: [Amount] = [Amount::value(7_i32), Amount::value(9_i32)]
+    var total: Amount = amounts[0 as usize] + amounts[1 as usize]
+    match total {
+        case .value(value) => assert(value == 16, "operators copy enum values from shared list storage")
+        case .empty => panic("lost owned result enum case")
+    }
+    match amounts[0 as usize] {
+        case .value(value) => assert(value == 7, "value enum operands stay in the list")
+        case .empty => panic("operator consumed its list element")
+    }
+
+    var primitive: int32 = 3
+    primitive += primitive
+    assert(primitive == 6, "primitive numeric assignment retains its scalar snapshot rule")
+    var left: string = "value "
+    var right: string = "strings"
+    assert(left + right == "value strings", "string Add follows the value contract")
+    assert(left == "value " && right == "strings", "string operands remain usable")
+}

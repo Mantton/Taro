@@ -1,0 +1,6 @@
+func main() {
+    var builder = std::string::Builder::new()
+    var _ = builder.intoString()
+    var buffer = std::bytes::Buffer::new()
+    var _ = buffer.intoBytes()
+}

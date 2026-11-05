@@ -1,0 +1,17 @@
+interface Source { func current() -> &int32; }
+class Base { value: int32 }
+extend Base { init(_ value: int32) { self.value = value } }
+conform Base to Source { func current() -> &int32 { &self.value }; }
+class Derived: Base { stamp: int32 = 7 }
+conform Derived to Source { override func current() -> &int32 { &self.stamp }; }
+func project[T: Source](_ value: &T) -> &int32 { value.current() }
+func changeOther(_ value: Derived) { value.value = 9 }
+func main() {
+    var derived: Derived = Derived(1) // Derived; strong object handle.
+    var base: Base = derived // Base; same object, base static type.
+    var saved: &int32 = project(&base) // &int32; guards Derived.stamp through virtual dispatch.
+    changeOther(derived) // A copied handle may access the different value field.
+    assert(*saved == 7 && base.value == 9, "virtual result carries the actual target's field guard")
+    derived.stamp = 11 // The returned borrow's last use has passed.
+    assert(derived.stamp == 11, "last-use release reopens that field")
+}

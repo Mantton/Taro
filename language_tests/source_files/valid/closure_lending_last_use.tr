@@ -1,0 +1,27 @@
+func main() {
+    var value: int32 = 7
+    lender := () => &value
+    var saved: &int32 = lender()
+    assert(*saved == 7, "captured borrow result")
+    value = 99
+
+    owner := () => &value
+    var first: &int32 = owner()
+    assert(*first == 99, "borrow of an owned capture")
+    moved := owner
+    var second: &int32 = moved()
+    assert(*second == 99, "receiver can move after result last use")
+
+    var count: int32 = 1
+    var advance = () => {
+        count += 1
+        &count
+    }
+    var before: &int32 = advance()
+    assert(*before == 2, "mutable receiver lending")
+    var after: &int32 = advance()
+    assert(*after == 3, "mutable receiver resumes after last use")
+
+    var function: (int32) -> int32 = (input: int32) => input + 1
+    assert(function(8) == 9, "empty closure shim has a valid borrowed receiver")
+}

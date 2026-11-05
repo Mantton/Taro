@@ -1,0 +1,9 @@
+Checking – vet_nocopy_index_iteration
+warning: indexing copies a @NoCopy element; take its reference instead
+ -> language_tests/source_files/invalid/vet_nocopy_index_iteration.tr:6:14
+	    copied := values[0]
+	              ^^^^^^^^^
+warning: iteration copies a @NoCopy element; iterate references instead
+ -> language_tests/source_files/invalid/vet_nocopy_index_iteration.tr:8:4
+	    for value in values { var _ = &value }
+	    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

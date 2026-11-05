@@ -6,5 +6,5 @@
 // EXPECT_STDERR_COUNT: 1 runtime stats:
 
 func main() {
-    std.print("PASS: Sync runtime observability\n")
+    std::print("PASS: Sync runtime observability\n")
 }

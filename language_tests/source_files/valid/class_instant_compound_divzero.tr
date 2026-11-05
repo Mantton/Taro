@@ -1,0 +1,18 @@
+// EXPECT_EXIT: 101
+// OVERFLOW_CHECKS
+// EXPECT_STDERR_CONTAINS: panic: attempt to divide by zero
+// EXPECT_STDOUT_CONTAINS: cleanup observed 7
+// A zero divisor panics before the field access starts.
+class Gauge { level: int32 = 7 }
+extend Gauge {
+    init() {}
+}
+func divisor() -> int32 { 0 }
+func main() {
+    var gauge: Gauge = Gauge()
+    defer {
+        std::printf("cleanup observed %v\n", gauge.level)
+        gauge.level += 1
+    }
+    gauge.level /= divisor()
+}

@@ -1,73 +1,75 @@
 @test
 func testSpanReadsAndSlices() {
-    let data: [int32; 4] = [11, 22, 33, 44]
-    let ptr = unsafe { (&data as *const [int32; 4]) as *const int32 }
-    let view = std.mem.Span[int32].from(ptr, 4)
+    var data: [int32; 4] = [11, 22, 33, 44]
+    ptr := unsafe { (&data as *const [int32; 4]) as *const int32 }
+    view := unsafe { std::mem::Span[int32]::from(ptr, 4) }
 
-    std.testing.assertEqual(view.len(), 4 as usize, "Span.len should match source length")
-    std.testing.assertFalse(view.isEmpty(), "Span over populated storage should not be empty")
-    std.testing.assertEqual(*view.at(0), 11, "Span.at should read first element")
-    std.testing.assertTrue(view.get(5).isNone(), "Span.get should return none when out of bounds")
+    std::testing::assertEqual(view.len(), 4 as usize, "Span.len should match source length")
+    std::testing::assertFalse(view.isEmpty(), "Span over populated storage should not be empty")
+    std::testing::assertEqual(*view.at(0), 11, "Span.at should read first element")
+    std::testing::assertTrue(view.get(5).isNone(), "Span.get should return none when out of bounds")
 
-    let tail = view.slice(2, 2)
-    std.testing.assertEqual(tail.len(), 2 as usize, "Span.slice length mismatch")
-    std.testing.assertEqual(*tail.at(0), 33, "Span.slice start element mismatch")
+    tail := view.slice(2, 2)
+    std::testing::assertEqual(tail.len(), 2 as usize, "Span.slice length mismatch")
+    std::testing::assertEqual(*tail.at(0), 33, "Span.slice start element mismatch")
 }
 
 @test
-func testMutableSpanWritesAndSubslice() {
+func testSpanWritesAndSubslice() {
     var data: [int32; 4] = [5, 6, 7, 8]
-    let ptr = unsafe { (&mut data as *mut [int32; 4]) as *mut int32 }
-    var view = std.mem.MutableSpan[int32].from(ptr, 4)
+    ptr := unsafe { (&data as *mut [int32; 4]) as *mut int32 }
+    var view = unsafe { std::mem::Span[int32]::from(ptr, 4) }
 
     *view.at(1) = 60
-    std.testing.assertEqual(*data.at(1), 60, "MutableSpan.at write should update backing storage")
+    std::testing::assertEqual(*data.at(1), 60, "Span.at write should update backing storage")
 
-    var sub = view.slice(1, 2)
+    var sub: std::mem::Span[int32] = view.slice(1, 2)
     *sub.at(0) = 61
-    std.testing.assertEqual(*data.at(1), 61, "MutableSpan.slice should alias original storage")
-    std.testing.assertTrue(view.get(99).isNone(), "MutableSpan.get should return none when out of bounds")
+    std::testing::assertEqual(*data.at(1), 61, "Span.slice should alias original storage")
+    std::testing::assertTrue(view.get(99).isNone(), "Span.get should return none when out of bounds")
 }
 
 @test
-func testSpansAreCopy() {
+func testSpanCopiesShareElements() {
     var data: [int32; 3] = [1, 2, 3]
 
-    let constPtr = unsafe { (&data as *const [int32; 3]) as *const int32 }
-    let view = std.mem.Span[int32].from(constPtr, 3)
-    let viewCopy = view
-    std.testing.assertEqual(*view.at(0), 1, "Span original should remain usable after copy")
-    std.testing.assertEqual(*viewCopy.at(2), 3, "Span copy should read same backing storage")
+    constPtr := unsafe { (&data as *const [int32; 3]) as *const int32 }
+    view := unsafe { std::mem::Span[int32]::from(constPtr, 3) }
+    viewCopy := view
+    std::testing::assertEqual(*view.at(0), 1, "Span original should remain usable after copy")
+    std::testing::assertEqual(*viewCopy.at(2), 3, "Span copy should read same backing storage")
 
-    let mutPtr = unsafe { (&mut data as *mut [int32; 3]) as *mut int32 }
-    var mutView = std.mem.MutableSpan[int32].from(mutPtr, 3)
-    var mutCopy = mutView
-    *mutCopy.at(1) = 20
-    *mutView.at(2) = 30
-    std.testing.assertEqual(*data.at(1), 20, "MutableSpan copy should alias backing storage")
-    std.testing.assertEqual(*data.at(2), 30, "MutableSpan original should remain usable after copy")
+    mutPtr := unsafe { (&data as *mut [int32; 3]) as *mut int32 }
+    var mutView = unsafe { std::mem::Span[int32]::from(mutPtr, 3) }
+    var moved = mutView
+    *moved.at(1) = 20
+    *moved.at(2) = 30
+    std::testing::assertEqual(*data.at(1), 20, "copied Span should retain access to backing storage")
+    std::testing::assertEqual(*data.at(2), 30, "copied Span shares storage")
 }
 
-func first(_ view: std.mem.Span[int32]) -> int32 {
+func first(_ view: std::mem::Span[int32]) -> int32 {
     *view.at(0)
 }
 
-func writeFirst(_ view: std.mem.MutableSpan[int32], _ value: int32) {
+func writeFirst(_ view: std::mem::Span[int32], _ value: int32) {
     var local = view
     *local.at(0) = value
 }
 
-func sumSpan(_ view: std.mem.Span[int32]) -> int32 {
+func sumSpan(_ view: std::mem::Span[int32]) -> int32 {
     var sum: int32 = 0
     for value in view {
-        sum = sum + *value
+        sum = sum + value
     }
     return sum
 }
 
-func doubleMutableSpan(_ view: std.mem.MutableSpan[int32]) {
-    for value in view {
-        *value = *value * 2
+func doubleSpan(_ view: std::mem::Span[int32]) {
+    var index: usize = 0
+    while index < view.len() {
+        *view.at(index) *= 2
+        index += 1
     }
 }
 
@@ -75,41 +77,43 @@ func doubleMutableSpan(_ view: std.mem.MutableSpan[int32]) {
 func testSpanAsBytesAndPassByValue() {
     var values: [int32; 3] = [10, 20, 30]
 
-    let baseConst = unsafe { (&values as *const [int32; 3]) as *const int32 }
-    let view = std.mem.Span[int32].from(baseConst, 3)
-    let bytes = view.asBytes()
-    std.testing.assertEqual(
+    baseConst := unsafe { (&values as *const [int32; 3]) as *const int32 }
+    view := unsafe { std::mem::Span[int32]::from(baseConst, 3) }
+    bytes := unsafe { view.asBytes() }
+    std::testing::assertEqual(
         bytes.len(),
-        (3 as usize) * std.mem.sizeOf[int32](),
+        (3 as usize) * std::mem::sizeOf[int32](),
         "Span.asBytes should scale by element size",
     )
 
-    std.testing.assertEqual(first(view), 10, "Span pass-by-value should read first element")
-    std.testing.assertEqual(*view.at(0), 10, "Span should remain usable after by-value call")
+    std::testing::assertEqual(first(view), 10, "Span pass-by-value should read first element")
+    std::testing::assertEqual(*view.at(0), 10, "Span should remain usable after by-value call")
 
-    let baseMut = unsafe { (&mut values as *mut [int32; 3]) as *mut int32 }
-    var mutView = std.mem.MutableSpan[int32].from(baseMut, 3)
-    writeFirst(mutView, 111)
-    std.testing.assertEqual(*mutView.at(0), 111, "MutableSpan should remain usable after by-value call")
+    baseMut := unsafe { (&values as *mut [int32; 3]) as *mut int32 }
+    var mutView = unsafe { std::mem::Span[int32]::from(baseMut, 3) }
+    // Passing a slice copies its header and shares its elements.
+    count := mutView.len()
+    writeFirst(mutView.slice(0, count), 111)
+    std::testing::assertEqual(*mutView.at(0), 111, "Span should remain usable after a child-view call")
 }
 
 @test
-func testSpanAndMutableSpanIteration() {
+func testSpanIterationAndIndexedWrites() {
     var values: [int32; 4] = [1, 2, 3, 4]
 
-    let baseConst = unsafe { (&values as *const [int32; 4]) as *const int32 }
-    let view = std.mem.Span[int32].from(baseConst, 4)
-    std.testing.assertEqual(sumSpan(view), 10, "Span iteration should sum elements")
+    baseConst := unsafe { (&values as *const [int32; 4]) as *const int32 }
+    view := unsafe { std::mem::Span[int32]::from(baseConst, 4) }
+    std::testing::assertEqual(sumSpan(view), 10, "Span iteration should sum elements")
 
-    let baseMut = unsafe { (&mut values as *mut [int32; 4]) as *mut int32 }
-    var mutView = std.mem.MutableSpan[int32].from(baseMut, 4)
+    baseMut := unsafe { (&values as *mut [int32; 4]) as *mut int32 }
+    var mutView = unsafe { std::mem::Span[int32]::from(baseMut, 4) }
 
-    let immutable = mutView.asConst()
-    std.testing.assertEqual(sumSpan(immutable), 10, "MutableSpan.asConst iteration should sum elements")
+    immutable := mutView
+    std::testing::assertEqual(sumSpan(immutable), 10, "copied Span iteration should sum elements")
 
-    doubleMutableSpan(mutView)
-    std.testing.assertEqual(*values.at(0), 2, "MutableSpan iteration should update first element")
-    std.testing.assertEqual(*values.at(1), 4, "MutableSpan iteration should update second element")
-    std.testing.assertEqual(*values.at(2), 6, "MutableSpan iteration should update third element")
-    std.testing.assertEqual(*values.at(3), 8, "MutableSpan iteration should update fourth element")
+    doubleSpan(mutView)
+    std::testing::assertEqual(*values.at(0), 2, "Span iteration should update first element")
+    std::testing::assertEqual(*values.at(1), 4, "Span iteration should update second element")
+    std::testing::assertEqual(*values.at(2), 6, "Span iteration should update third element")
+    std::testing::assertEqual(*values.at(3), 8, "Span iteration should update fourth element")
 }

@@ -1,0 +1,38 @@
+func twice[F: Fn() -> int32](_ callback: F) -> int32 {
+    callback() + callback()
+}
+func repeatMutable[F: Fn() -> int32](_ callback: &F) -> int32 {
+    callback() + callback()
+}
+func wrap[F: Fn() -> int32](_ callback: F) -> int32 {
+    outer := () => callback()
+    twice(outer)
+}
+func tick() async { await std::testing::yieldNow() }
+func main() async {
+    inner := () => 7_i32
+    outer := () => inner()
+    assert(twice(outer) == 14, "calling Fn should borrow its environment")
+    assert(inner() == 7, "captured callable was not moved")
+    assert(wrap(inner) == 14, "generic Fn capture retains its capability")
+
+    var count: int32 = 0
+    var increment = () => { count += 1; count }
+    var relay = () => increment()
+    assert(repeatMutable(&relay) == 3, "nested FnMut preserves mutable receiver")
+    assert(increment() == 3, "mutable capture ends at final wrapper use")
+    assert(count == 3, "captured state")
+
+    var secondCount: int32 = 0
+    var second = () => { secondCount += 1; secondCount }
+    token := &second
+    var throughToken = () => token()
+    assert(throughToken() == 1, "unique capture of an immutable mutable-reference token")
+    assert(throughToken() == 2, "token remains reusable")
+    assert(secondCount == 2, "token capture ends at final use")
+
+    asyncInner := () => { await tick(); 11_i32 }
+    asyncOuter := () => { await asyncInner() }
+    assert((await asyncOuter()) == 11, "nested AsyncFn borrows its environment")
+    assert((await asyncOuter()) == 11, "nested AsyncFn remains reusable")
+}

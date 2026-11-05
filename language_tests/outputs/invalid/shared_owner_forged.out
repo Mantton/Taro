@@ -1,0 +1,12 @@
+error: type 'SharedOwner' is not visible here
+ -> language_tests/source_files/invalid/shared_owner_forged.tr:2:16
+	    var forged: std::runtime::SharedOwner[int32] = std::runtime::SharedOwner[int32](7)
+	                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+error: type 'SharedOwner' is not visible here
+ -> language_tests/source_files/invalid/shared_owner_forged.tr:2:51
+	    var forged: std::runtime::SharedOwner[int32] = std::runtime::SharedOwner[int32](7)
+	                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+error: a type name cannot select `new` implicitly; use an explicit `::new` factory
+ -> language_tests/source_files/invalid/shared_owner_forged.tr:2:51
+	    var forged: std::runtime::SharedOwner[int32] = std::runtime::SharedOwner[int32](7)
+	                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

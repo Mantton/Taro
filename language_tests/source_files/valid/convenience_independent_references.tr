@@ -1,0 +1,18 @@
+class Example { value: &int32; alias: &int32; copied: &int32 }
+extend Example {
+    init(_ source: &int32) { self.value = source; self.alias = source; self.copied = source };
+    convenience init() {
+        local := 7
+        self.init(&local)
+        self.alias = &*self.value
+        copy := *self.value
+        self.copied = &copy
+        std::runtime::collect()
+    };
+}
+func main() {
+    value := Example()
+    *value.value = 9
+    std::runtime::collect()
+    assert(*value.alias == 9 && *value.copied == 7, "convenience init can retain independent pointees and copies")
+}

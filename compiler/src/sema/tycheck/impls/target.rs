@@ -33,6 +33,12 @@ impl<'ctx> Actor<'ctx> {
         let ctx = DefTyLoweringCtx::new(impl_id, self.context);
         let ty = ctx.lowerer().lower_type(&node.target);
         self.context.cache_impl_target_ty(impl_id, ty);
+        // Aliases are transparent to coherence and member lookup, including
+        // aliases imported from another package.
+        let normalized = crate::sema::tycheck::utils::normalize_aliases(self.context, ty);
+        if let Some(head) = crate::sema::tycheck::utils::type_head_from_value_ty(normalized) {
+            self.context.cache_impl_type_head(impl_id, head);
+        }
     }
 }
 

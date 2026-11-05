@@ -1,0 +1,24 @@
+type Count = uint32
+type Signed = int8
+type Ratio = double
+const SIZE: Count = 16_u32
+const NEGATIVE: Signed = -3_i8
+const SCALE: Ratio = 2.5
+const CONVERTED: Count = 19_u8 as Count
+
+func sizeValue() -> Count { SIZE }
+func signedValue() -> Signed { NEGATIVE }
+func ratioValue() -> Ratio { SCALE }
+
+func main() {
+    var count: Count = 7_u32
+    assert(sizeValue() == 16_u32, "alias constants retain their value")
+    assert(signedValue() == -3_i8, "signed alias constant retains its bits")
+    assert(ratioValue() == 2.5, "floating alias constants retain their value")
+    assert(CONVERTED == 19_u32, "constant casts normalize aliases")
+    assert((count as int64) == 7_i64, "alias source integer conversion")
+    assert((NEGATIVE as int64) == -3_i64, "alias source sign extension")
+    assert((42_u8 as Count) == 42_u32, "alias target integer conversion")
+    assert((SCALE as float) == (2.5 as float), "alias source floating conversion")
+    print("alias scalar constants ok\n")
+}

@@ -1,0 +1,14 @@
+struct Counter { value: int32 }
+
+extend Counter {
+    static func new(_ value: int32) -> Self { Self { value } }
+    static func wrong() -> Self { Self(7) }
+}
+
+type Alias = Counter
+
+func main() {
+    value := Counter(7)
+    factory := Counter
+    alias := Alias(9)
+}

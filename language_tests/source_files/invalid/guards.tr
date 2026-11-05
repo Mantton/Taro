@@ -1,4 +1,4 @@
 func main() {
     guard 1 else { return }
-    guard let value = 123 else { return }
+    guard var value = 123 else { return }
 }

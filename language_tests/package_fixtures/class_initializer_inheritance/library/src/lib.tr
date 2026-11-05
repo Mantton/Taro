@@ -1,0 +1,38 @@
+public class Base[T] { value: T; flag: bool }
+extend[T] Base[T] {
+    public init(_ value: T, flag: bool = true) {
+        self.value = value
+        self.flag = flag
+    }
+    public func get() -> &T { &self.value }
+    public convenience init(pair: (T, T)) { self.init(pair.0) }
+    public func kind() -> int32 { 1 }
+}
+public class Child[U]: Base[List[U]] { sentinel: int32 = 17 }
+extend[U] Child[U] {
+    public override func kind() -> int32 { self.sentinel }
+}
+
+public interface Marker {}
+public struct Box[T] { value: T }
+conform[T] Box[T] to Marker {}
+public class ShapedBase[T] { value: T; tags: usize }
+extend[U] ShapedBase[Box[U]] {
+    public init[Tag, const N: usize](_ value: Box[U], tag: [Tag; N]) {
+        self.value = value
+        self.tags = N
+    }
+    public func get() -> &Box[U] { &self.value }
+    public convenience init[Tag, const M: usize](_ value: Box[U], flags: [Tag; M], enabled: bool = true) {
+        self.init(value, tag: flags)
+        assert(enabled, "imported convenience default")
+    }
+}
+public class ShapedChild[T: Marker, V, const N: usize]: ShapedBase[T] { marker: int32 = 29; extra: V? = .none; dimension: usize = N }
+
+public class HiddenBase { value: int32 }
+extend HiddenBase {
+    init(_ value: int32) { self.value = value }
+    public convenience init() { self.init(41) }
+}
+public class HiddenChild: HiddenBase {}

@@ -1,0 +1,8 @@
+error: conflicting conformance to 'Into[Target]'
+ -> language_tests/source_files/invalid/conversion_bridge_overlap.tr:6:18
+	conform Source to Into[Target] {
+	                  ^^^^^^^^^^^^
+info: existing conformance is defined here
+ -> std/src/convert/convert.tr:47:48
+	conform[Source, Target: From[Source]] Source to Into[Target] {
+	                                                ^^^^^^^^^^^^

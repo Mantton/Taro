@@ -1,0 +1,32 @@
+// Spawned work runs independently of its handle: discarding, overwriting or
+// leaving the scope of a Task never cancels it (G21).
+// ENV: TARO_WORKERS=1
+static var FINISHED: int32 = 0
+
+func main() async {
+    var _ = std::task::spawn(() async => {
+        await std::testing::yieldNow()
+        FINISHED += 1
+    })
+    var replaced = std::task::spawn(() async => {
+        await std::testing::yieldNow()
+        FINISHED += 1
+    })
+    replaced = std::task::spawn(() async => { FINISHED += 1 })
+    {
+        scoped := std::task::spawn(() async => {
+            await std::testing::yieldNow()
+            FINISHED += 1
+        })
+    }
+    std::task::detached(() async => {
+        await std::testing::yieldNow()
+        FINISHED += 1
+    })
+    var attempts = 0
+    while FINISHED < 5 && attempts < 1000 {
+        await std::testing::yieldNow()
+        attempts += 1
+    }
+    std::printf("finished %d\n", FINISHED)
+}

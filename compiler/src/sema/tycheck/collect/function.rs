@@ -57,7 +57,26 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
     ) -> Self::Result {
         let gcx = self.context;
         let signature = self.build_signature(id, node, fn_ctx);
-        let ty = Ty::from_labeled_signature(gcx, &signature);
+        let base = Ty::from_labeled_signature(gcx, &signature);
+        let crate::sema::models::TyKind::FnPointer { inputs, output, .. } = base.kind() else {
+            unreachable!()
+        };
+        let ty = Ty::new(
+            crate::sema::models::TyKind::FnPointer {
+                inputs,
+                output,
+                effects: crate::sema::models::FunctionPointerEffects {
+                    kind: if node.is_async {
+                        crate::sema::models::ClosureKind::AsyncFn
+                    } else {
+                        crate::sema::models::ClosureKind::Fn
+                    },
+                    is_unsafe: node.is_unsafe,
+                    abi: signature.abi,
+                },
+            },
+            gcx,
+        );
         gcx.cache_signature(id, signature);
         gcx.cache_type(id, ty);
         hir::walk_function(self, id, node, fn_ctx)
@@ -141,6 +160,7 @@ impl<'ctx> Actor<'ctx> {
                 let fn_name = self.context.definition_ident(id).symbol;
                 let fn_name_text = self.context.symbol_text(fn_name);
                 let def = crate::sema::models::SyntheticDefinition {
+                    kind: crate::sema::models::SyntheticDefinitionKind::Ordinary,
                     name: self
                         .context
                         .intern_symbol(&format!("{}$default_arg{}", fn_name_text, idx)),

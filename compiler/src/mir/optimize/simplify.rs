@@ -169,6 +169,11 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
         for stmt in &block.statements {
             match &stmt.kind {
                 StatementKind::Assign(dest, rv) => {
+                    // Acquiring an owning Copy is an effect, even if the
+                    // resulting value currently has no ordinary data use.
+                    if matches!(rv, Rvalue::CopyValue { .. }) {
+                        mark_place_used(dest, &mut used);
+                    }
                     // Only mark destination as used if it has projections
                     // (the base local is read to compute the final address)
                     if !dest.projection.is_empty() {
@@ -181,9 +186,11 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
                         mark_place_used(place, &mut used);
                     }
                 }
+
                 StatementKind::KeepAlive(operand) => mark_operand_used(operand, &mut used),
                 StatementKind::SourceScope(_)
                 | StatementKind::StorageLive(_)
+                | StatementKind::StorageDead(_)
                 | StatementKind::SetInitialized(_)
                 | StatementKind::GcSafepoint(_)
                 | StatementKind::Nop => {}
@@ -238,11 +245,12 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
     for (old_id, local_decl) in body.locals.iter_enumerated() {
         if used[old_id.index()] {
             let new_id = new_locals.push(local_decl.clone());
-            if old_id.index() < body.escape_locals.len() {
-                new_escape_locals.push(body.escape_locals[old_id.index()]);
-            } else {
-                new_escape_locals.push(false);
-            }
+            new_escape_locals.push(
+                body.escape_locals
+                    .get(old_id.index())
+                    .copied()
+                    .unwrap_or(false),
+            );
             remap[old_id] = Some(new_id);
         }
     }
@@ -259,7 +267,9 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
     for block in &mut body.basic_blocks {
         for stmt in &mut block.statements {
             match &mut stmt.kind {
-                StatementKind::StorageLive(local) | StatementKind::SetInitialized(local) => {
+                StatementKind::StorageLive(local)
+                | StatementKind::StorageDead(local)
+                | StatementKind::SetInitialized(local) => {
                     if let Some(new_local) = remap[*local] {
                         *local = new_local;
                     } else {
@@ -281,6 +291,7 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
                         stmt.kind = StatementKind::Nop;
                     }
                 }
+
                 StatementKind::KeepAlive(operand) => remap_operand(operand),
                 StatementKind::SourceScope(_)
                 | StatementKind::GcSafepoint(_)
@@ -294,13 +305,11 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
                     func,
                     args,
                     destination,
-                    devirt_hint,
                     ..
                 } => {
                     remap_operand(func);
                     args.iter_mut().for_each(remap_operand);
                     remap_place(destination);
-                    *devirt_hint = None;
                 }
                 TerminatorKind::SwitchInt { discr, .. } => remap_operand(discr),
                 TerminatorKind::Yield {
@@ -322,22 +331,6 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
     body.locals = new_locals;
     body.escape_locals = new_escape_locals;
     body.return_local = remap[body.return_local].expect("return local must be used");
-}
-
-/// Merge consecutive gc_safepoint statements within each basic block.
-/// Multiple consecutive safepoints are redundant - only one is needed.
-pub fn merge_consecutive_safepoints(body: &mut Body<'_>) {
-    use crate::mir::StatementKind;
-
-    for block in body.basic_blocks.iter_mut() {
-        let mut prev_was_safepoint = false;
-        block.statements.retain(|stmt| {
-            let is_safepoint = matches!(stmt.kind, StatementKind::GcSafepoint(_));
-            let keep = !is_safepoint || !prev_was_safepoint;
-            prev_was_safepoint = is_safepoint;
-            keep
-        });
-    }
 }
 
 #[cfg(test)]
@@ -370,6 +363,7 @@ mod tests {
                     value: Operand::Copy(Place::from_local(body.return_local)),
                     resume,
                     resume_arg: Place::from_local(body.return_local),
+                    no_result: None,
                     cancel,
                     cancel_complete,
                     unwind: CallUnwindAction::Cleanup(cancel),

@@ -1,0 +1,8 @@
+import std::crypto::__rt__crypto_equal
+import std::mem::Span
+
+/// Constant-time content comparison for equal-length inputs. Lengths are
+/// public; unequal lengths return false without comparing their contents.
+public func equal(_ left: Span[uint8], _ right: Span[uint8]) -> bool {
+    unsafe { __rt__crypto_equal(left.asPtr(), left.len(), right.asPtr(), right.len()) }
+}

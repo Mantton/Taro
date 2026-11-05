@@ -1,0 +1,8 @@
+error: field 'ptr' of Span[int32] is not visible here
+ -> language_tests/source_files/invalid/span_header_fabrication.tr:4:42
+	    var view: Span[int32] = Span[int32] { ptr: pointer, len: 1 }
+	                                          ^^^^
+error: field 'ptr' of Span[int32] is not visible here
+ -> language_tests/source_files/invalid/span_header_fabrication.tr:9:42
+	    var view: Span[int32] = Span[int32] { ptr: pointer, len: 1 }
+	                                          ^^^^

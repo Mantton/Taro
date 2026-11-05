@@ -1,20 +1,20 @@
-import std.collections.List
-import std.io.{Error, Reader, Writer}
-import std.mem.{Span, MutableSpan}
-import std.result.Result
+import std::collections::List
+import std::io::{Error, Reader, Writer}
+import std::mem::{Span}
+import std::result::Result
 
 const IO_CHUNK_SIZE: usize = 4096
 
 public func writeStdout(_ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
-    std.sys.io.writeStdout(buf, len)
+    std::sys::io::writeStdout(buf, len)
 }
 
 public func writeStderr(_ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
-    std.sys.io.writeStderr(buf, len)
+    std::sys::io::writeStderr(buf, len)
 }
 
 public func readStdin(_ buf: *mut uint8, _ len: usize) -> Result[usize, Error] {
-    std.sys.io.readStdin(buf, len)
+    std::sys::io::readStdin(buf, len)
 }
 
 /// The process's standard input, as a `Reader`.
@@ -30,33 +30,33 @@ public func stdin() -> Stdin {
     return Stdin {}
 }
 
-impl Reader for Stdin {
-    public func read(&mut self, _ buf: MutableSpan[uint8]) -> Result[usize, Error] {
-        let len = buf.len()
+conform Stdin to Reader {
+    public func read(_ buf: Span[uint8]) -> Result[usize, Error] {
+        len := buf.len()
         if len == 0 {
             return .ok(0)
         }
 
         var writable = buf
-        let ptr = unsafe { writable.at(0) as *mut uint8 }
+        ptr := unsafe { writable.at(0) as *mut uint8 }
         return readStdin(ptr, len)
     }
 }
 
-public func writeAll[W: Writer](_ writer: &mut W, _ buf: Span[uint8]) -> Result[(), Error] {
-    let len = buf.len()
+public func writeAll[W: Writer](_ writer: W, _ buf: Span[uint8]) -> Result[(), Error] {
+    len := buf.len()
     if len == 0 {
         return .ok(())
     }
 
     var written: usize = 0
     while written < len {
-        let remaining = buf.slice(written, len - written)
-        let writeRes = writer.write(remaining)
+        remaining := buf.slice(written, len - written)
+        writeRes := writer.write(remaining)
         match writeRes {
             case .ok(count) => {
                 if count == 0 {
-                    return .err(Error(.writeZero).withOperation("write all"))
+                    return .err(Error::new(.writeZero).withOperation("write all"))
                 }
                 written += count
             }
@@ -67,25 +67,19 @@ public func writeAll[W: Writer](_ writer: &mut W, _ buf: Span[uint8]) -> Result[
     return .ok(())
 }
 
-public func writeString[W: Writer](_ writer: &mut W, _ s: string) -> Result[(), Error] {
-    let len = std.string.stringLen(s)
-    if len == 0 {
-        return .ok(())
-    }
-
-    let ptr = std.string.stringData(s)
-    let bytes = Span[uint8].from(ptr, len)
-    writeAll(writer, bytes)
+@inline
+public func writeString[W: Writer](_ writer: W, _ s: string) -> Result[(), Error] {
+    writer.writeString(s)
 }
 
-public func readAll[R: Reader](_ reader: &mut R) -> Result[List[uint8], Error] {
-    var out = List[uint8]()
+public func readAll[R: Reader](_ reader: R) -> Result[List[uint8], Error] {
+    var out = List[uint8]::new()
     var storage: [uint8; IO_CHUNK_SIZE] = [0; IO_CHUNK_SIZE]
-    let storagePtr = unsafe { (&mut storage as *mut [uint8; IO_CHUNK_SIZE]) as *mut uint8 }
+    storagePtr := unsafe { (&storage as *mut [uint8; IO_CHUNK_SIZE]) as *mut uint8 }
 
     loop {
-        let readBuf = MutableSpan[uint8].from(storagePtr, IO_CHUNK_SIZE)
-        let readRes = reader.read(readBuf)
+        readBuf := unsafe { Span[uint8]::from(storagePtr, IO_CHUNK_SIZE) }
+        readRes := reader.read(readBuf)
         match readRes {
             case .ok(count) => {
                 if count == 0 {
@@ -105,30 +99,23 @@ public func readAll[R: Reader](_ reader: &mut R) -> Result[List[uint8], Error] {
     return .ok(out)
 }
 
-public func readToString[R: Reader](_ reader: &mut R) -> Result[string, Error] {
-    let bytesRes = readAll(reader)
-    let bytes = match bytesRes {
+public func readToString[R: Reader](_ reader: R) -> Result[string, Error] {
+    bytesRes := readAll(reader)
+    bytes := match bytesRes {
         case .ok(value) => value
         case .err(err) => return .err(err)
     }
 
-    let len = bytes.len()
+    len := bytes.len()
     if len == 0 {
         return .ok("")
     }
 
-    let data = std.mem.allocBytes(len)
-    var idx: usize = 0
-    while idx < len {
-        data.add(idx).write(*bytes.at(idx))
-        idx += 1
-    }
-
-    return .ok(std.string.stringFromParts(data, len))
+    return .ok(std::string::stringFromBytes(bytes.asSpan()))
 }
 
-public func readExact[R: Reader](_ reader: &mut R, _ buf: MutableSpan[uint8]) -> Result[(), Error] {
-    let len = buf.len()
+public func readExact[R: Reader](_ reader: R, _ buf: Span[uint8]) -> Result[(), Error] {
+    len := buf.len()
     if len == 0 {
         return .ok(())
     }
@@ -136,15 +123,15 @@ public func readExact[R: Reader](_ reader: &mut R, _ buf: MutableSpan[uint8]) ->
     var total: usize = 0
     var writable = buf
     while total < len {
-        let tail = writable.slice(total, len - total)
-        let readRes = reader.read(tail)
-        let count = match readRes {
+        tail := writable.slice(total, len - total)
+        readRes := reader.read(tail)
+        count := match readRes {
             case .ok(value) => value
             case .err(err) => return .err(err)
         }
 
         if count == 0 {
-            return .err(Error(.unexpectedEof).withOperation("read exact"))
+            return .err(Error::new(.unexpectedEof).withOperation("read exact"))
         }
 
         total += count
@@ -154,13 +141,13 @@ public func readExact[R: Reader](_ reader: &mut R, _ buf: MutableSpan[uint8]) ->
 }
 
 public func readAtLeast[R: Reader](
-    _ reader: &mut R,
+    _ reader: R,
     _ min: usize,
-    _ buf: MutableSpan[uint8],
+    _ buf: Span[uint8],
 ) -> Result[usize, Error] {
-    let len = buf.len()
+    len := buf.len()
     if min > len {
-        return .err(Error(.invalidInput).withOperation("read at least"))
+        return .err(Error::new(.invalidInput).withOperation("read at least"))
     }
 
     if min == 0 {
@@ -170,15 +157,15 @@ public func readAtLeast[R: Reader](
     var total: usize = 0
     var writable = buf
     while total < min {
-        let tail = writable.slice(total, len - total)
-        let readRes = reader.read(tail)
-        let count = match readRes {
+        tail := writable.slice(total, len - total)
+        readRes := reader.read(tail)
+        count := match readRes {
             case .ok(value) => value
             case .err(err) => return .err(err)
         }
 
         if count == 0 {
-            return .err(Error(.unexpectedEof).withOperation("read at least"))
+            return .err(Error::new(.unexpectedEof).withOperation("read at least"))
         }
 
         total += count
@@ -187,16 +174,16 @@ public func readAtLeast[R: Reader](
     return .ok(total)
 }
 
-public func copy[R: Reader, W: Writer](_ reader: &mut R, _ writer: &mut W) -> Result[usize, Error] {
+public func copy[R: Reader, W: Writer](_ reader: R, _ writer: W) -> Result[usize, Error] {
     var total: usize = 0
     var storage: [uint8; IO_CHUNK_SIZE] = [0; IO_CHUNK_SIZE]
-    let storageMutPtr = unsafe { (&mut storage as *mut [uint8; IO_CHUNK_SIZE]) as *mut uint8 }
-    let storagePtr = unsafe { storageMutPtr as *const uint8 }
+    storageMutPtr := unsafe { (&storage as *mut [uint8; IO_CHUNK_SIZE]) as *mut uint8 }
+    storagePtr := unsafe { storageMutPtr as *const uint8 }
 
     loop {
-        let readBuf = MutableSpan[uint8].from(storageMutPtr, IO_CHUNK_SIZE)
-        let readRes = reader.read(readBuf)
-        let readCount = match readRes {
+        readBuf := unsafe { Span[uint8]::from(storageMutPtr, IO_CHUNK_SIZE) }
+        readRes := reader.read(readBuf)
+        readCount := match readRes {
             case .ok(count) => count
             case .err(err) => return .err(err)
         }
@@ -205,8 +192,8 @@ public func copy[R: Reader, W: Writer](_ reader: &mut R, _ writer: &mut W) -> Re
             break
         }
 
-        let writeBuf = Span[uint8].from(storagePtr, readCount)
-        let writeRes = writeAll(writer, writeBuf)
+        writeBuf := unsafe { Span[uint8]::from(storagePtr, readCount) }
+        writeRes := writeAll(writer, writeBuf)
         match writeRes {
             case .ok(_) => {}
             case .err(err) => return .err(err)

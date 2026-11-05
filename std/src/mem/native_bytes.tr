@@ -1,0 +1,72 @@
+
+// Package-only byte storage backed by the existing GC sequence ABI. A value is
+// its allocation's one owner: a copy doesn't follow the original's later growth.
+// Logical lengths belong to Builder/Buffer; old allocations remain valid for
+// raw pointers and views after growth.
+internal struct NativeBytes {
+    private dataValue: *mut uint8
+    private capacityValue: usize
+}
+
+extern "taro_rt" {
+    unsafe func __gc__buffer_new(_ element: *const uint8, _ capacity: usize) -> *mut uint8
+    unsafe func __gc__buffer_publish(_ data: *mut uint8, _ element: *const uint8, _ initialized: usize)
+    unsafe func __gc__buffer_grow(_ data: *mut uint8, _ element: *const uint8, _ length: usize, _ capacity: usize) -> *mut uint8
+}
+
+func byteStorageDescriptor() -> *const uint8 {
+    unsafe { std::intrinsic::__intrinsic_gc_value_descriptor[uint8]() }
+}
+
+extend NativeBytes {
+    internal static func new(_ capacity: usize) -> Self {
+        assertBufferCapacity[uint8](capacity, "byte buffer capacity overflow")
+        data := if capacity == 0 {
+            unsafe { 0 as *mut uint8 }
+        } else {
+            unsafe { __gc__buffer_new(byteStorageDescriptor(), capacity) }
+        }
+        if capacity > 0 && unsafe { data as usize } == 0 {
+            std::panic::panic("byte buffer capacity overflow")
+        }
+        Self { dataValue: data, capacityValue: capacity }
+    }
+
+    internal func data() -> *mut uint8 { self.dataValue }
+    internal func capacity() -> usize { self.capacityValue }
+
+    // Bytes contain no managed pointers. Publishing still records the readable
+    // prefix required by sequence growth; it never shortens previous extents.
+    internal unsafe func publish(_ initialized: usize) {
+        if initialized > self.capacityValue {
+            std::panic::panic("byte buffer initialized extent exceeds capacity")
+        }
+        if self.capacityValue > 0 {
+            unsafe { __gc__buffer_publish(self.dataValue, byteStorageDescriptor(), initialized) }
+        }
+    }
+
+    /// Snapshot writable bytes into independent immutable string storage.
+    internal unsafe func toString(_ initialized: usize) -> string {
+        unsafe { self.publish(initialized) }
+        std::string::stringFromBytes(unsafe { Span[uint8]::from(self.data() as *const uint8, initialized) })
+    }
+}
+
+extend &NativeBytes {
+    internal unsafe func reserve(_ initialized: usize, _ capacity: usize) {
+        unsafe { self.publish(initialized) }
+        if capacity <= self.capacityValue { return }
+        assertBufferCapacity[uint8](capacity, "byte buffer capacity overflow")
+        data := unsafe { __gc__buffer_grow(self.dataValue, byteStorageDescriptor(), initialized, capacity) }
+        if unsafe { data as usize } == 0 { std::panic::panic("byte buffer capacity overflow") }
+        self.dataValue = data
+        self.capacityValue = capacity
+    }
+
+    // Give up the allocation, whose bytes are someone else's from now on.
+    internal func detach() {
+        self.dataValue = unsafe { 0 as *mut uint8 }
+        self.capacityValue = 0
+    }
+}

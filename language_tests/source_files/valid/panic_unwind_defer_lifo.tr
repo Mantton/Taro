@@ -3,8 +3,8 @@
 // EXPECT_STDERR_CONTAINS: panic_unwind_defer_lifo.tr:9
 // EXPECT_STDERR_CONTAINS: taro stack:
 func main() {
-    std.print("start\n")
-    defer { std.print("defer-1\n") }
-    defer { std.print("defer-2\n") }
+    std::print("start\n")
+    defer { std::print("defer-1\n") }
+    defer { std::print("defer-2\n") }
     panic("boom")
 }

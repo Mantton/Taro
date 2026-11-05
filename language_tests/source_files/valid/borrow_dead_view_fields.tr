@@ -1,0 +1,42 @@
+// ENV: TARO_WORKERS=4
+// Copied payload references stay valid independently of the source variant.
+struct PointerCell { pointer: *const uint8 }
+struct Links { left: &PointerCell; right: &PointerCell }
+enum Slot { case full(Links); case bits(uint64, uint64, uint64, uint64) }
+struct View { stale: &Links; alive: &int32 }
+func links(_ slot: &Slot) -> &Links {
+    match *slot {
+        case .full(item) => &item
+        case _ => panic("not full")
+    }
+}
+func inspectLive(_ view: &View) {
+    assert(unsafe { view.stale.left.pointer as usize } == 0, "live reference chains remain protected")
+}
+func structFields() {
+    var left: PointerCell = PointerCell { pointer: unsafe { 0 as *const uint8 } }
+    var right: PointerCell = PointerCell { pointer: unsafe { 0 as *const uint8 } }
+    var keep: int32 = 3
+    var slot: Slot = .full(Links { left: &left, right: &right })
+    var view: View = View { stale: links(&slot), alive: &keep }
+    assert(unsafe { view.stale.left.pointer as usize } == 0, "old field's last use")
+    slot = .bits(1_u64, 1_u64, 1_u64, 1_u64)
+    assert(*view.alive == 3, "independent struct field remains live")
+    slot = .full(Links { left: &left, right: &right })
+    var fresh: View = View { stale: links(&slot), alive: &keep }
+    inspectLive(&fresh)
+}
+func tupleFields() {
+    var left: PointerCell = PointerCell { pointer: unsafe { 0 as *const uint8 } }
+    var right: PointerCell = PointerCell { pointer: unsafe { 0 as *const uint8 } }
+    var keep: int32 = 4
+    var slot: Slot = .full(Links { left: &left, right: &right })
+    var view: (&Links, &int32) = (links(&slot), &keep)
+    assert(unsafe { view.0.left.pointer as usize } == 0, "old tuple field's last use")
+    slot = .bits(1_u64, 1_u64, 1_u64, 1_u64)
+    assert(*view.1 == 4, "independent tuple field remains live")
+}
+func main() {
+    structFields()
+    tupleFields()
+}

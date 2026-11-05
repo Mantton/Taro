@@ -1,0 +1,6 @@
+func fill[const N: usize](_ value: int32) -> [int32; N] {
+    [value; N]
+}
+func main() {
+    var values: [int32; 3] = fill[3](7_i32)
+}

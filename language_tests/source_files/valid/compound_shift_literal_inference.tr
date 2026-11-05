@@ -1,0 +1,22 @@
+// Compound shifts infer a literal amount as the operand's own integer type,
+// matching binary shifts, for every width.
+class Flags { bits: uint8 = 12 }
+extend Flags {
+    init() {}
+}
+func main() {
+    var small: uint8 = 12
+    small >>= 1
+    small <<= 2
+    var signed: int16 = -64
+    signed >>= 3
+    var wide: uint64 = 1
+    wide <<= 40
+    var amount: uint8 = 1
+    var other: uint8 = 1
+    other <<= amount
+    var flags: Flags = Flags()
+    flags.bits >>= 2
+    flags.bits <<= 1
+    std::printf("%v %v %v %v %v\n", small, signed, wide, other, flags.bits)
+}

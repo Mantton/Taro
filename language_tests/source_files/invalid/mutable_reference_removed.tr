@@ -1,0 +1,2 @@
+func edit(_ value: &mut int32) {}
+func main() {}

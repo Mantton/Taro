@@ -1,12 +1,15 @@
-import std.optional.Optional
-import std.hash.{Hashable, DefaultHasher, Hasher}
-import std.collections.List
-import std.panic.panic
-import std.iter.{Iterator, Iterable}
-import std.marker.Clone
-import std.ops.Fn
-import std.mem.assertBufferCapacity
-import std.testing.{assertFalse, assertTrue}
+import std::optional::Optional
+import std::hash::{Hashable, DefaultHasher, Hasher}
+import std::panic::panic
+import std::iter::{Iterator, Iterable}
+import std::marker::Clone
+import std::mem::maxBufferCapacity
+import std::intrinsic::{__intrinsic_align_of, __intrinsic_keep_alive, __intrinsic_size_of}
+
+extern "taro_rt" {
+    unsafe func __gc__dictionary_groups_new(_ entry: *const uint8, _ groups: usize) -> *mut uint8
+}
+import std::testing::{assertFalse, assertTrue}
 
 const SWISS_GROUP_WIDTH: usize = 8
 const SWISS_CTRL_EMPTY: uint8 = 0x80
@@ -14,17 +17,83 @@ const SWISS_CTRL_DELETED: uint8 = 0xfe
 // A single probe group keeps small dictionaries from allocating unused groups.
 const SWISS_INITIAL_CAPACITY: usize = SWISS_GROUP_WIDTH
 
+const SWISS_LOW_BITS: uint64 = 0x7f7f7f7f7f7f7f7f
+const SWISS_HIGH_BITS: uint64 = 0x8080808080808080
+const SWISS_BYTE_ONES: uint64 = 0x0101010101010101
+
+@inline
 func swissFingerprint(_ hash: uint64) -> uint8 {
-    ((hash >> 57) as uint8) & 0x7f_u8
+    (hash & 0x7f_u64) as uint8
 }
 
+@inline
 func swissCtrlIsFull(_ ctrl: uint8) -> bool {
     ctrl < SWISS_CTRL_EMPTY
 }
 
+// Each matching byte contributes its high bit. Masking before addition prevents
+// carries between bytes, so adjacent fingerprints cannot create false matches.
+// This is the portable word-at-a-time form of SwissTable group matching.
+@inline
+func swissMatch(_ group: uint64, _ tag: uint8) -> uint64 {
+    different := group ^ (SWISS_BYTE_ONES * (tag as uint64))
+    ~(((different & SWISS_LOW_BITS) + SWISS_LOW_BITS) | different | SWISS_LOW_BITS)
+}
+
+@inline
+func swissMatchEmpty(_ group: uint64) -> uint64 {
+    // Empty is 0x80, deleted is 0xfe, and full bytes have their high bit clear.
+    group & ~(group << 6) & SWISS_HIGH_BITS
+}
+
+// The caller supplies a nonzero byte mask. Return the lowest matching slot.
+@inline
+func swissFirstMatch(_ matches: uint64) -> usize {
+    var bits = matches
+    var slot: usize = 0
+    if (bits & 0xffffffff_u64) == 0_u64 {
+        bits >>= 32
+        slot += 4
+    }
+    if (bits & 0xffff_u64) == 0_u64 {
+        bits >>= 16
+        slot += 2
+    }
+    if (bits & 0xff_u64) == 0_u64 { slot += 1 }
+    slot
+}
+
+// Triangular offsets visit every group exactly once for a power-of-two count.
+// All slots of a group are checked before its empties terminate a lookup.
+struct SwissProbe {
+    group: usize
+    stride: usize
+    mask: usize
+}
+
+extend SwissProbe {
+    @inline
+    static func new(_ hash: uint64, _ groups: usize) -> Self {
+        mask := groups - (1 as usize)
+        SwissProbe { group: ((hash >> 7) as usize) & mask, stride: 0, mask }
+    }
+}
+
+extend &SwissProbe {
+    @inline
+    func advance() {
+        self.stride += 1
+        self.group = (self.group + self.stride) & self.mask
+    }
+}
+
+// Keep hashing in one specialization: caller-dependent O3 inlining can
+// otherwise promote temporary byte spans to heap allocations. This boundary
+// also reduces lookup frame traffic (see the SwissTable benchmark results).
+@noinline
 func hashKey[Key: Hashable](_ key: &Key) -> uint64 {
-    var hasher = DefaultHasher.new()
-    key.hash(into: &mut hasher)
+    var hasher = DefaultHasher::new()
+    key.hash(into: &hasher)
     hasher.finish()
 }
 
@@ -42,11 +111,31 @@ func checkedDictionaryLenAfterInsert(_ len: usize) -> usize {
     }
 }
 
+// A control word followed by eight plain payloads. These specialization
+// constants match the runtime's checked group-layout calculation.
+@inline
+func dictionaryEntryOffset[T]() -> usize {
+    alignment := __intrinsic_align_of[T]()
+    if alignment > (8 as usize) { alignment } else { 8 as usize }
+}
+
+@inline
+func dictionaryGroupStride[T]() -> usize {
+    // Keep type geometry constant-foldable at slot accesses. The bound still
+    // checks multiplication/addition overflow before either operation.
+    size := __intrinsic_size_of[T]()
+    offset := dictionaryEntryOffset[T]()
+    if size > (~(0 as usize) - offset) / SWISS_GROUP_WIDTH {
+        dictionaryCapacityOverflow()
+    }
+    offset + size * SWISS_GROUP_WIDTH
+}
+
 func assertDictionaryStorageCapacity[Key: Hashable, Value](_ capacity: usize) {
-    assertBufferCapacity[uint8](capacity, "dictionary capacity overflow")
-    assertBufferCapacity[uint64](capacity, "dictionary capacity overflow")
-    assertBufferCapacity[Key?](capacity, "dictionary capacity overflow")
-    assertBufferCapacity[Value?](capacity, "dictionary capacity overflow")
+    stride := dictionaryGroupStride[(Key, Value)]()
+    if capacity / SWISS_GROUP_WIDTH > maxBufferCapacity[uint8]() / stride {
+        dictionaryCapacityOverflow()
+    }
 }
 
 func dictionaryShouldGrowForInsert(_ len: usize, _ capacity: usize) -> bool {
@@ -54,12 +143,12 @@ func dictionaryShouldGrowForInsert(_ len: usize, _ capacity: usize) -> bool {
         return true
     }
 
-    let maxLenBeforeGrow = capacity - (capacity / (4 as usize))
+    maxLenBeforeGrow := capacity - (capacity / SWISS_GROUP_WIDTH)
     return len >= maxLenBeforeGrow
 }
 
 func nextDictionaryCapacityForGrow[Key: Hashable, Value](_ current: usize) -> usize {
-    let nextCapacity = if current == 0 {
+    nextCapacity := if current == 0 {
         SWISS_INITIAL_CAPACITY
     } else {
         match current.checkedMul(2 as usize) {
@@ -77,8 +166,8 @@ func nextDictionaryCapacityForGrow[Key: Hashable, Value](_ current: usize) -> us
 
 @test
 func testDictionaryShouldGrowForInsertUsesOverflowFreeThreshold() {
-    let capacity = 0xffffffffffffffff_u64 as usize
-    let maxLenBeforeGrow = capacity - (capacity / (4 as usize))
+    capacity := 0xffffffffffffffff_u64 as usize
+    maxLenBeforeGrow := capacity - (capacity / SWISS_GROUP_WIDTH)
 
     assertFalse(
         dictionaryShouldGrowForInsert(maxLenBeforeGrow - (1 as usize), capacity),
@@ -94,845 +183,649 @@ func testDictionaryShouldGrowForInsertUsesOverflowFreeThreshold() {
 @test
 @expectPanic
 func testDictionaryGrowRejectsCapacityOverflow() {
-    let capacity = ((0xffffffffffffffff_u64 as usize) / (2 as usize)) + (1 as usize)
-    let _ = nextDictionaryCapacityForGrow[int32, int32](capacity)
+    capacity := ((0xffffffffffffffff_u64 as usize) / (2 as usize)) + (1 as usize)
+    var _ = nextDictionaryCapacityForGrow[int32, int32](capacity)
 }
 
 @test
 @expectPanic
 func testDictionaryGrowRejectsStorageByteOverflow() {
-    let maxValueCapacity = std.mem.maxBufferCapacity[(uint64, uint64)?]()
-    let capacity = (maxValueCapacity / (2 as usize)) + (1 as usize)
-    let _ = nextDictionaryCapacityForGrow[int32, (uint64, uint64)](capacity)
+    maxValueCapacity := std::mem::maxBufferCapacity[(uint64, uint64)?]()
+    capacity := (maxValueCapacity / (2 as usize)) + (1 as usize)
+    var _ = nextDictionaryCapacityForGrow[int32, (uint64, uint64)](capacity)
 }
 
-/// Hash table layout (scalar Swiss-style probing):
-/// - `controls` stores metadata per slot:
-///   - `SWISS_CTRL_EMPTY` marks the end of a probe chain.
-///   - `SWISS_CTRL_DELETED` is a tombstone slot used by `remove`.
-///   - full slots store a 7-bit hash fingerprint.
-/// - probing walks fixed groups of `SWISS_GROUP_WIDTH` slots using `(base + offset) & mask`.
-/// - candidate hits are validated by `fingerprint -> full hash -> key equality`.
-/// - `insert` remembers the first deleted slot and prefers it once an empty slot is found.
-/// - growth uses capacity doubling and rehashes all full slots.
-/// - removals mark tombstones (`SWISS_CTRL_DELETED`) so probe chains remain intact.
-@lang("Dictionary")
-public struct Dictionary[Key: Hashable, Value] {
+/// SwissTable with eight-slot groups, 7-bit fingerprints and triangular probes.
+/// Each control word encodes slot zero in its low byte, independent of target
+/// endianness. Load is capped at 7/8, counting tombstones as occupied slots.
+/// References: go.dev/blog/swisstable and abseil.io/about/design/swisstables.
+///
+/// Copying a Dictionary shares this table. The GC traces only payloads whose
+/// control byte is full; empty/deleted slots are raw storage. Public reads copy values
+/// and expose no slot address. Structural changes invalidate cursors via version.
+final class DictionaryStorage[Key: Hashable, Value] {
     len: usize
     capacity: usize
-    controls: List[uint8]
-    hashes: List[uint64]
-    keys: List[Key?]
-    values: List[Value?]
+    deleted: usize
+    groups: DictionaryGroups[(Key, Value)]
+    version: usize
 }
 
-impl[Key: Hashable, Value] Dictionary[Key, Value] {
-    public func new() -> Self {
-        var controls: List[uint8] = List(withCapacity: SWISS_INITIAL_CAPACITY)
-        var hashes: List[uint64] = List(withCapacity: SWISS_INITIAL_CAPACITY)
-        var keys: List[Key?] = List(withCapacity: SWISS_INITIAL_CAPACITY)
-        var values: List[Value?] = List(withCapacity: SWISS_INITIAL_CAPACITY)
+// Fixed GC storage of Swiss groups. No typed array/reference covers inactive
+// payloads: their bytes need not form valid values. Its runtime descriptor uses
+// the same control words as lookup. No public API exposes an entry reference.
+struct DictionaryGroups[T] {
+    data: *mut uint8
+    length: usize
+}
 
-        var idx: usize = 0
-        while idx < SWISS_INITIAL_CAPACITY {
-            controls.append(SWISS_CTRL_EMPTY)
-            hashes.append(0_u64)
-            keys.append(.none)
-            values.append(.none)
-            idx += 1
+extend[T] DictionaryGroups[T] {
+    func len() -> usize { self.length }
+
+    @inline
+    func groupAt(_ group: usize) -> *mut uint8 {
+        if group >= self.length { panic("dictionary group out of range") }
+        self.data.add(group * dictionaryGroupStride[T]())
+    }
+
+    @inline
+    func controls(_ group: usize) -> uint64 {
+        unsafe { (self.groupAt(group) as *const uint64).read() }
+    }
+
+    @inline
+    func entryPointer(_ slot: usize) -> *mut T {
+        group := self.groupAt(slot / SWISS_GROUP_WIDTH)
+        payloads := unsafe { group.add(dictionaryEntryOffset[T]()) as *mut T }
+        payloads.add(slot % SWISS_GROUP_WIDTH)
+    }
+
+    // Callers prove this slot is full before interpreting its payload.
+    @inline
+    func entryAt(_ slot: usize) -> &T {
+        unsafe { self.entryPointer(slot) as &T }
+    }
+
+    @inline
+    func controlAt(_ slot: usize) -> uint8 {
+        controls := self.controls(slot / SWISS_GROUP_WIDTH)
+        shift := ((slot % SWISS_GROUP_WIDTH) * (8 as usize)) as uint64
+        ((controls >> shift) & 0xff_u64) as uint8
+    }
+
+    @inline
+    func setControl(_ slot: usize, _ tag: uint8) {
+        controls := unsafe { self.groupAt(slot / SWISS_GROUP_WIDTH) as *mut uint64 }
+        shift := ((slot % SWISS_GROUP_WIDTH) * (8 as usize)) as uint64
+        previous := unsafe { controls.read() }
+        unsafe { controls.write((previous & ~(0xff_u64 << shift)) | ((tag as uint64) << shift)) }
+    }
+
+    func writeEntry(_ slot: usize, _ tag: uint8, _ value: T) {
+        pointer := self.entryPointer(slot)
+        // Typed write preserves value copying and reference escape analysis,
+        // including allocating copies of erased inline payloads.
+        unsafe { pointer.write(value) }
+        initialized := unsafe { pointer as &T }
+        self.setControl(slot, tag)
+        // Publishing may safepoint. Root the initialized destination until it
+        // is visible: erased copies may own boxes absent from the source value.
+        __intrinsic_keep_alive(initialized)
+    }
+}
+
+func emptyDictionaryGroups[T](_ groups: usize) -> DictionaryGroups[T] {
+    element := unsafe { std::intrinsic::__intrinsic_gc_value_descriptor[T]() }
+    data := unsafe { __gc__dictionary_groups_new(element, groups) }
+    if unsafe { data as usize } == 0 { dictionaryCapacityOverflow() }
+    DictionaryGroups[T] { data, length: groups }
+}
+
+func copyDictionaryGroups[T](_ source: DictionaryGroups[T]) -> DictionaryGroups[T] {
+    result := emptyDictionaryGroups[T](source.len())
+    var slot: usize = 0
+    while slot < source.len() * SWISS_GROUP_WIDTH {
+        control := source.controlAt(slot)
+        if swissCtrlIsFull(control) {
+            value := *source.entryAt(slot)
+            result.writeEntry(slot, control, value)
+        } else if control == SWISS_CTRL_DELETED {
+            result.setControl(slot, control)
         }
+        slot += 1
+    }
+    result
+}
 
-        Dictionary[Key, Value] {
-            len: 0,
-            capacity: SWISS_INITIAL_CAPACITY,
-            controls,
-            hashes,
-            keys,
-            values,
-        }
+extend[Key: Hashable, Value] DictionaryStorage[Key, Value] {
+    init(_ capacity: usize) {
+        self.len = 0
+        self.capacity = capacity
+        self.deleted = 0
+        self.groups = emptyDictionaryGroups[(Key, Value)](capacity / SWISS_GROUP_WIDTH)
+        self.version = 0
     }
 
-    public func len(&self) -> usize {
-        self.len
+    init(copying source: DictionaryStorage[Key, Value]) {
+        self.len = source.len
+        self.capacity = source.capacity
+        self.deleted = source.deleted
+        self.groups = copyDictionaryGroups(source.groups)
+        self.version = 0
     }
 
-    public func isEmpty(&self) -> bool {
-        self.len == 0
+    @inline
+    func controlAt(_ slot: usize) -> uint8 {
+        self.groups.controlAt(slot)
     }
 
-    public func contains(&self, _ key: &Key) -> bool {
-        self.get(key).isSome()
+    @inline
+    func setControl(_ slot: usize, _ tag: uint8) {
+        self.groups.setControl(slot, tag)
     }
 
-    func findSlot(&self, _ key: &Key) -> usize? {
-        if self.capacity == 0 {
-            return .none
-        }
+    func keyAt(_ slot: usize) -> Key {
+        self.groups.entryAt(slot).0
+    }
 
-        let hash = hashKey(key)
-        let fp = swissFingerprint(hash)
-        let mask = self.capacity - (1 as usize)
-        let base = (hash as usize) & mask
+    func valueAt(_ slot: usize) -> Value {
+        self.groups.entryAt(slot).1
+    }
+}
 
-        var groupOffset: usize = 0
-        while groupOffset < self.capacity {
-            let groupStart = (base + groupOffset) & mask
+@lang("Dictionary")
+/// A shared hash-table handle. Use `copy()` for independent outer storage.
+/// Mutating a handle-typed key's hash or equality while it is stored makes
+/// subsequent lookup unspecified; it does not invalidate managed references.
+/// Hash/equality callbacks must not structurally mutate this dictionary,
+/// including while growth or tombstone cleanup rehashes its keys.
+public struct Dictionary[Key: Hashable, Value] {
+    internal storage: DictionaryStorage[Key, Value]
+}
 
-            var slotOffset: usize = 0
-            while slotOffset < SWISS_GROUP_WIDTH {
-                let slot = (groupStart + slotOffset) & mask
-                let ctrl = *self.controls.at(slot)
+// Copying a dictionary copies the handle (D9); methods take value receivers.
 
-                if ctrl == SWISS_CTRL_EMPTY {
-                    return .none
-                }
-
-                if swissCtrlIsFull(ctrl) && ctrl == fp {
-                    let slotHash = *self.hashes.at(slot)
-                    if slotHash == hash {
-                        let keySlot: &Key? = self.keys.at(slot)
-                        match keySlot {
-                            case .some(existingKey) => {
-                                if key.eq(existingKey) {
-                                    return .some(slot)
-                                }
-                            }
-                            case .none => {}
-                        }
-                    }
-                }
-
-                slotOffset += 1
+extend[Key: Hashable, Value] Dictionary[Key, Value] {
+    /// Reads require an existing key; assignment inserts or replaces a value.
+    /// There is no address accessor into dictionary entry storage.
+    public subscript(key: Key) -> Value {
+        get {
+            match self.findSlot(&key) {
+                case .some(slot) => self.storage.valueAt(slot)
+                case .none => panic("dictionary key not found")
             }
-
-            groupOffset += SWISS_GROUP_WIDTH
         }
+        set(value) { self.set(key: key, value: value) }
+    }
+}
 
+extend[Key: Hashable, Value] Dictionary[Key, Value] {
+    public static func new() -> Self {
+        Dictionary[Key, Value] { storage: DictionaryStorage[Key, Value](SWISS_INITIAL_CAPACITY) }
+    }
+
+    /// A new dictionary with the same entries. Keys and values are copied as
+    /// ordinary values, so handle-typed entries are shared with the source.
+    public func copy() -> Self {
+        Dictionary[Key, Value] { storage: DictionaryStorage[Key, Value](copying: self.storage) }
+    }
+
+    public func len() -> usize {
+        self.storage.len
+    }
+
+    public func isEmpty() -> bool {
+        self.storage.len == 0
+    }
+
+    public func contains(_ key: &Key) -> bool {
+        self.findSlot(key).isSome()
+    }
+
+    @inline
+    func findSlot(_ key: &Key) -> usize? {
+        storage := self.storage
+        // One live entry in one group needs just equality. The full-slot mask
+        // also finds survivors past deleted slots; hashing remains necessary
+        // for larger tables and for choosing insertion positions.
+        if storage.groups.len() == 1 && storage.len <= 1 {
+            if storage.len == 0 { return .none }
+            return self.findSingleEntrySlot(key)
+        }
+        return self.findHashedSlot(key, hashKey(key))
+    }
+
+    // Keep equality's roots and saved registers out of the hashed lookup's
+    // frame. The dispatch above proves there is one live entry in one group.
+    @noinline
+    func findSingleEntrySlot(_ key: &Key) -> usize? {
+        storage := self.storage
+        full := ~storage.groups.controls(0 as usize) & SWISS_HIGH_BITS
+        slot := swissFirstMatch(full)
+        if key.eq(storage.keyAt(slot)) { return .some(slot) }
         return .none
     }
 
-    func valueAtSlot(&self, _ slot: usize) -> &Value {
-        let valueSlot: &Value? = self.values.at(slot)
-        match valueSlot {
-            case .some(value) => return value
-            case .none => panic("dictionary slot has no value")
-        }
-    }
-
-    func valueAtSlot(&mut self, _ slot: usize) -> &mut Value {
-        let valueSlot: &mut Value? = self.values.at(slot)
-        match valueSlot {
-            case .some(value) => return value
-            case .none => panic("dictionary slot has no value")
-        }
-    }
-
-    func keyAtSlot(&self, _ slot: usize) -> &Key {
-        let keySlot: &Key? = self.keys.at(slot)
-        match keySlot {
-            case .some(key) => return key
-            case .none => panic("dictionary slot has no key")
-        }
-    }
-
-    func removeSlot(&mut self, _ slot: usize) -> Value {
-        let valueSlot: &mut Value? = self.values.at(slot)
-        var removed: Value?
-        unsafe {
-            let valuePtr: *mut Value? = valueSlot as *mut Value?
-            removed = valuePtr.read()
-            valuePtr.write(.none)
-        }
-
-        let keySlot: &mut Key? = self.keys.at(slot)
-        let ctrlSlot: &mut uint8 = self.controls.at(slot)
-        let hashSlot: &mut uint64 = self.hashes.at(slot)
-        *keySlot = .none
-        *ctrlSlot = SWISS_CTRL_DELETED
-        *hashSlot = 0_u64
-
-        match removed {
-            case .some(value) => {
-                self.len -= 1
-                return value
+    func findHashedSlot(_ key: &Key, _ hash: uint64) -> usize? {
+        storage := self.storage
+        groups := storage.groups.len()
+        fingerprint := swissFingerprint(hash)
+        var probe = SwissProbe::new(hash, groups)
+        while probe.stride < groups {
+            controls := storage.groups.controls(probe.group)
+            var matches = swissMatch(controls, fingerprint)
+            while matches != 0_u64 {
+                slot := probe.group * SWISS_GROUP_WIDTH + swissFirstMatch(matches)
+                if key.eq(storage.keyAt(slot)) { return .some(slot) }
+                matches &= matches - 1_u64
             }
-            case .none => panic("dictionary slot has no value")
+            if swissMatchEmpty(controls) != 0_u64 { return .none }
+            probe.advance()
         }
+        return .none
     }
 
-    public func remove(&mut self, _ key: &Key) -> Value? {
+    func removeSlot(_ slot: usize) -> Value {
+        storage := self.storage
+        removed := storage.valueAt(slot)
+        controls := storage.groups.controls(slot / SWISS_GROUP_WIDTH)
+        // A group that already has an empty cannot be part of a probe chain
+        // continuing beyond it. Otherwise preserve the chain with a tombstone.
+        if swissMatchEmpty(controls) != 0_u64 {
+            storage.setControl(slot, SWISS_CTRL_EMPTY)
+        } else {
+            storage.setControl(slot, SWISS_CTRL_DELETED)
+            storage.deleted += 1
+        }
+        storage.len -= 1
+        storage.version += 1
+        return removed
+    }
+
+    public func remove(_ key: &Key) -> Value? {
         match self.findSlot(key) {
             case .some(slot) => return .some(self.removeSlot(slot))
             case .none => return .none
         }
     }
 
-    public func get(&self, _ key: &Key) -> Optional[&Value] {
+    public func get(_ key: &Key) -> Optional[Value] {
         match self.findSlot(key) {
-            case .some(slot) => return .some(self.valueAtSlot(slot))
+            case .some(slot) => return .some(self.storage.valueAt(slot))
             case .none => return .none
         }
     }
 
-    public func get(&mut self, _ key: &Key) -> Optional[&mut Value] {
+    // Search past tombstones for an existing equal key before choosing a slot.
+    // At least one empty exists because the occupied budget is capped at 7/8.
+    func locateSlot(_ key: &Key, _ hash: uint64) -> (usize, bool) {
+        storage := self.storage
+        groups := storage.groups.len()
+        fingerprint := swissFingerprint(hash)
+        var probe = SwissProbe::new(hash, groups)
+        var firstDeleted: usize? = .none
+        while probe.stride < groups {
+            controls := storage.groups.controls(probe.group)
+            base := probe.group * SWISS_GROUP_WIDTH
+            var matches = swissMatch(controls, fingerprint)
+            while matches != 0_u64 {
+                slot := base + swissFirstMatch(matches)
+                if key.eq(storage.keyAt(slot)) { return (slot, true) }
+                matches &= matches - 1_u64
+            }
+            if firstDeleted.isNone() {
+                deleted := swissMatch(controls, SWISS_CTRL_DELETED)
+                if deleted != 0_u64 { firstDeleted = .some(base + swissFirstMatch(deleted)) }
+            }
+            empty := swissMatchEmpty(controls)
+            if empty != 0_u64 {
+                match firstDeleted {
+                    case .some(slot) => return (slot, false)
+                    case .none => return (base + swissFirstMatch(empty), false)
+                }
+            }
+            probe.advance()
+        }
+        panic("dictionary has no empty probe group")
+    }
+
+    func claimSlot(_ key: &Key, _ hash: uint64) -> (usize, bool) {
+        var (slot, occupied) = self.locateSlot(key, hash)
+        storage := self.storage
+        if occupied || storage.controlAt(slot) == SWISS_CTRL_DELETED {
+            return (slot, occupied)
+        }
+        if dictionaryShouldGrowForInsert(storage.len + storage.deleted, storage.capacity) {
+            // Reclaim tombstones at the same capacity when enough accumulated
+            // to amortize a rebuild. Otherwise grow to avoid repeated rebuilds.
+            capacity := if storage.deleted >= storage.capacity / SWISS_GROUP_WIDTH {
+                storage.capacity
+            } else {
+                nextDictionaryCapacityForGrow[Key, Value](storage.capacity)
+            }
+            self.rebuild(capacity)
+            return self.locateSlot(key, hash)
+        }
+        return (slot, false)
+    }
+
+    func fillSlot(_ slot: usize, _ hash: uint64, key: Key, value: Value) {
+        storage := self.storage
+        if storage.controlAt(slot) == SWISS_CTRL_DELETED { storage.deleted -= 1 }
+        storage.groups.writeEntry(slot, swissFingerprint(hash), (key, value))
+        storage.len = checkedDictionaryLenAfterInsert(storage.len)
+        storage.version += 1
+    }
+
+    public func insert(key: Key, value: Value) -> Value? {
+        hash := hashKey(&key)
+        var (slot, occupied) = self.claimSlot(&key, hash)
+        if occupied {
+            // Replacing a value is not a structural change.
+            previous := self.storage.valueAt(slot)
+            self.storage.groups.writeEntry(
+                slot,
+                self.storage.controlAt(slot),
+                (self.storage.keyAt(slot), value),
+            )
+            return .some(previous)
+        }
+        self.fillSlot(slot, hash, key: key, value: value)
+        return .none
+    }
+
+    public func set(key: Key, value: Value) {
+        var _ = self.insert(key: key, value: value)
+    }
+
+    public func getOr(_ key: &Key, default defaultValue: Value) -> Value {
         match self.findSlot(key) {
-            case .some(slot) => return .some(self.valueAtSlot(slot))
-            case .none => return .none
-        }
-    }
-
-    public func insert(&mut self, key: Key, value: Value) -> Value? {
-        if self.capacity == 0 {
-            return .none
-        }
-
-        let hash = hashKey(&key)
-        let fp = swissFingerprint(hash)
-        let mask = self.capacity - (1 as usize)
-        let base = (hash as usize) & mask
-
-        var firstDeleted: usize = 0 as usize
-        var hasDeleted = false
-
-        var groupOffset: usize = 0
-        while groupOffset < self.capacity {
-            let groupStart = (base + groupOffset) & mask
-
-            var slotOffset: usize = 0
-            while slotOffset < SWISS_GROUP_WIDTH {
-                let slot = (groupStart + slotOffset) & mask
-                let ctrl = *self.controls.at(slot)
-
-                if ctrl == SWISS_CTRL_EMPTY {
-                    if self.shouldGrowForInsert() {
-                        self.grow()
-                        return self.insert(key: key, value: value)
-                    }
-
-                    let insertSlot = if hasDeleted { firstDeleted } else { slot }
-                    *self.controls.at(insertSlot) = fp
-                    *self.hashes.at(insertSlot) = hash
-                    *self.keys.at(insertSlot) = .some(key)
-                    *self.values.at(insertSlot) = .some(value)
-                    self.len = checkedDictionaryLenAfterInsert(self.len)
-                    return .none
-                }
-
-                if ctrl == SWISS_CTRL_DELETED {
-                    if !hasDeleted {
-                        hasDeleted = true
-                        firstDeleted = slot
-                    }
-                } else if swissCtrlIsFull(ctrl) && ctrl == fp {
-                    let slotHash = *self.hashes.at(slot)
-                    if slotHash == hash {
-                        let keySlot: &mut Key? = self.keys.at(slot)
-                        match keySlot {
-                            case .some(existingKey) => {
-                                if key == *existingKey {
-                                    let valueSlot: &mut Value? = self.values.at(slot)
-                                    var previous: Value?
-                                    unsafe {
-                                        let valueSlotPtr: *mut Value? = valueSlot as *mut Value?
-                                        previous = valueSlotPtr.read()
-                                        let replacement: Value? = .some(value)
-                                        valueSlotPtr.write(replacement)
-                                    }
-                                    return previous
-                                }
-                            }
-                            case .none => {}
-                        }
-                    }
-                }
-
-                slotOffset += 1
-            }
-
-            groupOffset += SWISS_GROUP_WIDTH
-        }
-
-        self.grow()
-        return self.insert(key: key, value: value)
-    }
-
-    func insertAndGet(&mut self, key: Key, value: Value) -> &mut Value {
-        if self.capacity == 0 || self.shouldGrowForInsert() {
-            self.grow()
-        }
-
-        let hash = hashKey(&key)
-        let fp = swissFingerprint(hash)
-        let mask = self.capacity - (1 as usize)
-        let base = (hash as usize) & mask
-
-        var firstDeleted: usize = 0 as usize
-        var hasDeleted = false
-
-        var groupOffset: usize = 0
-        while groupOffset < self.capacity {
-            let groupStart = (base + groupOffset) & mask
-
-            var slotOffset: usize = 0
-            while slotOffset < SWISS_GROUP_WIDTH {
-                let slot = (groupStart + slotOffset) & mask
-                let ctrl = *self.controls.at(slot)
-
-                if ctrl == SWISS_CTRL_EMPTY {
-                    let insertSlot = if hasDeleted { firstDeleted } else { slot }
-                    *self.controls.at(insertSlot) = fp
-                    *self.hashes.at(insertSlot) = hash
-                    *self.keys.at(insertSlot) = .some(key)
-                    *self.values.at(insertSlot) = .some(value)
-                    self.len = checkedDictionaryLenAfterInsert(self.len)
-                    return self.valueAtSlot(insertSlot)
-                }
-
-                if ctrl == SWISS_CTRL_DELETED {
-                    if !hasDeleted {
-                        hasDeleted = true
-                        firstDeleted = slot
-                    }
-                } else if swissCtrlIsFull(ctrl) && ctrl == fp {
-                    let slotHash = *self.hashes.at(slot)
-                    if slotHash == hash {
-                        let keySlot: &mut Key? = self.keys.at(slot)
-                        match keySlot {
-                            case .some(existingKey) => {
-                                if key == *existingKey {
-                                    let valueSlot: &mut Value? = self.values.at(slot)
-                                    unsafe {
-                                        let valueSlotPtr: *mut Value? = valueSlot as *mut Value?
-                                        let replacement: Value? = .some(value)
-                                        valueSlotPtr.write(replacement)
-                                    }
-                                    return self.valueAtSlot(slot)
-                                }
-                            }
-                            case .none => {}
-                        }
-                    }
-                }
-
-                slotOffset += 1
-            }
-
-            groupOffset += SWISS_GROUP_WIDTH
-        }
-
-        self.grow()
-        return self.insertAndGet(key: key, value: value)
-    }
-
-    public func set(&mut self, key: Key, value: Value) {
-        let _ = self.insert(key: key, value: value)
-    }
-
-    public func getOr(&self, _ key: &Key, default defaultValue: Value) -> Value where Value: Clone {
-        match self.get(key) {
-            case .some(value) => value.clone()
+            case .some(slot) => self.storage.valueAt(slot)
             case .none => defaultValue
         }
     }
 
-    public func entry(&mut self, _ key: Key) -> Entry[Key, Value] {
-        match self.findSlot(&key) {
-            case .some(slot) => {
-                return .occupied(OccupiedEntry[Key, Value] { dict: self, slot })
-            }
-            case .none => {
-                return .vacant(VacantEntry[Key, Value] { dict: self, key })
-            }
-        }
-    }
-
-    func shouldGrowForInsert(&self) -> bool {
-        dictionaryShouldGrowForInsert(self.len, self.capacity)
-    }
-
-    func grow(&mut self) {
-        let newCapacity = nextDictionaryCapacityForGrow[Key, Value](self.capacity)
-
-        var newControls: List[uint8] = List(withCapacity: newCapacity)
-        var newHashes: List[uint64] = List(withCapacity: newCapacity)
-        var newKeys: List[Key?] = List(withCapacity: newCapacity)
-        var newValues: List[Value?] = List(withCapacity: newCapacity)
-
-        var initIdx: usize = 0
-        while initIdx < newCapacity {
-            newControls.append(SWISS_CTRL_EMPTY)
-            newHashes.append(0_u64)
-            newKeys.append(.none)
-            newValues.append(.none)
-            initIdx += 1
-        }
-
+    func rebuild(_ newCapacity: usize) {
+        storage := self.storage
+        fresh := DictionaryStorage[Key, Value](newCapacity)
+        groups := fresh.groups.len()
         var oldSlot: usize = 0
-        while oldSlot < self.capacity {
-            let ctrl = *self.controls.at(oldSlot)
-            if swissCtrlIsFull(ctrl) {
-                let hash = *self.hashes.at(oldSlot)
-                var oldKeyOpt: Key?
-                var oldValueOpt: Value?
-                {
-                    let oldKeys: &mut List[Key?] = &mut self.keys
-                    let oldValues: &mut List[Value?] = &mut self.values
-                    let oldKeySlot = oldKeys.at(oldSlot)
-                    let oldValueSlot = oldValues.at(oldSlot)
-                    unsafe {
-                        let oldKeyPtr: *mut Key? = oldKeySlot as *mut Key?
-                        let oldValuePtr: *mut Value? = oldValueSlot as *mut Value?
-                        oldKeyOpt = oldKeyPtr.read()
-                        oldValueOpt = oldValuePtr.read()
-                        oldKeyPtr.write(.none)
-                        oldValuePtr.write(.none)
+        while oldSlot < storage.capacity {
+            if swissCtrlIsFull(storage.controlAt(oldSlot)) {
+                var (key, value) = *storage.groups.entryAt(oldSlot)
+                hash := hashKey(&key)
+                var probe = SwissProbe::new(hash, groups)
+                while probe.stride < groups {
+                    empty := swissMatchEmpty(fresh.groups.controls(probe.group))
+                    if empty != 0_u64 {
+                        slot := probe.group * SWISS_GROUP_WIDTH + swissFirstMatch(empty)
+                        fresh.groups.writeEntry(slot, swissFingerprint(hash), (key, value))
+                        break
                     }
-                }
-
-                match oldKeyOpt {
-                    case .some(oldKey) => {
-                        match oldValueOpt {
-                            case .some(oldValue) => {
-                                let fp = swissFingerprint(hash)
-                                let mask = newCapacity - (1 as usize)
-                                let base = (hash as usize) & mask
-                                var inserted = false
-                                var insertSlot: usize = 0 as usize
-
-                                var groupOffset: usize = 0
-                                while groupOffset < newCapacity {
-                                    let groupStart = (base + groupOffset) & mask
-
-                                    var slotOffset: usize = 0
-                                    while slotOffset < SWISS_GROUP_WIDTH {
-                                        let slot = (groupStart + slotOffset) & mask
-                                        let candidateCtrl = *newControls.at(slot)
-                                        if candidateCtrl == SWISS_CTRL_EMPTY || candidateCtrl == SWISS_CTRL_DELETED {
-                                            insertSlot = slot
-                                            inserted = true
-                                            break
-                                        }
-                                        slotOffset += 1
-                                    }
-
-                                    if inserted {
-                                        break
-                                    }
-
-                                    groupOffset += SWISS_GROUP_WIDTH
-                                }
-
-                                if !inserted {
-                                    panic("dictionary grow failed: unable to place entry")
-                                }
-
-                                *newControls.at(insertSlot) = fp
-                                *newHashes.at(insertSlot) = hash
-                                *newKeys.at(insertSlot) = .some(oldKey)
-                                *newValues.at(insertSlot) = .some(oldValue)
-                            }
-                            case .none => {}
-                        }
-                    }
-                    case .none => {}
+                    probe.advance()
                 }
             }
             oldSlot += 1
         }
-
-        self.controls = newControls
-        self.hashes = newHashes
-        self.keys = newKeys
-        self.values = newValues
-        self.capacity = newCapacity
+        // Keep shared identity; install only after all entries have been copied.
+        storage.groups = fresh.groups
+        storage.capacity = newCapacity
+        storage.deleted = 0
+        storage.version += 1
     }
 
-    public func clear(&mut self) {
-        if self.len == 0 {
-            return
-        }
-
-        var idx: usize = 0
-        while idx < self.capacity {
-            *self.controls.at(idx) = SWISS_CTRL_EMPTY
-            *self.hashes.at(idx) = 0_u64
-            *self.keys.at(idx) = .none
-            *self.values.at(idx) = .none
-            idx += 1
-        }
-        self.len = 0
+    public func clear() {
+        storage := self.storage
+        fresh := DictionaryStorage[Key, Value](SWISS_INITIAL_CAPACITY)
+        storage.groups = fresh.groups
+        storage.capacity = SWISS_INITIAL_CAPACITY
+        storage.len = 0
+        storage.deleted = 0
+        storage.version += 1
     }
 
-    public func keys(&self) -> DictKeysIterator[Key, Value] {
-        DictKeysIterator[Key, Value] { dict: self, currentSlot: 0 }
+    public func keys() -> DictKeysIterator[Key, Value] {
+        DictKeysIterator[Key, Value] { cursor: DictionaryCursor[Key, Value](self.storage) }
     }
 
-    public func keys(&mut self) -> DictMutKeysIterator[Key, Value] {
-        DictMutKeysIterator[Key, Value] { dict: self, currentSlot: 0 }
+    public func values() -> DictValuesIterator[Key, Value] {
+        DictValuesIterator[Key, Value] { cursor: DictionaryCursor[Key, Value](self.storage) }
     }
 
-    public func values(&self) -> DictValuesIterator[Key, Value] {
-        DictValuesIterator[Key, Value] { dict: self, currentSlot: 0 }
-    }
-
-    public func values(&mut self) -> DictMutValuesIterator[Key, Value] {
-        DictMutValuesIterator[Key, Value] { dict: self, currentSlot: 0 }
-    }
-
-    public func entries(&self) -> DictEntriesIterator[Key, Value] {
-        DictEntriesIterator[Key, Value] { dict: self, currentSlot: 0 }
-    }
-
-    public func entries(&mut self) -> DictMutEntriesIterator[Key, Value] {
-        DictMutEntriesIterator[Key, Value] { dict: self, currentSlot: 0 }
+    public func entries() -> DictEntriesIterator[Key, Value] {
+        DictEntriesIterator[Key, Value] { cursor: DictionaryCursor[Key, Value](self.storage) }
     }
 }
 
-public enum Entry[Key: Hashable, Value] {
-    case occupied(OccupiedEntry[Key, Value])
-    case vacant(VacantEntry[Key, Value])
-}
-
-impl[Key: Hashable, Value] Entry[Key, Value] {
-    public func orInsert(self, _ defaultValue: Value) -> &mut Value {
-        match self {
-            case .occupied(entry) => {
-                var occupied = entry
-                return occupied.get()
-            }
-            case .vacant(entry) => {
-                return entry.insert(defaultValue)
-            }
-        }
-    }
-
-    public func orInsertWith[F: Fn[(), Value]](self, _ f: F) -> &mut Value {
-        match self {
-            case .occupied(entry) => {
-                var occupied = entry
-                return occupied.get()
-            }
-            case .vacant(entry) => {
-                return entry.insert(f())
-            }
-        }
-    }
-
-    public func andModify[F: Fn[&mut Value, ()]](self, _ f: F) -> Entry[Key, Value] {
-        match self {
-            case .occupied(entry) => {
-                var occupied = entry
-                f(occupied.get())
-                return .occupied(occupied)
-            }
-            case .vacant(entry) => return .vacant(entry)
-        }
-    }
-}
-
-public struct OccupiedEntry[Key: Hashable, Value] {
-    dict: &mut Dictionary[Key, Value]
-    slot: usize
-}
-
-impl[Key: Hashable, Value] OccupiedEntry[Key, Value] {
-    public func key(&self) -> &Key {
-        return self.dict.keyAtSlot(self.slot)
-    }
-
-    public func get(&self) -> &Value {
-        return self.dict.valueAtSlot(self.slot)
-    }
-
-    public func get(&mut self) -> &mut Value {
-        return self.dict.valueAtSlot(self.slot)
-    }
-
-    public func insert(&mut self, _ value: Value) -> Value {
-        let valueSlot: &mut Value? = self.dict.values.at(self.slot)
-        var previous: Value?
-        unsafe {
-            let valueSlotPtr: *mut Value? = valueSlot as *mut Value?
-            previous = valueSlotPtr.read()
-            let replacement: Value? = .some(value)
-            valueSlotPtr.write(replacement)
-        }
-
-        match previous {
-            case .some(oldValue) => return oldValue
-            case .none => panic("dictionary slot has no value")
-        }
-    }
-
-    public func remove(self) -> Value {
-        var entry = self
-        return entry.dict.removeSlot(entry.slot)
-    }
-}
-
-public struct VacantEntry[Key: Hashable, Value] {
-    dict: &mut Dictionary[Key, Value]
-    key: Key
-}
-
-impl[Key: Hashable, Value] VacantEntry[Key, Value] {
-    public func key(&self) -> &Key {
-        return &self.key
-    }
-
-    public func insert(self, _ value: Value) -> &mut Value {
-        var entry = self
-        var dict = entry.dict
-        let key = entry.key
-        return dict.insertAndGet(key: key, value: value)
-    }
-}
-
-impl[Key: Hashable, Value] Clone for Dictionary[Key, Value] where Key: Clone, Value: Clone {
-    public func clone(&self) -> Self {
-        var cloned = Dictionary[Key, Value].new()
+conform[Key: Hashable, Value] Dictionary[Key, Value] to Clone where Key: Clone, Value: Clone {
+    public func clone() -> Self {
+        var cloned = Dictionary[Key, Value]::new()
         for (key, value) in self {
-            let _ = cloned.insert(key: key.clone(), value: value.clone())
+            var _ = cloned.insert(key: key.clone(), value: value.clone())
         }
         return cloned
     }
 }
 
-public struct DictKeysIterator[Key: Hashable, Value] {
-    dict: &Dictionary[Key, Value]
-    currentSlot: usize
+// Shared traversal position (G14a). Copying an iterator shares the cursor;
+// a structural change of the dictionary after the cursor starts panics.
+final class DictionaryCursor[Key: Hashable, Value] {
+    storage: DictionaryStorage[Key, Value]
+    slot: usize
+    version: usize
+    exhausted: bool
 }
 
-impl[Key: Hashable, Value] Iterator for DictKeysIterator[Key, Value] {
-    type Element = &Key
+extend[Key: Hashable, Value] DictionaryCursor[Key, Value] {
+    init(_ storage: DictionaryStorage[Key, Value]) {
+        self.storage = storage
+        self.slot = 0
+        self.version = storage.version
+        self.exhausted = false
+    }
 
-    public func next(&mut self) -> Optional[Self.Element] {
-        let dict = self.dict
-        while self.currentSlot < dict.capacity {
-            let slot = self.currentSlot
-            self.currentSlot += 1
-
-            let ctrl = *dict.controls.at(slot)
-            if swissCtrlIsFull(ctrl) {
-                match dict.keys.at(slot) {
-                    case .some(key) => return .some(key)
-                    case .none => {}
-                }
+    func advance() -> usize? {
+        if self.exhausted {
+            return .none
+        }
+        storage := self.storage
+        if storage.version != self.version {
+            panic("dictionary changed structurally during iteration")
+        }
+        while self.slot < storage.capacity {
+            slot := self.slot
+            self.slot += 1
+            if swissCtrlIsFull(storage.controlAt(slot)) {
+                return .some(slot)
             }
         }
+        self.exhausted = true
         return .none
     }
 }
 
-public struct DictMutKeysIterator[Key: Hashable, Value] {
-    dict: &mut Dictionary[Key, Value]
-    currentSlot: usize
+public struct DictKeysIterator[Key: Hashable, Value] {
+    internal cursor: DictionaryCursor[Key, Value]
 }
 
-impl[Key: Hashable, Value] Iterator for DictMutKeysIterator[Key, Value] {
-    type Element = &Key
+conform[Key: Hashable, Value] DictKeysIterator[Key, Value] to Iterator {
+    type Element = Key
 
-    public func next(&mut self) -> Optional[Self.Element] {
-        let dict = self.dict
-        while self.currentSlot < dict.capacity {
-            let slot = self.currentSlot
-            self.currentSlot += 1
-
-            let ctrl = *dict.controls.at(slot)
-            if swissCtrlIsFull(ctrl) {
-                let keysRead: &List[Key?] = &dict.keys
-                match keysRead.at(slot) {
-                    case .some(key) => return .some(key)
-                    case .none => {}
-                }
-            }
+    public func next() -> Optional[Self::Element] {
+        match self.cursor.advance() {
+            case .some(slot) => return .some(self.cursor.storage.keyAt(slot))
+            case .none => return .none
         }
-        return .none
+    }
+}
+
+conform[Key: Hashable, Value] DictKeysIterator[Key, Value] to Iterable {
+    type Iterator = DictKeysIterator[Key, Value]
+    type Element = Key
+
+    public func iter() -> Self::Iterator {
+        self
     }
 }
 
 public struct DictValuesIterator[Key: Hashable, Value] {
-    dict: &Dictionary[Key, Value]
-    currentSlot: usize
+    internal cursor: DictionaryCursor[Key, Value]
 }
 
-impl[Key: Hashable, Value] Iterator for DictValuesIterator[Key, Value] {
-    type Element = &Value
+conform[Key: Hashable, Value] DictValuesIterator[Key, Value] to Iterator {
+    type Element = Value
 
-    public func next(&mut self) -> Optional[Self.Element] {
-        let dict = self.dict
-        while self.currentSlot < dict.capacity {
-            let slot = self.currentSlot
-            self.currentSlot += 1
-
-            let ctrl = *dict.controls.at(slot)
-            if swissCtrlIsFull(ctrl) {
-                match dict.values.at(slot) {
-                    case .some(val) => return .some(val)
-                    case .none => {}
-                }
-            }
+    public func next() -> Optional[Self::Element] {
+        match self.cursor.advance() {
+            case .some(slot) => return .some(self.cursor.storage.valueAt(slot))
+            case .none => return .none
         }
-        return .none
     }
 }
 
-public struct DictMutValuesIterator[Key: Hashable, Value] {
-    dict: &mut Dictionary[Key, Value]
-    currentSlot: usize
-}
+conform[Key: Hashable, Value] DictValuesIterator[Key, Value] to Iterable {
+    type Iterator = DictValuesIterator[Key, Value]
+    type Element = Value
 
-impl[Key: Hashable, Value] Iterator for DictMutValuesIterator[Key, Value] {
-    type Element = &mut Value
-
-    public func next(&mut self) -> Optional[Self.Element] {
-        let dict = self.dict
-        while self.currentSlot < dict.capacity {
-            let slot = self.currentSlot
-            self.currentSlot += 1
-
-            let ctrl = *dict.controls.at(slot)
-            if swissCtrlIsFull(ctrl) {
-                match dict.values.at(slot) {
-                    case .some(val) => return .some(val)
-                    case .none => {}
-                }
-            }
-        }
-        return .none
+    public func iter() -> Self::Iterator {
+        self
     }
 }
 
 public struct DictEntriesIterator[Key: Hashable, Value] {
-    dict: &Dictionary[Key, Value]
-    currentSlot: usize
+    internal cursor: DictionaryCursor[Key, Value]
 }
 
-impl[Key: Hashable, Value] Iterator for DictEntriesIterator[Key, Value] {
-    type Element = (&Key, &Value)
-
-    public func next(&mut self) -> Optional[Self.Element] {
-        let dict = self.dict
-        while self.currentSlot < dict.capacity {
-            let slot = self.currentSlot
-            self.currentSlot += 1
-
-            let ctrl = *dict.controls.at(slot)
-            if swissCtrlIsFull(ctrl) {
-                let keyOpt = dict.keys.at(slot)
-                let valOpt = dict.values.at(slot)
-                match keyOpt {
-                    case .some(key) => {
-                        match valOpt {
-                            case .some(val) => return .some((key, val))
-                            case .none => {}
-                        }
-                    }
-                    case .none => {}
-                }
-            }
-        }
-        return .none
-    }
-}
-
-public struct DictMutEntriesIterator[Key: Hashable, Value] {
-    dict: &mut Dictionary[Key, Value]
-    currentSlot: usize
-}
-
-impl[Key: Hashable, Value] Iterator for DictMutEntriesIterator[Key, Value] {
-    type Element = (&Key, &mut Value)
-
-    public func next(&mut self) -> Optional[Self.Element] {
-        let dict = self.dict
-        while self.currentSlot < dict.capacity {
-            let slot = self.currentSlot
-            self.currentSlot += 1
-
-            let ctrl = *dict.controls.at(slot)
-            if swissCtrlIsFull(ctrl) {
-                let keysRead: &List[Key?] = &dict.keys
-                let keyOpt = keysRead.at(slot)
-                let valOpt = dict.values.at(slot)
-                match keyOpt {
-                    case .some(key) => {
-                        match valOpt {
-                            case .some(val) => return .some((key, val))
-                            case .none => {}
-                        }
-                    }
-                    case .none => {}
-                }
-            }
-        }
-        return .none
-    }
-}
-
-public struct DictOwnedEntriesIterator[Key: Hashable, Value] {
-    dict: Dictionary[Key, Value]
-    currentSlot: usize
-}
-
-impl[Key: Hashable, Value] Iterator for DictOwnedEntriesIterator[Key, Value] {
+conform[Key: Hashable, Value] DictEntriesIterator[Key, Value] to Iterator {
     type Element = (Key, Value)
 
-    public func next(&mut self) -> Optional[Self.Element] {
-        let dict = &mut self.dict
-        while self.currentSlot < dict.capacity {
-            let slot = self.currentSlot
-            self.currentSlot += 1
-
-            let ctrl = *dict.controls.at(slot)
-            if swissCtrlIsFull(ctrl) {
-                let keySlot: &mut Key? = dict.keys.at(slot)
-                let keyOpt = std.mem.take(keySlot)
-
-                let valueSlot: &mut Value? = dict.values.at(slot)
-                let valueOpt = std.mem.take(valueSlot)
-
-                match keyOpt {
-                    case .some(key) => {
-                        match valueOpt {
-                            case .some(value) => return .some((key, value))
-                            case .none => {}
-                        }
-                    }
-                    case .none => {}
-                }
+    public func next() -> Optional[Self::Element] {
+        match self.cursor.advance() {
+            case .some(slot) => {
+                storage := self.cursor.storage
+                return .some((storage.keyAt(slot), storage.valueAt(slot)))
             }
+            case .none => return .none
         }
-        return .none
     }
 }
 
-impl[Key: Hashable, Value] Iterable for Dictionary[Key, Value] {
+conform[Key: Hashable, Value] DictEntriesIterator[Key, Value] to Iterable {
+    type Iterator = DictEntriesIterator[Key, Value]
     type Element = (Key, Value)
-    type Iterator = DictOwnedEntriesIterator[Key, Value]
 
-    public func iter(self) -> Self.Iterator {
-        DictOwnedEntriesIterator[Key, Value] {
-            dict: self,
-            currentSlot: 0,
-        }
+    public func iter() -> Self::Iterator {
+        self
     }
 }
 
-impl[Key: Hashable, Value] Iterable for &Dictionary[Key, Value] {
-    type Element = (&Key, &Value)
+conform[Key: Hashable, Value] Dictionary[Key, Value] to Iterable {
+    type Element = (Key, Value)
     type Iterator = DictEntriesIterator[Key, Value]
 
-    public func iter(self) -> Self.Iterator {
+    public func iter() -> Self::Iterator {
         self.entries()
     }
 }
 
-impl[Key: Hashable, Value] Iterable for &mut Dictionary[Key, Value] {
-    type Element = (&Key, &mut Value)
-    type Iterator = DictMutEntriesIterator[Key, Value]
+@test
+func testSwissGroupMasksAndFirstMatch() {
+    var byte: uint64 = 0
+    while byte < 256_u64 {
+        var lane: usize = 0
+        while lane < SWISS_GROUP_WIDTH {
+            shift := (lane * (8 as usize)) as uint64
+            group := (SWISS_HIGH_BITS & ~(0xff_u64 << shift)) | (byte << shift)
+            var fingerprint: uint64 = 0
+            while fingerprint < 128_u64 {
+                expected := if byte == fingerprint { 0x80_u64 << shift } else { 0_u64 }
+                std::testing::assertEqual(
+                    swissMatch(group, fingerprint as uint8),
+                    expected,
+                    "fingerprint mask must match each byte exactly",
+                )
+                fingerprint += 1
+            }
+            expectedEmpty := if byte == 128_u64 {
+                SWISS_HIGH_BITS
+            } else {
+                SWISS_HIGH_BITS & ~(0x80_u64 << shift)
+            }
+            if byte <= 128_u64 || byte == 254_u64 {
+                std::testing::assertEqual(
+                    swissMatchEmpty(group),
+                    expectedEmpty,
+                    "empty mask must exclude full and deleted slots",
+                )
+            }
+            std::testing::assertEqual(
+                swissFirstMatch(0x80_u64 << shift),
+                lane,
+                "first match must identify the lowest matching byte",
+            )
+            lane += 1
+        }
+        byte += 1
+    }
+    // Adjacent 0/1 bytes are the carry edge case for subtraction-based masks.
+    std::testing::assertEqual(
+        swissMatch(0x0100010001000100_u64, 0),
+        0x0080008000800080_u64,
+        "matching must not carry into adjacent bytes",
+    )
+    std::testing::assertEqual(
+        swissMatch(0xfefefefefefefefe_u64, SWISS_CTRL_DELETED),
+        SWISS_HIGH_BITS,
+        "deleted mask must include every tombstone",
+    )
+}
 
-    public func iter(self) -> Self.Iterator {
-        self.entries()
+@test
+func testSwissProbeVisitsEveryGroupOnce() {
+    var groups: usize = 1
+    while groups <= (128 as usize) {
+        var seen: [bool] = []
+        var index: usize = 0
+        while index < groups {
+            seen.append(false)
+            index += 1
+        }
+        var probe = SwissProbe::new(0xfedcba9876543210_u64, groups)
+        while probe.stride < groups {
+            assertFalse(seen[probe.group], "triangular probing must not repeat a group")
+            seen[probe.group] = true
+            probe.advance()
+        }
+        for visited in seen { assertTrue(visited, "triangular probing must visit every group") }
+        groups *= 2
+    }
+}
+
+@test
+func testSwissTombstoneBudgetRebuildsWithoutGrowing() {
+    table := Dictionary[int32, int32] { storage: DictionaryStorage[int32, int32](64) }
+    // Synthetic hashes put 56 entries in seven full groups; the eighth is empty.
+    var slot: usize = 0
+    while slot < (56 as usize) {
+        hash := ((slot / SWISS_GROUP_WIDTH) as uint64) << 7
+        table.fillSlot(slot, hash, key: slot as int32, value: slot as int32)
+        slot += 1
+    }
+    slot = 0
+    while slot < SWISS_GROUP_WIDTH {
+        var _ = table.removeSlot(slot)
+        slot += 1
+    }
+    std::testing::assertEqual(table.storage.deleted, 8 as usize, "removing a full group creates tombstones")
+    // The new key starts in the empty group, so consuming an empty exceeds the
+    // budget. Rebuilding must reclaim the tombstones rather than grow capacity.
+    var _ = table.claimSlot(&999, 7_u64 << 7)
+    std::testing::assertEqual(table.storage.capacity, 64 as usize, "tombstone cleanup must retain capacity")
+    std::testing::assertEqual(table.storage.deleted, 0 as usize, "rebuild must remove every tombstone")
+    slot = 8
+    while slot < (56 as usize) {
+        key := slot as int32
+        std::testing::assertEqual(table.get(&key).unwrap(), key, "rebuild preserves every live entry")
+        slot += 1
     }
 }

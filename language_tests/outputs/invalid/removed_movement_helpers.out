@@ -1,0 +1,8 @@
+error: unknown symbol `replace`
+ -> language_tests/source_files/invalid/removed_movement_helpers.tr:3:22
+	    var _ = std::mem::replace(&value, 2)
+	                      ^^^^^^^
+error: unknown symbol `take`
+ -> language_tests/source_files/invalid/removed_movement_helpers.tr:4:22
+	    var _ = std::mem::take(&value)
+	                      ^^^^

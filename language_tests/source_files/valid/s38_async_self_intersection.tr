@@ -1,0 +1,75 @@
+// Native ownership regression.
+interface Duplicate {
+    func duplicate() async -> Self
+}
+interface Label {
+    func number() -> int32
+}
+interface Advance {
+    func advance() async -> Self
+}
+interface Next {
+    func next() async -> Self
+}
+struct Counter { value: int32 }
+conform Counter to Duplicate {
+    func duplicate() async -> Self { await std::testing::yieldNow(); Counter { value: self.value + 1_i32 } }
+}
+conform Counter to Label {
+    func number() -> int32 { self.value }
+}
+conform Counter to Advance {
+    func advance() async -> Self { await std::testing::yieldNow(); Counter { value: self.value + 2_i32 } }
+}
+conform Counter to Next {
+    func next() async -> Self {
+        await std::testing::yieldNow()
+        self.value += 1_i32
+        Counter { value: self.value }
+    }
+}
+// This noncopyable value crosses the indirect-result ABI threshold.
+struct Large {
+    words: [int64; 16]
+    text: string
+    value: int32
+}
+conform Large to Duplicate {
+    func duplicate() async -> Self { await std::testing::yieldNow();
+        Large { words: self.words, text: self.text, value: self.value + 1_i32 }
+    }
+}
+conform Large to Label {
+    func number() -> int32 { self.value }
+}
+func duplicateGeneric[T: Duplicate](_ value: &T) async -> any Duplicate {
+    await value.duplicate()
+}
+func main() async {
+    var original: any Duplicate = Counter { value: 7_i32 }
+    var copied: any Duplicate = await original.duplicate()
+    var value: Counter = match copied as? Counter {
+        case .some(value) => value
+        case .none => panic("owned Self must be re-erased")
+    }
+    assert(value.value == 8_i32, "small direct result is boxed once")
+    var generic: any Duplicate = await duplicateGeneric(&original)
+    assert((generic as? Counter).unwrap().value == 8_i32, "generic forwarding preserves the return ABI")
+
+    var refined: any Duplicate & Label = Large { words: [3_i64; 16], text: "retained text", value: 41_i32 }
+    var next: any Duplicate & Label = await refined.duplicate()
+    assert(refined.number() == 41_i32, "shared receiver is preserved")
+    assert(next.number() == 42_i32, "caller rebuilds its complete interface intersection")
+    var concrete: Large = (next as? Large).unwrap()
+    assert(concrete.text == "retained text", "indirect owned result keeps traced fields alive")
+    assert(*concrete.words.at(15) == 3_i64, "large payload transfer preserves every field")
+
+    var owned: any Advance & Label = Counter { value: 5_i32 }
+    var advanced: any Advance & Label = await owned.advance()
+    assert(advanced.number() == 7_i32, "consuming receiver reuses copied metadata after freeing its old shell")
+
+    var mutable: any Next & Label = Counter { value: 10_i32 }
+    var incremented: any Next & Label = await mutable.next()
+    assert(mutable.number() == 10_i32, "value receiver preserves stored value")
+    assert(incremented.number() == 11_i32, "mutable receiver also returns an independently owned Self")
+}

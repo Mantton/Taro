@@ -1,0 +1,4 @@
+func main() {
+    std::panic("calling a module") // Error: a module is not a value.
+    var _ = std::collections // Error: nor is it one here.
+}

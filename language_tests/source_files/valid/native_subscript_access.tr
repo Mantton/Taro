@@ -1,0 +1,154 @@
+import std::ops::AddAssign
+
+static var order: int32 = 0
+static var gets: int32 = 0
+static var sets: int32 = 0
+static var addresses: int32 = 0
+static var receivers: int32 = 0
+static var indices: int32 = 0
+func reset() { order = 0; gets = 0; sets = 0; addresses = 0; receivers = 0; indices = 0 }
+func rhs(_ value: int32) -> int32 { order = order * 10 + 1; value }
+func key() -> usize { indices += 1; order = order * 10 + 3; 0 as usize }
+
+struct Addressed { value: int32 }
+extend &Addressed {
+    @inline
+    subscript(index: usize) -> int32 {
+        get { gets += 1; order = order * 10 + 4; self.value }
+        set(value) { sets += 1; order = order * 10 + 5; self.value = value }
+        address { addresses += 1; order = order * 10 + 6; &self.value }
+    }
+    var slot: &int32 { get { &self.value } }
+}
+func addressed(_ value: &Addressed) -> &Addressed { receivers += 1; order = order * 10 + 2; value }
+
+struct InlineDefault { value: int32 }
+extend &InlineDefault {
+    @inline
+    subscript(index: usize) -> int32 {
+        address { addresses += 1; order = order * 10 + 6; &self.value }
+    }
+}
+func inlineDefault(_ value: &InlineDefault) -> &InlineDefault {
+    receivers += 1; order = order * 10 + 2; value
+}
+
+struct Computed { value: int32 }
+extend &Computed {
+    subscript(index: usize) -> int32 {
+        get { gets += 1; order = order * 10 + 4; self.value }
+        set(value) { sets += 1; order = order * 10 + 5; self.value = value }
+    }
+}
+func computed(_ value: &Computed) -> &Computed { receivers += 1; order = order * 10 + 2; value }
+
+struct Matrix { value: int32 }
+extend Matrix {
+    subscript(row: usize, column: usize) -> int32 { get { self.value + (row as int32) + (column as int32) } }
+    subscript(pair: (usize, usize)) -> int32 { get { self.value + 100 } }
+    subscript(range: std::range::Range[int32]) -> int32 { get { self.value + 200 } }
+    subscript(at index: usize) -> int32 { get { self.value + (index as int32) + 300 } }
+}
+
+struct Cell { value: int32 }
+extend &Cell { func bump() { self.value += 1 }; }
+struct Cells { cell: Cell }
+extend &Cells {
+    subscript(index: usize) -> Cell {
+        get { gets += 1; self.cell }
+        set(value) { sets += 1; self.cell = value }
+        address { addresses += 1; &self.cell }
+    }
+}
+struct ValueCells { cell: Cell }
+extend ValueCells {
+    subscript(index: usize) -> Cell { address { &self.cell } }
+}
+struct CopiedCells { cell: Cell }
+extend CopiedCells {
+    subscript(index: usize) -> Cell { get { self.cell } }
+}
+struct SharedCell { cell: &Cell }
+extend SharedCell {
+    subscript(index: usize) -> &Cell { get { self.cell } }
+}
+class Object { value: int32 }
+extend Object { init(_ value: int32) { self.value = value } }
+conform Object to AddAssign[int32] {
+    func addAssign(_ value: int32) { order = order * 10 + 7; self.value += value }
+}
+struct Objects { object: Object }
+extend Objects {
+    subscript(index: usize) -> Object { get { gets += 1; order = order * 10 + 4; self.object } }
+}
+
+func main() {
+    var storage = Addressed { value: 7 }
+    reset()
+    assert(addressed(&storage)[key()] == 7, "value reads use get")
+    assert(order == 234 && gets == 1 && addresses == 0 && receivers == 1 && indices == 1, "get evaluates each operand once")
+    reset()
+    addressed(&storage)[key()] = rhs(10)
+    assert(storage.value == 10 && order == 1235 && gets == 0 && sets == 1 && addresses == 0 && receivers == 1 && indices == 1, "whole assignment uses set after RHS, receiver and index")
+    reset()
+    addressed(&storage)[key()] += rhs(2)
+    assert(storage.value == 12 && order == 1236 && gets == 0 && sets == 0 && addresses == 1 && receivers == 1 && indices == 1, "address mutation bypasses custom get/set")
+    reset()
+    reference := &addressed(&storage)[key()]
+    *reference = 20
+    assert(order == 236 && storage.value == 20 && addresses == 1 && sets == 0 && gets == 0, "explicit reference denotes element storage")
+    *storage.slot = 21
+    assert(storage.value == 21, "reference-target computed getter uses ordinary autoref")
+
+    var defaults = InlineDefault { value: 8 }
+    reset()
+    assert(inlineDefault(&defaults)[key()] == 8, "inline default read")
+    assert(order == 236 && addresses == 1 && receivers == 1 && indices == 1, "inline read evaluates address operands once")
+    reset()
+    inlineDefault(&defaults)[key()] = rhs(9)
+    assert(defaults.value == 9 && order == 1236 && addresses == 1 && receivers == 1 && indices == 1, "inline default assignment evaluates RHS before address once")
+    reset()
+    inlineDefault(&defaults)[key()] += rhs(2)
+    assert(defaults.value == 11 && order == 1236 && addresses == 1 && receivers == 1 && indices == 1, "inline compound assignment resolves one storage address")
+
+    var values = Computed { value: 30 }
+    reset()
+    computed(&values)[key()] += rhs(3)
+    assert(values.value == 33 && order == 12345 && gets == 1 && sets == 1 && receivers == 1 && indices == 1, "numeric get/set writeback preserves one-time evaluation")
+
+    matrix := Matrix { value: 7 }
+    assert(matrix[2 as usize, 3 as usize] == 12, "multiple indices")
+    assert(matrix[(2 as usize, 3 as usize)] == 107, "one tuple index stays distinct")
+    assert(matrix[0_i32..2_i32] == 207, "range values are ordinary typed indices")
+    assert(matrix[at: 2 as usize] == 309, "explicit index labels")
+
+    var cells = Cells { cell: Cell { value: 1 } }
+    reset()
+    cells[0 as usize].value = 10
+    cells[0 as usize].bump()
+    callback := cells[0 as usize].bump
+    callback()
+    assert(cells.cell.value == 12 && addresses == 3 && gets == 0 && sets == 0, "nested writes and reference methods use address")
+    copied := CopiedCells { cell: Cell { value: 7 } }
+    local := copied[0 as usize]
+    local.value = 99
+    assert(copied[0 as usize].value == 7 && local.value == 99, "ordinary reads copy inline values")
+    inline := ValueCells { cell: Cell { value: 8 } }
+    copiedAddress := &inline[0 as usize]
+    copiedAddress.value = 100
+    assert(inline.cell.value == 8, "value receiver addresses retain their receiver copy")
+
+    shared := SharedCell { cell: &cells.cell }
+    shared[0 as usize].bump()
+    sharedReference := &shared[0 as usize].value
+    *sharedReference = 14
+    object := Object(40)
+    objects := Objects { object }
+    objects[0 as usize].value = 41
+    reset()
+    objects[key()] += rhs(2)
+    assert(object.value == 43 && order == 1347 && gets == 1 && sets == 0 && addresses == 0, "class value operators need only get")
+    std::runtime::collect()
+    callback()
+    assert(cells.cell.value == 15 && *sharedReference == 15 && *reference == 21 && copiedAddress.value == 100, "escaped addresses and callbacks retain their backing storage")
+}

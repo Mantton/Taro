@@ -1,0 +1,21 @@
+// Class handles break inline layout recursion, including through enum payloads.
+enum Syntax { case leaf(int32); case nested(SyntaxNode) }
+final class SyntaxNode { readonly value: Syntax }
+extend SyntaxNode {
+    init(_ value: Syntax) { self.value = value }
+}
+func depth(_ value: &Syntax) -> int32 {
+    match *value {
+        case .leaf(_) => 0
+        case .nested(node) => 1 + depth(&node.value)
+    }
+}
+func main() {
+    var syntax: Syntax = .leaf(7)
+    var count: int32 = 0
+    while count < 32 {
+        syntax = .nested(SyntaxNode(syntax))
+        count += 1
+    }
+    assert(depth(&syntax) == 32, "class handles provide owning recursion")
+}

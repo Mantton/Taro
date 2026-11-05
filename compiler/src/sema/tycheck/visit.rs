@@ -40,9 +40,9 @@ impl<'ctx> TypeSuperVisitable<'ctx> for Ty<'ctx> {
                 element.visit_with(visitor) || len.visit_with(visitor)
             }
             TyKind::Adt(_, args) | TyKind::Alias { args, .. } => args.visit_with(visitor),
-            TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => inner.visit_with(visitor),
+            TyKind::Pointer(inner, _) | TyKind::Reference(inner) => inner.visit_with(visitor),
             TyKind::Tuple(items) => items.visit_with(visitor),
-            TyKind::FnPointer { inputs, output } => {
+            TyKind::FnPointer { inputs, output, .. } => {
                 inputs.visit_with(visitor) || output.visit_with(visitor)
             }
             TyKind::Closure {
@@ -63,6 +63,7 @@ impl<'ctx> TypeSuperVisitable<'ctx> for Ty<'ctx> {
             | TyKind::UInt(_)
             | TyKind::Float(_)
             | TyKind::Infer(_)
+            | TyKind::ExistentialSelf(_)
             | TyKind::Parameter(_)
             | TyKind::Opaque(_)
             | TyKind::Error

@@ -1,39 +1,39 @@
-import std.collections.List
-import std.convert.ParseError
-import std.fmt.Display
-import std.marker.{Clone, Copy}
-import std.ops.PartialEq
-import std.optional.Optional
-import std.result.Result
+import std::collections::{Dictionary, List}
+import std::convert::ParseError
+import std::fmt::Display
+import std::marker::Clone
+import std::ops::PartialEq
+import std::optional::Optional
+import std::result::Result
 
 /// The category of a JSON number construction failure.
-public enum NumberErrorKind: Copy, PartialEq {
+public enum NumberErrorKind: PartialEq {
     case empty
     case invalidSyntax
 }
 
 /// A failure to construct an exact JSON number from text.
-public struct NumberError: Copy {
+public struct NumberError {
     kindValue: NumberErrorKind
     indexValue: usize
 }
 
-impl NumberError {
-    func new(_ kind: NumberErrorKind, _ index: usize) -> Self {
+extend NumberError {
+    static func new(_ kind: NumberErrorKind, _ index: usize) -> Self {
         NumberError { kindValue: kind, indexValue: index }
     }
 
-    public func kind(&self) -> NumberErrorKind {
+    public func kind() -> NumberErrorKind {
         self.kindValue
     }
 
-    public func index(&self) -> usize {
+    public func index() -> usize {
         self.indexValue
     }
 }
 
-impl Display for NumberErrorKind {
-    public func display(&self, _ into: &mut std.fmt.Formatter) {
+conform NumberErrorKind to Display {
+    public func display(_ into: &std::fmt::Formatter) {
         match self {
             case .empty => into.writeString("empty JSON number")
             case .invalidSyntax => into.writeString("invalid JSON number syntax")
@@ -41,43 +41,44 @@ impl Display for NumberErrorKind {
     }
 }
 
-impl Display for NumberError {
-    public func display(&self, _ into: &mut std.fmt.Formatter) {
+conform NumberError to Display {
+    public func display(_ into: &std::fmt::Formatter) {
         self.kindValue.display(into)
         into.writeString(" at byte ")
         self.indexValue.display(into)
     }
 }
 
-impl std.error.Error for NumberError {}
+conform NumberError to std::error::Error {}
 
+@inline
 func isDigit(_ byte: uint8) -> bool {
     byte >= ('0' as uint8) && byte <= ('9' as uint8)
 }
 
 func validateNumberText(_ text: string) -> NumberError? {
-    let len = text.byteLen()
+    len := text.byteLen()
     if len == 0 {
-        return .some(NumberError(.empty, 0))
+        return .some(NumberError::new(.empty, 0))
     }
 
     var index: usize = 0
     if text.byteAt(index) == ('-' as uint8) {
         index += 1
         if index == len {
-            return .some(NumberError(.invalidSyntax, index))
+            return .some(NumberError::new(.invalidSyntax, index))
         }
     }
 
     if text.byteAt(index) == ('0' as uint8) {
         index += 1
         if index < len && isDigit(text.byteAt(index)) {
-            return .some(NumberError(.invalidSyntax, index))
+            return .some(NumberError::new(.invalidSyntax, index))
         }
     } else {
-        let first = text.byteAt(index)
+        first := text.byteAt(index)
         if first < ('1' as uint8) || first > ('9' as uint8) {
-            return .some(NumberError(.invalidSyntax, index))
+            return .some(NumberError::new(.invalidSyntax, index))
         }
         index += 1
         while index < len && isDigit(text.byteAt(index)) {
@@ -88,7 +89,7 @@ func validateNumberText(_ text: string) -> NumberError? {
     if index < len && text.byteAt(index) == ('.' as uint8) {
         index += 1
         if index == len || !isDigit(text.byteAt(index)) {
-            return .some(NumberError(.invalidSyntax, index))
+            return .some(NumberError::new(.invalidSyntax, index))
         }
         while index < len && isDigit(text.byteAt(index)) {
             index += 1
@@ -96,17 +97,17 @@ func validateNumberText(_ text: string) -> NumberError? {
     }
 
     if index < len {
-        let byte = text.byteAt(index)
+        byte := text.byteAt(index)
         if byte == ('e' as uint8) || byte == ('E' as uint8) {
             index += 1
             if index < len {
-                let sign = text.byteAt(index)
+                sign := text.byteAt(index)
                 if sign == ('+' as uint8) || sign == ('-' as uint8) {
                     index += 1
                 }
             }
             if index == len || !isDigit(text.byteAt(index)) {
-                return .some(NumberError(.invalidSyntax, index))
+                return .some(NumberError::new(.invalidSyntax, index))
             }
             while index < len && isDigit(text.byteAt(index)) {
                 index += 1
@@ -115,7 +116,7 @@ func validateNumberText(_ text: string) -> NumberError? {
     }
 
     if index != len {
-        return .some(NumberError(.invalidSyntax, index))
+        return .some(NumberError::new(.invalidSyntax, index))
     }
     return .none
 }
@@ -129,8 +130,8 @@ public struct Number {
     textValue: string
 }
 
-impl Number {
-    public func parse(_ text: string) -> Result[Self, NumberError] {
+extend Number {
+    public static func parse(_ text: string) -> Result[Self, NumberError] {
         match validateNumberText(text) {
             case .some(error) => return .err(error)
             case .none => return .ok(Number { textValue: text })
@@ -140,35 +141,29 @@ impl Number {
     /// Construct from text whose complete JSON number grammar was already
     /// checked by the streaming parser. Keeping this package-private avoids a
     /// second scan without weakening the validating public constructor.
-    func fromValidated(_ text: string) -> Self {
+    static func fromValidated(_ text: string) -> Self {
         Number { textValue: text }
     }
 
-    public func text(&self) -> string {
+    public func text() -> string {
         self.textValue
     }
 
-    public func asInt64(&self) -> Result[int64, ParseError] {
-        int64.parse(self.textValue)
+    public func asInt64() -> Result[int64, ParseError] {
+        int64::parse(self.textValue)
     }
 
-    public func asUint64(&self) -> Result[uint64, ParseError] {
-        uint64.parse(self.textValue)
+    public func asUint64() -> Result[uint64, ParseError] {
+        uint64::parse(self.textValue)
     }
 
-    public func asDouble(&self) -> Result[double, ParseError] {
-        double.parse(self.textValue)
-    }
-}
-
-impl Clone for Number {
-    public func clone(&self) -> Self {
-        Number { textValue: self.textValue }
+    public func asDouble() -> Result[double, ParseError] {
+        double::parse(self.textValue)
     }
 }
 
-impl Display for Number {
-    public func display(&self, _ into: &mut std.fmt.Formatter) {
+conform Number to Display {
+    public func display(_ into: &std::fmt::Formatter) {
         into.writeString(self.textValue)
     }
 }
@@ -178,106 +173,126 @@ struct ObjectMember {
     valueValue: Value
 }
 
-/// An insertion-ordered JSON object.
-///
-/// JSON objects are ordered here deliberately: it gives callers stable output
-/// and lets duplicate-key policy remain independent from hash-table behavior.
-public struct Object {
-    members: List[ObjectMember]
+// Small objects keep the original member list and allocate no index. A class
+// optional uses the existing null-pointer representation, keeping Object to
+// two words and Value to three on 64-bit targets without another enum layer.
+const OBJECT_INDEX_THRESHOLD: usize = 32
+const OBJECT_INITIAL_CAPACITY: usize = 4
+
+final class ObjectLookupIndex {
+    lookup: Dictionary[string, usize]
 }
 
-impl Object {
-    public func new() -> Self {
-        Object { members: List[ObjectMember]() }
+extend ObjectLookupIndex {
+    init(_ lookup: Dictionary[string, usize]) { self.lookup = lookup }
+}
+
+/// An insertion-ordered JSON object. Large parsed objects retain a shared
+/// SwissTable index without changing member order or duplicate-key policy.
+public struct Object {
+    members: List[ObjectMember]
+    index: ObjectLookupIndex?
+}
+
+extend Object {
+    public static func new() -> Self {
+        Object { members: List[ObjectMember]::new(), index: .none }
     }
 
-    public func len(&self) -> usize {
-        self.members.len()
+    // Call only while constructing an unpublished object. Once returned to
+    // callers every copy shares the same members and (when present) index.
+    // Ordinary Object::new() values keep linear storage, so promoting a local
+    // header can never leave a pre-existing external alias with a stale index.
+    func indexedForParsing() -> Self {
+        if self.index.isSome() || self.members.len() < OBJECT_INDEX_THRESHOLD { return self }
+        var lookup = Dictionary[string, usize]::new()
+        var index: usize = 0
+        while index < self.members.len() {
+            lookup.set(key: self.members.at(index).keyValue, value: index)
+            index += 1
+        }
+        return Object { members: self.members, index: .some(ObjectLookupIndex(lookup)) }
     }
 
-    public func isEmpty(&self) -> bool {
-        self.members.isEmpty()
-    }
+    @inline
+    public func len() -> usize { self.members.len() }
+    public func isEmpty() -> bool { self.members.isEmpty() }
+    public func contains(_ key: string) -> bool { self.indexOf(key).isSome() }
 
-    public func contains(&self, _ key: string) -> bool {
-        self.indexOf(key).isSome()
-    }
-
-    public func get(&self, _ key: string) -> Optional[&Value] {
+    public func get(_ key: string) -> Optional[&Value] {
         match self.indexOf(key) {
             case .some(index) => return .some(&self.members.at(index).valueValue)
             case .none => return .none
         }
     }
 
-    public func keyAt(&self, _ index: usize) -> string {
-        self.members.at(index).keyValue
-    }
-
-    public func valueAt(&self, _ index: usize) -> &Value {
-        &self.members.at(index).valueValue
-    }
+    public func keyAt(_ index: usize) -> string { self.members.at(index).keyValue }
+    public func valueAt(_ index: usize) -> &Value { &self.members.at(index).valueValue }
 
     /// Insert a member only when its key is not already present.
-    public func insert(&mut self, _ key: string, _ value: Value) -> bool {
-        if self.indexOf(key).isSome() {
-            return false
-        }
+    public func insert(_ key: string, _ value: Value) -> bool {
+        if self.indexOf(key).isSome() { return false }
         self.appendKnownUnique(key, value)
         return true
     }
 
     /// Insert or replace a member without changing its original position.
-    public func set(&mut self, _ key: string, _ value: Value) {
+    public func set(_ key: string, _ value: Value) {
         match self.indexOf(key) {
             case .some(index) => self.replaceAt(index, value)
             case .none => self.appendKnownUnique(key, value)
         }
     }
 
-    func indexOf(&self, _ key: string) -> usize? {
+    func indexOf(_ key: string) -> usize? {
+        match self.index {
+            case .some(index) => return index.lookup.get(&key)
+            case .none => {}
+        }
         var index: usize = 0
         while index < self.members.len() {
-            if self.members.at(index).keyValue == key {
-                return .some(index)
-            }
+            if self.members.at(index).keyValue == key { return .some(index) }
             index += 1
         }
         return .none
     }
 
-    /// Parser-only insertion after its single duplicate lookup.
-    func appendKnownUnique(&mut self, _ key: string, _ value: Value) {
+    /// Parser-only insertion after its duplicate lookup.
+    func appendKnownUnique(_ key: string, _ value: Value) {
+        index := self.members.len()
+        // Empty objects need no buffer. Four slots on the first insertion
+        // avoid immediately growing small records while leaving List's
+        // conservative policy for other wide element types unchanged.
+        if index == 0 { self.members.reserve(OBJECT_INITIAL_CAPACITY) }
         self.members.append(ObjectMember { keyValue: key, valueValue: value })
+        match self.index {
+            case .none => {}
+            case .some(lookup) => lookup.lookup.set(key: key, value: index)
+        }
     }
 
     /// Parser-only replacement at the index returned by `indexOf`.
-    func replaceAt(&mut self, _ index: usize, _ value: Value) {
-        // Bind the mutable member before projecting its field; method call
-        // results are values and are not assignment expressions.
-        let member = self.members.at(index)
+    func replaceAt(_ index: usize, _ value: Value) {
+        member := self.members.at(index)
         member.valueValue = value
     }
 }
 
-impl Clone for Object {
-    public func clone(&self) -> Self {
-        var result = Object()
+conform Object to Clone {
+    public func clone() -> Self {
+        var result = Object::new()
         var index: usize = 0
         while index < self.members.len() {
-            let member = self.members.at(index)
-            result.members.append(ObjectMember {
-                keyValue: member.keyValue,
-                valueValue: member.valueValue.clone(),
-            })
+            member := self.members.at(index)
+            result.appendKnownUnique(member.keyValue, member.valueValue.clone())
             index += 1
         }
-        return result
+        return result.indexedForParsing()
     }
 }
 
 /// The kind of a JSON DOM value.
-public enum ValueKind: Copy, PartialEq {
+public enum ValueKind: PartialEq {
     case null
     case boolean
     case number
@@ -296,8 +311,8 @@ public enum Value {
     case object(Object)
 }
 
-impl Value {
-    public func kind(&self) -> ValueKind {
+extend Value {
+    public func kind() -> ValueKind {
         match self {
             case .null => .null
             case .boolean(_) => .boolean
@@ -308,42 +323,42 @@ impl Value {
         }
     }
 
-    public func asBool(&self) -> bool? {
+    public func asBool() -> bool? {
         match self {
-            case .boolean(value) => .some(*value)
+            case .boolean(value) => .some(value)
             case _ => .none
         }
     }
 
-    public func asNumber(&self) -> Number? {
+    public func asNumber() -> Number? {
         match self {
-            case .number(value) => .some(value.clone())
+            case .number(value) => .some(value)
             case _ => .none
         }
     }
 
-    public func asString(&self) -> string? {
+    public func asString() -> string? {
         match self {
-            case .string(value) => .some(*value)
+            case .string(value) => .some(value)
             case _ => .none
         }
     }
 
-    public func arrayLen(&self) -> usize? {
+    public func arrayLen() -> usize? {
         match self {
             case .array(value) => .some(value.len())
             case _ => .none
         }
     }
 
-    public func arrayAt(&self, _ index: usize) -> Optional[&Value] {
+    public func arrayAt(_ index: usize) -> Optional[&Value] {
         match self {
             case .array(value) => value.get(index)
             case _ => .none
         }
     }
 
-    public func asObject(&self) -> Optional[&Object] {
+    public func asObject() -> Optional[Object] {
         match self {
             case .object(value) => .some(value)
             case _ => .none
@@ -351,13 +366,13 @@ impl Value {
     }
 }
 
-impl Clone for Value {
-    public func clone(&self) -> Self {
+conform Value to Clone {
+    public func clone() -> Self {
         match self {
             case .null => .null
-            case .boolean(value) => .boolean(*value)
-            case .number(value) => .number(value.clone())
-            case .string(value) => .string(*value)
+            case .boolean(value) => .boolean(value)
+            case .number(value) => .number(value)
+            case .string(value) => .string(value)
             case .array(value) => .array(value.clone())
             case .object(value) => .object(value.clone())
         }

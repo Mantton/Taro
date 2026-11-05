@@ -1,0 +1,20 @@
+error: `let` was removed; write `var` instead
+ -> language_tests/source_files/invalid/let_removed.tr:3:7
+	static let LIMIT: int32 = 3
+	       ^^^
+error: `let` was removed; declare this as `count := ...`
+ -> language_tests/source_files/invalid/let_removed.tr:6:4
+	    let count = 1
+	    ^^^
+error: `let` was removed; write `var` instead
+ -> language_tests/source_files/invalid/let_removed.tr:7:4
+	    let typed: int32 = 2
+	    ^^^
+error: `let` was removed; write `var` instead
+ -> language_tests/source_files/invalid/let_removed.tr:8:4
+	    let (a, b) = (count, typed)
+	    ^^^
+error: `let` was removed; write `var` instead
+ -> language_tests/source_files/invalid/let_removed.tr:10:7
+	    if let value = maybe { maybe = .some(value + LIMIT) }
+	       ^^^

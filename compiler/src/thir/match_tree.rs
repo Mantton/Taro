@@ -18,7 +18,6 @@ use std::collections::{HashMap, HashSet};
 pub struct MatchTree<'ctx> {
     pub root_var: Variable<'ctx>,
     pub decision: Decision<'ctx>,
-    pub deref_vars: Vec<DerefVar>,
 }
 
 /// Diagnostics from match compilation.
@@ -35,12 +34,6 @@ pub struct MatchReport<'ctx> {
     pub diagnostics: Diagnostics,
 }
 
-#[derive(Clone, Debug)]
-pub struct DerefVar {
-    pub deref: usize,
-    pub base: usize,
-}
-
 /// A captured binding from a pattern.
 #[derive(Clone, Debug)]
 pub struct Binding<'ctx> {
@@ -50,10 +43,7 @@ pub struct Binding<'ctx> {
     pub local: NodeID,
     /// The type of the binding.
     pub ty: Ty<'ctx>,
-    /// The binding mode (ByValue or ByRef).
-    pub mode: crate::hir::BindingMode,
-    /// Whether the binding is mutable.
-    pub mutable: bool,
+
     /// The span of the binding pattern.
     pub span: Span,
     /// The match-tree variable this binding corresponds to.
@@ -86,6 +76,7 @@ impl<'ctx> Body<'ctx> {
 pub enum Constructor {
     Bool(bool),
     Tuple(usize),
+    Struct(Symbol),
     Variant { name: Symbol, index: usize },
     Literal(LiteralKey),
 }
@@ -135,8 +126,30 @@ pub enum Decision<'ctx> {
     /// Checks if a guard evaluates to true, running the body if it does.
     Guard(ExprId, Body<'ctx>, Box<Decision<'ctx>>),
 
+    /// Read a referent for structural matching, preserving the original
+    /// reference variable for any plain identifier bindings in other arms.
+    Dereference {
+        source: Variable<'ctx>,
+        target: Variable<'ctx>,
+        next: Box<Decision<'ctx>>,
+    },
+
     /// Checks if a value is any of the given patterns.
     Switch(Variable<'ctx>, Vec<Case<'ctx>>, Option<Box<Decision<'ctx>>>),
+}
+
+impl Decision<'_> {
+    pub fn has_guard(&self) -> bool {
+        match self {
+            Decision::Guard(..) => true,
+            Decision::Dereference { next, .. } => next.has_guard(),
+            Decision::Switch(_, cases, fallback) => {
+                cases.iter().any(|case| case.body.has_guard())
+                    || fallback.as_deref().is_some_and(Decision::has_guard)
+            }
+            Decision::Success(_) | Decision::Failure => false,
+        }
+    }
 }
 
 /// Compile a match expression into a decision tree + diagnostics.
@@ -155,7 +168,6 @@ pub fn compile_match<'ctx>(
             tree: MatchTree {
                 root_var: scrutinee_var,
                 decision: Decision::Failure,
-                deref_vars: Vec::new(),
             },
             diagnostics: Diagnostics {
                 missing: false,
@@ -172,7 +184,6 @@ pub fn compile_match<'ctx>(
                 tree: MatchTree {
                     root_var: scrutinee_var,
                     decision: Decision::Failure,
-                    deref_vars: Vec::new(),
                 },
                 diagnostics: Diagnostics {
                     missing: false,
@@ -193,7 +204,6 @@ pub fn compile_match<'ctx>(
         tree: MatchTree {
             root_var: scrutinee_var,
             decision,
-            deref_vars: compiler.deref_vars,
         },
         diagnostics,
     }
@@ -250,6 +260,27 @@ impl<'ctx> MatchReport<'ctx> {
 
                 missing.insert(name);
             }
+            Decision::Dereference {
+                source,
+                target,
+                next,
+            } => {
+                // A parent's payload names the reference variable. Follow its
+                // structural read when spelling nested missing patterns.
+                let mut changed = Vec::new();
+                for (term_index, term) in terms.iter_mut().enumerate() {
+                    for (arg_index, argument) in term.arguments.iter_mut().enumerate() {
+                        if argument == source {
+                            *argument = *target;
+                            changed.push((term_index, arg_index));
+                        }
+                    }
+                }
+                self.add_missing_patterns(next, terms, missing, gcx);
+                for (term, arg) in changed {
+                    terms[term].arguments[arg] = *source;
+                }
+            }
             Decision::Guard(_, _, fallback) => {
                 self.add_missing_patterns(fallback, terms, missing, gcx);
             }
@@ -273,12 +304,46 @@ impl<'ctx> MatchReport<'ctx> {
                             };
                             terms.push(Term::new(*var, name, case.arguments.clone()));
                         }
-                        Constructor::Variant { name, .. } => {
-                            terms.push(Term::new(
+                        Constructor::Struct(name) => {
+                            let TyKind::Adt(def, _) = var.ty.kind() else {
+                                unreachable!()
+                            };
+                            let fields = gcx
+                                .get_struct_definition(def.id)
+                                .fields
+                                .iter()
+                                .map(|field| gcx.symbol_text(field.name).to_string())
+                                .collect();
+                            terms.push(Term::named(
                                 *var,
                                 gcx.symbol_text(*name).to_string(),
                                 case.arguments.clone(),
+                                fields,
                             ));
+                        }
+                        Constructor::Variant { name, index } => {
+                            let mut term = Term::new(
+                                *var,
+                                gcx.symbol_text(*name).to_string(),
+                                case.arguments.clone(),
+                            );
+                            if let TyKind::Adt(def, _) = var.ty.kind()
+                                && let EnumVariantKind::Struct(fields) =
+                                    gcx.get_enum_definition(def.id).variants[*index].kind
+                            {
+                                term.field_names = Some(
+                                    fields
+                                        .iter()
+                                        .map(|field| {
+                                            field
+                                                .label
+                                                .map(|name| gcx.symbol_text(name).to_string())
+                                                .unwrap_or_else(|| "_".into())
+                                        })
+                                        .collect(),
+                                );
+                            }
+                            terms.push(term);
                         }
                     }
 
@@ -355,8 +420,6 @@ struct Compiler<'ctx> {
     variable_id: usize,
     gcx: GlobalContext<'ctx>,
     diagnostics: Diagnostics,
-    deref_vars: Vec<DerefVar>,
-    deref_var_map: HashMap<usize, Variable<'ctx>>,
 }
 
 impl<'ctx> Compiler<'ctx> {
@@ -368,8 +431,6 @@ impl<'ctx> Compiler<'ctx> {
                 missing: false,
                 reachable: HashSet::new(),
             },
-            deref_vars: Vec::new(),
-            deref_var_map: HashMap::new(),
         }
     }
 
@@ -388,7 +449,6 @@ impl<'ctx> Compiler<'ctx> {
             return Decision::Failure;
         }
 
-        self.peel_deref_patterns(&mut rows);
         expand_or_patterns(&mut rows);
 
         for row in &mut rows {
@@ -411,22 +471,21 @@ impl<'ctx> Compiler<'ctx> {
 
         let branch_var = self.branch_variable(&rows);
 
-        if let TyKind::Reference(inner, _) = branch_var.ty.kind() {
-            // Nested match-ergonomic patterns can introduce a reference-typed
-            // constructor variable without an explicit PatternKind::Deref.
-            // Merely inspecting the pointee type below made the decision tree
-            // look correct while leaving MIR to read the discriminant from the
-            // reference itself. Materialize a dereference variable and rewrite
-            // every remaining column before compiling the constructor switch.
-            let deref_var = self.deref_variable(branch_var, inner);
+        if let TyKind::Reference(inner) = branch_var.ty.kind() {
+            let target = self.new_variable(inner);
             for row in &mut rows {
                 for column in &mut row.columns {
                     if column.variable == branch_var {
-                        column.variable = deref_var;
+                        column.variable = target;
                     }
                 }
             }
-            return self.compile_rows(rows);
+            let next = Box::new(self.compile_rows(rows));
+            return Decision::Dereference {
+                source: branch_var,
+                target,
+                next,
+            };
         }
 
         let match_ty = branch_var.ty;
@@ -448,6 +507,18 @@ impl<'ctx> Compiler<'ctx> {
                 let vars = self.new_variables(&items);
                 let cases = vec![(Constructor::Tuple(items.len()), vars, Vec::new())];
 
+                Decision::Switch(
+                    branch_var,
+                    self.compile_constructor_cases(rows, branch_var, cases),
+                    None,
+                )
+            }
+            TyKind::Adt(def, args) if def.kind == AdtKind::Struct => {
+                let definition = crate::sema::tycheck::utils::instantiate::instantiate_struct_definition_with_args(self.gcx, self.gcx.get_struct_definition(def.id), args);
+                let types: Vec<_> = definition.fields.iter().map(|field| field.ty).collect();
+                let vars = self.new_variables(&types);
+                let name = self.gcx.definition_ident(def.id).symbol;
+                let cases = vec![(Constructor::Struct(name), vars, Vec::new())];
                 Decision::Switch(
                     branch_var,
                     self.compile_constructor_cases(rows, branch_var, cases),
@@ -593,9 +664,6 @@ impl<'ctx> Compiler<'ctx> {
                     PatternKind::Binding { .. } | PatternKind::Wild => {
                         unreachable!("binding pattern should have been moved")
                     }
-                    PatternKind::Deref { .. } => {
-                        unreachable!("deref patterns should be lowered in MIR")
-                    }
                 }
             } else {
                 for (_, _, rows) in &mut cases {
@@ -616,18 +684,11 @@ impl<'ctx> Compiler<'ctx> {
         let mut new_columns = Vec::new();
         for col in row.columns.drain(..) {
             match &col.pattern.kind {
-                PatternKind::Binding {
-                    name,
-                    local,
-                    ty,
-                    mode,
-                } => {
+                PatternKind::Binding { name, local, ty } => {
                     row.bindings.push(Binding {
                         name: *name,
                         local: *local,
                         ty: *ty,
-                        mode: *mode,
-                        mutable: true,
                         span: col.pattern.span,
                         variable: col.variable,
                     });
@@ -641,33 +702,6 @@ impl<'ctx> Compiler<'ctx> {
             }
         }
         row.columns = new_columns;
-    }
-
-    /// Given a row, returns the variable in that row that's referred to the
-    /// most across all rows.
-    fn peel_deref_patterns(&mut self, rows: &mut [Row<'ctx>]) {
-        for row in rows {
-            let mut new_columns = Vec::with_capacity(row.columns.len());
-            for col in row.columns.drain(..) {
-                let mut pattern = col.pattern;
-                let mut variable = col.variable;
-
-                loop {
-                    match pattern.kind {
-                        PatternKind::Deref { pattern: inner } => {
-                            let inner = *inner;
-                            variable = self.deref_variable(variable, inner.ty);
-                            pattern = inner;
-                        }
-                        _ => {
-                            new_columns.push(Column::new(variable, pattern));
-                            break;
-                        }
-                    }
-                }
-            }
-            row.columns = new_columns;
-        }
     }
 
     fn branch_variable(&self, rows: &[Row<'ctx>]) -> Variable<'ctx> {
@@ -694,19 +728,6 @@ impl<'ctx> Compiler<'ctx> {
             ty,
         };
         self.variable_id += 1;
-        var
-    }
-
-    fn deref_variable(&mut self, base: Variable<'ctx>, inner_ty: Ty<'ctx>) -> Variable<'ctx> {
-        if let Some(var) = self.deref_var_map.get(&base.id) {
-            return *var;
-        }
-        let var = self.new_variable(inner_ty);
-        self.deref_var_map.insert(base.id, var);
-        self.deref_vars.push(DerefVar {
-            deref: var.id,
-            base: base.id,
-        });
         var
     }
 
@@ -755,6 +776,7 @@ struct Term<'ctx> {
     variable: Variable<'ctx>,
     name: String,
     arguments: Vec<Variable<'ctx>>,
+    field_names: Option<Vec<String>>,
 }
 
 impl<'ctx> Term<'ctx> {
@@ -763,6 +785,21 @@ impl<'ctx> Term<'ctx> {
             variable,
             name,
             arguments,
+            field_names: None,
+        }
+    }
+
+    fn named(
+        variable: Variable<'ctx>,
+        name: String,
+        arguments: Vec<Variable<'ctx>>,
+        field_names: Vec<String>,
+    ) -> Self {
+        Self {
+            variable,
+            name,
+            arguments,
+            field_names: Some(field_names),
         }
     }
 
@@ -771,7 +808,25 @@ impl<'ctx> Term<'ctx> {
         terms: &[Term<'ctx>],
         mapping: &HashMap<Variable<'ctx>, usize>,
     ) -> String {
-        if self.arguments.is_empty() {
+        if let Some(names) = &self.field_names {
+            let fields = names
+                .iter()
+                .zip(&self.arguments)
+                .map(|(name, argument)| {
+                    let value = mapping
+                        .get(argument)
+                        .map(|&index| terms[index].pattern_name(terms, mapping))
+                        .unwrap_or_else(|| "_".into());
+                    format!("{name}: {value}")
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            if fields.is_empty() {
+                format!("{} {{}}", self.name)
+            } else {
+                format!("{} {{ {} }}", self.name, fields)
+            }
+        } else if self.arguments.is_empty() {
             self.name.to_string()
         } else {
             let args = self
@@ -794,7 +849,9 @@ impl<'ctx> Term<'ctx> {
 fn variant_field_types<'ctx>(variant: EnumVariant<'ctx>) -> Vec<Ty<'ctx>> {
     match variant.kind {
         EnumVariantKind::Unit => Vec::new(),
-        EnumVariantKind::Tuple(fields) => fields.iter().map(|field| field.ty).collect(),
+        EnumVariantKind::Tuple(fields) | EnumVariantKind::Struct(fields) => {
+            fields.iter().map(|field| field.ty).collect()
+        }
     }
 }
 

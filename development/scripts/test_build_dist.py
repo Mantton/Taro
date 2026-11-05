@@ -19,6 +19,8 @@ class BuildDistributionTests(unittest.TestCase):
         self.repo = self.root / "repo"
         self.std = self.repo / "std"
         self.std.mkdir(parents=True)
+        (self.repo / "runtime").mkdir()
+        (self.repo / "runtime/GO-LICENSE").write_text("Go runtime attribution")
         target = self.repo / "target/release"
         target.mkdir(parents=True)
         (target / "taro-bin").write_bytes(b"new compiler")

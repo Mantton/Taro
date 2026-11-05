@@ -1,11 +1,11 @@
-import adex_iris.config.AdExParameters
+import adex_iris::config::AdExParameters
 
-public struct AdExState: Copy {
+public struct AdExState {
     public voltage: double
     public adaptation: double
 }
 
-public struct AdExStep: Copy {
+public struct AdExStep {
     public state: AdExState
     public spike: double
     public rawVoltage: double
@@ -22,7 +22,7 @@ public struct AdExStep: Copy {
 public func finite(_ value: double) -> bool { return value - value == 0.0 }
 
 public func surrogateDerivative(_ voltage: double, _ parameters: &AdExParameters) -> double {
-    let distance = (voltage - parameters.spikeCutoff).abs()
+    distance := (voltage - parameters.spikeCutoff).abs()
     if distance >= parameters.surrogateWidth { return 0.0 }
     return parameters.surrogateDampening * (1.0 - distance / parameters.surrogateWidth) / parameters.surrogateWidth
 }
@@ -36,29 +36,29 @@ public func stepAdEx(
     _ parameters: &AdExParameters,
 ) -> AdExStep {
     var exponentArgument = (state.voltage - parameters.exponentialThreshold) / parameters.slopeFactor
-    let maximumArgument = (parameters.spikeCutoff - parameters.exponentialThreshold) / parameters.slopeFactor
+    maximumArgument := (parameters.spikeCutoff - parameters.exponentialThreshold) / parameters.slopeFactor
     var exponentialDerivativeEnabled = true
     if exponentArgument > maximumArgument {
         exponentArgument = maximumArgument
         exponentialDerivativeEnabled = false
     }
-    let exponential = exponentArgument.exp()
-    let exponentialDerivative = if exponentialDerivativeEnabled { exponential } else { 0.0 }
+    exponential := exponentArgument.exp()
+    exponentialDerivative := if exponentialDerivativeEnabled { exponential } else { 0.0 }
 
-    let voltageCurrent = -parameters.leakConductance * (state.voltage - parameters.leakPotential) + parameters.leakConductance * parameters.slopeFactor * exponential - state.adaptation + current
-    let voltageSlope = voltageCurrent / parameters.capacitance
-    let adaptationCurrent = parameters.subthresholdAdaptation * (state.voltage - parameters.leakPotential) - state.adaptation
-    let adaptationSlope = adaptationCurrent / parameters.adaptationTime
+    voltageCurrent := -parameters.leakConductance * (state.voltage - parameters.leakPotential) + parameters.leakConductance * parameters.slopeFactor * exponential - state.adaptation + current
+    voltageSlope := voltageCurrent / parameters.capacitance
+    adaptationCurrent := parameters.subthresholdAdaptation * (state.voltage - parameters.leakPotential) - state.adaptation
+    adaptationSlope := adaptationCurrent / parameters.adaptationTime
 
-    let rawVoltage = state.voltage + dt * voltageSlope
-    let rawAdaptation = state.adaptation + dt * adaptationSlope
-    let spike = if rawVoltage >= parameters.spikeCutoff { 1.0 } else { 0.0 }
-    let surrogate = surrogateDerivative(rawVoltage, parameters)
-    let resetVoltageDerivative = 1.0 - spike
+    rawVoltage := state.voltage + dt * voltageSlope
+    rawAdaptation := state.adaptation + dt * adaptationSlope
+    spike := if rawVoltage >= parameters.spikeCutoff { 1.0 } else { 0.0 }
+    surrogate := surrogateDerivative(rawVoltage, parameters)
+    resetVoltageDerivative := 1.0 - spike
         + (parameters.resetPotential - rawVoltage) * surrogate
 
-    let nextVoltage = if spike == 1.0 { parameters.resetPotential } else { rawVoltage }
-    let nextAdaptation = rawAdaptation + parameters.spikeAdaptation * spike
+    nextVoltage := if spike == 1.0 { parameters.resetPotential } else { rawVoltage }
+    nextAdaptation := rawAdaptation + parameters.spikeAdaptation * spike
 
     return AdExStep {
         state: AdExState { voltage: nextVoltage, adaptation: nextAdaptation },
@@ -75,7 +75,7 @@ public func stepAdEx(
     }
 }
 
-public struct Eligibility: Copy {
+public struct Eligibility {
     public voltage: double
     public adaptation: double
     public filtered: double
@@ -90,12 +90,12 @@ public func advanceEligibility(
     _ readoutDecay: double,
     _ spikeAdaptation: double,
 ) -> Eligibility {
-    let rawVoltageEligibility = transition.rawJvv * previous.voltage
+    rawVoltageEligibility := transition.rawJvv * previous.voltage
         + transition.rawJvw * previous.adaptation
         + transition.rawCurrentDerivative * currentDerivative
-    let rawAdaptationEligibility = transition.rawJwv * previous.voltage
+    rawAdaptationEligibility := transition.rawJwv * previous.voltage
         + transition.rawJww * previous.adaptation
-    let spikeEligibility = transition.surrogate * rawVoltageEligibility
+    spikeEligibility := transition.surrogate * rawVoltageEligibility
     return Eligibility {
         voltage: transition.resetVoltageDerivative * rawVoltageEligibility,
         adaptation: rawAdaptationEligibility + spikeAdaptation * spikeEligibility,

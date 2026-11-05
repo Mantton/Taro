@@ -1,9 +1,8 @@
-import std.fmt.Display
-import std.marker.Copy
-import std.ops.PartialEq
+import std::fmt::Display
+import std::ops::PartialEq
 
 /// The category of a textual binary-decoding failure.
-public enum DecodeErrorKind: Copy, PartialEq {
+public enum DecodeErrorKind: PartialEq {
     /// The encoded byte count cannot represent a complete value.
     case invalidLength
     /// A byte does not belong to the selected encoding alphabet.
@@ -18,30 +17,30 @@ public enum DecodeErrorKind: Copy, PartialEq {
 ///
 /// When required data or padding is missing at end of input, `index()` equals
 /// the input byte length.
-public struct DecodeError: Copy {
+public struct DecodeError {
     kindValue: DecodeErrorKind
     indexValue: usize
 }
 
-impl DecodeError {
-    public func new(_ kind: DecodeErrorKind, _ index: usize) -> Self {
+extend DecodeError {
+    public static func new(_ kind: DecodeErrorKind, _ index: usize) -> Self {
         DecodeError {
             kindValue: kind,
             indexValue: index,
         }
     }
 
-    public func kind(&self) -> DecodeErrorKind {
+    public func kind() -> DecodeErrorKind {
         self.kindValue
     }
 
-    public func index(&self) -> usize {
+    public func index() -> usize {
         self.indexValue
     }
 }
 
-impl std.fmt.Display for DecodeErrorKind {
-    public func display(&self, _ into: &mut std.fmt.Formatter) {
+conform DecodeErrorKind to std::fmt::Display {
+    public func display(_ into: &std::fmt::Formatter) {
         match self {
             case .invalidLength => into.writeString("invalid encoded length")
             case .invalidByte => into.writeString("invalid encoded byte")
@@ -51,12 +50,12 @@ impl std.fmt.Display for DecodeErrorKind {
     }
 }
 
-impl std.fmt.Display for DecodeError {
-    public func display(&self, _ into: &mut std.fmt.Formatter) {
+conform DecodeError to std::fmt::Display {
+    public func display(_ into: &std::fmt::Formatter) {
         self.kindValue.display(into)
         into.writeString(" at byte ")
         self.indexValue.display(into)
     }
 }
 
-impl std.error.Error for DecodeError {}
+conform DecodeError to std::error::Error {}

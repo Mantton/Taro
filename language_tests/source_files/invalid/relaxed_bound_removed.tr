@@ -1,0 +1,6 @@
+// `!` bound relaxations were removed: every type is escapable.
+func forward[T: !Escapable](_ value: T) -> T { value }
+
+interface View: !Escapable {}
+
+func main() {}

@@ -1,0 +1,8 @@
+// CHECK_ONLY
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_CONTAINS: conformance needs a complete checked witness
+// EXPECT_STDERR_NOT_CONTAINS: panicked
+interface Reader { func read() -> int32; }
+class Base: Reader {}
+extend Base { func read() -> int32 { 1 }; }
+func main() {}

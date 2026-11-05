@@ -1,0 +1,28 @@
+struct Record { value: int32 }
+
+extend Record {
+    func get(_ unused: &int32) -> &int32 {
+        unsafe { (&self.value as *const int32) as &int32 }
+    }
+}
+
+func relay(_ input: &Record) -> &int32 {
+    var unrelated: int32 = 0
+    input.get(&unrelated)
+}
+
+func main() {
+    var items: [int32] = [1, 2]
+    var saved: std::mem::Span[int32] = items.asSpan()
+    assert(*saved.at(0) == 1, "unproved view keeps the selected source")
+    items.append(3)
+    var first: &int32 = items.at(0)
+    assert(*first == 1, "unproved element result remains usable")
+    items.append(4)
+    var left: &int32 = items.at(0)
+    var right: &int32 = items.at(1)
+    assert(*left + *right == 3, "independent shared lookups may coexist")
+    items.append(5)
+    record := Record { value: 9 }
+    assert(*relay(&record) == 9, "unused borrowed argument does not become a result dependency")
+}

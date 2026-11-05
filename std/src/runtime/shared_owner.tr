@@ -1,0 +1,33 @@
+// Package-only shared resource close state. Copies share the same object.
+// Nothing closes the resource when it becomes unreachable (D4): wrappers
+// expose explicit close, and the collector reclaims only the object.
+internal final class SharedOwner[T] {
+    private value: T
+}
+
+extend[T] SharedOwner[T] {
+    internal init(_ value: T) { self.value = value }
+    internal static func new(_ value: T) -> Self { Self(value) }
+    internal func get() -> &T { &self.value }
+}
+
+internal struct SharedOwnerProbe {
+    values: [string]
+}
+
+internal func sharedOwnerProbe() -> SharedOwner[SharedOwnerProbe] {
+    SharedOwner[SharedOwnerProbe]::new(SharedOwnerProbe { values: ["retained native payload"] })
+}
+
+@test
+internal func testSharedOwnerRetainsTypedGraphAcrossCopiesAndCaptures() {
+    owner := sharedOwnerProbe()
+    copied := owner
+    captured := () => {
+        var value: &string = copied.get().values.at(0)
+        *value
+    }
+    std::testing::assertEqual(captured(), "retained native payload", "shared state survives a reference capture")
+    var original: &string = owner.get().values.at(0)
+    std::testing::assertEqual(*original, "retained native payload", "copy preserves the original native owner")
+}

@@ -1,0 +1,9 @@
+class FallibleBase { value: int32 }
+extend FallibleBase {
+    public init() -> Result[Self, string] { self.value = 7 }
+}
+final class FallibleChild: FallibleBase {}
+extend FallibleChild {
+    public override init() -> Result[Self, string] { super.init() }
+}
+func main() {}

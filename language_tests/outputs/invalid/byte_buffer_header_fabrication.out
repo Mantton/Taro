@@ -1,0 +1,4 @@
+error: field 'state' of Buffer is not visible here
+ -> language_tests/source_files/invalid/byte_buffer_header_fabrication.tr:2:25
+	    std::bytes::Buffer { state: pointer }.toBytes()
+	                         ^^^^^^

@@ -1,0 +1,10 @@
+// EXPECT_EXIT: nonzero
+// EXPECT_STDERR_CONTAINS: dictionary key not found
+
+func main() {
+    var values: std::collections::Dictionary[string, int32] = std::collections::Dictionary[string, int32]::new()
+    values.set(key: "present", value: 7_i32)
+    var key: string = "absent"
+    // Bracket reads panic for a missing key.
+    var _ = values[key]
+}

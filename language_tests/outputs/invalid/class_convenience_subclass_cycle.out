@@ -1,0 +1,8 @@
+error: convenience initializer delegation cycle in this class's constructor families
+ -> language_tests/source_files/invalid/class_convenience_subclass_cycle.tr:5:36
+	extend Child { override convenience init(_ value: int32) { self.init() } }
+	                                    ^^^^
+error: convenience initializer delegation cycle in this class's constructor families
+ -> language_tests/source_files/invalid/class_convenience_subclass_cycle.tr:4:6
+	class Child: Base {}
+	      ^^^^^

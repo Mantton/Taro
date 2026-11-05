@@ -1,0 +1,16 @@
+error: call to unsafe function 'read' must be inside an unsafe { ... } block
+ -> language_tests/source_files/invalid/raw_pointer_memory_operations.tr:1:46
+	func read(_ pointer: *const int32) -> int32 { pointer.read() }
+	                                              ^^^^^^^^^^^^^^
+error: call to unsafe function 'write' must be inside an unsafe { ... } block
+ -> language_tests/source_files/invalid/raw_pointer_memory_operations.tr:2:36
+	func write(_ pointer: *mut int32) { pointer.write(7_i32) }
+	                                    ^^^^^^^^^^^^^^^^^^^^
+error: call to unsafe function 'copyTo' must be inside an unsafe { ... } block
+ -> language_tests/source_files/invalid/raw_pointer_memory_operations.tr:4:4
+	    source.copyTo(target, 1)
+	    ^^^^^^^^^^^^^^^^^^^^^^^^
+error: unsafe function 'read' cannot be used as a value; call it directly inside unsafe { ... }
+ -> language_tests/source_files/invalid/raw_pointer_memory_operations.tr:7:12
+	    read := pointer.read
+	            ^^^^^^^^^^^^

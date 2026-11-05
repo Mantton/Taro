@@ -1,0 +1,96 @@
+import std::ops::{Add, Sub, Mul, Div, Rem, AddAssign, SubAssign, MulAssign, DivAssign, RemAssign, BitAnd, BitOr, BitXor, Shl, Shr, BitAndAssign, BitOrAssign, BitXorAssign, ShlAssign, ShrAssign, Neg, Not, BitNot}
+
+interface Opaque {}
+conform[T] T to Opaque {}
+
+func arithmetic[T: Add[Output = T] & Sub[Output = T] & Mul[Output = T] & Div[Output = T] & Rem[Output = T]](_ a: &T, _ b: &T) -> (T, T, T, T, T) {
+    (*a + *b, *a - *b, *a * *b, *a / *b, *a % *b)
+}
+func assign[T](_ a: &T, _ b: &T) where &T: AddAssign[T] & SubAssign[T] & MulAssign[T] & DivAssign[T] & RemAssign[T] {
+    *a += *b
+    *a -= *b
+    *a *= *b
+    *a /= *b
+    *a %= *b
+}
+func bits[T: BitAnd[Output = T] & BitOr[Output = T] & BitXor[Output = T]](_ a: &T, _ b: &T) -> (T, T, T) {
+    (*a & *b, *a | *b, *a ^ *b)
+}
+func bitAssign[T](_ a: &T, _ b: &T) where &T: BitAndAssign[T] & BitOrAssign[T] & BitXorAssign[T] {
+    *a &= *b
+    *a |= *b
+    *a ^= *b
+}
+func shifts[T: Shl[Output = T] & Shr[Output = T]](_ a: &T, _ b: &T) -> (T, T) { (*a << *b, *a >> *b) }
+func shiftAssign[T](_ a: &T, _ b: &T) where &T: ShlAssign[T] & ShrAssign[T] {
+    *a <<= *b
+    *a >>= *b
+}
+func negative[T: Neg[Output = T]](_ value: T) -> T { -value }
+func inverse[T: BitNot[Output = T]](_ value: T) -> T { ~value }
+func logicalNot[T: Not[Output = T]](_ value: T) -> T { !value }
+
+func main() {
+    // Direct lookup must work before generic witness discovery warms any cache.
+    var direct: int32 = 6
+    var two: int32 = 2
+    assert(direct.add(two) == 8, "direct primitive method lookup")
+    direct.addAssign(two)
+    assert(direct == 8, "direct mutable primitive witness")
+    var referenceBox: any Opaque = &direct
+    match referenceBox as? any AddAssign[int32] {
+        case .some(operation) => operation.addAssign(2_i32)
+        case .none => panic("reference primitive assignment metadata is missing")
+    }
+    assert(direct == 10, "runtime reference assignment uses a value RHS")
+    assert(!(referenceBox is any AddAssign[uint32]), "assignment metadata keeps the exact RHS scalar type")
+    var a: int32 = 12
+    var b: int32 = 5
+    var result: (int32, int32, int32, int32, int32) = arithmetic(&a, &b)
+    assert(result.0 == 17 && result.1 == 7 && result.2 == 60 && result.3 == 2 && result.4 == 2, "all arithmetic interfaces")
+    var assigned: int32 = 12
+    assign(&assigned, &b)
+    assert(assigned == 2, "all arithmetic assignment interfaces")
+    var fa: double = 12.0
+    var fb: double = 5.0
+    var floats: (double, double, double, double, double) = arithmetic(&fa, &fb)
+    assert(floats.0 == 17.0 && floats.1 == 7.0 && floats.2 == 60.0 && floats.3 == 2.4 && floats.4 == 2.0, "floating arithmetic witnesses")
+    var x: uint8 = 12
+    var y: uint8 = 3
+    var bitResults: (uint8, uint8, uint8) = bits(&x, &y)
+    assert(bitResults.0 == 0 && bitResults.1 == 15 && bitResults.2 == 15, "integer bit witnesses")
+    var masked: uint8 = 12
+    bitAssign(&masked, &y)
+    assert(masked == 0, "bit assignment witnesses")
+    var one: uint8 = 1
+    var shifted: (uint8, uint8) = shifts(&x, &one)
+    assert(shifted.0 == 24 && shifted.1 == 6, "shift witnesses")
+    shiftAssign(&masked, &one)
+    assert(masked == 0, "shift assignment witnesses")
+    var yes: bool = true
+    var no: bool = false
+    var flags: (bool, bool, bool) = bits(&yes, &no)
+    assert(!flags.0 && flags.1 && flags.2, "boolean bit witnesses")
+    var flag: bool = true
+    bitAssign(&flag, &no)
+    assert(!flag, "boolean assignment witnesses")
+    assert(negative(a) == -12 && negative(fa) == -12.0, "owned unary negation")
+    assert(inverse(one) == 254 && logicalNot(no), "owned unary bit/logical negation")
+
+    var eight: int32 = 8
+    var erased: any Add[int32, Output = int32] = eight
+    assert(erased.add(two) == 10, "erased fixed-result primitive witness")
+    var display: any std::fmt::Display = 9_i32
+    assert(display is int32, "canonical concrete identity")
+    assert(!(display is uint32), "different primitive types have different identities")
+    assert(display is any Add[int32, Output = int32], "builtin operators enter runtime conformance metadata")
+    match display as? any Add[int32, Output = int32] {
+        case .some(adder) => assert(adder.add(two) == 11, "runtime primitive operator cast")
+        case .none => panic("missing primitive arithmetic metadata")
+    }
+    var boxed: any std::fmt::Display = 13_i32
+    match boxed as? int32 {
+        case .some(value) => assert(value == 13, "concrete primitive downcast")
+        case .none => panic("lost primitive concrete identity")
+    }
+}

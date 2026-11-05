@@ -1,4 +1,8 @@
 #![feature(associated_type_defaults)]
+// GC execution tests use C ABI symbols from this matched runtime.
+#[cfg(test)]
+extern crate taro_runtime as _;
+
 mod ast;
 mod ast_lowering;
 #[cfg(test)]

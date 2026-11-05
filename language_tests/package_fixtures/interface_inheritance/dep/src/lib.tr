@@ -1,9 +1,9 @@
 public interface Value[T] {
-    func value(&self) -> T
+    func value() -> T
 }
 
 public interface Count[const N: usize] {
-    func count(&self) -> usize { N }
+    func count() -> usize { N }
 }
 
 public interface Forward[T]: Value[T] {}

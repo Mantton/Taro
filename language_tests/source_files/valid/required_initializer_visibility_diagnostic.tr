@@ -1,0 +1,7 @@
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_CONTAINS: required initializer must be at least as visible as its non-final class
+// EXPECT_STDERR_NOT_CONTAINS: invalid LLVM
+// EXPECT_STDERR_NOT_CONTAINS: panicked
+public class Base {}
+extend Base { private required init() {}; }
+func main() {}

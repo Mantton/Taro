@@ -18,6 +18,28 @@ pub fn resolve_instance<'ctx>(
     def_id: DefinitionID,
     args: GenericArguments<'ctx>,
 ) -> Instance<'ctx> {
+    if let Some(source) = gcx.class_default_source(def_id) {
+        // Select the implementation body exactly once. Re-entering this
+        // resolver with its interface requirement would choose the forwarding
+        // class witness again and recurse forever.
+        return Instance::item(source, args);
+    }
+    // A cleanup/intrinsic specialization can mention an erased associated
+    // type even before its producing method is visited. Diagnose that boundary
+    // before constructing MIR or computing a concrete layout for the argument.
+    for argument in args {
+        if let GenericArgument::Type(ty) = argument
+            && !crate::sema::tycheck::utils::unresolved::storage_needs_substitution(gcx, *ty)
+            && let Err(error) =
+                crate::sema::tycheck::utils::try_normalize_post_monomorphization(gcx, *ty)
+        {
+            gcx.dcx().emit_error(
+                error.format(gcx),
+                Some(gcx.definition_ident(error.associated_type).span),
+            );
+            return Instance::item(def_id, args);
+        }
+    }
     let Some(interface_id) = interface_method_parent(gcx, def_id) else {
         return Instance::item(def_id, args);
     };
@@ -68,6 +90,24 @@ pub fn resolve_instance<'ctx>(
         return Instance::item(def_id, args);
     }
 
+    // Validate reference result types in the method signature too. Otherwise an unbound associated result could reach LLVM
+    // layout without ever passing the generic-argument preflight above.
+    let signature = instantiate_ty_with_args(
+        gcx,
+        Ty::from_labeled_signature(gcx, gcx.get_signature(def_id)),
+        args,
+    );
+    if !crate::sema::tycheck::utils::unresolved::storage_needs_substitution(gcx, signature)
+        && let Err(error) =
+            crate::sema::tycheck::utils::try_normalize_post_monomorphization(gcx, signature)
+    {
+        gcx.dcx().emit_error(
+            error.format(gcx),
+            Some(gcx.definition_ident(error.associated_type).span),
+        );
+        return Instance::item(def_id, args);
+    }
+
     let Some(slot) =
         crate::sema::impl_engine::ref_ops::interface_method_slot(gcx, interface_id, def_id)
     else {
@@ -78,7 +118,53 @@ pub fn resolve_instance<'ctx>(
         return Instance::item(def_id, args);
     };
 
+    // A generic body's receiver can become erased only after substitution.
+    // Revalidate the actual stored interface contract, rather than assuming
+    // that T = any P grants the container P's hidden concrete Self ABI.
+    if let Some(stored) =
+        stored_interface_for_method(gcx, interfaces[table_index], method_interface)
+        && crate::sema::tycheck::utils::erased_self::method_has_unsupported_payload_types(
+            gcx,
+            def_id,
+            stored.arguments,
+        )
+    {
+        gcx.dcx().emit_error(
+            crate::sema::error::TypeError::ErasedMethodUsesHiddenType.format(gcx),
+            Some(gcx.definition_ident(def_id).span),
+        );
+        return Instance::item(def_id, args);
+    }
+
     Instance::virtual_call(def_id, method_interface, slot, table_index, args)
+}
+
+/// Preserve the receiver's hidden defaults while following an inherited table.
+/// Reconstructing this from generic call arguments could instead turn a hidden
+/// default such as Other = Self into the public any-P container itself.
+fn stored_interface_for_method<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    root: InterfaceReference<'ctx>,
+    target: InterfaceReference<'ctx>,
+) -> Option<InterfaceReference<'ctx>> {
+    let mut work = vec![root];
+    let mut seen = rustc_hash::FxHashSet::default();
+    while let Some(current) = work.pop() {
+        if !seen.insert(current) {
+            continue;
+        }
+        if crate::sema::impl_engine::ref_ops::interface_ref_matches(
+            target,
+            current,
+            crate::sema::impl_engine::ref_ops::InterfaceRefMatch::Logical,
+        ) {
+            return Some(current);
+        }
+        work.extend(crate::sema::impl_engine::ref_ops::direct_superfaces(
+            gcx, current,
+        ));
+    }
+    None
 }
 
 fn resolve_interface_method_for_concrete<'ctx>(
@@ -88,7 +174,7 @@ fn resolve_interface_method_for_concrete<'ctx>(
     self_ty: Ty<'ctx>,
     call_args: GenericArguments<'ctx>,
 ) -> Option<Instance<'ctx>> {
-    let type_head = type_head_from_value_ty(self_ty)?;
+    let type_head = type_head_from_value_ty(self_ty);
     let interface_args = interface_args_from_call(gcx, interface_id, call_args)?;
     let interface = InterfaceReference {
         id: interface_id,
@@ -103,6 +189,28 @@ fn resolve_interface_method_for_concrete<'ctx>(
         DefinitionKind::AssociatedFunction => {
             let method = witness.method_witnesses.get(&method_id)?;
 
+            // Reconstructed witnesses may name the concrete factory directly.
+            // Constructor selection is independent of that witness encoding.
+            if let Some(implementation) = method.implementation.impl_id() {
+                let decoder = gcx
+                    .store
+                    .synthetic_definitions
+                    .borrow()
+                    .get(&implementation)
+                    .map(|value| value.kind);
+                if let Some(crate::sema::models::SyntheticDefinitionKind::ClassDecoder {
+                    initializer,
+                    ..
+                }) = decoder
+                {
+                    let source_class = gcx.initializer_target(initializer);
+                    let family = gcx.class_initializer(source_class, initializer)?.family;
+                    let entry = gcx.class_initializer(self_ty, family)?;
+                    let own = own_method_call_args(gcx, method_id, call_args);
+                    let arguments = gcx.class_method_arguments(self_ty, entry.definition, own)?;
+                    return Some(Instance::item(entry.definition, arguments));
+                }
+            }
             // Default interface methods are represented by the requirement definition itself.
             // They should use the witness args template directly; attempting impl-arg deduction
             // (which is designed for concrete impl methods) can drop `Self` substitutions.
@@ -126,14 +234,19 @@ fn resolve_interface_method_for_concrete<'ctx>(
                 method.implementation
             {
                 let impl_func_id = method.implementation.impl_id().or_else(|| {
-                    gcx.find_synthetic_method(type_head, method_id)
+                    gcx.find_synthetic_method(type_head?, method_id)
                         .and_then(|info| info.syn_id)
                 })?;
+                if gcx.is_class_type(self_ty) {
+                    let own = own_method_call_args(gcx, method_id, call_args);
+                    if let Some(arguments) = gcx.class_method_arguments(self_ty, impl_func_id, own)
+                    {
+                        return Some(Instance::item(impl_func_id, arguments));
+                    }
+                }
                 let mut final_args = match (kind, self_ty.kind()) {
                     (
-                        crate::sema::models::SyntheticMethodKind::ClosureCall
-                        | crate::sema::models::SyntheticMethodKind::ClosureCallMut
-                        | crate::sema::models::SyntheticMethodKind::ClosureCallOnce,
+                        crate::sema::models::SyntheticMethodKind::ClosureCall,
                         TyKind::Closure {
                             captured_generics, ..
                         },
@@ -141,12 +254,7 @@ fn resolve_interface_method_for_concrete<'ctx>(
                     (_, TyKind::Adt(_, adt_args)) => adt_args.to_vec(),
                     _ => Vec::new(),
                 };
-                if !matches!(
-                    kind,
-                    crate::sema::models::SyntheticMethodKind::ClosureCall
-                        | crate::sema::models::SyntheticMethodKind::ClosureCallMut
-                        | crate::sema::models::SyntheticMethodKind::ClosureCallOnce
-                ) {
+                if !matches!(kind, crate::sema::models::SyntheticMethodKind::ClosureCall) {
                     let own_method_args = own_method_call_args(gcx, method_id, call_args);
                     final_args.extend_from_slice(&own_method_args);
                 }
@@ -160,14 +268,25 @@ fn resolve_interface_method_for_concrete<'ctx>(
 
             let impl_func_id = method.implementation.impl_id()?;
 
+            // Partial subclass witnesses may retain a base body whose generic
+            // environment differs from the block selecting the conformance.
+            if gcx.is_class_type(self_ty) {
+                let own = own_method_call_args(gcx, method_id, call_args);
+                if let Some(arguments) = gcx.class_method_arguments(self_ty, impl_func_id, own) {
+                    return Some(Instance::item(impl_func_id, arguments));
+                }
+            }
+
             // Strategy 1: Deduction (Preferred for concrete types)
             // If this is a method from an impl block, we try to deduce the impl's generic arguments
             // by structurally matching the concrete Self type (from call) against the impl's Self type.
             // This handles cases where we need to extract inner types (e.g. List[int32] -> int32).
             if let Some(impl_id) = witness.extension_id {
-                if let Some(deduced_args) =
-                    crate::sema::impl_engine::deduce_impl_subst(gcx, impl_id, self_ty, &[])
-                {
+                let owners =
+                    std::iter::once(self_ty).chain(gcx.class_ancestry(self_ty).into_iter().skip(1));
+                if let Some(deduced_args) = owners.into_iter().find_map(|owner| {
+                    crate::sema::impl_engine::deduce_impl_subst(gcx, impl_id, owner, &[])
+                }) {
                     // Interface-owned arguments (including Self) describe the
                     // selected conformance. Only arguments declared directly
                     // by the requirement method belong after the deduced impl
@@ -408,4 +527,146 @@ fn instantiate_generic_args_with_args<'ctx>(
     }
 
     gcx.store.interners.intern_generic_args(out)
+}
+
+#[cfg(test)]
+mod erased_abi_tests {
+    use super::*;
+
+    #[test]
+    fn inherited_ordering_defaults_select_the_declared_concrete_comparison() {
+        crate::test_support::analyze_native_class_fixture(
+            r#"
+interface PartialEq[Rhs=Self] {
+    func eq(_ other: Rhs) -> bool;
+}
+interface PartialOrd[Rhs=Self]: PartialEq[Rhs] {
+    func partialCmp(_ other: Rhs) -> int32;
+    func gt(_ other: Rhs) -> bool { self.partialCmp(other) > 0 }
+}
+interface Ord: PartialOrd {
+    func cmp(_ other: Self) -> int32;
+}
+struct Score { value: int32 }
+conform Score to PartialEq {
+    func eq(_ other: Score) -> bool { true }
+}
+conform Score to PartialOrd {
+    func partialCmp(_ other: Score) -> int32 { self.cmp(other) }
+}
+conform Score to Ord {
+    func cmp(_ other: Score) -> int32 { self.value - other.value }
+}
+func main() {}
+"#,
+            &[],
+            &[],
+            |syntax, _, gcx| {
+                let interface = syntax
+                    .root
+                    .declarations
+                    .iter()
+                    .find(|decl| decl.identifier.symbol.as_str() == "PartialOrd")
+                    .unwrap()
+                    .id;
+                let score = syntax
+                    .root
+                    .declarations
+                    .iter()
+                    .find(|decl| decl.identifier.symbol.as_str() == "Score")
+                    .unwrap()
+                    .id;
+                let method = gcx
+                    .get_interface_requirements(interface)
+                    .unwrap()
+                    .methods
+                    .iter()
+                    .find(|method| method.name.as_str() == "partialCmp")
+                    .unwrap()
+                    .id;
+                let ty = gcx.get_type(score);
+                let args = gcx
+                    .store
+                    .interners
+                    .intern_generic_args(vec![GenericArgument::Type(ty); 2]);
+                let instance = resolve_instance(gcx, method, args);
+                assert!(instance.is_item());
+                assert_ne!(
+                    instance.def_id(),
+                    method,
+                    "concrete comparison must resolve beyond the requirement"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn unbound_reference_associated_results_report_before_layout() {
+        crate::test_support::analyze_script(
+            "interface P { type Output; func get() -> &Self::Output; }\nfunc main() {}",
+            |package, gcx| {
+                let interface = package.root.declarations[0].id;
+                let arguments = gcx
+                    .store
+                    .interners
+                    .intern_generic_args(vec![GenericArgument::Type(gcx.types.existential_self)]);
+                let interfaces = gcx
+                    .store
+                    .arenas
+                    .global
+                    .alloc_slice_clone(&[InterfaceReference {
+                        id: interface,
+                        arguments,
+                        bindings: &[],
+                    }]);
+                let boxed = Ty::new(TyKind::BoxedExistential { interfaces }, gcx);
+                let arguments = gcx
+                    .store
+                    .interners
+                    .intern_generic_args(vec![GenericArgument::Type(boxed)]);
+                let method = gcx.get_interface_requirements(interface).unwrap().methods[0].id;
+                assert!(resolve_instance(gcx, method, arguments).is_item());
+                assert!(gcx.dcx().has_error());
+            },
+        );
+    }
+
+    #[test]
+    fn generic_specialization_does_not_turn_hidden_self_into_container_storage() {
+        crate::test_support::analyze_script(
+            "interface P { func number() -> int32; func duplicate() -> Self; func same(_ other: &Self) -> bool; }\nfunc main() {}",
+            |package, gcx| {
+                let interface = package.root.declarations[0].id;
+                let hidden = gcx
+                    .store
+                    .interners
+                    .intern_generic_args(vec![GenericArgument::Type(gcx.types.existential_self)]);
+                let roots = gcx
+                    .store
+                    .arenas
+                    .global
+                    .alloc_slice_clone(&[InterfaceReference {
+                        id: interface,
+                        arguments: hidden,
+                        bindings: &[],
+                    }]);
+                let boxed = Ty::new(TyKind::BoxedExistential { interfaces: roots }, gcx);
+                let arguments = gcx
+                    .store
+                    .interners
+                    .intern_generic_args(vec![GenericArgument::Type(boxed)]);
+                let requirements = gcx.get_interface_requirements(interface).unwrap();
+                for method in requirements.methods.iter().take(2) {
+                    assert!(matches!(
+                        resolve_instance(gcx, method.id, arguments).kind(),
+                        crate::specialize::InstanceKind::Virtual(_)
+                    ));
+                    assert!(!gcx.dcx().has_error());
+                }
+                let rejected = resolve_instance(gcx, requirements.methods[2].id, arguments);
+                assert!(rejected.is_item());
+                assert!(gcx.dcx().has_error());
+            },
+        );
+    }
 }

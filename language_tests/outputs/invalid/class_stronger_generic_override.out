@@ -1,0 +1,4 @@
+error: override generic constraints must match the base after parameter renaming
+ -> language_tests/source_files/invalid/class_stronger_generic_override.tr:5:31
+	extend Derived { override func echo[U: Clone](_ value: U) -> U { value }
+	                               ^^^^

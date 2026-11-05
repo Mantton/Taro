@@ -1,4 +1,4 @@
-use crate::sema::models::{LabeledFunctionSignature, Ty, TyKind};
+use crate::sema::models::{Ty, TyKind};
 
 /// ABI pass mode for a value in a lowered function signature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +27,9 @@ pub struct TypeLayout {
 pub struct ArgAbi<'gcx> {
     pub ty: Ty<'gcx>,
     pub mode: PassMode,
+    /// Native ABI stack value, copied by LLVM's `byval` lowering rather than
+    /// passed as the ordinary Taro indirect-argument pointer.
+    pub byval: bool,
 }
 
 /// ABI-lowered function signature.
@@ -37,7 +40,7 @@ pub struct FnAbi<'gcx> {
     pub c_variadic: bool,
 }
 
-/// Temporary policy knob while introducing ABI classification incrementally.
+/// Classification policy for Taro calls and native foreign calls.
 #[derive(Debug, Clone, Copy)]
 pub struct AbiPolicy {
     /// Enables using `PassMode::Indirect` for return values.
@@ -48,15 +51,6 @@ pub struct AbiPolicy {
     pub enable_indirect_args: bool,
     /// Size threshold for indirect argument mode when enabled.
     pub indirect_arg_threshold_bytes: u64,
-}
-
-pub fn compute_fn_abi<'gcx>(
-    sig: &LabeledFunctionSignature<'gcx>,
-    layout_of: impl FnMut(Ty<'gcx>) -> Option<TypeLayout>,
-    policy: AbiPolicy,
-) -> FnAbi<'gcx> {
-    let input_tys: Vec<_> = sig.inputs.iter().map(|param| param.ty).collect();
-    compute_fn_abi_from_tys(&input_tys, sig.output, sig.is_variadic, layout_of, policy)
 }
 
 pub fn compute_fn_abi_from_tys<'gcx>(
@@ -70,6 +64,7 @@ pub fn compute_fn_abi_from_tys<'gcx>(
     let ret = ArgAbi {
         ty: output,
         mode: classify_return_mode(output, ret_layout, policy),
+        byval: false,
     };
 
     let mut args = Vec::with_capacity(inputs.len());
@@ -78,6 +73,7 @@ pub fn compute_fn_abi_from_tys<'gcx>(
         args.push(ArgAbi {
             ty: *ty,
             mode: classify_arg_mode(*ty, layout, policy),
+            byval: false,
         });
     }
 

@@ -1,0 +1,6 @@
+import std::ops::Add
+func require[T: Add[int32, Output = int64]](_ value: T) {}
+func main() {
+    var value: int32 = 1
+    require(value)
+}

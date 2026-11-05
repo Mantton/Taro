@@ -1,0 +1,13 @@
+import dep::{Record, relay, forwardReference}
+
+func main() {
+    var record: Record = Record { value: 7 } // Record
+    var saved: &int32 = relay(&record) // &int32
+    assert(*saved == 7, "imported checked summaries preserve borrowed results")
+    record.value = 9 // Allowed after saved's last use.
+    assert(*record.get() == 9, "imported method result observes new value")
+    var whole: &Record = forwardReference(&record)
+    assert(whole.value == 9, "imported generic summaries preserve input dependency")
+    record.value = 11
+    print("cross-package checked returns ok\n")
+}

@@ -1,4 +1,4 @@
-public func invokeDefault(action: () -> int32 = || 77) -> int32 {
+public func invokeDefault(action: () -> int32 = () => 77) -> int32 {
     action()
 }
 

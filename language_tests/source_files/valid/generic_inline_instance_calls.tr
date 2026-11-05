@@ -1,0 +1,54 @@
+@inline
+func identity[T](_ value: T) -> T { value }
+
+// The callee's T is parameter zero; its caller's T is parameter one.
+@noinline
+func relay[Unused, T](_ value: T, _ unused: Unused) -> T {
+    identity(value)
+}
+
+@inline
+func retained[T](_ value: T) -> &T {
+    local := value
+    &local
+}
+
+@inline
+func pair[T](_ value: T) -> (T, T) { (value, value) }
+
+@noinline
+func paired[Unused, T](_ value: T, _ unused: Unused) -> (T, T) {
+    pair(value)
+}
+
+@noinline
+func references[T](_ first: T, _ second: T) -> List[&T] {
+    var result = List[&T]::new()
+    var index: usize = 0
+    while index < 2 {
+        value := if index == 0 { first } else { second }
+        result.append(retained(value))
+        index += 1
+    }
+    result
+}
+
+struct Item { value: int32 }
+
+func main() {
+    assert(relay(41_i32, true) == 41, "callee and caller generic indices stay distinct")
+    assert(relay(true, 17_i32), "another instance keeps its own types")
+    assert(relay("value", false) == "value", "string headers survive specialization")
+    values := paired(23_i32, false)
+    assert(values.0 == 23 && values.1 == 23, "inlined aggregate returns are lowered again")
+
+    var original = Item { value: 3 }
+    var copied = relay(original, false)
+    copied.value = 4
+    assert(original.value == 3, "specialized calls retain mutable value semantics")
+
+    cells := references(Item { value: 5 }, Item { value: 6 })
+    std::runtime::collect()
+    cells[0].value += 10
+    assert(cells[0].value == 15 && cells[1].value == 6, "inlined loop calls retain distinct cells")
+}

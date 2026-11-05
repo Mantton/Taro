@@ -1,0 +1,40 @@
+// Values holding references are ordinary values: they fill owning containers,
+// flow through generic adapters and observe later writes (G27f).
+struct Selection { value: &int32 }
+
+final class Cursor { value: int32; done: bool }
+
+extend Cursor {
+    init(value: int32, done: bool) {
+        self.value = value
+        self.done = done
+    }
+}
+
+conform Cursor to std::iter::Iterator {
+    type Element = &int32
+    func next() -> std::optional::Optional[&int32] {
+        if self.done { return .none }
+        self.done = true
+        return .some(&self.value)
+    }
+}
+
+conform Cursor to std::iter::Iterable {
+    type Iterator = Cursor
+    type Element = &int32
+    func iter() -> Cursor { self }
+}
+
+func main() {
+    var value: int32 = 7
+    selection := Selection { value: &value }
+    var values: [Selection] = [selection]
+    var input: int32? = .some(1)
+    saved := input.map((input: int32) => &value)
+    value = 99
+    std::printf("%v\n", *values[0].value)
+    std::printf("%v\n", *saved.unwrap())
+    last := Cursor ( value: 5, done: false ).last()
+    std::printf("%v\n", *last.unwrap())
+}

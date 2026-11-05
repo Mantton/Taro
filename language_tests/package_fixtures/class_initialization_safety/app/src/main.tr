@@ -1,0 +1,15 @@
+import library::{Base, Middle, Token}
+class Child[T]: Middle[T] { own: Token }
+extend[T] Child[T] {
+    init(_ items: List[T]) {
+        super.init(items, marker: 9)
+        self.own = Token(50)
+        std::runtime::collect()
+    }
+}
+func main() {
+    child := Child[int64]([7_i64, 9_i64])
+    var base: Base[List[int64]] = child
+    assert(base.value[0] == 7 && child.value[1] == 9, "generic immediate-base construction preserves inherited storage")
+    assert(base.secretValue() == 40 && child.marker == 9 && child.own.value == 50, "imported private state is initialized by its owning initializer")
+}

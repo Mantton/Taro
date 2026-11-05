@@ -1,0 +1,6 @@
+func main() {
+    var value: dep::Resource[string] = dep::Resource("imported " + "constructor")
+    assert(value.value == "imported constructor", "imported generic constructor stores its field")
+    assert(value.size == std::mem::sizeOf[string](), "imported default uses the instantiated type")
+    assert(dep::initCount() == 1, "imported generic constructor runs once")
+}

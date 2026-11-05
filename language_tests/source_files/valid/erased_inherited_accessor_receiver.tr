@@ -1,0 +1,12 @@
+// Inherited computed accessors still receive &Self storage until G39.
+interface Read { var value: int32 { get }; }
+class Base { data: int32 }
+extend Base { init(_ data: int32) { self.data = data }; }
+conform Base to Read {
+    var value: int32 { get { self.data } };
+}
+class Derived: Base {}
+func main() {
+    var erased: any Read = Derived(9)
+    assert(erased.value == 9, "an inherited getter keeps its declared storage receiver")
+}

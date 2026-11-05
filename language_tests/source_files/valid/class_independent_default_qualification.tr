@@ -1,0 +1,8 @@
+interface Left { func read() -> int32 { 1 }; }
+interface Right { func read() -> int32 { 2 }; }
+class Base: Left, Right {}
+extend Base { init() {} }
+func main() {
+    value := Base()
+    assert(Left::read(value) == 1 && Right::read(value) == 2, "identical defaults can be selected by interface qualification")
+}

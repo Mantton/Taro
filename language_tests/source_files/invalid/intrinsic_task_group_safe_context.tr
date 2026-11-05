@@ -1,0 +1,7 @@
+import std::intrinsic::__intrinsic_task_group_create
+
+func createRawGroup() -> usize {
+    __intrinsic_task_group_create[int32](false)
+}
+
+func main() {}

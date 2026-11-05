@@ -1,0 +1,12 @@
+import dep
+func main() {
+    var value: any dep::Other = dep::makeOther(7)
+    assert(dep::inspect[bool](&value) == 7, "cached metadata preserves default Self")
+    var erased: any dep::Root = dep::makeRoot(11)
+    assert(erased is any dep::Nested, "nested defaults survive library metadata")
+    var nested: any dep::Nested = (erased as? any dep::Nested).unwrap()
+    assert(nested.nested() == 12, "relative metadata key selects the library witness")
+    var child: any dep::Child = dep::makeChild(13)
+    var parent: any dep::Parent = child
+    assert(parent.inherited() == 15, "nested Self in inherited interfaces survives metadata")
+}
