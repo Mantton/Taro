@@ -11,7 +11,7 @@ accept a single identifier; use `case` for destructuring in a condition:
 
 ```taro
 // Variable declarations
-pattern := expression
+name := expression       // Shorthand accepts a single name
 var pattern = expression
 
 // Match arms

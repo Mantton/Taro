@@ -712,7 +712,7 @@ while case .some(item) = iterator.next() {
 }
 ```
 
-### Let Binding (Optional Shorthand)
+### Optional Binding Shorthand
 
 ```taro
 if var value = optional {

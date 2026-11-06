@@ -18,15 +18,18 @@ Blocks group statements and define scopes.
 
 ## Variable Statements
 
-### Let (Immutable)
+### Inferred and Typed Bindings
+
+Local bindings are writable. `name := value` infers a single name's type;
+`var` also supports explicit types and destructuring. `let` is not supported.
 
 ```taro
-x := 42              // Type inferred
+x := 42                // Type inferred
 var y: int32 = 42       // Explicit type
 var (a, b) = (1, 2)     // Pattern destructuring
 ```
 
-### Var (Mutable)
+### Reassignment
 
 ```taro
 var count = 0           // Mutable variable
