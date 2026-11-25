@@ -10,6 +10,17 @@
         "Programming Languages"
     ],
     "activationEvents": ["onLanguage:taro"],
+    "capabilities": {
+        "untrustedWorkspaces": {
+            "supported": "limited",
+            "description": "Taro server and SDK paths from workspace settings require a trusted workspace.",
+            "restrictedConfigurations": [
+                "taro.languageServer.path",
+                "taro.sdk.path",
+                "taro.languageServer.bundle"
+            ]
+        }
+    },
     "main": "./extension.js",
     "dependencies": {
         "vscode-languageclient": "^9.0.1"
@@ -21,19 +32,19 @@
                 "taro.languageServer.path": {
                     "type": "string",
                     "default": "taro-lsp",
-                    "scope": "machine",
+                    "scope": "machine-overridable",
                     "description": "Path to the installed Taro language server executable."
                 },
                 "taro.sdk.path": {
                     "type": "string",
                     "default": "",
-                    "scope": "machine",
+                    "scope": "machine-overridable",
                     "description": "Taro SDK directory. Leave empty to discover the SDK."
                 },
                 "taro.languageServer.bundle": {
                     "type": "string",
                     "default": "",
-                    "scope": "machine",
+                    "scope": "machine-overridable",
                     "description": "Explicit portable LSP bundle directory. Use with the SDK path unset."
                 }
             }
