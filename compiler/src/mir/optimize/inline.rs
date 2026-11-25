@@ -461,7 +461,7 @@ impl Inline {
         // Create entry block that assigns arguments to parameters
         let callee_name = gcx.definition_ident(site.callee_id).symbol;
         let inline_entry = caller.basic_blocks.push(BasicBlockData {
-            note: Some(format!("inlined: {}", callee_name)),
+            note: Some(format!("inlined: {}", gcx.symbol_text(callee_name))),
             statements: vec![Statement {
                 kind: StatementKind::SourceScope(callee_root_scope),
                 span: site.span,
@@ -1342,12 +1342,12 @@ func main() {}
                 }
                 let leaf = bodies
                     .iter()
-                    .find(|body| gcx.definition_ident(body.owner).symbol.as_str() == "leaf")
+                    .find(|body| gcx.symbol_text(gcx.definition_ident(body.owner).symbol).as_str() == "leaf")
                     .unwrap()
                     .owner;
                 let parent = bodies
                     .iter()
-                    .find(|body| gcx.definition_ident(body.owner).symbol.as_str() == "parent")
+                    .find(|body| gcx.symbol_text(gcx.definition_ident(body.owner).symbol).as_str() == "parent")
                     .unwrap()
                     .owner;
                 let functions = bodies
@@ -1466,7 +1466,7 @@ func main() {{}}
                         .insert(gcx.package_index(), package);
                     let mut caller = bodies
                         .into_iter()
-                        .find(|body| gcx.definition_ident(body.owner).symbol.as_str() == "caller")
+                        .find(|body| gcx.symbol_text(gcx.definition_ident(body.owner).symbol).as_str() == "caller")
                         .unwrap();
                     let mut inliner = Inline {
                         forced_growth_used: FORCED_INLINE_GROWTH_LIMIT,
@@ -1510,7 +1510,7 @@ func main() {{}}
                     .borrow_mut()
                     .insert(gcx.package_index(), package);
                 for mut body in bodies {
-                    let name = gcx.definition_ident(body.owner).symbol;
+                    let name = gcx.symbol_text(gcx.definition_ident(body.owner).symbol);
                     if !matches!(name.as_str(), "read" | "write" | "address") {
                         continue;
                     }
@@ -1531,7 +1531,7 @@ func main() {{}}
                                 return None;
                             };
                             let (id, _) = super::extract_callee(func)?;
-                            Some(gcx.definition_ident(id).symbol)
+                            Some(gcx.symbol_text(gcx.definition_ident(id).symbol))
                         })
                         .collect();
                     assert_eq!(callees.len(), 1, "{policy} {name}: {callees:?}");
@@ -1816,12 +1816,12 @@ func main() {}
             }
             let caller = bodies
                 .iter()
-                .find(|body| gcx.definition_ident(body.owner).symbol.as_str() == "main")
+                .find(|body| gcx.symbol_text(gcx.definition_ident(body.owner).symbol).as_str() == "main")
                 .unwrap()
                 .clone();
             let callees: Vec<_> = bodies
                 .iter()
-                .filter(|body| gcx.definition_ident(body.owner).symbol.as_str() != "main")
+                .filter(|body| gcx.symbol_text(gcx.definition_ident(body.owner).symbol).as_str() != "main")
                 .map(|body| body.owner)
                 .collect();
             let package = gcx.store.alloc_mir_package(MirPackage {
@@ -1879,12 +1879,12 @@ func main() {}
             }
             let callee = bodies
                 .iter()
-                .find(|body| gcx.definition_ident(body.owner).symbol.as_str() == "read")
+                .find(|body| gcx.symbol_text(gcx.definition_ident(body.owner).symbol).as_str() == "read")
                 .unwrap()
                 .owner;
             let caller = bodies
                 .iter()
-                .find(|body| gcx.definition_ident(body.owner).symbol.as_str() == "main")
+                .find(|body| gcx.symbol_text(gcx.definition_ident(body.owner).symbol).as_str() == "main")
                 .unwrap()
                 .clone();
             let functions = bodies

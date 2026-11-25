@@ -282,7 +282,7 @@ fn has_structural_equality<'ctx>(gcx: Gcx<'ctx>, self_ty: Ty<'ctx>) -> bool {
     let Some(requirement) = requirements
         .methods
         .iter()
-        .find(|method| method.name.as_str() == "eq")
+        .find(|method| gcx.symbol_text(method.name).as_str() == "eq")
     else {
         return false;
     };
@@ -368,7 +368,7 @@ pub(crate) fn enum_derivation_obstacle<'ctx>(
         let problem = if !matches!(variant.kind, crate::sema::models::EnumVariantKind::Unit) {
             format!(
                 "cannot derive {name} for case '{}' with a payload",
-                variant.name.as_str()
+                gcx.symbol_text(variant.name).as_str()
             )
         } else if let Some((raw, layout)) = raw_layout
             && !layout.contains(i128::from(variant.discriminant))

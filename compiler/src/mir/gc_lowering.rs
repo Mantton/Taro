@@ -62,7 +62,7 @@ func main() {
                     "fixture bodies were published"
                 );
                 for (definition, body) in &package.functions {
-                    let name = gcx.definition_symbol_or_fallback(*definition);
+                    let name = gcx.symbol_text(gcx.definition_symbol_or_fallback(*definition));
                     for block in &body.basic_blocks {
                         for statement in &block.statements {
                             if let StatementKind::Assign(_, Rvalue::Use(Operand::Copy(place))) =

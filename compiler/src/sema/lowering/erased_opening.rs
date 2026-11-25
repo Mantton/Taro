@@ -293,7 +293,7 @@ func main() {}
                     .root
                     .declarations
                     .iter()
-                    .find(|item| item.identifier.symbol.as_str() == "Erased")
+                    .find(|item| gcx.symbol_text(item.identifier.symbol).as_str() == "Erased")
                     .unwrap()
                     .id;
                 let erased = gcx.get_struct_definition(erased_id).fields[0].ty;
@@ -306,7 +306,7 @@ func main() {}
                         .root
                         .declarations
                         .iter()
-                        .find(|item| item.identifier.symbol.as_str() == name)
+                        .find(|item| gcx.symbol_text(item.identifier.symbol).as_str() == name)
                         .unwrap()
                         .id;
                     assert_eq!(
@@ -328,7 +328,7 @@ func main() {}
                         .root
                         .declarations
                         .iter()
-                        .find(|item| item.identifier.symbol.as_str() == name)
+                        .find(|item| gcx.symbol_text(item.identifier.symbol).as_str() == name)
                         .unwrap()
                         .id;
                     assert_eq!(plan(gcx, id, arguments), Err(error));

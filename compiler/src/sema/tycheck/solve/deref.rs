@@ -85,7 +85,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let Some(method) = requirements
             .methods
             .iter()
-            .find(|method| method.name.as_str() == "deref")
+            .find(|method| self.gcx().symbol_eq(method.name, "deref"))
         else {
             return Ok(None);
         };

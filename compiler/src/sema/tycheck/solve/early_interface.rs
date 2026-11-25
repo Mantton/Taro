@@ -1259,12 +1259,12 @@ mod tests {
 
     const SIZE: &str = "struct Boxed[T] { value: T }\ninterface Size { func size() -> usize; }\n";
 
-    fn find(package: &crate::hir::Package, name: &str) -> DefinitionID {
+    fn find(gcx: Gcx<'_>, package: &crate::hir::Package, name: &str) -> DefinitionID {
         package
             .root
             .declarations
             .iter()
-            .find(|declaration| declaration.identifier.symbol.as_str() == name)
+            .find(|declaration| gcx.symbol_text(declaration.identifier.symbol).as_str() == name)
             .unwrap()
             .id
     }
@@ -1305,7 +1305,7 @@ mod tests {
             .store
             .interners
             .intern_generic_args(vec![GenericArgument::Type(element)]);
-        instantiate_ty_with_args(gcx, gcx.get_type(find(package, "Boxed")), arguments)
+        instantiate_ty_with_args(gcx, gcx.get_type(find(gcx, package, "Boxed")), arguments)
     }
 
     fn size_call<'ctx>(
@@ -1357,7 +1357,7 @@ mod tests {
             let icx = Rc::new(InferCtx::new(gcx));
             let literal = icx.next_int_var();
             let receiver = boxed(gcx, &package, literal);
-            let mut solver = solver(icx.clone(), find(&package, "main"));
+            let mut solver = solver(icx.clone(), find(gcx, &package, "main"));
             let call = size_call(gcx, &icx, receiver);
             let result = solver.solve_method_call(call.clone());
             assert!(
@@ -1383,7 +1383,7 @@ mod tests {
         );
         analyze_script(&source, |package, gcx| {
             let icx = Rc::new(InferCtx::new(gcx));
-            let mut solver = solver(icx.clone(), find(&package, "main"));
+            let mut solver = solver(icx.clone(), find(gcx, &package, "main"));
             let literal = icx.next_int_var();
             let call = size_call(gcx, &icx, boxed(gcx, &package, literal));
             assert!(matches!(
@@ -1410,8 +1410,8 @@ mod tests {
             "{SIZE}conform Boxed[int64] to Size {{ func size() -> usize {{ 8 }}; }}\nfunc main() {{}}"
         );
         analyze_script(&source, |package, gcx| {
-            let size = find(&package, "Size");
-            let main = find(&package, "main");
+            let size = find(gcx, &package, "Size");
+            let main = find(gcx, &package, "main");
             for (element, rejected) in [(gcx.types.int32, true), (gcx.types.int64, false)] {
                 let ty = boxed(gcx, &package, element);
                 let mut cs = ConstraintSystem::new(gcx, main);
@@ -1505,7 +1505,7 @@ mod tests {
             let icx = Rc::new(InferCtx::new(gcx));
             let literal = icx.next_int_var();
             let receiver = receiver(gcx, &package, literal);
-            let mut solver = solver(icx.clone(), find(&package, "main"));
+            let mut solver = solver(icx.clone(), find(gcx, &package, "main"));
             prepare(&mut solver, &package, gcx, receiver);
             let mut call = named_call(gcx, &icx, receiver, name);
             call.receiver_addressable = addressable;
@@ -1548,7 +1548,7 @@ mod tests {
             gcx: Gcx<'ctx>,
             receiver: Ty<'ctx>,
         ) {
-            let bound = interface(gcx, find(package, "A"), receiver);
+            let bound = interface(gcx, find(gcx, package, "A"), receiver);
             solver.param_env.add_pending_bound(receiver, bound);
         }
         assert!(!binds_early(&source, "pick", true, pending));
@@ -1570,7 +1570,7 @@ mod tests {
             false,
             |solver, package, gcx, _| {
                 let int32 = boxed(gcx, package, gcx.types.int32);
-                let bound = interface(gcx, find(package, "B"), int32);
+                let bound = interface(gcx, find(gcx, package, "B"), int32);
                 solver.param_env.add_pending_bound(int32, bound);
             }
         ));
@@ -1611,7 +1611,7 @@ mod tests {
             _: Ty<'ctx>,
         ) {
             let int32 = boxed(gcx, package, gcx.types.int32);
-            let bound = interface(gcx, find(package, "Root"), int32);
+            let bound = interface(gcx, find(gcx, package, "Root"), int32);
             solver.param_env.add_pending_bound(int32, bound);
         }
         for (supers, binds) in [
@@ -1654,7 +1654,7 @@ mod tests {
             GenericArgument::Type(first),
             GenericArgument::Type(second),
         ]);
-        instantiate_ty_with_args(gcx, gcx.get_type(find(package, "Pair")), arguments)
+        instantiate_ty_with_args(gcx, gcx.get_type(find(gcx, package, "Pair")), arguments)
     }
 
     /// `Pair[T, {integer}]`, as in `func run[T](_ value: T)` calling
@@ -1685,7 +1685,7 @@ mod tests {
             // A bound that may apply once the literal is int32 could supply
             // its own `Wrapped`.
             let int32 = boxed(gcx, package, gcx.types.int32);
-            let bound = interface(gcx, find(package, "Wrap"), int32);
+            let bound = interface(gcx, find(gcx, package, "Wrap"), int32);
             solver.param_env.add_pending_bound(int32, bound);
         }
         let generic = "conform[T] Boxed[T] to Wrap { type Wrapped = Cell[T]; func wrap() -> Cell[T] { Cell { value: self.value } }; }";
@@ -1709,7 +1709,7 @@ mod tests {
         ) {
             // `where Pair[T, int32]: Wrap` may apply once the literal is int32.
             let subject = pair(gcx, package, rigid(gcx), gcx.types.int32);
-            let bound = interface(gcx, find(package, "Wrap"), subject);
+            let bound = interface(gcx, find(gcx, package, "Wrap"), subject);
             solver.param_env.add_pending_bound(subject, bound);
         }
         type Prepare =
@@ -1747,7 +1747,7 @@ mod tests {
             let icx = Rc::new(InferCtx::new(gcx));
             let literal = icx.next_int_var();
             let receiver = rigid_pair(gcx, &package, literal);
-            let mut solver = solver(icx.clone(), find(&package, "main"));
+            let mut solver = solver(icx.clone(), find(gcx, &package, "main"));
             let call = named_call(gcx, &icx, receiver, "wrap");
             assert!(matches!(
                 solver.solve_method_call(call),
@@ -1794,7 +1794,7 @@ mod tests {
             let icx = Rc::new(InferCtx::new(gcx));
             let literal = icx.next_int_var();
             let receiver = boxed(gcx, &package, literal);
-            let mut solver = solver(icx.clone(), find(&package, "main"));
+            let mut solver = solver(icx.clone(), find(gcx, &package, "main"));
             let call = named_call(gcx, &icx, receiver, "wrap");
             assert!(matches!(
                 solver.solve_method_call(call),
@@ -1806,7 +1806,7 @@ mod tests {
             let cell = |element| {
                 instantiate_ty_with_args(
                     gcx,
-                    gcx.get_type(find(&package, "Cell")),
+                    gcx.get_type(find(gcx, &package, "Cell")),
                     gcx.store
                         .interners
                         .intern_generic_args(vec![GenericArgument::Type(element)]),
@@ -1846,8 +1846,8 @@ mod tests {
                 let icx = Rc::new(InferCtx::new(gcx));
                 let literal = icx.next_int_var();
                 let receiver = boxed(gcx, &package, literal);
-                let mut solver = solver(icx.clone(), find(&package, "main"));
-                solver.visible_traits = Rc::new([find(&package, "Child")].into_iter().collect());
+                let mut solver = solver(icx.clone(), find(gcx, &package, "main"));
+                solver.visible_traits = Rc::new([find(gcx, &package, "Child")].into_iter().collect());
                 let call = size_call(gcx, &icx, receiver);
                 assert!(matches!(
                     solver.solve_method_call(call),

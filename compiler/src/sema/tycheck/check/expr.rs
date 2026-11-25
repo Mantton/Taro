@@ -1053,7 +1053,7 @@ impl<'ctx> Checker<'ctx> {
                     let name = self.gcx().definition_ident(*id).symbol;
                     self.gcx()
                         .dcx()
-                        .emit_error(format!("'{}' is not visible here", name).into(), Some(span));
+                            .emit_error(format!("'{}' is not visible here", self.gcx().symbol_text(name)).into(), Some(span));
                     return Ty::error(self.gcx());
                 }
                 match kind {
@@ -2313,17 +2313,17 @@ impl<'ctx> Checker<'ctx> {
         self.record_await_scope_call(expression.id);
         let prefer_async_call = self.call_is_awaited();
 
-        if name.symbol.as_str() == "init"
+        if self.gcx().symbol_text(name.symbol).as_str() == "init"
             && matches!(&receiver.kind, hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path))
-                if path.segments.len() == 1 && path.segments[0].identifier.symbol.as_str() == "self"
+                if path.segments.len() == 1 && self.gcx().symbol_text(path.segments[0].identifier.symbol).as_str() == "self"
                     && matches!(path.resolution, hir::Resolution::LocalVariable(id) if self.constructor_self.get() == Some(id)))
         {
             return self.synth_self_initializer(expression, receiver, name, arguments, cs);
         }
         // Static member invocation on a type (e.g., `List[Int].new()`).
-        if name.symbol.as_str() == "init"
+        if self.gcx().symbol_text(name.symbol).as_str() == "init"
             && matches!(&receiver.kind, hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path))
-                if path.segments.len() == 1 && path.segments[0].identifier.symbol.as_str() == "super")
+                if path.segments.len() == 1 && self.gcx().symbol_text(path.segments[0].identifier.symbol).as_str() == "super")
         {
             return self.synth_base_initializer(expression, receiver, name, arguments, cs);
         }
@@ -2470,7 +2470,7 @@ impl<'ctx> Checker<'ctx> {
             }
         }
 
-        let is_super = matches!(&receiver.kind,hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) if path.segments.len() == 1 && path.segments[0].identifier.symbol.as_str() == "super");
+        let is_super = matches!(&receiver.kind,hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) if path.segments.len() == 1 && self.gcx().symbol_text(path.segments[0].identifier.symbol).as_str() == "super");
         let recv_ty = if is_super {
             let hir::ExpressionKind::Path(path) = &receiver.kind else {
                 unreachable!()
@@ -3649,7 +3649,7 @@ impl<'ctx> Checker<'ctx> {
         expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
-        if matches!(path,hir::ResolvedPath::Resolved(path) if path.segments.len() == 1 && path.segments[0].identifier.symbol.as_str() == "super")
+        if matches!(path,hir::ResolvedPath::Resolved(path) if path.segments.len() == 1 && self.gcx().symbol_text(path.segments[0].identifier.symbol).as_str() == "super")
         {
             self.gcx().dcx().emit_error(
                 "super is only valid as the receiver of a base method call".into(),
@@ -3714,7 +3714,7 @@ impl<'ctx> Checker<'ctx> {
                     )
                 ) {
                     self.gcx().dcx().emit_error(
-                        format!("qualified access to `{}` requires `::`", name.symbol).into(),
+                    format!("qualified access to `{}` requires `::`", self.gcx().symbol_text(name.symbol)).into(),
                         Some(crate::span::Span {
                             start: target.span.end,
                             end: name.span.start,

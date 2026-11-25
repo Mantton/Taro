@@ -34,7 +34,7 @@ pub(crate) fn projection_signature(
     {
         return None;
     }
-    let (mode, array) = match gcx.definition_ident(id).symbol.as_str() {
+    let (mode, array) = match gcx.symbol_text(gcx.definition_ident(id).symbol).as_str() {
         "__intrinsic_array_read_unchecked" => (Mutability::Immutable, true),
         "__intrinsic_ref_project" => (Mutability::Immutable, false),
         "__intrinsic_ref_project_mut" => (Mutability::Mutable, false),
@@ -76,7 +76,7 @@ pub(crate) fn value_signature(
     if memory::empty_uninit(gcx, id) {
         return Some(());
     }
-    if is_class_handle_intrinsic(gcx.definition_ident(id).symbol.as_str())
+    if is_class_handle_intrinsic(gcx.symbol_text(gcx.definition_ident(id).symbol).as_str())
         && class_handle_signature(gcx, id)
     {
         return Some(());
@@ -96,8 +96,8 @@ pub(crate) fn value_signature(
     };
     let sig = gcx.get_signature(id);
     // Address extraction preserves the reference's pointee and pointer mode.
-    if is_reference_address(gcx.definition_ident(id).symbol.as_str()) {
-        let mode = if gcx.definition_ident(id).symbol.as_str() == "__intrinsic_mut_ref_to_ptr" {
+    if is_reference_address(gcx.symbol_text(gcx.definition_ident(id).symbol).as_str()) {
+        let mode = if gcx.symbol_text(gcx.definition_ident(id).symbol).as_str() == "__intrinsic_mut_ref_to_ptr" {
             Mutability::Mutable
         } else {
             Mutability::Immutable
@@ -119,9 +119,9 @@ pub(crate) fn value_signature(
         return None;
     }
     let symbol = gcx.definition_ident(id).symbol;
-    let slice = symbol.as_str() == "__intrinsic_string_slice";
+    let slice = gcx.symbol_text(symbol).as_str() == "__intrinsic_string_slice";
     if !matches!(
-        symbol.as_str(),
+        gcx.symbol_text(symbol).as_str(),
         "__intrinsic_string_len" | "__intrinsic_string_data" | "__intrinsic_string_slice"
     ) || sig.inputs.len() != if slice { 3 } else { 1 }
     {
@@ -134,7 +134,7 @@ pub(crate) fn value_signature(
         return None;
     }
     let output = normalize_aliases(gcx, sig.output);
-    let valid = match symbol.as_str() {
+    let valid = match gcx.symbol_text(symbol).as_str() {
         "__intrinsic_string_len" => output == gcx.types.uint,
         "__intrinsic_string_data" => {
             matches!(output.kind(), TyKind::Pointer(element, Mutability::Immutable) if normalize_aliases(gcx, element) == gcx.types.uint8)
@@ -193,7 +193,7 @@ fn pure_address_result(
         },
     };
     let name = gcx.definition_ident(id).symbol;
-    if !is_pure_address(name.as_str()) {
+    if !is_pure_address(gcx.symbol_text(name).as_str()) {
         return false;
     }
     let sig = gcx.get_signature(id);
@@ -214,7 +214,7 @@ fn pure_address_result(
         return false;
     }
     if matches!(
-        name.as_str(),
+        gcx.symbol_text(name).as_str(),
         "__intrinsic_size_of" | "__intrinsic_align_of"
     ) {
         return sig.inputs.is_empty() && normalize_aliases(gcx, sig.output) == gcx.types.uint;
@@ -229,7 +229,7 @@ fn pure_address_result(
     matches!(normalize_aliases(gcx, element).kind(), TyKind::Parameter(parameter) if parameter.index == 0)
         && input == normalize_aliases(gcx, sig.output)
         && normalize_aliases(gcx, sig.inputs[1].ty)
-            == if name.as_str() == "__intrinsic_ptr_offset" {
+            == if gcx.symbol_text(name).as_str() == "__intrinsic_ptr_offset" {
                 gcx.types.int
             } else {
                 gcx.types.uint
@@ -258,12 +258,12 @@ pub(crate) fn class_field_access_signature(
         sema::models::{Constraint, TyKind},
     };
     let name = gcx.definition_ident(id).symbol;
-    if !is_class_field_access(name.as_str()) {
+    if !is_class_field_access(gcx.symbol_text(name).as_str()) {
         return false;
     }
     // write(slot, path, value) and modify(slot, path, op, rhs) store a value
     // of the field type; read(slot, path) returns one.
-    let stored = match name.as_str() {
+    let stored = match gcx.symbol_text(name).as_str() {
         "__intrinsic_class_field_write" => Some(2),
         "__intrinsic_class_field_modify" => Some(3),
         _ => None,
@@ -283,7 +283,7 @@ pub(crate) fn class_field_access_signature(
             .any(|input| input.ty != gcx.types.string)
         || !match stored {
             Some(index) => field(signature.inputs[index].ty) && signature.output == gcx.types.void,
-            None if name.as_str() == "__intrinsic_class_field_reference" => {
+            None if gcx.symbol_text(name).as_str() == "__intrinsic_class_field_reference" => {
                 matches!(signature.output.kind(), TyKind::Reference(inner) if field(inner))
             }
             None => field(signature.output),
@@ -341,7 +341,7 @@ pub(crate) fn class_handle_signature(
     let output = normalize_aliases(gcx, signature.output);
     let pointer = |ty: crate::sema::models::Ty<'_>| matches!(ty.kind(), TyKind::Pointer(element, Mutability::Immutable) if element == gcx.types.uint8);
     let parameter = if matches!(
-        gcx.definition_ident(id).symbol.as_str(),
+        gcx.symbol_text(gcx.definition_ident(id).symbol).as_str(),
         "__intrinsic_class_owner"
     ) {
         let TyKind::Reference(parameter) = input.kind() else {
@@ -352,7 +352,7 @@ pub(crate) fn class_handle_signature(
         }
         parameter
     } else {
-        let valid_input = if gcx.definition_ident(id).symbol.as_str()
+        let valid_input = if gcx.symbol_text(gcx.definition_ident(id).symbol).as_str()
             == "__intrinsic_class_from_handle"
         {
             matches!(input.kind(), TyKind::Adt(definition, _) if gcx.std_item_def(crate::hir::StdItem::ClassHandle) == Some(definition.id))

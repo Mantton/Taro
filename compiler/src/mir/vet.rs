@@ -115,11 +115,11 @@ pub(crate) fn check_body<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Vec<Finding
     for local in &body.locals {
         if local.kind == LocalKind::Param
             && marked(local.ty)
-            && let Some(name) = local.name.filter(|name| !name.as_str().starts_with('$'))
+            && let Some(name) = local.name.filter(|name| !gcx.symbol_text(*name).as_str().starts_with('$'))
         {
             findings.push(Finding {
                 span: local.span,
-                message: format!("@NoCopy parameter '{name}' is passed by value; use a reference"),
+                message: format!("@NoCopy parameter '{}' is passed by value; use a reference", gcx.symbol_text(name)),
             });
         }
     }
@@ -129,7 +129,7 @@ pub(crate) fn check_body<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Vec<Finding
         // operation once instead of presenting its hidden bindings as user code.
         if local
             .name
-            .is_some_and(|name| name.as_str().starts_with('$'))
+            .is_some_and(|name| gcx.symbol_text(name).as_str().starts_with('$'))
         {
             return;
         }
@@ -152,7 +152,7 @@ pub(crate) fn check_body<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Vec<Finding
             return;
         }
         let captured_name = (local.kind == LocalKind::Param
-            && local.name.is_some_and(|name| name.as_str() == "self"))
+            && local.name.is_some_and(|name| gcx.symbol_text(name).as_str() == "self"))
         .then(|| gcx.get_closure_captures(body.owner))
         .flatten()
         .and_then(|captures| {
@@ -172,8 +172,8 @@ pub(crate) fn check_body<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Vec<Finding
         let name = captured_name
             .as_ref()
             .or(local.name.as_ref())
-            .map(|name| name.as_str())
-            .unwrap_or("value");
+            .map(|name| gcx.symbol_text(name))
+            .unwrap_or_else(|| "value".into());
         findings.push(Finding {
             span,
             message: format!("copy of @NoCopy value '{name}'; use a reference"),
@@ -237,7 +237,7 @@ pub(crate) fn check_body<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Vec<Finding
                 let native_get = gcx
                     .native_subscript_for_accessor(definition)
                     .is_some_and(|(_, entry)| entry.getter == Some(definition));
-                let iteration = gcx.definition_ident(definition).symbol.as_str() == "next";
+                let iteration = gcx.symbol_text(gcx.definition_ident(definition).symbol).as_str() == "next";
                 if native_get || iteration {
                     findings.push(Finding {
                         span: terminator.span,

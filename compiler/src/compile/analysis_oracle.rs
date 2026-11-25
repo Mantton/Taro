@@ -79,7 +79,7 @@ impl HirVisitor for Calls<'_, '_> {
             arguments,
             ..
         } = &expr.kind
-            && name.symbol.as_str() == "label"
+            && self.context.symbol_text(name.symbol).as_str() == "label"
         {
             let context = self.context;
             let definition = self
@@ -225,4 +225,34 @@ fn full_check_oracle_normalizes_diagnostics_across_checkouts() {
         snapshot.diagnostics
     );
     assert_eq!(snapshot, full_check(DECLARATIONS, &broken).0);
+}
+
+#[test]
+fn simultaneous_compilers_resolve_names_in_their_own_sessions() {
+    with_source_compiler(
+        &[("main.tr", "func first() {}")],
+        false,
+        HarnessMode::None,
+        |first| {
+            let (package, _) = first.analyze().unwrap_or_else(|_| {
+                panic!("{:?}", first.context.dcx().take_recorded_diagnostics())
+            });
+            let first_name = package.root.declarations[0].identifier.symbol;
+            with_source_compiler(
+                &[("main.tr", "func second() {}")],
+                false,
+                HarnessMode::None,
+                |second| {
+                    let (package, _) = second.analyze().unwrap_or_else(|_| {
+                        panic!("{:?}", second.context.dcx().take_recorded_diagnostics())
+                    });
+                    let second_name = package.root.declarations[0].identifier.symbol;
+                    assert!(first.context.symbols().try_resolve(second_name).is_none());
+                    assert!(second.context.symbols().try_resolve(first_name).is_none());
+                    assert!(first.context.symbol_eq(first_name, "first"));
+                    assert!(second.context.symbol_eq(second_name, "second"));
+                },
+            );
+        },
+    );
 }

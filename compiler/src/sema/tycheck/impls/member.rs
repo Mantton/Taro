@@ -161,7 +161,7 @@ impl<'ctx> Actor<'ctx> {
             return false;
         };
         self.context.dcx().emit_error(
-            format!("invalid redeclaration of '{}'", decl.identifier.symbol),
+            format!("invalid redeclaration of '{}'", self.context.symbol_text(decl.identifier.symbol)),
             Some(decl.identifier.span),
         );
         self.context.dcx().emit_info(

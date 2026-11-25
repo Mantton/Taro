@@ -14,7 +14,9 @@ impl<'ctx> GlobalContext<'ctx> {
     /// Constructor synthesis calls this std hook; GC codegen replaces its
     /// placeholder body, which must therefore never be inlined or summarized.
     pub fn is_class_payload_factory(self, definition: crate::hir::DefinitionID) -> bool {
-        self.definition_symbol_or_fallback(definition).as_str() == "__classAllocatePayload"
+        self.symbol_text(self.definition_symbol_or_fallback(definition))
+            .as_str()
+            == "__classAllocatePayload"
     }
 
     /// Recover the source class for its private, physically nested payload.
@@ -197,7 +199,7 @@ impl<'ctx> GlobalContext<'ctx> {
                     },
                     name: self.intern_symbol(&format!(
                         "{}$payload",
-                        self.definition_ident(definition.id).symbol
+                        self.symbol_text(self.definition_ident(definition.id).symbol)
                     )),
                     generics,
                     signature,
@@ -256,7 +258,7 @@ impl<'ctx> GlobalContext<'ctx> {
     pub fn is_virtual_class_method(self, method: crate::hir::DefinitionID) -> bool {
         self.try_get_signature(method)
             .and_then(|signature| signature.inputs.first())
-            .filter(|input| input.name.as_str() == "self")
+            .filter(|input| self.symbol_text(input.name).as_str() == "self")
             .map(|input| match normalize_aliases(self, input.ty).kind() {
                 TyKind::Reference(inner) => inner,
                 _ => input.ty,
@@ -303,7 +305,7 @@ impl<'ctx> GlobalContext<'ctx> {
                 },
                 name: self.intern_symbol(&format!(
                     "{}$init_payload${}",
-                    self.definition_ident(class.id).symbol,
+                    self.symbol_text(self.definition_ident(class.id).symbol),
                     initializer.index().raw()
                 )),
                 generics: self.generics_of(initializer),

@@ -26,7 +26,7 @@ pub(crate) fn static_candidates<'ctx>(
     name: Symbol,
     current: DefinitionID,
 ) -> Vec<DefinitionID> {
-    if name.as_str() == "init"
+    if gcx.symbol_text(name).as_str() == "init"
         && let Some(info) = gcx.class_info(base)
     {
         return info

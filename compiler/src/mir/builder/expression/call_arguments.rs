@@ -129,7 +129,7 @@ mod tests {
             |_, gcx| {
                 let calls: Vec<_> = entry_calls(gcx)
                     .into_iter()
-                    .map(|id| gcx.definition_ident(id).symbol.as_str().to_string())
+                    .map(|id| gcx.symbol_text(gcx.definition_ident(id).symbol).as_str().to_string())
                     .collect();
                 assert_eq!(calls, ["right", "left", "pair"]);
             },
@@ -146,7 +146,7 @@ mod tests {
                         .root
                         .declarations
                         .iter()
-                        .find(|declaration| declaration.identifier.symbol.as_str() == name)
+                        .find(|declaration| gcx.symbol_text(declaration.identifier.symbol).as_str() == name)
                         .unwrap()
                         .id
                 };

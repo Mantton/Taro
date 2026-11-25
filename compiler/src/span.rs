@@ -1,6 +1,5 @@
 use crate::interner;
 use index_vec::define_index_type;
-use std::fmt;
 
 index_vec::define_index_type! {
     pub struct PackageIndex = u32;
@@ -59,54 +58,8 @@ impl<T> Spanned<T> {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Symbol(u32);
-
-impl Default for Symbol {
-    fn default() -> Self {
-        Self::empty()
-    }
-}
-
-impl Symbol {
-    pub fn empty() -> Symbol {
-        Symbol(0) // Index 0 is always the empty string.
-    }
-
-    pub fn new(value: &str) -> Symbol {
-        Symbol(interner::intern(value))
-    }
-
-    pub fn as_str(&self) -> &str {
-        interner::resolve(self.0)
-    }
-}
-
-pub use interner::{InternedBytes, interned_symbol_count, reset_session};
-
-impl fmt::Debug for Symbol {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(self.as_str(), f)
-    }
-}
-
-impl fmt::Display for Symbol {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self.as_str(), f)
-    }
-}
-
-impl AsRef<str> for Symbol {
-    fn as_ref(&self) -> &str {
-        self.as_str()
-    }
-}
-
-impl From<&str> for Symbol {
-    fn from(value: &str) -> Self {
-        Symbol::new(value)
-    }
-}
+pub use crate::symbols::Symbol;
+pub use interner::InternedBytes;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Identifier {
@@ -115,10 +68,10 @@ pub struct Identifier {
 }
 
 impl Identifier {
-    pub fn emtpy(file: FileID) -> Self {
+    pub(crate) fn empty(file: FileID, symbols: &crate::symbols::SymbolTable) -> Self {
         Identifier {
             span: Span::empty(file),
-            symbol: Symbol::empty(),
+            symbol: symbols.intern(""),
         }
     }
 

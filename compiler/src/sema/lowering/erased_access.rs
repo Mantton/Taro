@@ -29,7 +29,7 @@ impl<'ctx> Gcx<'ctx> {
         erased: Ty<'ctx>,
         name: Symbol,
     ) -> Option<DefinitionID> {
-        let borrowed = match name.as_str() {
+        let borrowed = match self.symbol_text(name).as_str() {
             "takeAs" => false,
             "asRef" => true,
             _ => return None,

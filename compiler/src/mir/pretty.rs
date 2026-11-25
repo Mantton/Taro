@@ -45,7 +45,7 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                     f,
                     "source_scope({}: {})",
                     scope.index(),
-                    self.gcx.definition_symbol_or_fallback(data.definition)
+                    self.gcx.symbol_text(self.gcx.definition_symbol_or_fallback(data.definition))
                 )
             }
             StatementKind::StorageLive(local) => {
@@ -77,7 +77,7 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                 write!(f, "set_discriminant ")?;
                 self.write_place(place, f)?;
                 if let Some(name) = self.variant_name_for_place(place, *variant_index) {
-                    write!(f, " = {}", name)
+                    write!(f, " = {}", self.gcx.symbol_text(name))
                 } else {
                     write!(f, " = {}", variant_index.index())
                 }
@@ -172,7 +172,7 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                     out.push_str(&format!(".{:?}", idx));
                 }
                 PlaceElem::VariantDowncast { name, .. } => {
-                    out = format!("({out} as {name})");
+                    out = format!("({out} as {})", self.gcx.symbol_text(name));
                 }
             }
         }
@@ -199,17 +199,17 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
             ConstantKind::Rune(c) => write!(f, "{:?}", c),
             ConstantKind::Bytes(value) => value.with_bytes(|bytes| write!(f, "{bytes:?}")),
             ConstantKind::ConstArray(arr) => write!(f, "[const; {}]", arr.len()),
-            ConstantKind::String(s) => write!(f, "{:?}", s),
+            ConstantKind::String(s) => write!(f, "{:?}", self.gcx.symbol_text(s).as_str()),
             ConstantKind::Integer(i) => write!(f, "const {}", i),
             ConstantKind::Float(fl) => write!(f, "const {}", fl),
             ConstantKind::Unit => write!(f, "()"),
             ConstantKind::Function(def_id, _, _) => {
                 let symbol = self.gcx.definition_symbol_or_fallback(*def_id);
-                write!(f, "fn {}", symbol)
+                write!(f, "fn {}", self.gcx.symbol_text(symbol))
             }
             ConstantKind::GlobalVariableAddress(def_id) => {
                 let symbol = self.gcx.definition_symbol_or_fallback(*def_id);
-                write!(f, "global {}", symbol)
+                write!(f, "global {}", self.gcx.symbol_text(symbol))
             }
             ConstantKind::InterfaceConstant(id, args) => {
                 let owner = self
@@ -229,7 +229,7 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                         .expect("interface Self")
                         .format(self.gcx),
                     interface.format(self.gcx),
-                    self.gcx.definition_symbol_or_fallback(*id)
+                    self.gcx.symbol_text(self.gcx.definition_symbol_or_fallback(*id))
                 )
             }
             ConstantKind::ConstParam(param) => {
@@ -285,7 +285,7 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                         ..
                     } => {
                         let symbol = self.gcx.definition_symbol_or_fallback(*def_id);
-                        write!(f, "{}", symbol)?;
+                        write!(f, "{}", self.gcx.symbol_text(symbol))?;
                         if let Some(variant_index) = variant_index {
                             if matches!(
                                 self.gcx.try_definition_kind(*def_id),
@@ -293,7 +293,7 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                             ) {
                                 let variant =
                                     self.gcx.enum_variant_by_index(*def_id, *variant_index);
-                                write!(f, "::{}", variant.name)?;
+                                write!(f, "::{}", self.gcx.symbol_text(variant.name))?;
                             }
                         }
                     }
@@ -349,7 +349,7 @@ impl<'body, 'ctx> fmt::Display for PrettyPrintMir<'body, 'ctx> {
                 decl.ty.format(self.gcx)
             )?;
             if let Some(name) = &decl.name {
-                write!(f, "        // debug: {}", name)?;
+                write!(f, "        // debug: {}", self.gcx.symbol_text(name))?;
             }
             writeln!(f)?;
         }

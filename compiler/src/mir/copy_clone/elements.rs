@@ -222,7 +222,7 @@ mod tests {
                 };
                 let token = bodies
                     .iter()
-                    .find(|body| gcx.definition_symbol_or_fallback(body.owner).as_str() == "read")
+                    .find(|body| gcx.symbol_text(gcx.definition_symbol_or_fallback(body.owner)).as_str() == "read")
                     .map(|body| {
                         body.locals
                             .iter()

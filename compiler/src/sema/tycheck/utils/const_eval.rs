@@ -690,7 +690,7 @@ fn constant_witness<'ctx>(
     gcx.dcx().emit_error(
         format!(
             "constant evaluation requires a concrete implementation of '{}'",
-            gcx.definition_ident(requirement).symbol
+            gcx.symbol_text(gcx.definition_ident(requirement).symbol)
         ),
         Some(span),
     );

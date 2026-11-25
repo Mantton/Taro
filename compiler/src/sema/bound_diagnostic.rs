@@ -63,7 +63,7 @@ pub(crate) fn validate(gcx: Gcx<'_>, attributes: &[Attribute], is_interface: boo
         } else if seen {
             Some(("duplicate @onUnsatisfied on interface", attribute.span))
         } else if let Some((text, span)) = literal(attribute) {
-            render(text.as_str(), "{Self}")
+            render(gcx.symbol_text(text).as_str(), "{Self}")
                 .err()
                 .map(|error| (error, span))
         } else {
@@ -89,5 +89,5 @@ pub(crate) fn message<'ctx>(
         .iter()
         .find(|attr| attr.as_known(gcx) == Some(KnownAttribute::OnUnsatisfied))?;
     let (text, _) = literal(attr)?;
-    render(text.as_str(), &ty.format(gcx)).ok()
+    render(gcx.symbol_text(text).as_str(), &ty.format(gcx)).ok()
 }

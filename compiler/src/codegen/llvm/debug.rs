@@ -109,8 +109,8 @@ impl<'llvm> DebugContext<'llvm> {
         let name = ident
             .map(|ident| gcx.symbol_text(ident.symbol))
             .unwrap_or_else(|| {
-                gcx.definition_symbol_or_fallback(body.owner)
-                    .as_str()
+                gcx.symbol_text(gcx.definition_symbol_or_fallback(body.owner)
+                    ).as_str()
                     .into()
             });
         let linkage_name = function.get_name().to_string_lossy();

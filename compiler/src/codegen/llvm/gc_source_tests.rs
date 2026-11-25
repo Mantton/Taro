@@ -52,7 +52,7 @@ func main() {}
                 let id = *package
                     .functions
                     .keys()
-                    .find(|&&id| gcx.definition_ident(id).symbol.as_str() == "number")
+                    .find(|&&id| gcx.symbol_text(gcx.definition_ident(id).symbol).as_str() == "number")
                     .unwrap();
                 let context = Context::create();
                 let mut emitter = Emitter::new(
@@ -107,7 +107,7 @@ func main() {}
         let id = *package
             .functions
             .keys()
-            .find(|&&id| gcx.definition_ident(id).symbol.as_str() == "emptyGroup")
+            .find(|&&id| gcx.symbol_text(gcx.definition_ident(id).symbol).as_str() == "emptyGroup")
             .unwrap();
         let context = Context::create();
         let mut emitter = Emitter::new(
@@ -192,7 +192,7 @@ func main() {}
                 let id = *package
                     .functions
                     .keys()
-                    .find(|&&id| gcx.definition_ident(id).symbol.as_str() == name)
+                    .find(|&&id| gcx.symbol_text(gcx.definition_ident(id).symbol).as_str() == name)
                     .unwrap();
                 let (function, _) = emitter
                     .instance_function_with_abi(Instance::item(id, GenericArguments::empty()));
@@ -256,7 +256,7 @@ func main() {}
         )
         .unwrap_or_else(|_| panic!("emitter"));
         for &id in package.functions.keys() {
-            if gcx.definition_ident(id).symbol.as_str().starts_with("raw") {
+            if gcx.symbol_text(gcx.definition_ident(id).symbol).as_str().starts_with("raw") {
                 emitter.instance_function_with_abi(Instance::item(id, GenericArguments::empty()));
             }
         }
@@ -318,7 +318,7 @@ func main() {}
         let id = *package
             .functions
             .keys()
-            .find(|&&id| gcx.definition_ident(id).symbol.as_str() == "fill")
+            .find(|&&id| gcx.symbol_text(gcx.definition_ident(id).symbol).as_str() == "fill")
             .unwrap();
         let context = Context::create();
         let mut emitter = Emitter::new(
@@ -385,7 +385,7 @@ func main() {}
         let id = *package
             .functions
             .keys()
-            .find(|&&id| gcx.definition_ident(id).symbol.as_str() == "consume")
+            .find(|&&id| gcx.symbol_text(gcx.definition_ident(id).symbol).as_str() == "consume")
             .unwrap();
         let context = Context::create();
         let mut emitter = Emitter::new(
@@ -448,7 +448,7 @@ func main() {}
         let id = *package
             .functions
             .keys()
-            .find(|&&id| gcx.definition_ident(id).symbol.as_str() == "recurse")
+            .find(|&&id| gcx.symbol_text(gcx.definition_ident(id).symbol).as_str() == "recurse")
             .unwrap();
         let body = package.functions[&id];
         assert!(
@@ -541,7 +541,7 @@ func main() {}
                 let id = *package
                     .functions
                     .keys()
-                    .find(|&&id| gcx.definition_ident(id).symbol.as_str() == name)
+                    .find(|&&id| gcx.symbol_text(gcx.definition_ident(id).symbol).as_str() == name)
                     .unwrap();
                 let (function, _) = emitter
                     .instance_function_with_abi(Instance::item(id, GenericArguments::empty()));
@@ -620,7 +620,7 @@ fn assert_cold_root_initialization(source: &str) {
         let id = *package
             .functions
             .keys()
-            .find(|&&id| gcx.definition_ident(id).symbol.as_str() == "coldRoot")
+            .find(|&&id| gcx.symbol_text(gcx.definition_ident(id).symbol).as_str() == "coldRoot")
             .unwrap();
         let context = Context::create();
         let mut emitter = Emitter::new(
@@ -712,7 +712,7 @@ func main() {}
         let id = *package
             .functions
             .keys()
-            .find(|&&id| gcx.definition_ident(id).symbol.as_str() == "caller")
+            .find(|&&id| gcx.symbol_text(gcx.definition_ident(id).symbol).as_str() == "caller")
             .unwrap();
         let context = Context::create();
         let mut emitter = Emitter::new(
@@ -1056,7 +1056,7 @@ func main() {{}}
                     .declarations
                     .iter()
                     .find(|declaration| {
-                        gcx.definition_ident(declaration.id).symbol.as_str() == "allocateEscaping"
+                        gcx.symbol_text(gcx.definition_ident(declaration.id).symbol).as_str() == "allocateEscaping"
                     })
                     .unwrap()
                     .id;
@@ -1135,7 +1135,7 @@ func main() {{}}
                                     ..
                                 } => match constant.value {
                                     mir::ConstantKind::Function(id, _, _)
-                                        if gcx.definition_ident(id).symbol.as_str() == name =>
+                                        if gcx.symbol_text(gcx.definition_ident(id).symbol).as_str() == name =>
                                     {
                                         Some(id)
                                     }
@@ -1160,7 +1160,7 @@ func main() {{}}
                         .declarations
                         .iter()
                         .find(|declaration| {
-                            gcx.definition_ident(declaration.id).symbol.as_str() == "GcCell"
+                            gcx.symbol_text(gcx.definition_ident(declaration.id).symbol).as_str() == "GcCell"
                         })
                         .unwrap()
                         .id;
@@ -1195,7 +1195,7 @@ func main() {{}}
                             let mir::ConstantKind::Function(id, _, _) = constant.value else {
                                 continue;
                             };
-                            if gcx.definition_ident(id).symbol.as_str() != "fixture_gc_allocate" {
+                            if gcx.symbol_text(gcx.definition_ident(id).symbol).as_str() != "fixture_gc_allocate" {
                                 continue;
                             }
                             let span = term.span;
@@ -1339,7 +1339,7 @@ fn compile_link_run_with_metadata<'gcx>(
     let id = *package
         .functions
         .keys()
-        .find(|&&id| gcx.definition_ident(id).symbol.as_str() == entry)
+        .find(|&&id| gcx.symbol_text(gcx.definition_ident(id).symbol).as_str() == entry)
         .unwrap();
     let context = Context::create();
     let mut emitter = Emitter::new(
@@ -1822,7 +1822,7 @@ func main() {}
         let id = *package
             .functions
             .keys()
-            .find(|&&id| gcx.definition_ident(id).symbol.as_str() == "rawPartialCopy")
+            .find(|&&id| gcx.symbol_text(gcx.definition_ident(id).symbol).as_str() == "rawPartialCopy")
             .unwrap();
         emitter.instance_function_with_abi(Instance::item(id, GenericArguments::empty()));
         assert!(
@@ -1868,10 +1868,10 @@ func main() {}
         )
         .unwrap_or_else(|_| panic!("emitter"));
         for &id in package.functions.keys() {
-            if gcx
+            if gcx.symbol_text(gcx
                 .definition_ident(id)
                 .symbol
-                .as_str()
+                ).as_str()
                 .starts_with("atomic")
             {
                 emitter.instance_function_with_abi(Instance::item(id, GenericArguments::empty()));
@@ -1906,7 +1906,7 @@ fn enum_projection_substitutes_the_generic_base_before_downcast() {
         let choice = gcx.get_type(package.root.declarations[0].id);
         let body = bodies
             .iter()
-            .find(|body| gcx.definition_ident(body.owner).symbol.as_str() == "shape")
+            .find(|body| gcx.symbol_text(gcx.definition_ident(body.owner).symbol).as_str() == "shape")
             .unwrap();
         let parameter = body
             .locals

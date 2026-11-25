@@ -1142,7 +1142,7 @@ impl EscapeGraph {
                         continue;
                     }
                     (
-                        format!("`{}`", name.as_str()),
+                        format!("`{}`", gcx.symbol_text(name).as_str()),
                         declaration.span,
                         placement.heap_locals.contains(&local),
                     )

@@ -94,7 +94,7 @@ func main() {}"#,
                     .root
                     .declarations
                     .iter()
-                    .find(|item| item.identifier.symbol.as_str() == "native_env")
+                    .find(|item| gcx.symbol_text(item.identifier.symbol).as_str() == "native_env")
                     .unwrap();
                 let facade = emitter.declare_foreign_function(declaration.id);
                 assert_eq!(facade.get_name().to_str().unwrap(), "native_env");
@@ -126,7 +126,7 @@ func main() {}"#,
                     .root
                     .declarations
                     .iter()
-                    .find(|item| item.identifier.symbol.as_str() == "reference_echo")
+                    .find(|item| gcx.symbol_text(item.identifier.symbol).as_str() == "reference_echo")
                     .unwrap();
                 let function = emitter.declare_foreign_function(declaration.id);
                 let pointer = context.ptr_type(AddressSpace::default());

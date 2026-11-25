@@ -145,8 +145,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 "class field access requires a constant compiler field path",
             ));
         };
-        let path: Vec<u32> = path
-            .as_str()
+        let path: Vec<u32> = self.gcx.symbol_text(*path
+            ).as_str()
             .split('.')
             .map(str::parse)
             .collect::<Result<_, _>>()
@@ -294,7 +294,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return Ok(false);
         };
         if self.gcx.get_signature(*id).abi != Some(crate::hir::Abi::Intrinsic)
-            || self.gcx.definition_ident(*id).symbol.as_str() != "__intrinsic_class_field_modify"
+            || self.gcx.symbol_text(self.gcx.definition_ident(*id).symbol).as_str() != "__intrinsic_class_field_modify"
         {
             return Ok(false);
         }
@@ -339,6 +339,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             );
             return Err(crate::error::ReportedError);
         };
+        let spelling = self.gcx.symbol_text(*spelling);
         let (checked, name) = match spelling.as_str().strip_prefix("checked.") {
             Some(name) => (true, name),
             None => (false, spelling.as_str()),

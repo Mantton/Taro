@@ -139,7 +139,7 @@ func main() {
                         .root
                         .declarations
                         .iter()
-                        .find(|declaration| declaration.identifier.symbol.as_str() == name)
+                        .find(|declaration| gcx.symbol_text(declaration.identifier.symbol).as_str() == name)
                         .unwrap()
                         .id
                 };
@@ -315,7 +315,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         // Address-derived bodies call their own declared capability,
         // including extra capabilities absent from a get-only bound.
         // The binding still uses ordinary receiver/argument solving.
-        let default_address = if name.symbol.as_str() == "__subscript_address" {
+        let default_address = if self.gcx().symbol_eq(name.symbol, "__subscript_address") {
             self.gcx()
                 .native_subscript_for_accessor(self.current_def)
                 .filter(|(_, entry)| {

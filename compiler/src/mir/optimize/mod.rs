@@ -39,7 +39,7 @@ pub fn run_passes<'ctx>(
         {
             eprintln!(
                 "[mir timing] {} {}: {:?} ({} locals, {} blocks)",
-                gcx.definition_symbol_or_fallback(body.owner),
+                gcx.symbol_text(gcx.definition_symbol_or_fallback(body.owner)),
                 pass.name(),
                 started.elapsed(),
                 body.locals.len(),
@@ -321,7 +321,7 @@ func main() {}
 "#;
         crate::test_support::analyze_script_built_mir(source, |bodies, gcx| {
             for body in bodies {
-                let name = gcx.definition_ident(body.owner).symbol;
+                let name = gcx.symbol_text(gcx.definition_ident(body.owner).symbol);
                 if !matches!(name.as_str(), "plain" | "guarded") {
                     continue;
                 }
@@ -330,7 +330,7 @@ func main() {}
                     .iter()
                     .filter(|local| {
                         matches!(local.ty.kind(), crate::sema::models::TyKind::Adt(def, _)
-                        if gcx.definition_ident(def.id).symbol.as_str() == "Choice")
+                        if gcx.symbol_text(gcx.definition_ident(def.id).symbol).as_str() == "Choice")
                     })
                     .count();
                 assert_eq!(

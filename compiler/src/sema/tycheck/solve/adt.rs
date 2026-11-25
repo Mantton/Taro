@@ -351,7 +351,7 @@ func main() { var base = Pair { first: 1_i32, second: 2_i32 }; var changed = upd
             |bodies, gcx| {
                 let body = bodies
                     .iter()
-                    .find(|body| gcx.definition_ident(body.owner).symbol.as_str() == "update")
+                    .find(|body| gcx.symbol_text(gcx.definition_ident(body.owner).symbol).as_str() == "update")
                     .unwrap();
                 let operands: Vec<_> = body
                     .basic_blocks

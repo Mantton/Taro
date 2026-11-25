@@ -42,7 +42,7 @@ impl Parser {
                 break;
             }
             let accessor = self.parse_identifier()?;
-            let slot = match accessor.symbol.as_str() {
+            let slot = match self.symbol_text(accessor.symbol).as_str() {
                 "get" => &mut getter,
                 "set" => &mut setter,
                 "address" => &mut address,
@@ -142,7 +142,7 @@ impl Parser {
         let inline_policy: AttributeList = attributes
             .iter()
             .filter(|attribute| {
-                matches!(attribute.identifier.symbol.as_str(), "inline" | "noinline")
+                matches!(self.symbol_text(attribute.identifier.symbol).as_str(), "inline" | "noinline")
             })
             .cloned()
             .collect();
@@ -192,6 +192,7 @@ impl Parser {
                 tokens: header.to_vec(),
             },
             self.next_index.clone(),
+            self.symbols.clone(),
         );
         let mut inputs = parser.parse_function_parameters()?;
         parser.expect(Token::RArrow)?;
@@ -230,7 +231,7 @@ impl Parser {
                 span: accessor.span,
             },
         );
-        let output = match accessor.symbol.as_str() {
+        let output = match self.symbol_text(accessor.symbol).as_str() {
             "set" => {
                 let value = value.unwrap_or_else(|| {
                     let mut name = "__subscript_value".to_owned();
@@ -271,7 +272,7 @@ impl Parser {
             visibility,
             attributes: vec![],
             identifier: Identifier {
-                symbol: self.intern_symbol(&format!("__subscript_{}", accessor.symbol.as_str())),
+                symbol: self.intern_symbol(&format!("__subscript_{}", self.symbol_text(accessor.symbol).as_str())),
                 span: accessor.span,
             },
             kind: AssociatedDeclarationKind::Function(Function {

@@ -13,7 +13,7 @@ pub(crate) enum Transfer {
 
 pub(crate) fn transfer(gcx: Gcx<'_>, id: DefinitionID) -> Option<Transfer> {
     let name = gcx.definition_ident(id).symbol;
-    let kind = match name.as_str() {
+    let kind = match gcx.symbol_text(name).as_str() {
         "__intrinsic_ptr_read" => Transfer::Read,
         "__intrinsic_ptr_write" => Transfer::Write,
         _ => return None,
@@ -49,7 +49,7 @@ pub(crate) fn empty_uninit(gcx: Gcx<'_>, id: DefinitionID) -> bool {
         return false;
     };
     let generics = gcx.generics_of(id);
-    gcx.definition_ident(id).symbol.as_str() == "__intrinsic_maybe_uninit"
+    gcx.symbol_text(gcx.definition_ident(id).symbol).as_str() == "__intrinsic_maybe_uninit"
         && sig.abi == Some(Abi::Intrinsic)
         && !sig.is_variadic
         && sig.inputs.is_empty()

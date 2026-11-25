@@ -50,7 +50,7 @@ func main() {}
                 let id = *package
                     .functions
                     .keys()
-                    .find(|&&id| gcx.definition_ident(id).symbol.as_str() == name)
+                    .find(|&&id| gcx.symbol_text(gcx.definition_ident(id).symbol).as_str() == name)
                     .unwrap();
                 let (function, _) = emitter
                     .instance_function_with_abi(Instance::item(id, GenericArguments::empty()));
@@ -125,7 +125,7 @@ func main() {}
                 let id = *package
                     .functions
                     .keys()
-                    .find(|&&id| gcx.definition_ident(id).symbol.as_str() == name)
+                    .find(|&&id| gcx.symbol_text(gcx.definition_ident(id).symbol).as_str() == name)
                     .unwrap();
                 let (function, _) = emitter
                     .instance_function_with_abi(Instance::item(id, GenericArguments::empty()));
@@ -135,7 +135,7 @@ func main() {}
         let swap8_id = *package
             .functions
             .keys()
-            .find(|&&id| gcx.definition_ident(id).symbol.as_str() == "swap8")
+            .find(|&&id| gcx.symbol_text(gcx.definition_ident(id).symbol).as_str() == "swap8")
             .unwrap();
         let (swap8_fn, _) = emitter
             .instance_function_with_abi(Instance::item(swap8_id, GenericArguments::empty()));

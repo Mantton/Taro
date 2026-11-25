@@ -20,6 +20,7 @@ use crate::{
     error::ReportedError,
     parse::{Base, lexer, token::Token},
     span::{Position, Span, Spanned, Symbol},
+    symbols::SymbolTable,
 };
 use std::{cell::RefCell, fmt::Display, rc::Rc};
 
@@ -67,7 +68,7 @@ fn parse_module(
     options: ParseOptions,
     is_root: bool,
 ) -> Result<ast::Module, ReportedError> {
-    let name = Symbol::new(&module.name);
+    let name = dcx.symbols.intern(&module.name);
     let mut files = vec![];
     let mut submodules = vec![];
     let mut module_decls: Vec<ModuleDecl> = vec![];
@@ -127,7 +128,7 @@ fn pick_module_decl(
         had_error = true;
     }
 
-    let declared = first.name.symbol.as_str().to_string();
+    let declared = dcx.symbols.text(first.name.symbol).to_string();
     if declared != module_name {
         dcx.emit_error(
             ParserError::ModuleDeclNameMismatch {
@@ -156,7 +157,7 @@ fn parse_file(
     #[cfg(test)]
     dcx.analysis_work.parsed_files.update(|count| count + 1);
     let id = file.id;
-    let mut parser = Parser::new(file, next.clone());
+    let mut parser = Parser::new(file, next.clone(), dcx.symbols.clone());
     if options.lint_warnings {
         parser.enable_lint_warnings();
     }
@@ -191,6 +192,7 @@ struct ParserCheckpoint {
 }
 
 struct Parser {
+    symbols: Rc<SymbolTable>,
     file: lexer::File,
     cursor: usize,
     restrictions: Restrictions,
@@ -206,8 +208,9 @@ struct Parser {
 }
 
 impl Parser {
-    fn new(file: lexer::File, next: NextNode) -> Parser {
+    fn new(file: lexer::File, next: NextNode, symbols: Rc<SymbolTable>) -> Parser {
         Parser {
+            symbols,
             file,
             cursor: 0,
             restrictions: Restrictions::empty(),
@@ -513,11 +516,15 @@ impl Parser {
 
 impl Parser {
     fn intern_symbol(&self, text: &str) -> Symbol {
-        Symbol::new(text)
+        self.symbols.intern(text)
     }
 
-    fn symbol_eq(&self, symbol: impl AsRef<str>, text: &str) -> bool {
-        symbol.as_ref() == text
+    fn symbol_eq(&self, symbol: Symbol, text: &str) -> bool {
+        self.symbols.matches(symbol, text)
+    }
+
+    fn symbol_text(&self, symbol: Symbol) -> ecow::EcoString {
+        self.symbols.text(symbol)
     }
 
     fn next_id(&mut self) -> NodeID {
@@ -1167,7 +1174,7 @@ impl Parser {
 
     fn make_hidden_property_accessor_identifier(&mut self, property: &Identifier) -> Identifier {
         Identifier {
-            symbol: self.intern_symbol(&format!("__prop_get_{}", property.symbol.as_str())),
+            symbol: self.intern_symbol(&format!("__prop_get_{}", self.symbol_text(property.symbol).as_str())),
             span: property.span,
         }
     }
@@ -1211,18 +1218,18 @@ impl Parser {
             }
             Token::Const => self.parse_const_decl()?,
             Token::Import => (
-                Identifier::emtpy(self.file.id),
+                Identifier::empty(self.file.id, &self.symbols),
                 self.parse_import_export_declaration(true)?,
             ),
             Token::Export => (
-                Identifier::emtpy(self.file.id),
+                Identifier::empty(self.file.id, &self.symbols),
                 self.parse_import_export_declaration(false)?,
             ),
             Token::Extern => self.parse_extern_declaration()?,
             Token::Type => self.parse_type_declaration()?,
             Token::Function | Token::Unsafe => self.parse_function_declaration_kind(mode)?,
             Token::Extend | Token::Conform | Token::Impl => {
-                (Identifier::emtpy(self.file.id), self.parse_impl()?)
+                (Identifier::empty(self.file.id, &self.symbols), self.parse_impl()?)
             }
             Token::Namespace => self.parse_namespace()?,
 
@@ -1266,7 +1273,7 @@ impl Parser {
             let declarations: Vec<Declaration<ast::ExternDeclarationKind>> =
                 self.parse_declaration_list(|p| p.parse_extern_block_declaration(abi))?;
             return Ok((
-                Identifier::emtpy(self.file.id),
+                Identifier::empty(self.file.id, &self.symbols),
                 DeclarationKind::ExternBlock(ast::ExternBlock { abi, declarations }),
             ));
         }
@@ -1811,10 +1818,10 @@ impl Parser {
                 };
                 self.bump();
                 if matches!(
-                    v.symbol.as_str(),
+                    self.symbol_text(v.symbol).as_str(),
                     "FnMut" | "FnOnce" | "AsyncFnMut" | "AsyncFnOnce"
                 ) {
-                    self.emit_error(ParserError::RemovedCallableKind(v.symbol), span);
+                    self.emit_error(ParserError::RemovedCallableKind(self.symbol_text(v.symbol)), span);
                 }
                 return Ok(v);
             }
@@ -2051,7 +2058,7 @@ impl Parser {
         self.expect(Token::Hash)?;
 
         let ident = self.parse_identifier()?;
-        let kind = match ident.symbol.as_str() {
+        let kind = match self.symbol_text(ident.symbol).as_str() {
             "embed" | "embedBytes" => {
                 self.expect(Token::LParen)?;
                 let Token::String { value } = self.current_token() else {
@@ -2062,7 +2069,7 @@ impl Parser {
                 self.expect(Token::RParen)?;
                 ExpressionKind::Embed {
                     path,
-                    bytes: ident.symbol.as_str() == "embedBytes",
+                    bytes: self.symbol_text(ident.symbol).as_str() == "embedBytes",
                 }
             }
             "file" => ExpressionKind::SourceLocation(ast::SourceLocation::File),
@@ -2082,7 +2089,7 @@ impl Parser {
             }
             _ => {
                 return Err(Spanned::new(
-                    ParserError::UnknownDirective(ident.symbol),
+                    ParserError::UnknownDirective(self.symbol_text(ident.symbol)),
                     ident.span,
                 ));
             }
@@ -2321,7 +2328,7 @@ impl Parser {
             self.check_enum_payload_visibility(&field.visibility);
             if !names.insert(field.identifier.symbol) {
                 self.emit_error(
-                    ParserError::DuplicateEnumPayloadField(field.identifier.symbol),
+                    ParserError::DuplicateEnumPayloadField(self.symbol_text(field.identifier.symbol)),
                     field.identifier.span,
                 );
             }
@@ -2380,7 +2387,7 @@ impl Parser {
             visibility: vis,
             label,
             mutability,
-            identifier: Identifier::emtpy(self.file.id),
+            identifier: Identifier::empty(self.file.id, &self.symbols),
             ty,
             span: lo.to(self.hi_span()),
         };
@@ -2503,7 +2510,7 @@ impl Parser {
         for (label, value) in entries {
             if let Some(label) = label {
                 if !seen.insert(label.symbol) {
-                    self.emit_error(ParserError::DuplicateTupleLabel(label.symbol), label.span);
+                    self.emit_error(ParserError::DuplicateTupleLabel(self.symbol_text(label.symbol)), label.span);
                 }
                 labels.push((values.len(), label));
             }
@@ -3035,7 +3042,7 @@ impl Parser {
                         }
                         let name = p.parse_identifier()?;
                         if !names.insert(name.symbol) {
-                            p.emit_error(ParserError::DuplicateNamedField(name.symbol), name.span);
+                            p.emit_error(ParserError::DuplicateNamedField(p.symbol_text(name.symbol)), name.span);
                         }
                         let pattern = if p.eat(Token::Colon) {
                             p.parse_pattern_alternatives(&[])?
@@ -3279,7 +3286,7 @@ impl Parser {
         if let Some(span) = removed_let {
             // Suggest the shorthand only where it can replace the declaration.
             let shorthand = match (&pattern.kind, &ty, &initializer) {
-                (PatternKind::Identifier(name), None, Some(_)) => Some(name.symbol),
+                (PatternKind::Identifier(name), None, Some(_)) => Some(self.symbol_text(name.symbol)),
                 _ => None,
             };
             self.emit_error(ParserError::LetRemoved(shorthand), span);
@@ -3522,9 +3529,9 @@ impl Parser {
         self.expect(Token::In)?;
         self.expect(Token::Hash)?;
         let directive = self.parse_identifier()?;
-        if directive.symbol.as_str() != "fields" {
+        if self.symbol_text(directive.symbol).as_str() != "fields" {
             return Err(Spanned::new(
-                ParserError::UnknownDirective(directive.symbol),
+                ParserError::UnknownDirective(self.symbol_text(directive.symbol)),
                 directive.span,
             ));
         }
@@ -5969,7 +5976,7 @@ impl Parser {
         } else if let Some(label) = label.as_ref() {
             *label
         } else if underscore_label {
-            Identifier::emtpy(self.file.id)
+            Identifier::empty(self.file.id, &self.symbols)
         } else {
             return Err(self.err_at_current(ParserError::ExpectedParameterName));
         };
@@ -6063,7 +6070,7 @@ impl Parser {
         // Removed categories retain only parsing recovery, so the declaration
         // diagnostic identifies the old name without unrelated arrow errors.
         matches!(
-            symbol.as_str(),
+            self.symbol_text(symbol).as_str(),
             "Fn" | "AsyncFn" | "FnMut" | "FnOnce" | "AsyncFnMut" | "AsyncFnOnce"
         )
     }
@@ -6234,22 +6241,16 @@ impl Parser {
         }
     }
 
-    fn path_last_segment_starts_uppercase(expr: &Expression) -> bool {
+    fn path_last_segment_starts_uppercase(&self, expr: &Expression) -> bool {
         match &expr.kind {
-            ExpressionKind::Identifier(id) => id
-                .symbol
-                .as_str()
-                .chars()
+            ExpressionKind::Identifier(id) => self.symbol_text(id.symbol).chars()
                 .next()
                 .is_some_and(|ch| ch.is_ascii_uppercase()),
-            ExpressionKind::Member { name, .. } => name
-                .symbol
-                .as_str()
-                .chars()
+            ExpressionKind::Member { name, .. } => self.symbol_text(name.symbol).chars()
                 .next()
                 .is_some_and(|ch| ch.is_ascii_uppercase()),
             ExpressionKind::Specialize { target, .. } => {
-                Self::path_last_segment_starts_uppercase(target)
+                self.path_last_segment_starts_uppercase(target)
             }
             _ => false,
         }
@@ -6350,7 +6351,7 @@ impl Parser {
         // Retain struct literal recognition for `Name { ... }`, `Mod::Name { ... }`,
         // `.variant { ... }`, and legacy `pkg.Name { ... }` diagnostics.
         if matches!(expr.kind, ExpressionKind::InferredMember { .. })
-            || Self::path_last_segment_starts_uppercase(&expr)
+            || self.path_last_segment_starts_uppercase(&expr)
         {
             return self.try_parse_struct_literal(expr);
         }
@@ -6363,7 +6364,7 @@ impl Parser {
                 target,
                 qualified: true,
                 ..
-            } if Self::path_last_segment_starts_uppercase(target)
+            } if self.path_last_segment_starts_uppercase(target)
         );
         if is_enum_variant_ctor
             && (self.next_matches(1, Token::RBrace)
@@ -6456,7 +6457,7 @@ impl Parser {
         };
 
         let mut has_implicit_it = false;
-        if !has_header && Self::block_uses_free_it(&block) {
+        if !has_header && Self::block_uses_free_it(&block, self.intern_symbol("it")) {
             has_implicit_it = true;
             let it_symbol = self.intern_symbol("it");
             inputs.push(FunctionParameter {
@@ -6494,9 +6495,9 @@ impl Parser {
         Ok(self.build_expr(ExpressionKind::Closure(closure), span))
     }
 
-    fn pattern_binds_name(pattern: &Pattern, name: &str) -> bool {
+    fn pattern_binds_name(pattern: &Pattern, name: Symbol) -> bool {
         match &pattern.kind {
-            PatternKind::Identifier(id) => id.symbol.as_str() == name,
+            PatternKind::Identifier(id) => id.symbol == name,
             PatternKind::Tuple(patterns, _)
             | PatternKind::PathTuple { fields: patterns, .. }
             | PatternKind::Or(patterns, _) => {
@@ -6516,10 +6517,11 @@ impl Parser {
         }
     }
 
-    fn block_uses_free_it(block: &Block) -> bool {
+    fn block_uses_free_it(block: &Block, it: Symbol) -> bool {
         use crate::ast::AstVisitor;
 
         struct FreeItFinder {
+            it: Symbol,
             found: bool,
         }
 
@@ -6536,7 +6538,7 @@ impl Parser {
                             if let Some(init) = &local.initializer {
                                 self.visit_expression(init);
                             }
-                            if Parser::pattern_binds_name(&local.pattern, "it") {
+                            if Parser::pattern_binds_name(&local.pattern, self.it) {
                                 // `it` is now locally shadowed for the rest of this block.
                                 return;
                             }
@@ -6544,7 +6546,7 @@ impl Parser {
                         StatementKind::Declaration(_) => {}
                         StatementKind::For(for_stmt) => {
                             self.visit_expression(&for_stmt.iterator);
-                            if !Parser::pattern_binds_name(&for_stmt.pattern, "it") {
+                            if !Parser::pattern_binds_name(&for_stmt.pattern, self.it) {
                                 if let Some(clause) = &for_stmt.clause {
                                     self.visit_expression(clause);
                                 }
@@ -6561,7 +6563,7 @@ impl Parser {
                     return;
                 }
                 match &expr.kind {
-                    ExpressionKind::Identifier(id) if id.symbol.as_str() == "it" => {
+                    ExpressionKind::Identifier(id) if id.symbol == self.it => {
                         self.found = true;
                     }
                     ExpressionKind::Closure(closure) => {
@@ -6570,7 +6572,7 @@ impl Parser {
                             .prototype
                             .inputs
                             .iter()
-                            .any(|param| param.name.symbol.as_str() == "it");
+                            .any(|param| param.name.symbol == self.it);
                         if !shadows_it {
                             self.visit_expression(&closure.body);
                         }
@@ -6578,7 +6580,7 @@ impl Parser {
                     ExpressionKind::Match(match_expr) => {
                         self.visit_expression(&match_expr.value);
                         for arm in &match_expr.arms {
-                            if !Parser::pattern_binds_name(&arm.pattern, "it") {
+                            if !Parser::pattern_binds_name(&arm.pattern, self.it) {
                                 self.visit_expression(&arm.body);
                             }
                         }
@@ -6586,7 +6588,7 @@ impl Parser {
                     ExpressionKind::Select(select_expr) => {
                         for arm in &select_expr.arms {
                             self.visit_expression(&arm.operation);
-                            if !Parser::pattern_binds_name(&arm.pattern, "it") {
+                            if !Parser::pattern_binds_name(&arm.pattern, self.it) {
                                 self.visit_expression(&arm.body);
                             }
                         }
@@ -6596,7 +6598,7 @@ impl Parser {
             }
         }
 
-        let mut finder = FreeItFinder { found: false };
+        let mut finder = FreeItFinder { it, found: false };
         finder.visit_block(block);
         finder.found
     }
@@ -6698,7 +6700,7 @@ impl Parser {
                 }
             };
             if !names.insert(name.symbol) {
-                self.emit_error(ParserError::DuplicateNamedField(name.symbol), name.span);
+                self.emit_error(ParserError::DuplicateNamedField(self.symbol_text(name.symbol)), name.span);
             }
         }
         Ok((fields, base))
@@ -6772,15 +6774,14 @@ impl Parser {
 }
 
 #[derive(Debug)]
-pub(crate) enum ParserError {
-    Expected(Token, Token),
+pub(crate) enum ParserError {    Expected(Token, Token),
     ExpectedListSeparator {
         separator: Token,
         close: Token,
         found: Token,
     },
     ExpectedIdentifier,
-    UnknownDirective(Symbol),
+    UnknownDirective(ecow::EcoString),
     ExpectedAssetPath,
     ExpectedSemiColon,
     QualifiedPathSeparator,
@@ -6801,12 +6802,12 @@ pub(crate) enum ParserError {
     ExplicitReceiverRemoved,
     ReferencePatternRemoved,
     MoveClosureRemoved,
-    RemovedCallableKind(Symbol),
+    RemovedCallableKind(ecow::EcoString),
     LegacyPipeClosure,
     EnumPayloadVisibility,
-    DuplicateEnumPayloadField(Symbol),
-    DuplicateNamedField(Symbol),
-    DuplicateTupleLabel(Symbol),
+    DuplicateEnumPayloadField(ecow::EcoString),
+    DuplicateNamedField(ecow::EcoString),
+    DuplicateTupleLabel(ecow::EcoString),
     LabeledFunctionTypeInput,
     StructUpdateBaseMustBeLast,
     InvalidNamedPatternRest,
@@ -6828,7 +6829,7 @@ pub(crate) enum ParserError {
     ExpectedExpression,
     InvalidCollectionType,
     ExpectedStaticVar,
-    LetRemoved(Option<Symbol>),
+    LetRemoved(Option<ecow::EcoString>),
     RelaxedBoundRemoved,
     MissingStaticTypeAnnotation,
     MissingStaticInitializer,
@@ -7150,13 +7151,21 @@ mod tests {
     use crate::parse::IntegerTypeSuffix;
     use crate::parse::lexer::Lexer;
 
+    thread_local! {
+        static TEST_NAMES: Rc<SymbolTable> = Rc::default();
+    }
+
+    fn symbol_text(symbol: Symbol) -> ecow::EcoString {
+        TEST_NAMES.with(|names| names.text(symbol))
+    }
+
     fn assert_nested_types_parse_once(open: &str, close: &str) {
         let depth = 10;
         let source = format!("{}int{}", open.repeat(depth), close.repeat(depth));
         let file = Lexer::new(&source, crate::span::FileID::new(0))
             .tokenize()
             .unwrap();
-        let mut parser = Parser::new(file, NextNode::default());
+        let mut parser = Parser::new(file, NextNode::default(), TEST_NAMES.with(Rc::clone));
         parser.parse_type().unwrap();
         let allocations = parser.next_index.borrow().allocations;
         assert!(
@@ -7200,7 +7209,7 @@ mod tests {
             .tokenize()
             .unwrap();
         let original = format!("{:?}", file.tokens);
-        let mut parser = Parser::new(file, NextNode::default());
+        let mut parser = Parser::new(file, NextNode::default(), TEST_NAMES.with(Rc::clone));
         assert!(parser.parse_optional_type_arguments().unwrap().is_none());
         assert_eq!(parser.cursor, 0);
         assert_eq!(parser.next_index.borrow().next_index, 0);
@@ -7215,7 +7224,7 @@ mod tests {
         };
         let param = &function.signature.prototype.inputs[0];
         assert_eq!(param.attributes.len(), 1);
-        assert_eq!(param.attributes[0].identifier.symbol.as_str(), "marker");
+        assert_eq!(symbol_text(param.attributes[0].identifier.symbol), "marker");
         assert_eq!(param.span.start.offset, 7);
     }
 
@@ -7277,7 +7286,7 @@ mod tests {
         let file = Lexer::new(input, crate::span::FileID::new(0))
             .tokenize()
             .expect("Lexing failed");
-        Parser::new(file, NextNode::default())
+        Parser::new(file, NextNode::default(), TEST_NAMES.with(Rc::clone))
     }
 
     fn parse_decls_and_module_decls(
@@ -7392,7 +7401,7 @@ mod tests {
         assert!(decls.is_empty(), "mod should not produce a Declaration");
         assert_eq!(module_decls.len(), 1);
         let m = &module_decls[0];
-        assert_eq!(m.name.symbol.as_str(), "unix");
+        assert_eq!(symbol_text(m.name.symbol), "unix");
         assert_eq!(m.visibility.level, VisibilityLevel::Inherent);
         assert!(m.attributes.is_empty());
     }
@@ -7413,7 +7422,7 @@ mod tests {
         assert_eq!(module_decls.len(), 1);
         assert_eq!(module_decls[0].attributes.len(), 1);
         assert_eq!(
-            module_decls[0].attributes[0].identifier.symbol.as_str(),
+            symbol_text(module_decls[0].attributes[0].identifier.symbol),
             "cfg"
         );
     }
@@ -7565,8 +7574,11 @@ mod tests {
         let TypeKind::Nominal(interface) = &implementation.interface.as_ref().unwrap().kind else {
             panic!("expected nominal interface");
         };
-        assert_eq!(target.segments[0].identifier.symbol.as_str(), "Box");
-        assert_eq!(interface.segments[0].identifier.symbol.as_str(), "Readable");
+        assert_eq!(symbol_text(target.segments[0].identifier.symbol), "Box");
+        assert_eq!(
+            symbol_text(interface.segments[0].identifier.symbol),
+            "Readable"
+        );
         assert!(target.segments[0].arguments.is_some());
         assert!(implementation.generics.where_clause.is_some());
         let ty = parse_type_str("library::Wrapper[int32]::Item");
@@ -7595,7 +7607,7 @@ mod tests {
                 "{target}: receiver must be Self, not &Self"
             );
             assert_eq!(
-                method.signature.prototype.inputs[1].name.symbol.as_str(),
+                symbol_text(method.signature.prototype.inputs[1].name.symbol),
                 "scale"
             );
             let AssociatedDeclarationKind::Function(method) = &implementation.declarations[1].kind
@@ -7954,7 +7966,7 @@ mod tests {
         };
         assert!(class.fields[0].default_value.is_some());
         assert_eq!(class.fields[1].mutability, Mutability::Immutable);
-        assert_eq!(class.fields[2].identifier.symbol.as_str(), "weak");
+        assert_eq!(symbol_text(class.fields[2].identifier.symbol), "weak");
         parse_one_decl("func f() { weak := 1 }");
         for source in [
             "class Node { weak parent: Node? = .none }",
@@ -8048,7 +8060,7 @@ mod tests {
             panic!("named payload")
         };
         assert_eq!(fields.len(), 2);
-        assert_eq!(fields[0].identifier.symbol.as_str(), "fixed");
+        assert_eq!(symbol_text(fields[0].identifier.symbol), "fixed");
         assert_eq!(fields[0].label.unwrap().identifier, fields[0].identifier);
         assert_eq!(fields[0].mutability, Mutability::Immutable);
         assert_eq!(fields[1].mutability, Mutability::Mutable);
@@ -8260,7 +8272,7 @@ mod tests {
         };
         assert_eq!(values.len(), 2);
         assert_eq!(labels[0].0, 1);
-        assert_eq!(labels[0].1.symbol.as_str(), "high");
+        assert_eq!(symbol_text(labels[0].1.symbol), "high");
 
         let singleton = parse_expr_str("(low: 1)");
         let ExpressionKind::Tuple(values, labels) = singleton.kind else {
@@ -8268,7 +8280,7 @@ mod tests {
         };
         assert_eq!(values.len(), 1);
         assert_eq!(labels[0].0, 0);
-        assert_eq!(labels[0].1.symbol.as_str(), "low");
+        assert_eq!(symbol_text(labels[0].1.symbol), "low");
     }
 
     #[test]
@@ -8676,17 +8688,17 @@ mod tests {
 
         match &args[1].expression.kind {
             ExpressionKind::Identifier(identifier) => {
-                assert_eq!(identifier.symbol.as_str(), "name");
+                assert_eq!(symbol_text(identifier.symbol), "name");
             }
             _ => panic!("expected interpolation expression as second argument"),
         }
 
         match &callee.kind {
             ExpressionKind::Member { target, name, .. } => {
-                assert_eq!(name.symbol.as_str(), "sprintf");
+                assert_eq!(symbol_text(name.symbol), "sprintf");
                 match &target.kind {
                     ExpressionKind::Identifier(identifier) => {
-                        assert_eq!(identifier.symbol.as_str(), "std");
+                        assert_eq!(symbol_text(identifier.symbol), "std");
                     }
                     _ => panic!("expected std identifier target"),
                 }
@@ -10575,7 +10587,7 @@ mod tests {
         match &expr.kind {
             ExpressionKind::OptionalEvaluation(inner) => match &inner.kind {
                 ExpressionKind::Member { target, name, .. } => {
-                    assert_eq!(name.symbol.as_str(), "b");
+                    assert_eq!(symbol_text(name.symbol), "b");
                     assert!(matches!(target.kind, ExpressionKind::OptionalUnwrap(_)));
                 }
                 _ => panic!("Expected Member inside OptionalEvaluation"),
@@ -10598,7 +10610,7 @@ mod tests {
                         name: outer_name,
                         ..
                     } => {
-                        assert_eq!(outer_name.symbol.as_str(), "c");
+                        assert_eq!(symbol_text(outer_name.symbol), "c");
                         // Should be OptionalUnwrap(Member(..))
                         match &outer_target.kind {
                             ExpressionKind::OptionalUnwrap(middle) => {
@@ -10609,7 +10621,7 @@ mod tests {
                                         name: inner_name,
                                         ..
                                     } => {
-                                        assert_eq!(inner_name.symbol.as_str(), "b");
+                                        assert_eq!(symbol_text(inner_name.symbol), "b");
                                         // Should be OptionalUnwrap(a)
                                         assert!(matches!(
                                             inner_target.kind,
@@ -10738,11 +10750,7 @@ mod tests {
             panic!("expected blocking extern function");
         };
         assert_eq!(
-            function
-                .abi
-                .as_ref()
-                .expect("expected blocking ABI")
-                .as_str(),
+            symbol_text(function.abi.expect("expected blocking ABI")),
             "blocking"
         );
     }
@@ -10753,8 +10761,8 @@ mod tests {
         let decl = parse_one_decl(input);
         match &decl.kind {
             DeclarationKind::Function(func) => {
-                assert_eq!(func.abi.as_ref().expect("Expected ABI").as_str(), "C");
-                assert_eq!(decl.identifier.symbol.as_str(), "malloc");
+                assert_eq!(symbol_text(func.abi.expect("Expected ABI")), "C");
+                assert_eq!(symbol_text(decl.identifier.symbol), "malloc");
             }
             _ => panic!("Expected function"),
         }
@@ -10766,7 +10774,7 @@ mod tests {
         match &decl.kind {
             DeclarationKind::Function(func) => {
                 assert!(func.is_unsafe);
-                assert_eq!(decl.identifier.symbol.as_str(), "foo");
+                assert_eq!(symbol_text(decl.identifier.symbol), "foo");
             }
             _ => panic!("Expected function"),
         }
@@ -10779,8 +10787,8 @@ mod tests {
         match &decl.kind {
             DeclarationKind::Function(func) => {
                 assert!(func.is_unsafe);
-                assert_eq!(func.abi.as_ref().expect("Expected ABI").as_str(), "C");
-                assert_eq!(decl.identifier.symbol.as_str(), "read");
+                assert_eq!(symbol_text(func.abi.expect("Expected ABI")), "C");
+                assert_eq!(symbol_text(decl.identifier.symbol), "read");
             }
             _ => panic!("Expected function"),
         }
@@ -10853,7 +10861,7 @@ mod tests {
                 };
                 for accessor in &block.declarations[1..] {
                     assert_eq!(accessor.attributes.len(), 1);
-                    assert_eq!(accessor.attributes[0].identifier.symbol.as_str(), policy);
+                    assert_eq!(symbol_text(accessor.attributes[0].identifier.symbol), policy);
                 }
             }
         }
@@ -11033,7 +11041,7 @@ mod tests {
                 block
                     .declarations
                     .iter()
-                    .any(|declaration| declaration.identifier.symbol.as_str() == "ok")
+                    .any(|declaration| symbol_text(declaration.identifier.symbol) == "ok")
             );
         }
     }
@@ -11044,7 +11052,7 @@ mod tests {
     fn test_simple_attribute() {
         let decl = parse_one_decl("@inline func foo() {}");
         assert_eq!(decl.attributes.len(), 1);
-        assert_eq!(decl.attributes[0].identifier.symbol.as_str(), "inline");
+        assert_eq!(symbol_text(decl.attributes[0].identifier.symbol), "inline");
         assert!(decl.attributes[0].args.is_none());
     }
 
@@ -11075,12 +11083,12 @@ mod tests {
     fn test_attribute_with_key_value_string() {
         let decl = parse_one_decl(r#"@cfg(target_os = "macos") func foo() {}"#);
         assert_eq!(decl.attributes.len(), 1);
-        assert_eq!(decl.attributes[0].identifier.symbol.as_str(), "cfg");
+        assert_eq!(symbol_text(decl.attributes[0].identifier.symbol), "cfg");
         let args = decl.attributes[0].args.as_ref().expect("Expected args");
         assert_eq!(args.items.len(), 1);
         match &args.items[0] {
             AttributeArg::KeyValue { key, value, .. } => {
-                assert_eq!(key.symbol.as_str(), "target_os");
+                assert_eq!(symbol_text(key.symbol), "target_os");
                 match value {
                     Literal::String { value } => assert_eq!(value, "macos"),
                     _ => panic!("Expected string literal"),
@@ -11100,13 +11108,13 @@ mod tests {
 
         match &args.items[0] {
             AttributeArg::KeyValue { key, .. } => {
-                assert_eq!(key.symbol.as_str(), "target_os")
+                assert_eq!(symbol_text(key.symbol), "target_os")
             }
             _ => panic!("Expected key-value"),
         }
         match &args.items[1] {
             AttributeArg::KeyValue { key, .. } => {
-                assert_eq!(key.symbol.as_str(), "target_arch")
+                assert_eq!(symbol_text(key.symbol), "target_arch")
             }
             _ => panic!("Expected key-value"),
         }
@@ -11123,7 +11131,7 @@ mod tests {
             .expect("Expected cfg expression")
         {
             CfgExpr::Flag { name, .. } => {
-                assert_eq!(name.symbol.as_str(), "test")
+                assert_eq!(symbol_text(name.symbol), "test")
             }
             _ => panic!("Expected cfg flag expression"),
         }
@@ -11133,8 +11141,8 @@ mod tests {
     fn test_multiple_attributes() {
         let decl = parse_one_decl(r#"@inline @cfg(target_os = "macos") func foo() {}"#);
         assert_eq!(decl.attributes.len(), 2);
-        assert_eq!(decl.attributes[0].identifier.symbol.as_str(), "inline");
-        assert_eq!(decl.attributes[1].identifier.symbol.as_str(), "cfg");
+        assert_eq!(symbol_text(decl.attributes[0].identifier.symbol), "inline");
+        assert_eq!(symbol_text(decl.attributes[1].identifier.symbol), "cfg");
     }
 
     #[test]
@@ -11145,7 +11153,7 @@ mod tests {
         assert_eq!(args.items.len(), 1);
         match &args.items[0] {
             AttributeArg::KeyValue { key, value, .. } => {
-                assert_eq!(key.symbol.as_str(), "major");
+                assert_eq!(symbol_text(key.symbol), "major");
                 assert!(matches!(value, Literal::Integer { .. }));
             }
             _ => panic!("Expected key-value"),
@@ -11160,7 +11168,7 @@ mod tests {
         assert_eq!(args.items.len(), 1);
         match &args.items[0] {
             AttributeArg::KeyValue { key, value, .. } => {
-                assert_eq!(key.symbol.as_str(), "major");
+                assert_eq!(symbol_text(key.symbol), "major");
                 assert!(matches!(
                     value,
                     Literal::Integer {
@@ -11177,7 +11185,7 @@ mod tests {
     fn test_attribute_with_positional_literal_arg() {
         let decl = parse_one_decl(r#"@doc("hello") func foo() {}"#);
         assert_eq!(decl.attributes.len(), 1);
-        assert_eq!(decl.attributes[0].identifier.symbol.as_str(), "doc");
+        assert_eq!(symbol_text(decl.attributes[0].identifier.symbol), "doc");
 
         let args = decl.attributes[0].args.as_ref().expect("Expected args");
         assert_eq!(args.items.len(), 1);
@@ -11195,7 +11203,7 @@ mod tests {
     fn test_tag_attribute_with_string_literals() {
         let decl = parse_one_decl(r#"@tag("smoke", "slow") func foo() {}"#);
         assert_eq!(decl.attributes.len(), 1);
-        assert_eq!(decl.attributes[0].identifier.symbol.as_str(), "tag");
+        assert_eq!(symbol_text(decl.attributes[0].identifier.symbol), "tag");
 
         let args = decl.attributes[0].args.as_ref().expect("Expected args");
         assert_eq!(args.items.len(), 2);
@@ -11279,7 +11287,7 @@ mod tests {
                 assert!(func.is_async);
                 assert!(!func.is_unsafe);
                 assert!(func.signature.prototype.output.is_some());
-                assert_eq!(decl.identifier.symbol.as_str(), "fetch");
+                assert_eq!(symbol_text(decl.identifier.symbol), "fetch");
             }
             _ => panic!("Expected function"),
         }

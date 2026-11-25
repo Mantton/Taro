@@ -403,7 +403,7 @@ pub(super) fn validate_erased_access<'ctx>(
         let [input] = signature.inputs.as_slice() else {
             return Err("erased access requires exactly one receiver".into());
         };
-        if input.name.as_str() != "self"
+        if gcx.symbol_text(input.name).as_str() != "self"
             || input.label.is_some()
             || input.default_provider.is_some()
             || signature.abi.is_some()
@@ -545,7 +545,7 @@ pub(super) fn validate_opened_defaults<'ctx>(
             || actual.is_variadic
             || actual.inputs.len() != 1 + provider_signature.inputs.len()
             || !valid_caller_inputs(gcx, &actual.inputs[1..])
-            || actual.inputs[0].name.as_str() != "source"
+            || gcx.symbol_text(actual.inputs[0].name).as_str() != "source"
             || actual.inputs[0].label.is_some()
             || actual.inputs[0].default_provider.is_some()
             || actual.output != provider_signature.output
@@ -856,7 +856,7 @@ pub(super) fn validate_class_payloads_with_result<'ctx>(
                         TyKind::Reference(class) => class,
                         _ => ty,
                     };
-                    input.name.as_str() == "self"
+                    gcx.symbol_text(input.name).as_str() == "self"
                         && matches!(ty.kind(), TyKind::Adt(class, _) if class.id == owner.id)
                 });
                 if !receiver_is_owner
@@ -1059,7 +1059,7 @@ pub(super) fn validate_class_payloads_with_result<'ctx>(
                     TyKind::Reference(class) => class,
                     _ => input.ty,
                 };
-                input.name.as_str() == "self"
+                gcx.symbol_text(input.name).as_str() == "self"
                     && matches!(ty.kind(), TyKind::Adt(class, _) if class.id == owner.id)
             });
             if !known_requirement
@@ -1810,7 +1810,7 @@ pub(super) fn validate_class_defaults<'ctx>(
             || !signature
                 .inputs
                 .first()
-                .is_some_and(|input| input.name.as_str() == "self")
+                .is_some_and(|input| gcx.symbol_text(input.name).as_str() == "self")
         {
             return Err("class default contract does not describe an instance default".into());
         }
@@ -1880,7 +1880,7 @@ mod tests {
                     inherited,
                     gcx.store.synthetic_definitions.borrow()[&inherited].clone(),
                 )];
-                let mut symbols = wire::SymbolTableBuilder::default();
+                let mut symbols = wire::SymbolTableBuilder::new(gcx.symbols());
                 let encoded = wire::resolution_output_to_wire(
                     gcx.resolution_output(gcx.package_index()),
                     &mut symbols,
@@ -1892,7 +1892,7 @@ mod tests {
                     gcx,
                     &encoded,
                     wire::FileRemap { old_to_new: &files },
-                    wire::SymbolTableRef::new(&table, &invalid),
+                    wire::SymbolTableRef::new(gcx.symbols(), &table, &invalid),
                 )
                 .unwrap();
                 validate_required_initializers(gcx, &database, &resolution, &synthetics).unwrap();
@@ -1984,7 +1984,7 @@ func main() {}
                 assert_eq!(database.def_to_class_default_contract.len(), 4);
                 let id = bodies
                     .iter()
-                    .find(|body| gcx.definition_ident(body.owner).symbol.as_str() == "keep")
+                    .find(|body| gcx.symbol_text(gcx.definition_ident(body.owner).symbol).as_str() == "keep")
                     .unwrap()
                     .owner;
                 assert!(
@@ -1992,7 +1992,7 @@ func main() {}
                         .preserves_dynamic_self
                         .unwrap()
                 );
-                let mut symbols = super::super::wire::SymbolTableBuilder::default();
+                let mut symbols = super::super::wire::SymbolTableBuilder::new(gcx.symbols());
                 let mut wire = super::super::wire::type_database_to_wire(&database, &mut symbols);
                 let table = symbols.finish();
                 let invalid = std::cell::Cell::new(None);
@@ -2006,7 +2006,7 @@ func main() {}
                     gcx,
                     &wire,
                     super::super::wire::FileRemap { old_to_new: &files },
-                    super::super::wire::SymbolTableRef::new(&table, &invalid),
+                    super::super::wire::SymbolTableRef::new(gcx.symbols(), &table, &invalid),
                 );
                 assert_eq!(
                     decoded.def_to_class_default_contract,
@@ -2064,7 +2064,7 @@ func main() {}
                 validate_class_payloads(gcx, &database, &synthetics).unwrap();
                 let index = synthetics
                     .iter()
-                    .position(|(_, definition)| definition.name.as_str() == "choose")
+                    .position(|(_, definition)| gcx.symbol_text(definition.name).as_str() == "choose")
                     .unwrap();
                 let original = synthetics[index].1.clone();
                 let mut invalid = original.signature.clone();
@@ -2083,9 +2083,9 @@ func main() {}
                 // both must reject the now-inconsistent generic environment.
                 assert!(validate_class_payloads(gcx, &database, &synthetics).is_err());
                 synthetics[index].1 = original;
-                let mut symbols = super::super::wire::SymbolTableBuilder::default();
+                let mut symbols = super::super::wire::SymbolTableBuilder::new(gcx.symbols());
                 for (id, definition) in &synthetics {
-                    let wire = super::super::wire::synthetic_definition_to_wire(*id, definition);
+                    let wire = super::super::wire::synthetic_definition_to_wire(gcx.symbols(), *id, definition);
                     // Encoding all new kinds is independent of hydration order.
                     assert_eq!(wire.id.index, id.index().raw());
                 }
@@ -2137,7 +2137,7 @@ func main() {}
                     requirements
                         .methods
                         .iter()
-                        .find(|method| method.name.as_str() == name)
+                        .find(|method| gcx.symbol_text(method.name).as_str() == name)
                         .unwrap()
                         .id
                 };
@@ -2219,7 +2219,7 @@ func main() {}
                     .with_session_type_database(|database| {
                         database.def_to_fn_sig.keys().copied().find(|id| {
                             gcx.definition_parent(*id) == Some(record.extension)
-                                && gcx.definition_ident(*id).symbol.as_str() == "read"
+                                && gcx.symbol_text(gcx.definition_ident(*id).symbol).as_str() == "read"
                         })
                     })
                     .unwrap();
@@ -2273,7 +2273,7 @@ func main() {}
                     .map(|(id, value)| (*id, value.clone()))
                     .collect();
                 validate_class_payloads(gcx, &database, &synthetics).unwrap();
-                let mut symbols = super::super::wire::SymbolTableBuilder::default();
+                let mut symbols = super::super::wire::SymbolTableBuilder::new(gcx.symbols());
                 let mut wire = super::super::wire::type_database_to_wire(&database, &mut symbols);
                 let symbols = symbols.finish();
                 let invalid = std::cell::Cell::new(None);
@@ -2287,7 +2287,7 @@ func main() {}
                     gcx,
                     &wire,
                     super::super::wire::FileRemap { old_to_new: &files },
-                    super::super::wire::SymbolTableRef::new(&symbols, &invalid),
+                    super::super::wire::SymbolTableRef::new(gcx.symbols(), &symbols, &invalid),
                 );
                 assert_eq!(decoded.class_adoptions[0].conformance, conformance);
                 assert_eq!(decoded.class_adoptions[0].methods, methods);
@@ -2371,7 +2371,7 @@ func main() {}
                 let mut database = gcx.with_session_type_database(|database| database.clone());
                 let method = bodies
                     .iter()
-                    .find(|body| gcx.definition_ident(body.owner).symbol.as_str() == "replace")
+                    .find(|body| gcx.symbol_text(gcx.definition_ident(body.owner).symbol).as_str() == "replace")
                     .unwrap()
                     .owner;
                 assert_eq!(
@@ -2417,14 +2417,14 @@ func main() {}
                     .collect();
                 validate_class_payloads(gcx, &database, &synthetics).unwrap();
                 let original = database.def_to_struct_def[&child].clone();
-                let mut symbols = super::super::wire::SymbolTableBuilder::default();
+                let mut symbols = super::super::wire::SymbolTableBuilder::new(gcx.symbols());
                 let wire = super::super::wire::struct_definition_to_wire(&original, &mut symbols);
                 let table = symbols.finish();
                 let invalid = std::cell::Cell::new(None);
                 let decoded = super::super::wire::struct_definition_from_wire(
                     gcx,
                     &wire,
-                    super::super::wire::SymbolTableRef::new(&table, &invalid),
+                    super::super::wire::SymbolTableRef::new(gcx.symbols(), &table, &invalid),
                 );
                 assert_eq!(
                     decoded.class_info.unwrap().methods,
@@ -2907,7 +2907,7 @@ mod return_only_tests {
         crate::test_support::check_script(
             "enum Maybe { case none; case some(&int32) }\nstruct View { value: Maybe = .none }\nfunc empty() -> View { View {} }\nfunc main() {}",
             |_, gcx| {
-                let mut symbols = SymbolTableBuilder::default();
+                let mut symbols = SymbolTableBuilder::new(gcx.symbols());
                 let wire = gcx
                     .with_session_type_database(|db| wire::type_database_to_wire(db, &mut symbols));
                 let symbols = symbols.finish();
@@ -2923,7 +2923,7 @@ mod return_only_tests {
                     gcx,
                     &wire,
                     FileRemap { old_to_new: &files },
-                    SymbolTableRef::new(&symbols, &invalid),
+                    SymbolTableRef::new(gcx.symbols(), &symbols, &invalid),
                 );
                 validate_class_defaults(gcx, &restored, resolution).unwrap();
                 let provider = *gcx
@@ -3067,7 +3067,7 @@ func main() {}
                     .root
                     .declarations
                     .iter()
-                    .find(|item| item.identifier.symbol.as_str() == "context")
+                    .find(|item| gcx.symbol_text(item.identifier.symbol).as_str() == "context")
                     .unwrap()
                     .id;
                 let provider = gcx.get_signature(source).inputs[1]

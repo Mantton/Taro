@@ -65,8 +65,8 @@ pub(crate) fn validate_attributes(gcx: GlobalContext<'_>, attributes: &[Attribut
                     seen_message = true;
                 }
                 AttributeArg::KeyValue { key, value, span } => {
-                    let key_name = key.symbol.as_str();
-                    match (key_name, value) {
+                    let key_name = gcx.symbol_text(key.symbol);
+                    match (key_name.as_str(), value) {
                         ("message", Literal::String(_)) => {
                             if seen_message {
                                 gcx.dcx().emit_error(
@@ -83,7 +83,7 @@ pub(crate) fn validate_attributes(gcx: GlobalContext<'_>, attributes: &[Attribut
                                     Some(*span),
                                 );
                             }
-                            if sym.as_str().trim().is_empty() {
+                            if gcx.symbol_text(*sym).as_str().trim().is_empty() {
                                 gcx.dcx().emit_error(
                                     "@deprecated replace value cannot be empty".into(),
                                     Some(*span),
@@ -108,7 +108,7 @@ pub(crate) fn validate_attributes(gcx: GlobalContext<'_>, attributes: &[Attribut
                     }
                 }
                 AttributeArg::Flag { key, span } => {
-                    if key.symbol.as_str() == "advisory" {
+                    if gcx.symbol_text(key.symbol).as_str() == "advisory" {
                         if seen_advisory {
                             gcx.dcx().emit_error(
                                 "duplicate 'advisory' flag in @deprecated".into(),
@@ -120,7 +120,7 @@ pub(crate) fn validate_attributes(gcx: GlobalContext<'_>, attributes: &[Attribut
                         gcx.dcx().emit_error(
                             format!(
                                 "unknown @deprecated flag '{}'; expected 'advisory'",
-                                key.symbol.as_str()
+                                gcx.symbol_text(key.symbol).as_str()
                             ),
                             Some(*span),
                         );
@@ -160,12 +160,12 @@ pub fn deprecation_info(gcx: GlobalContext<'_>, def_id: DefinitionID) -> Option<
                     key,
                     value: Literal::String(sym),
                     ..
-                } => match key.symbol.as_str() {
+                } => match gcx.symbol_text(key.symbol).as_str() {
                     "message" => message = Some(gcx.symbol_text(*sym).to_string()),
                     "replace" => replacement = Some(gcx.symbol_text(*sym).to_string()),
                     _ => {}
                 },
-                AttributeArg::Flag { key, .. } if key.symbol.as_str() == "advisory" => {
+                AttributeArg::Flag { key, .. } if gcx.symbol_text(key.symbol).as_str() == "advisory" => {
                     advisory = true;
                 }
                 _ => {}
@@ -264,26 +264,26 @@ impl<'ctx> Actor<'ctx, '_> {
         }
     }
 
-    fn path_leaf_span_and_name(path: &hir::ResolvedPath, fallback: Span) -> (Span, String) {
+    fn path_leaf_span_and_name(&self, path: &hir::ResolvedPath, fallback: Span) -> (Span, String) {
         match path {
             hir::ResolvedPath::Resolved(p) => p
                 .segments
                 .last()
-                .map(|seg| (seg.identifier.span, seg.identifier.symbol.as_str().to_string()))
+                .map(|seg| (seg.identifier.span, self.gcx.symbol_text(seg.identifier.symbol).as_str().to_string()))
                 .unwrap_or((fallback, String::new())),
             hir::ResolvedPath::Relative(_, seg) => {
-                (seg.identifier.span, seg.identifier.symbol.as_str().to_string())
+                (seg.identifier.span, self.gcx.symbol_text(seg.identifier.symbol).as_str().to_string())
             }
         }
     }
 
-    fn callee_leaf_span_and_name(callee: &hir::Expression) -> Option<(Span, String)> {
+    fn callee_leaf_span_and_name(&self, callee: &hir::Expression) -> Option<(Span, String)> {
         match &callee.kind {
             hir::ExpressionKind::Path(path) => {
-                Some(Self::path_leaf_span_and_name(path, callee.span))
+                Some(self.path_leaf_span_and_name(path, callee.span))
             }
             hir::ExpressionKind::Member { name, .. } => {
-                Some((name.span, name.symbol.as_str().to_string()))
+                Some((name.span, self.gcx.symbol_text(name.symbol).as_str().to_string()))
             }
             _ => None,
         }
@@ -309,7 +309,7 @@ impl<'ctx> HirVisitor for Actor<'ctx, '_> {
                             .map(|info| info.method_id)
                     });
                 if let (Some(def_id), Some((ident_span, name))) =
-                    (def_id, Self::callee_leaf_span_and_name(callee))
+                    (def_id, self.callee_leaf_span_and_name(callee))
                 {
                     self.check_def_use(def_id, ident_span, &name);
                 }
@@ -335,11 +335,11 @@ impl<'ctx> HirVisitor for Actor<'ctx, '_> {
                             .and_then(|r| self.resolve_def_from_resolution(&r))
                     });
                 if let Some(def_id) = def_id {
-                    self.check_def_use(def_id, name.span, name.symbol.as_str());
+                    self.check_def_use(def_id, name.span, self.gcx.symbol_text(name.symbol).as_str());
                 }
             }
             hir::ExpressionKind::Path(path) => {
-                let (ident_span, name) = Self::path_leaf_span_and_name(path, node.span);
+                let (ident_span, name) = self.path_leaf_span_and_name(path, node.span);
                 let def_id = self
                     .results
                     .overload_source(node.id)
@@ -363,12 +363,12 @@ impl<'ctx> HirVisitor for Actor<'ctx, '_> {
                             .and_then(|r| self.resolve_def_from_resolution(&r))
                     });
                 if let Some(def_id) = def_id {
-                    self.check_def_use(def_id, name.span, name.symbol.as_str());
+                    self.check_def_use(def_id, name.span, self.gcx.symbol_text(name.symbol).as_str());
                 }
             }
             hir::ExpressionKind::StructLiteral(lit) => {
                 if let hir::ConstructorPath::Qualified { path } = &lit.path {
-                    let (ident_span, name) = Self::path_leaf_span_and_name(path, node.span);
+                    let (ident_span, name) = self.path_leaf_span_and_name(path, node.span);
                     if let Some(def_id) = self.resolve_def_from_path(path) {
                         self.check_def_use(def_id, ident_span, &name);
                     }
@@ -381,7 +381,7 @@ impl<'ctx> HirVisitor for Actor<'ctx, '_> {
 
     fn visit_type(&mut self, node: &hir::Type) -> Self::Result {
         if let hir::TypeKind::Nominal(path) = &node.kind {
-            let (ident_span, name) = Self::path_leaf_span_and_name(path, node.span);
+            let (ident_span, name) = self.path_leaf_span_and_name(path, node.span);
             if let Some(def_id) = self.resolve_def_from_path(path) {
                 self.check_def_use(def_id, ident_span, &name);
             }

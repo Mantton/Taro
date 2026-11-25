@@ -1418,7 +1418,7 @@ mod precise_capture_tests {
                     captures.captures[1].source_id
                 );
                 use crate::metadata::wire::{self, SymbolTableBuilder, SymbolTableRef};
-                let mut symbols = SymbolTableBuilder::default();
+                let mut symbols = SymbolTableBuilder::new(gcx.symbols());
                 let wire = wire::closure_captures_to_wire(&captures, &mut symbols);
                 let wire: wire::ClosureCapturesWire =
                     bincode::deserialize(&bincode::serialize(&wire).unwrap()).unwrap();
@@ -1427,7 +1427,7 @@ mod precise_capture_tests {
                 let restored = wire::closure_captures_from_wire(
                     gcx,
                     &wire,
-                    SymbolTableRef::new(&symbols, &invalid),
+                    SymbolTableRef::new(gcx.symbols(), &symbols, &invalid),
                 );
                 for (original, restored) in captures.captures.iter().zip(&restored.captures) {
                     assert_eq!(original.root_ty, restored.root_ty);

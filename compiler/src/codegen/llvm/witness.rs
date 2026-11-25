@@ -550,7 +550,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let thunk_name = format!(
             "__wt_thunk_{}_{}",
             self.witness_thunks.len(),
-            self.gcx.definition_ident(impl_target_def_id).symbol,
+            self.gcx.symbol_text(self.gcx.definition_ident(impl_target_def_id).symbol),
         );
         // Thunk names use a module-local numeric index, just like their
         // internal witness tables. Keep the functions internal as well so a
@@ -1172,7 +1172,7 @@ func main() {}
                         .root
                         .declarations
                         .iter()
-                        .find(|d| d.identifier.symbol.as_str() == name)
+                        .find(|d| gcx.symbol_text(d.identifier.symbol).as_str() == name)
                         .unwrap()
                         .id
                 };
@@ -1224,7 +1224,7 @@ func main() {}
                         .root
                         .declarations
                         .iter()
-                        .find(|declaration| declaration.identifier.symbol.as_str() == name)
+                        .find(|declaration| gcx.symbol_text(declaration.identifier.symbol).as_str() == name)
                         .unwrap()
                         .id
                 };
@@ -1277,14 +1277,14 @@ func main() {}
                     .root
                     .declarations
                     .iter()
-                    .find(|d| d.identifier.symbol.as_str() == "Probe")
+                    .find(|d| gcx.symbol_text(d.identifier.symbol).as_str() == "Probe")
                     .unwrap()
                     .id;
                 let structure = package
                     .root
                     .declarations
                     .iter()
-                    .find(|d| d.identifier.symbol.as_str() == "Counter")
+                    .find(|d| gcx.symbol_text(d.identifier.symbol).as_str() == "Counter")
                     .unwrap()
                     .id;
                 let definition = gcx.get_struct_definition(structure);

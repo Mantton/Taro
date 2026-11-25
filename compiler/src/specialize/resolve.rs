@@ -573,14 +573,14 @@ func main() {}
                     .root
                     .declarations
                     .iter()
-                    .find(|decl| decl.identifier.symbol.as_str() == "PartialOrd")
+                    .find(|decl| gcx.symbol_text(decl.identifier.symbol).as_str() == "PartialOrd")
                     .unwrap()
                     .id;
                 let score = syntax
                     .root
                     .declarations
                     .iter()
-                    .find(|decl| decl.identifier.symbol.as_str() == "Score")
+                    .find(|decl| gcx.symbol_text(decl.identifier.symbol).as_str() == "Score")
                     .unwrap()
                     .id;
                 let method = gcx
@@ -588,7 +588,7 @@ func main() {}
                     .unwrap()
                     .methods
                     .iter()
-                    .find(|method| method.name.as_str() == "partialCmp")
+                    .find(|method| gcx.symbol_text(method.name).as_str() == "partialCmp")
                     .unwrap()
                     .id;
                 let ty = gcx.get_type(score);

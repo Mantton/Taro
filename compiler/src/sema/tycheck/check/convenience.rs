@@ -304,7 +304,7 @@ pub(super) fn validate<'ctx>(
                 }
                 hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path))
                     if path.segments.len() == 1
-                        && path.segments[0].identifier.symbol.as_str() == "super" =>
+                        && self.context.symbol_text(path.segments[0].identifier.symbol).as_str() == "super" =>
                 {
                     self.reject(expression);
                     return;

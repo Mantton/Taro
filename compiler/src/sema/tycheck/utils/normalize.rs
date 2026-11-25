@@ -89,7 +89,7 @@ mod tests {
                         .root
                         .declarations
                         .iter()
-                        .find(|declaration| declaration.identifier.symbol.as_str() == name)
+                        .find(|declaration| gcx.symbol_text(declaration.identifier.symbol).as_str() == name)
                         .unwrap()
                         .id
                 };
@@ -142,7 +142,7 @@ mod tests {
                         .root
                         .declarations
                         .iter()
-                        .find(|declaration| declaration.identifier.symbol.as_str() == name)
+                        .find(|declaration| gcx.symbol_text(declaration.identifier.symbol).as_str() == name)
                         .unwrap()
                         .id
                 };
@@ -211,7 +211,7 @@ mod tests {
                         .root
                         .declarations
                         .iter()
-                        .find(|decl| decl.identifier.symbol.as_str() == name)
+                        .find(|decl| gcx.symbol_text(decl.identifier.symbol).as_str() == name)
                         .unwrap()
                         .id
                 };

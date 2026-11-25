@@ -385,12 +385,12 @@ impl<'r, 'a> Actor<'r, 'a> {
 
         let result = file_result.and(module_result);
         if let Err(err) = result {
-            let message = format!("Duplicate Symbol {}", identifier.symbol);
+            let message = format!("Duplicate Symbol {}", self.resolver.context.symbol_text(identifier.symbol));
             self.resolver
                 .dcx()
                 .emit_error(message, Some(identifier.span));
 
-            let message = format!("'{}' is defined here.", identifier.symbol);
+            let message = format!("'{}' is defined here.", self.resolver.context.symbol_text(identifier.symbol));
             self.resolver.dcx().emit_info(message, Some(err.span));
         }
     }

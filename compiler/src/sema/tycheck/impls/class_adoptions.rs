@@ -138,7 +138,7 @@ pub fn run<'ctx>(package: &hir::Package, gcx: Gcx<'ctx>) -> CompileResult<()> {
             if !signature
                 .inputs
                 .first()
-                .is_some_and(|input| input.name.as_str() == "self")
+                .is_some_and(|input| gcx.symbol_text(input.name).as_str() == "self")
             {
                 continue;
             }
@@ -309,7 +309,7 @@ func main() {}
                     .collect();
                 let choose = synthetics
                     .iter()
-                    .find(|(_, value)| value.name.as_str() == "choose")
+                    .find(|(_, value)| gcx.symbol_text(value.name).as_str() == "choose")
                     .unwrap();
                 assert_eq!(choose.1.generics.parent_count, 3);
                 assert_eq!(choose.1.generics.parameters[0].index, 3);
@@ -415,7 +415,7 @@ func main() {}
                         .root
                         .declarations
                         .iter()
-                        .find(|declaration| declaration.identifier.symbol.as_str() == name)
+                        .find(|declaration| gcx.symbol_text(declaration.identifier.symbol).as_str() == name)
                         .unwrap()
                         .id
                 };
@@ -424,7 +424,7 @@ func main() {}
                 for method in gcx.class_methods(base) {
                     assert!(gcx.class_family_is_registered(method.family));
                     let child = gcx.class_method(derived, method.family).unwrap();
-                    if gcx.definition_ident(method.implementation).symbol.as_str() == "identity" {
+                    if gcx.symbol_text(gcx.definition_ident(method.implementation).symbol).as_str() == "identity" {
                         assert!(child.returns_self);
                     } else {
                         assert_ne!(child.implementation, method.implementation);

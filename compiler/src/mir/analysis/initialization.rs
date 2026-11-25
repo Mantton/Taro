@@ -632,7 +632,7 @@ pub fn validate_initialization<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Compi
         }
         let name = body.locals[place.local]
             .name
-            .map(|name| format!("'{}'", name))
+            .map(|name| format!("'{}'", gcx.symbol_text(name)))
             .unwrap_or_else(|| "<temporary>".to_string());
         let message = format!("use of uninitialized value {name}");
         gcx.dcx().emit_error(message, Some(span));

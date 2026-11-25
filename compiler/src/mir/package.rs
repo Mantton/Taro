@@ -157,7 +157,7 @@ pub(crate) fn build_package_with_vet<'ctx>(
         eprintln!("\n=== MIR Dump for {} ===", gcx.config.name);
         for (def_id, body) in final_pkg.functions.iter() {
             let symbol = gcx.definition_symbol_or_fallback(*def_id);
-            eprintln!("\nfn {}() {{", symbol);
+            eprintln!("\nfn {}() {{", gcx.symbol_text(symbol));
             let pretty = PrettyPrintMir { body, gcx };
             eprintln!("{}", pretty);
             eprintln!("}}");

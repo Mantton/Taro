@@ -195,7 +195,7 @@ impl<'r, 'a> Actor<'r, 'a> {
                     self.resolver.dcx().emit_error(
                         format!(
                             "type parameter – {} – has already been defined",
-                            param.identifier.symbol
+                            self.resolver.context.symbol_text(param.identifier.symbol)
                         ),
                         Some(param.identifier.span),
                     );
@@ -646,9 +646,9 @@ impl<'r, 'a> Actor<'r, 'a> {
     fn resolve_expression(&mut self, node: &ast::Expression) {
         match &node.kind {
             ast::ExpressionKind::Identifier(name) => {
-                let lookup = if name.symbol.as_str() == "super" {
+                let lookup = if self.resolver.context.symbol_text(name.symbol).as_str() == "super" {
                     Identifier {
-                        symbol: Symbol::new("self"),
+                        symbol: self.resolver.context.intern_symbol("self"),
                         ..*name
                     }
                 } else {
@@ -909,9 +909,9 @@ impl<'r, 'a> Actor<'r, 'a> {
     ) -> Result<ResolvedEntity<'a>, ResolutionError> {
         match &node.kind {
             ast::ExpressionKind::Identifier(name) => {
-                let lookup = if name.symbol.as_str() == "super" {
+                let lookup = if self.resolver.context.symbol_text(name.symbol).as_str() == "super" {
                     Identifier {
-                        symbol: Symbol::new("self"),
+                        symbol: self.resolver.context.intern_symbol("self"),
                         ..*name
                     }
                 } else {
@@ -1285,7 +1285,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             }
 
             // Ignored closure parameters occupy an ABI slot but bind no name.
-            if param.name.symbol.as_str() == "_" {
+            if self.resolver.context.symbol_text(param.name.symbol).as_str() == "_" {
                 continue;
             }
 
@@ -1669,7 +1669,7 @@ impl<'r, 'a> Actor<'r, 'a> {
         if let Some(resolution) = resolution {
             if !source.is_allowed(&resolution) {
                 let provided = resolution.description();
-                let symbol = &path.segments.last().unwrap().identifier.symbol;
+                let symbol = self.resolver.context.symbol_text(path.segments.last().unwrap().identifier.symbol);
                 if matches!(
                     source,
                     ResolutionSource::Type | ResolutionSource::TypeArgument
@@ -1687,7 +1687,7 @@ impl<'r, 'a> Actor<'r, 'a> {
                 }
             }
         } else if !source.defer_to_type_checker() {
-            let symbol = &path.segments.last().unwrap().identifier.symbol;
+            let symbol = self.resolver.context.symbol_text(path.segments.last().unwrap().identifier.symbol);
             let message = format!("cannot resolve {expected} '{symbol}'");
             self.resolver.dcx().emit_error(message, Some(path.span));
         }

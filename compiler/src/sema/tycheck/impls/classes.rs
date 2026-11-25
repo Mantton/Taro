@@ -61,7 +61,7 @@ pub fn run(package: &hir::Package, gcx: Gcx<'_>) -> CompileResult<()> {
                             .prototype
                             .inputs
                             .first()
-                            .is_some_and(|parameter| parameter.name.symbol.as_str() == "self");
+                            .is_some_and(|parameter| self.gcx.symbol_eq(parameter.name.symbol, "self"));
                         if let Some(class) = class
                             && has_self
                         {
@@ -514,7 +514,7 @@ func main() {}
                     .root
                     .declarations
                     .iter()
-                    .find(|declaration| declaration.identifier.symbol.as_str() == "Box")
+                    .find(|declaration| gcx.symbol_text(declaration.identifier.symbol).as_str() == "Box")
                     .unwrap();
                 let TyKind::Adt(class, _) = gcx.get_type(definition.id).kind() else {
                     unreachable!()

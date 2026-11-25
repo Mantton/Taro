@@ -66,7 +66,7 @@ impl<'ctx> HirVisitor for DefinitionActor<'ctx> {
             let name = declaration.identifier;
             if let Some(previous) = self.members.insert((owner, name.symbol), name.span) {
                 self.context.dcx().emit_error(
-                    format!("invalid redeclaration of '{}'", name.symbol),
+                    format!("invalid redeclaration of '{}'", self.context.symbol_text(name.symbol)),
                     Some(name.span),
                 );
                 self.context

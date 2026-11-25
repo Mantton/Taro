@@ -241,7 +241,7 @@ pub(crate) fn analyze_script_built_mir_with_items<R>(
                             .root
                             .declarations
                             .iter()
-                            .find(|declaration| declaration.identifier.symbol.as_str() == *name)
+                            .find(|declaration| gcx.symbol_text(declaration.identifier.symbol).as_str() == *name)
                             .expect("fixture allocation-family declaration");
                         (
                             *item,

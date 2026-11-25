@@ -631,7 +631,7 @@ func main() {}
                         .root
                         .declarations
                         .iter()
-                        .find(|decl| decl.identifier.symbol.as_str() == name)
+                        .find(|decl| gcx.symbol_text(decl.identifier.symbol).as_str() == name)
                         .unwrap()
                         .id
                 };
@@ -738,7 +738,7 @@ func main() {}
                     .unwrap()
                     .methods
                     .iter()
-                    .find(|method| method.name.as_str() == "echo")
+                    .find(|method| gcx.symbol_text(method.name).as_str() == "echo")
                     .unwrap()
                     .id;
                 let inherited = crate::specialize::resolve_instance(

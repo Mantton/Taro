@@ -35,7 +35,7 @@ pub(super) fn run<'ctx>(
                     .inputs
                     .first()
                     .zip(signature.inputs.first())
-                    && parameter.name.symbol.as_str() == "self"
+                    && self.gcx.symbol_eq(parameter.name.symbol, "self")
                 {
                     let class = match input.ty.kind() {
                         crate::sema::models::TyKind::Reference(class) => class,
@@ -278,7 +278,7 @@ func main() {}
                         .root
                         .declarations
                         .iter()
-                        .find(|declaration| declaration.identifier.symbol.as_str() == name)
+                        .find(|declaration| gcx.symbol_text(declaration.identifier.symbol).as_str() == name)
                         .unwrap()
                         .id;
                     let entries = gcx.class_info(gcx.get_type(id)).unwrap().initializers;

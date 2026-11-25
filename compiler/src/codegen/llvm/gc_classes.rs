@@ -80,7 +80,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 storage_deref_depth: root.map_or(0, |(_, depth)| depth),
             }],
             vec![crate::codegen::gc_stack_maps::PendingLogicalFrame {
-                function: ident.symbol.as_str().into(),
+                function: self.gcx.symbol_text(ident.symbol).as_str().into(),
                 file: self
                     .gcx
                     .dcx()
@@ -848,7 +848,7 @@ mod tests {
                     .declarations
                     .iter()
                     .find(|declaration| {
-                        gcx.definition_ident(declaration.id).symbol.as_str() == "Holder"
+                        gcx.symbol_text(gcx.definition_ident(declaration.id).symbol).as_str() == "Holder"
                     })
                     .unwrap()
                     .id;
@@ -932,7 +932,7 @@ func main() {}",
                     .declarations
                     .iter()
                     .find(|declaration| {
-                        gcx.definition_ident(declaration.id).symbol.as_str() == "Object"
+                        gcx.symbol_text(gcx.definition_ident(declaration.id).symbol).as_str() == "Object"
                     })
                     .unwrap()
                     .id;
@@ -987,7 +987,7 @@ func main() {}",
                         .declarations
                         .iter()
                         .find(|declaration| {
-                            gcx.definition_ident(declaration.id).symbol.as_str() == name
+                            gcx.symbol_text(gcx.definition_ident(declaration.id).symbol).as_str() == name
                         })
                         .unwrap()
                         .id
@@ -1041,7 +1041,7 @@ func main() {}",
                     .declarations
                     .iter()
                     .find(|declaration| {
-                        gcx.definition_ident(declaration.id).symbol.as_str() == "Node"
+                        gcx.symbol_text(gcx.definition_ident(declaration.id).symbol).as_str() == "Node"
                     })
                     .unwrap()
                     .id;

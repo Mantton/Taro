@@ -189,7 +189,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                     if !gcx.is_definition_visible(id, from) {
                         let name = gcx.definition_ident(id).symbol;
                         gcx.dcx().emit_error(
-                            format!("type '{}' is not visible here", name).into(),
+                            format!("type '{}' is not visible here", gcx.symbol_text(name)).into(),
                             Some(path.span),
                         );
                         return gcx.types.error;
@@ -1117,7 +1117,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 gcx.dcx().emit_error(
                     format!(
                         "no associated type '{}' in interface '{}'",
-                        member.symbol,
+                        gcx.symbol_text(member.symbol),
                         interface_ref.format(gcx)
                     ),
                     Some(member.span),
@@ -1128,7 +1128,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 gcx.dcx().emit_error(
                     format!(
                         "ambiguous associated type '{}' in interface '{}'",
-                        member.symbol,
+                        gcx.symbol_text(member.symbol),
                         interface_ref.format(gcx)
                     ),
                     Some(member.span),
@@ -1797,7 +1797,7 @@ pub fn check_generic_arg_count(
         } else {
             let message = format!(
                 "excess generic arguments, '{}' requires {} type argument(s), provided {}",
-                segment.identifier.symbol, min, provided
+                context.symbol_text(segment.identifier.symbol), min, provided
             );
             context
                 .dcx()

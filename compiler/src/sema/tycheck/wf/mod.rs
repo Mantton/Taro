@@ -92,11 +92,11 @@ impl<'ctx> Actor<'ctx> {
         let target = requirements
             .types
             .iter()
-            .find(|target| target.name.as_str() == "Target");
+            .find(|target| gcx.symbol_text(target.name).as_str() == "Target");
         let method = requirements
             .methods
             .iter()
-            .find(|method| method.name.as_str() == "deref");
+            .find(|method| gcx.symbol_text(method.name).as_str() == "deref");
         let valid = target.zip(method).is_some_and(|(target, method)| {
             let output = crate::sema::tycheck::utils::normalize_aliases(gcx, method.signature.output);
             method.has_self && method.signature.inputs.len() == 1
@@ -211,8 +211,9 @@ impl<'ctx> Actor<'ctx> {
     fn check_function(&self, id: DefinitionID, _: &hir::Function) {
         let sig = self.context.get_signature(id);
         let ident = self.context.definition_ident(id);
+        let name = self.context.symbol_text(ident.symbol);
         if sig.abi == Some(hir::Abi::Intrinsic)
-            && crate::sema::lowering::intrinsics::atomic::arity(ident.symbol.as_str()).is_some()
+            && crate::sema::lowering::intrinsics::atomic::arity(name.as_str()).is_some()
             && !crate::sema::lowering::intrinsics::atomic::valid(self.context, id)
         {
             self.context.dcx().emit_error(
@@ -222,7 +223,7 @@ impl<'ctx> Actor<'ctx> {
         }
         if sig.abi == Some(hir::Abi::Intrinsic)
             && matches!(
-                ident.symbol.as_str(),
+                name.as_str(),
                 "__intrinsic_ptr_read" | "__intrinsic_ptr_write"
             )
             && crate::sema::lowering::intrinsics::memory::transfer(self.context, id).is_none()
@@ -233,7 +234,7 @@ impl<'ctx> Actor<'ctx> {
             );
         }
         if sig.abi == Some(hir::Abi::Intrinsic)
-            && crate::sema::lowering::intrinsics::is_borrow_projection(ident.symbol.as_str())
+            && crate::sema::lowering::intrinsics::is_borrow_projection(name.as_str())
         {
             if !self.context.definition_is_unsafe(id) {
                 self.context.dcx().emit_error(
@@ -250,7 +251,7 @@ impl<'ctx> Actor<'ctx> {
             }
         }
         if sig.abi == Some(hir::Abi::Intrinsic)
-            && crate::sema::lowering::intrinsics::is_string_borrow(ident.symbol.as_str())
+            && crate::sema::lowering::intrinsics::is_string_borrow(name.as_str())
             && crate::sema::lowering::intrinsics::value_signature(self.context, id).is_none()
         {
             self.context.dcx().emit_error(
@@ -259,7 +260,7 @@ impl<'ctx> Actor<'ctx> {
             );
         }
         if sig.abi == Some(hir::Abi::Intrinsic)
-            && crate::sema::lowering::intrinsics::is_reference_address(ident.symbol.as_str())
+            && crate::sema::lowering::intrinsics::is_reference_address(name.as_str())
             && crate::sema::lowering::intrinsics::value_signature(self.context, id).is_none()
         {
             self.context.dcx().emit_error(
@@ -268,7 +269,7 @@ impl<'ctx> Actor<'ctx> {
             );
         }
         if sig.abi == Some(hir::Abi::Intrinsic)
-            && crate::sema::lowering::intrinsics::is_pure_address(ident.symbol.as_str())
+            && crate::sema::lowering::intrinsics::is_pure_address(name.as_str())
             && crate::sema::lowering::intrinsics::value_signature(self.context, id).is_none()
         {
             self.context.dcx().emit_error(
@@ -277,7 +278,7 @@ impl<'ctx> Actor<'ctx> {
             );
         }
         if sig.abi == Some(hir::Abi::Intrinsic)
-            && crate::sema::lowering::intrinsics::is_class_handle_intrinsic(ident.symbol.as_str())
+            && crate::sema::lowering::intrinsics::is_class_handle_intrinsic(name.as_str())
             && !crate::sema::lowering::intrinsics::class_handle_signature(self.context, id)
         {
             self.context.dcx().emit_error("invalid signature for class handle intrinsic (requires unsafe and an AnyObject type parameter)".into(), Some(ident.span));

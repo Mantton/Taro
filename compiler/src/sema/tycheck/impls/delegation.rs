@@ -46,7 +46,7 @@ fn register_block<'ctx>(
         gcx.dcx().emit_error(
             format!(
                 "delegation requires an accessible stored field named '{}'",
-                name.symbol
+                gcx.symbol_text(name.symbol)
             ),
             Some(name.span),
         );
@@ -87,7 +87,7 @@ fn register_block<'ctx>(
         gcx.dcx().emit_error(
             format!(
                 "stored field '{}' of type '{}' does not conform to '{}'",
-                name.symbol,
+                gcx.symbol_text(name.symbol),
                 storage.format(gcx),
                 record.interface.format(gcx)
             ),
@@ -131,7 +131,7 @@ fn register_block<'ctx>(
             gcx.conformance_adapter(conformance, method.id, Some((index as u32, borrow)))
         else {
             gcx.dcx().emit_error(
-                format!("cannot forward requirement '{}'", method.name),
+                format!("cannot forward requirement '{}'", gcx.symbol_text(method.name)),
                 Some(name.span),
             );
             continue;
@@ -139,7 +139,7 @@ fn register_block<'ctx>(
         if matches!(receiver.kind(), TyKind::BoxedExistential { .. })
             && !ref_ops::method_is_dispatchable(gcx, method)
         {
-            gcx.dcx().emit_error(format!("implement '{}' explicitly: the method cannot be called through a boxed interface", method.name), Some(name.span));
+            gcx.dcx().emit_error(format!("implement '{}' explicitly: the method cannot be called through a boxed interface", gcx.symbol_text(method.name)), Some(name.span));
             continue;
         }
         let identity =
@@ -178,7 +178,7 @@ fn register_block<'ctx>(
                 .skip(1)
                 .any(|(left, right)| !same(left.ty, right.ty))
         {
-            gcx.dcx().emit_error(format!("implement '{}' explicitly: forwarding changes a Self-dependent parameter or return type", method.name), Some(name.span));
+            gcx.dcx().emit_error(format!("implement '{}' explicitly: forwarding changes a Self-dependent parameter or return type", gcx.symbol_text(method.name)), Some(name.span));
             continue;
         }
         if let Some((subscript, source)) = gcx.native_subscript_for_accessor(method.id) {

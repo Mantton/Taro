@@ -127,9 +127,9 @@ impl<'r, 'a> Actor<'r, 'a> {
 
         let Some((holder, ns)) = resolved_holder else {
             if finalize {
-                let message = super::models::removed_marker_message(binding.source.symbol.as_str())
+                let message = super::models::removed_marker_message(self.resolver.context.symbol_text(binding.source.symbol).as_str())
                     .unwrap_or_else(|| {
-                        format!("unknown symbol '{}' in module", binding.source.symbol)
+                        format!("unknown symbol '{}' in module", self.resolver.context.symbol_text(binding.source.symbol))
                     });
                 self.resolver
                     .dcx()

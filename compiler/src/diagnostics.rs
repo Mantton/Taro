@@ -1,6 +1,7 @@
 use crate::{
     error::ReportedError,
     span::{FileID, Span, Symbol},
+    symbols::SymbolTable,
 };
 use colored::{ColoredString, Colorize};
 use ecow::EcoString;
@@ -10,12 +11,14 @@ use std::{
     cell::{Cell, RefCell},
     fs,
     path::PathBuf,
+    rc::Rc,
 };
 use unicode_width::UnicodeWidthChar;
 
 pub struct DiagCtx {
     cwd: PathBuf,
     inner: RefCell<DiagCtxInner>,
+    pub(crate) symbols: Rc<SymbolTable>,
     #[cfg(test)]
     pub(crate) analysis_work: AnalysisWork,
 }
@@ -34,6 +37,7 @@ impl DiagCtx {
         DiagCtx {
             cwd,
             inner: RefCell::new(Default::default()),
+            symbols: Rc::default(),
             #[cfg(test)]
             analysis_work: AnalysisWork::default(),
         }

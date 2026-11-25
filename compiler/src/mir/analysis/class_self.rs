@@ -158,7 +158,7 @@ fn call<'ctx>(
         }
         let signature = gcx.get_signature(id);
         if let Some(input) = signature.inputs.first()
-            && input.name.as_str() == "self"
+            && gcx.symbol_text(input.name).as_str() == "self"
         {
             let ty = instantiate_ty_with_args(gcx, input.ty, arguments);
             let class = match normalize_aliases(gcx, ty).kind() {
@@ -254,7 +254,7 @@ pub fn validate<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResult<()> {
         .get_signature(body.owner)
         .inputs
         .first()
-        .filter(|input| input.name.as_str() == "self")
+        .filter(|input| gcx.symbol_text(input.name).as_str() == "self")
         .map(|input| match normalize_aliases(gcx, input.ty).kind() {
             TyKind::Reference(inner) => inner,
             _ => input.ty,
@@ -274,7 +274,7 @@ pub fn validate<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResult<()> {
         .inputs
         .iter()
         .enumerate()
-        .find(|(_, input)| input.name.as_str() == "self")
+        .find(|(_, input)| gcx.symbol_text(input.name).as_str() == "self")
     else {
         return Ok(());
     };
@@ -307,7 +307,7 @@ pub(crate) fn default_preserves_dynamic_self<'ctx>(
     conditional_receiver_owner(gcx, body.owner)?;
     let signature = gcx.get_signature(body.owner);
     let input = signature.inputs.first()?;
-    if input.name.as_str() != "self" {
+    if gcx.symbol_text(input.name).as_str() != "self" {
         return None;
     }
     let ty = normalize_aliases(gcx, input.ty);
@@ -462,7 +462,7 @@ mod tests {
                 |bodies, gcx| {
                     let body = bodies
                         .iter()
-                        .find(|body| gcx.definition_ident(body.owner).symbol.as_str() == "target")
+                        .find(|body| gcx.symbol_text(gcx.definition_ident(body.owner).symbol).as_str() == "target")
                         .unwrap();
                     assert_eq!(
                         super::default_preserves_dynamic_self(gcx, body),
@@ -538,7 +538,7 @@ pub(crate) fn validate_instance<'ctx>(
     let Some(input) = signature
         .inputs
         .first()
-        .filter(|input| input.name.as_str() == "self")
+        .filter(|input| gcx.symbol_text(input.name).as_str() == "self")
     else {
         return Ok(());
     };

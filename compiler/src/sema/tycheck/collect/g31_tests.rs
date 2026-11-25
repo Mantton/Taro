@@ -15,7 +15,7 @@ fn with_types(test: impl for<'ctx> FnOnce(Gcx<'ctx>, Ty<'ctx>, Ty<'ctx>, Ty<'ctx
                         .root
                         .declarations
                         .iter()
-                        .find(|declaration| declaration.identifier.symbol.as_str() == name)
+                        .find(|declaration| gcx.symbol_text(declaration.identifier.symbol).as_str() == name)
                         .unwrap()
                         .id,
                 )
@@ -167,7 +167,7 @@ fn g31_aliases_preserve_reference_but_not_raw_pointer_locality() {
                     .root
                     .declarations
                     .iter()
-                    .find(|declaration| declaration.identifier.symbol.as_str() == name)
+                    .find(|declaration| gcx.symbol_text(declaration.identifier.symbol).as_str() == name)
                     .unwrap()
                     .id;
                 Ty::new(

@@ -20,6 +20,7 @@ pub struct Symbol {
 ///
 /// The same spelling deduplicates within the table. To compare spellings from
 /// separate sessions, resolve each handle through its own table.
+#[derive(Debug)]
 pub struct SymbolTable {
     id: NonZeroU32,
     names: RefCell<IndexSet<EcoString, FxBuildHasher>>,
@@ -70,6 +71,19 @@ impl SymbolTable {
             names.get_index(symbol.index as usize).map(EcoString::as_str)
         })
         .ok()
+    }
+
+    /// Copy the spelling out of the table before calling code that can intern names.
+    pub(crate) fn text(&self, symbol: Symbol) -> EcoString {
+        assert_eq!(self.id, symbol.owner, "symbol belongs to another session");
+        self.names.borrow()[symbol.index as usize].clone()
+    }
+
+    pub(crate) fn matches(&self, symbol: Symbol, spelling: &str) -> bool {
+        &*self
+            .try_resolve(symbol)
+            .expect("symbol belongs to another session")
+            == spelling
     }
 }
 

@@ -49,7 +49,7 @@ func main() {}
                 assert_eq!(selected.family, method.family);
                 assert_eq!(
                     selected.owner == child,
-                    gcx.definition_ident(method.family).symbol.as_str() == "read"
+                    gcx.symbol_text(gcx.definition_ident(method.family).symbol).as_str() == "read"
                 );
             }
             assert_eq!(gcx.class_methods(child).len(), 2);

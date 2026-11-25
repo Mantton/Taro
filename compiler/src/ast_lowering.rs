@@ -2581,7 +2581,7 @@ impl Actor<'_, '_> {
                 let pattern = hir::Pattern {
                     id,
                     span: param.span,
-                    kind: if param.name.symbol.as_str() == "_" {
+                    kind: if self.context.symbol_text(param.name.symbol).as_str() == "_" {
                         hir::PatternKind::Wildcard
                     } else {
                         hir::PatternKind::Binding { name: param.name }
@@ -3606,50 +3606,50 @@ mod tests {
 
     #[test]
     fn resolved_member_chain_keeps_per_segment_resolution() {
-        let package = analyze_script(
+        analyze_script(
             "func main() {\n    Foo::bar()\n}\n\nnamespace Foo {\n    func bar() {}\n}\n",
-            |package, _| package,
+            |package, gcx| {
+                let main_decl = package
+                    .root
+                    .declarations
+                    .iter()
+                    .find(|declaration| gcx.symbol_text(declaration.identifier.symbol).as_str() == "main")
+                    .expect("main declaration");
+                let DeclarationKind::Function(function) = &main_decl.kind else {
+                    panic!("main should be a function");
+                };
+                let block = function.block.as_ref().expect("main body");
+                let expression = if let Some(expression) = block.tail.as_ref() {
+                    expression
+                } else {
+                    let StatementKind::Expression(expression) = &block.statements[0].kind else {
+                        panic!("first statement should be an expression");
+                    };
+                    expression
+                };
+                let ExpressionKind::Call { callee, .. } = &expression.kind else {
+                    panic!("statement should lower to a call");
+                };
+                let ExpressionKind::Path(ResolvedPath::Resolved(path)) = &callee.kind else {
+                    panic!("callee should lower to a resolved path");
+                };
+
+                assert_eq!(path.segments.len(), 2);
+
+                let crate::hir::Resolution::Definition(first_id, first_kind) = &path.segments[0].resolution
+                else {
+                    panic!("first segment should resolve to a definition");
+                };
+                let crate::hir::Resolution::Definition(second_id, second_kind) =
+                    &path.segments[1].resolution
+                else {
+                    panic!("second segment should resolve to a definition");
+                };
+
+                assert_eq!(*first_kind, crate::hir::DefinitionKind::Namespace);
+                assert_ne!(*first_id, *second_id);
+                assert_eq!(*second_kind, crate::hir::DefinitionKind::Function);
+            },
         );
-
-        let main_decl = package
-            .root
-            .declarations
-            .iter()
-            .find(|declaration| declaration.identifier.symbol.as_str() == "main")
-            .expect("main declaration");
-        let DeclarationKind::Function(function) = &main_decl.kind else {
-            panic!("main should be a function");
-        };
-        let block = function.block.as_ref().expect("main body");
-        let expression = if let Some(expression) = block.tail.as_ref() {
-            expression
-        } else {
-            let StatementKind::Expression(expression) = &block.statements[0].kind else {
-                panic!("first statement should be an expression");
-            };
-            expression
-        };
-        let ExpressionKind::Call { callee, .. } = &expression.kind else {
-            panic!("statement should lower to a call");
-        };
-        let ExpressionKind::Path(ResolvedPath::Resolved(path)) = &callee.kind else {
-            panic!("callee should lower to a resolved path");
-        };
-
-        assert_eq!(path.segments.len(), 2);
-
-        let crate::hir::Resolution::Definition(first_id, first_kind) = &path.segments[0].resolution
-        else {
-            panic!("first segment should resolve to a definition");
-        };
-        let crate::hir::Resolution::Definition(second_id, second_kind) =
-            &path.segments[1].resolution
-        else {
-            panic!("second segment should resolve to a definition");
-        };
-
-        assert_eq!(*first_kind, crate::hir::DefinitionKind::Namespace);
-        assert_ne!(*first_id, *second_id);
-        assert_eq!(*second_kind, crate::hir::DefinitionKind::Function);
     }
 }

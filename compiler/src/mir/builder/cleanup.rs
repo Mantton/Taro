@@ -150,7 +150,7 @@ mod tests {
                 use crate::mir::{AggregateKind, Rvalue, StatementKind};
                 let body = bodies
                     .iter()
-                    .find(|body| gcx.definition_ident(body.owner).symbol.as_str() == "main")
+                    .find(|body| gcx.symbol_text(gcx.definition_ident(body.owner).symbol).as_str() == "main")
                     .unwrap();
                 let owners: Vec<_> = body
                     .basic_blocks
@@ -164,7 +164,7 @@ mod tests {
                                 ..
                             },
                         ) = &statement.kind
-                            && gcx.definition_ident(*def_id).symbol.as_str() == "Record"
+                            && gcx.symbol_text(gcx.definition_ident(*def_id).symbol).as_str() == "Record"
                         {
                             Some(place.local)
                         } else {
@@ -201,7 +201,7 @@ mod tests {
             |bodies, gcx| {
                 let body = bodies
                     .iter()
-                    .find(|body| gcx.definition_ident(body.owner).symbol.as_str() == "main")
+                    .find(|body| gcx.symbol_text(gcx.definition_ident(body.owner).symbol).as_str() == "main")
                     .unwrap();
                 assert!(
                     body.basic_blocks.len() < 640,

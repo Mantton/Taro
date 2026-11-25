@@ -319,7 +319,7 @@ mod tests {
                     let definition = gcx.get_struct_definition(declaration.id);
                     assert_eq!(
                         class_handle_layout_is_valid(gcx, declaration.id, definition.fields),
-                        declaration.identifier.symbol.as_str() == "Good"
+                        gcx.symbol_text(declaration.identifier.symbol).as_str() == "Good"
                     );
                 }
             },
@@ -335,7 +335,7 @@ mod tests {
                     .root
                     .declarations
                     .iter()
-                    .find(|decl| decl.identifier.symbol.as_str() == "Boxed")
+                    .find(|decl| gcx.symbol_text(decl.identifier.symbol).as_str() == "Boxed")
                     .expect("struct declaration");
                 assert!(matches!(decl.kind, DeclarationKind::Struct(_)));
                 assert_eq!(gcx.get_struct_definition(decl.id).repr, StructRepr::Taro);
@@ -352,13 +352,13 @@ mod tests {
                     .root
                     .declarations
                     .iter()
-                    .find(|decl| decl.identifier.symbol.as_str() == "CStyle")
+                    .find(|decl| gcx.symbol_text(decl.identifier.symbol).as_str() == "CStyle")
                     .expect("CStyle declaration");
                 let t_decl = package
                     .root
                     .declarations
                     .iter()
-                    .find(|decl| decl.identifier.symbol.as_str() == "Packed")
+                    .find(|decl| gcx.symbol_text(decl.identifier.symbol).as_str() == "Packed")
                     .expect("Packed declaration");
 
                 assert_eq!(gcx.get_struct_definition(c_decl.id).repr, StructRepr::C);

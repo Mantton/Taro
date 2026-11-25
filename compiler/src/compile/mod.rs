@@ -367,7 +367,7 @@ impl<'state> Compiler<'state> {
                         .root
                         .declarations
                         .iter()
-                        .find(|declaration| declaration.identifier.symbol.as_str() == *name)
+                        .find(|declaration| self.context.symbol_text(declaration.identifier.symbol).as_str() == *name)
                         .expect("fixture language item declaration");
                     (
                         *item,
@@ -427,7 +427,7 @@ impl<'state> Compiler<'state> {
         let mut timings = TimingReport::default();
         let mut package = self.lower_to_hir_with_timings(&mut timings, true)?;
         for declaration in &mut package.root.declarations {
-            if classes.contains(&declaration.identifier.symbol.as_str()) {
+            if classes.contains(&self.context.symbol_text(declaration.identifier.symbol).as_str()) {
                 let hir::DeclarationKind::Struct(value) = &mut declaration.kind else {
                     panic!("class fixture must name a struct header");
                 };
@@ -444,7 +444,7 @@ impl<'state> Compiler<'state> {
                     .root
                     .declarations
                     .iter()
-                    .find(|declaration| declaration.identifier.symbol.as_str() == *name)
+                    .find(|declaration| self.context.symbol_text(declaration.identifier.symbol).as_str() == *name)
                     .expect("fixture language item");
                 (
                     *item,
@@ -467,7 +467,7 @@ impl<'state> Compiler<'state> {
             && let hir::DeclarationKind::Enum(definition) = &declaration.kind
         {
             for variant in &definition.variants {
-                let (kind, constructor) = match variant.identifier.symbol.as_str() {
+                let (kind, constructor) = match self.context.symbol_text(variant.identifier.symbol).as_str() {
                     "some" => (
                         hir::StdItem::OptionalSomeVariant,
                         hir::StdItem::OptionalSomeCtor,

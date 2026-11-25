@@ -122,7 +122,7 @@ pub(super) fn run(package: &hir::Package, gcx: Gcx<'_>) -> CompileResult<()> {
             for id in definitions {
                 let ident = self.0.definition_ident(id);
                 if let Some(previous) = seen.insert((ident.symbol, fingerprint(self.0, id)), id) {
-                    self.0.dcx().emit_error(format!("invalid redeclaration of '{}'; return type alone cannot distinguish overloads", ident.symbol.as_str()), Some(ident.span));
+                    self.0.dcx().emit_error(format!("invalid redeclaration of '{}'; return type alone cannot distinguish overloads", self.0.symbol_text(ident.symbol).as_str()), Some(ident.span));
                     self.0.dcx().emit_info(
                         "previous declaration is here".into(),
                         Some(self.0.definition_ident(previous).span),

@@ -16,7 +16,7 @@ pub(crate) fn arity(name: &str) -> Option<usize> {
 
 pub(crate) fn valid(gcx: Gcx<'_>, id: DefinitionID) -> bool {
     let name = gcx.definition_ident(id).symbol;
-    let Some(arity) = arity(name.as_str()) else {
+    let Some(arity) = arity(gcx.symbol_text(name).as_str()) else {
         return false;
     };
     let sig = gcx.get_signature(id);
@@ -40,7 +40,7 @@ pub(crate) fn valid(gcx: Gcx<'_>, id: DefinitionID) -> bool {
         return false;
     }
     sig.output
-        == match name.as_str() {
+        == match gcx.symbol_text(name).as_str() {
             "__intrinsic_atomic_store" => gcx.types.void,
             "__intrinsic_atomic_compare_exchange" => gcx.types.bool,
             _ => element,

@@ -206,9 +206,9 @@ impl<'ctx> TypeError<'ctx> {
             TypeError::AmbiguousOverload => {
                 "ambiguous overload; unable to pick a best candidate".into()
             }
-            TypeError::AmbiguousConstant { name, on } => format!("associated constant '{name}' is ambiguous on type '{}'", on.format(gcx)),
-            TypeError::NoApplicableConstant { name, on } => format!("no applicable conformance supplies associated constant '{name}' on type '{}'", on.format(gcx)),
-            TypeError::ConstantNotVisible { name, on } => format!("associated constant '{name}' is not visible on type '{}'", on.format(gcx)),
+            TypeError::AmbiguousConstant { name, on } => format!("associated constant '{}' is ambiguous on type '{}'", gcx.symbol_text(name), on.format(gcx)),
+            TypeError::NoApplicableConstant { name, on } => format!("no applicable conformance supplies associated constant '{}' on type '{}'", gcx.symbol_text(name), on.format(gcx)),
+            TypeError::ConstantNotVisible { name, on } => format!("associated constant '{}' is not visible on type '{}'", gcx.symbol_text(name), on.format(gcx)),
             TypeError::AmbiguousProperty {
                 name,
                 on,
@@ -530,11 +530,3 @@ impl ApplyValidationError {
         self.format_with_symbol(|sym| gcx.symbol_text(sym).to_string())
     }
 }
-
-impl std::fmt::Display for ApplyValidationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&(*self).format_with_symbol(|sym| sym.to_string()))
-    }
-}
-
-impl std::error::Error for ApplyValidationError {}

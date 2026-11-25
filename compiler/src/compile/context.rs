@@ -168,15 +168,19 @@ impl<'arena> GlobalContext<'arena> {
     }
 
     pub fn intern_symbol(self, text: &str) -> Symbol {
-        Symbol::new(text)
+        self.symbols().intern(text)
     }
 
-    pub fn symbol_eq(self, symbol: impl AsRef<str>, text: &str) -> bool {
-        symbol.as_ref() == text
+    pub fn symbol_eq(self, symbol: impl std::borrow::Borrow<Symbol>, text: &str) -> bool {
+        self.symbols().matches(*symbol.borrow(), text)
     }
 
-    pub fn symbol_text(self, symbol: impl AsRef<str>) -> EcoString {
-        symbol.as_ref().into()
+    pub fn symbol_text(self, symbol: impl std::borrow::Borrow<Symbol>) -> EcoString {
+        self.symbols().text(*symbol.borrow())
+    }
+
+    pub(crate) fn symbols(self) -> &'arena crate::symbols::SymbolTable {
+        &self.context.dcx.symbols
     }
 }
 
@@ -2077,7 +2081,7 @@ pub struct CompilerContext<'arena> {
 
 impl<'arena> CompilerContext<'arena> {
     pub fn new(dcx: Rc<DiagCtx>, store: CompilerStore<'arena>) -> CompilerContext<'arena> {
-        let self_symbol = Symbol::new("Self");
+        let self_symbol = dcx.symbols.intern("Self");
         let types = CommonTypes::new(&store.interners, self_symbol);
         CompilerContext { dcx, store, types }
     }

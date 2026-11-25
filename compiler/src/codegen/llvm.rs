@@ -8145,7 +8145,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     self.gcx.dcx().emit_error(
                         format!(
                             "cannot resolve interface constant '{}'",
-                            self.gcx.definition_ident(*id).symbol
+                            self.gcx.symbol_text(self.gcx.definition_ident(*id).symbol)
                         ),
                         None,
                     );

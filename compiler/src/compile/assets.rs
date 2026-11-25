@@ -1,7 +1,7 @@
 use super::{config::Config, context::Gcx};
 use crate::{
     hir::Literal,
-    span::{FileID, InternedBytes, Symbol},
+    span::{FileID, InternedBytes},
 };
 use std::{
     collections::BTreeMap,
@@ -82,7 +82,7 @@ impl Gcx<'_> {
         } else {
             let text = std::str::from_utf8(&data)
                 .map_err(|_| format!("embedded asset '{name}' is not valid UTF-8"))?;
-            Literal::String(Symbol::new(text))
+            Literal::String(self.intern_symbol(text))
         };
         let hash = *blake3::hash(&data).as_bytes();
         let mut packages = self.store.embedded_inputs.borrow_mut();

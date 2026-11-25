@@ -44,7 +44,7 @@ pub(crate) fn class_interface_signature_supported<'ctx>(
     let instance = signature
         .inputs
         .first()
-        .is_some_and(|input| input.name.as_str() == "self");
+        .is_some_and(|input| gcx.symbol_text(input.name).as_str() == "self");
     signature
         .inputs
         .iter()
@@ -154,7 +154,7 @@ func main() {}
                 let method = requirements
                     .methods
                     .iter()
-                    .find(|method| method.name.as_str() == "read")
+                    .find(|method| gcx.symbol_text(method.name).as_str() == "read")
                     .unwrap()
                     .id;
                 let alias = gcx.class_default_body(method).unwrap();
@@ -187,7 +187,7 @@ func main() {}
                 let asynchronous = requirements
                     .methods
                     .iter()
-                    .find(|method| method.name.as_str() == "delayed")
+                    .find(|method| gcx.symbol_text(method.name).as_str() == "delayed")
                     .unwrap()
                     .id;
                 let async_alias = gcx.class_default_body(asynchronous).unwrap();
@@ -199,7 +199,7 @@ func main() {}
                 let required = requirements
                     .methods
                     .iter()
-                    .find(|method| method.name.as_str() == "required")
+                    .find(|method| gcx.symbol_text(method.name).as_str() == "required")
                     .unwrap()
                     .id;
                 assert_eq!(gcx.class_default_body(required), None);

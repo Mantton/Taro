@@ -256,7 +256,7 @@ impl<'arena> Ty<'arena> {
                         write_name(gcx, parent, out);
                         out.push_str("::");
                     }
-                    out.push_str(gcx.definition_ident(id).symbol.as_str());
+                    out.push_str(gcx.symbol_text(gcx.definition_ident(id).symbol).as_str());
                 }
                 let mut out = String::new();
                 write_name(gcx, adt.id, &mut out);
@@ -1027,10 +1027,6 @@ pub enum ConstKind {
 thread_local! {
     static SESSION_CONST_ARRAYS: std::cell::RefCell<indexmap::IndexSet<Box<[ConstValue]>>> =
         std::cell::RefCell::new(indexmap::IndexSet::new());
-}
-
-pub(crate) fn reset_const_arrays() {
-    SESSION_CONST_ARRAYS.with_borrow_mut(|values| *values = Default::default());
 }
 
 /// Session-interned fixed-size constant array value so `ConstValue` remains `Copy`.

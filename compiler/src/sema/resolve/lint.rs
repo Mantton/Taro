@@ -162,6 +162,7 @@ impl LintState {
     /// The expression `node` refers to `local` while `scopes` are open.
     pub fn note_local_reference(
         &mut self,
+        names: &crate::symbols::SymbolTable,
         node: NodeID,
         local: NodeID,
         scopes: &[LexicalScope<'_>],
@@ -189,7 +190,7 @@ impl LintState {
             };
             let message = format!(
                 "vet: '{}' shadows the {} declared on line {}, which is read after this scope ends",
-                inner.name.symbol.as_str(),
+                names.text(inner.name.symbol),
                 if outer.is_parameter {
                     "parameter"
                 } else {

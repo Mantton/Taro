@@ -753,7 +753,7 @@ mod tests {
                         .root
                         .declarations
                         .iter()
-                        .find(|declaration| declaration.identifier.symbol.as_str() == name)
+                        .find(|declaration| gcx.symbol_text(declaration.identifier.symbol).as_str() == name)
                         .unwrap()
                         .id;
                     assert_eq!(
@@ -780,7 +780,7 @@ mod tests {
                     .root
                     .declarations
                     .iter()
-                    .find(|declaration| declaration.identifier.symbol.as_str() == "Child")
+                    .find(|declaration| gcx.symbol_text(declaration.identifier.symbol).as_str() == "Child")
                     .unwrap()
                     .id;
                 let private = gcx.class_info(gcx.get_type(base)).unwrap().initializers[0];

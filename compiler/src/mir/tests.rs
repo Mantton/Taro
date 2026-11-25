@@ -214,7 +214,7 @@ fn task_result_failure_edge_preserves_order_remapping_and_metadata() {
             };
             let edges = terminator.kind.successors();
             assert_eq!(*edges.last().unwrap(), BasicBlockId::from_raw(5));
-            let wire = crate::metadata::wire::terminator_to_wire(&terminator);
+            let wire = crate::metadata::wire::terminator_to_wire(gcx.symbols(), &terminator);
             let files = rustc_hash::FxHashMap::default();
             let roundtrip = crate::metadata::wire::terminator_from_wire(
                 gcx,
@@ -249,12 +249,12 @@ fn explicit_reference_matches_copy_fields_without_copying_the_enum() {
         crate::test_support::analyze_script_built_mir(&source, |bodies, gcx| {
             let body = bodies
                 .iter()
-                .find(|body| gcx.definition_ident(body.owner).symbol.as_str() == "read")
+                .find(|body| gcx.symbol_text(gcx.definition_ident(body.owner).symbol).as_str() == "read")
                 .unwrap();
             let enum_copies = body.basic_blocks.iter().flat_map(|block| &block.statements).filter(|statement| {
                 let StatementKind::Assign(destination, Rvalue::Use(Operand::Copy(_))) = &statement.kind else { return false };
                 destination.projection.is_empty()
-                    && matches!(body.locals[destination.local].ty.kind(), TyKind::Adt(def, _) if gcx.definition_ident(def.id).symbol.as_str() == "Choice")
+                    && matches!(body.locals[destination.local].ty.kind(), TyKind::Adt(def, _) if gcx.symbol_text(gcx.definition_ident(def.id).symbol).as_str() == "Choice")
             }).count();
             assert_eq!(enum_copies, usize::from(expect_snapshot), "guard={guard}");
         });

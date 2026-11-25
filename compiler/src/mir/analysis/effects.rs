@@ -254,7 +254,7 @@ func main() {}
 "#;
         crate::test_support::analyze_script_built_mir(source, |bodies, gcx| {
             for mut body in bodies {
-                let name = gcx.definition_ident(body.owner).symbol;
+                let name = gcx.symbol_text(gcx.definition_ident(body.owner).symbol);
                 if name.as_str() == "main" {
                     continue;
                 }
@@ -303,7 +303,7 @@ func main() {}
 "#;
         crate::test_support::analyze_script_built_mir(source, |bodies, gcx| {
             for mut body in bodies {
-                let name = gcx.definition_ident(body.owner).symbol;
+                let name = gcx.symbol_text(gcx.definition_ident(body.owner).symbol);
                 if name.as_str() == "main" {
                     continue;
                 }
