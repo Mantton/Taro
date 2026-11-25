@@ -29,7 +29,7 @@ use crossbeam_channel::bounded;
 use crate::{
     project::Project,
     protocol::{self, AnalysisMode, AnalysisRequest, FromWorker, Inputs, Stamp, ToWorker},
-    standard_library::{Installation, Prepared, StdCache},
+    standard_library::{Installation, Prepared, StdCache, std_config},
 };
 
 pub enum Environment {
@@ -234,11 +234,22 @@ impl Workspace {
             self.sources = Some(Rc::new(WorkspaceSources::new(revision, buffers)?));
         }
         let sources = self.sources.as_ref().unwrap().clone();
-        let project = Project::read(
-            &self.root,
-            sources.as_ref(),
-            matches!(environment, Environment::Installed(_)),
-        )?;
+        let browsing_std = match environment {
+            Environment::Installed(installation) => installation.is_std_root(&self.root)?,
+            Environment::Bootstrap(_) => false,
+        };
+        let project = if browsing_std {
+            Project {
+                config: std_config(self.root.clone()),
+                prefs: Default::default(),
+            }
+        } else {
+            Project::read(
+                &self.root,
+                sources.as_ref(),
+                matches!(environment, Environment::Installed(_)),
+            )?
+        };
         run_cancellable(|| {
             let (target, prepared_std) = match environment {
                 Environment::Bootstrap(target) => {
@@ -253,6 +264,12 @@ impl Workspace {
                         ));
                     }
                     (target.clone(), None)
+                }
+                // Open SDK sources are the source package of this worker.
+                // The project worker loads the installed metadata separately.
+                Environment::Installed(installation) if browsing_std => {
+                    installation.verify_browsing_sources()?;
+                    (installation.target(None)?, None)
                 }
                 Environment::Installed(installation) => {
                     let target = installation.target(project.prefs.target.as_deref())?;

@@ -92,7 +92,7 @@ impl Bundle {
     }
 
     pub fn verify_std_sources(&self) -> io::Result<PathBuf> {
-        let root = std_path(&self.root);
+        let root = self.std_root()?;
         if std_digest(&root)?.as_str() != self.std_digest() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -100,6 +100,10 @@ impl Bundle {
             ));
         }
         Ok(root)
+    }
+
+    pub(crate) fn std_root(&self) -> io::Result<PathBuf> {
+        std_path(&self.root).canonicalize()
     }
 
     pub(crate) fn frozen_std(&self, target: &TargetFacts) -> io::Result<FrozenDependency> {

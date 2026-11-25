@@ -898,6 +898,106 @@ fn sdk_uses_canonical_sources_and_reuses_the_snapshot_after_restart() {
 }
 
 #[test]
+fn definitions_continue_inside_sdk_sources() {
+    let fixture = Fixture::new();
+    let root = fixture.root.canonicalize().unwrap();
+    let sdk = root.join("sdk");
+    let runtime = sdk.join("lib/taro/runtime");
+    fs::create_dir_all(&runtime).unwrap();
+    fs::copy(&fixture.facts, runtime.join("target-facts.toml")).unwrap();
+    let std = sdk.join("std");
+    copy_std(&std);
+    let entry = as_uri(&std.join("src/lsp_navigation_entry.tr"));
+    let sibling = as_uri(&std.join("src/lsp_navigation_target.tr"));
+    let entry_text = "public func sdkEntry() -> int32 { std::sdkTarget() }\n";
+    let sibling_text = "public func sdkTarget() -> int32 { 42 }\n";
+    fs::write(entry.to_file_path().unwrap(), entry_text).unwrap();
+    fs::write(sibling.to_file_path().unwrap(), sibling_text).unwrap();
+
+    let project = root.join("project");
+    fs::create_dir(&project).unwrap();
+    let active = as_uri(&project.join("src/use.tr"));
+    let active_text = "func check() { _ = std::sdkEntry() }";
+    let mut command = Command::new(env!("CARGO_BIN_EXE_taro-lsp"));
+    command
+        .arg("--sdk")
+        .arg(&sdk)
+        .env("TARO_LSP_CACHE_DIR", root.join("cache"));
+    let mut server = Session::spawn(&mut command, Message::read);
+    server.request(
+        1,
+        "initialize",
+        json!({"capabilities": {}, "rootUri": as_uri(&project).as_str()}),
+    );
+    server.response(1);
+    server.notify("initialized", json!({}));
+    server.open(active.as_str(), active_text);
+    loop {
+        if let Message::Notification(note) = server.next()
+            && note.method == "textDocument/publishDiagnostics"
+            && note.params["uri"] == active.as_str()
+        {
+            assert_eq!(note.params["diagnostics"], json!([]));
+            break;
+        }
+    }
+    server.request(
+        2,
+        "textDocument/definition",
+        at(active.as_str(), active_text, "sdkEntry"),
+    );
+    assert_eq!(server.response(2)["uri"], entry.as_str());
+
+    server.open(entry.as_str(), entry_text);
+    server.request(
+        3,
+        "textDocument/definition",
+        at(entry.as_str(), entry_text, "sdkTarget"),
+    );
+    assert_eq!(
+        server.response(3),
+        json!({"uri": sibling.as_str(), "range": {
+            "start": {"line": 0, "character": 12}, "end": {"line": 0, "character": 21}
+        }})
+    );
+
+    let shifted = format!("\n{sibling_text}");
+    server.open(sibling.as_str(), &shifted);
+    server.request(
+        4,
+        "textDocument/definition",
+        at(entry.as_str(), entry_text, "sdkTarget"),
+    );
+    assert_eq!(server.response(4)["range"]["start"]["line"], 1);
+    server.request(
+        5,
+        "textDocument/definition",
+        at(active.as_str(), active_text, "sdkEntry"),
+    );
+    assert_eq!(server.response(5)["uri"], entry.as_str());
+
+    for uri in [&entry, &sibling] {
+        server.notify(
+            "textDocument/didClose",
+            json!({"textDocument": {"uri": uri.as_str()}}),
+        );
+    }
+    server.request(
+        6,
+        "textDocument/definition",
+        at(entry.as_str(), entry_text, "sdkTarget"),
+    );
+    assert_eq!(server.response(6), Value::Null);
+    server.open(entry.as_str(), entry_text);
+    server.request(
+        7,
+        "textDocument/definition",
+        at(entry.as_str(), entry_text, "sdkTarget"),
+    );
+    assert_eq!(server.response(7)["range"]["start"]["line"], 0);
+}
+
+#[test]
 fn editor_features_follow_two_unsaved_files_and_clear_repaired_diagnostics() {
     let fixture = Fixture::new();
     let mut server = Session::spawn(&mut fixture.command(), Message::read);

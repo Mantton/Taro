@@ -83,6 +83,7 @@ pub fn run(launch: Launch, installed_std: Option<PathBuf>) -> Result<()> {
         installed_std,
         watching_files: false,
         workspaces: BTreeMap::new(),
+        std_workspace: None,
         waiting: Vec::new(),
         trace_analysis: std::env::var_os("TARO_LSP_TRACE_ANALYSIS").is_some(),
     };
@@ -108,6 +109,7 @@ struct Server {
     installed_std: Option<PathBuf>,
     watching_files: bool,
     workspaces: BTreeMap<PathBuf, Supervisor>,
+    std_workspace: Option<Supervisor>,
     waiting: Vec<EditorQuery>,
     trace_analysis: bool,
 }
@@ -146,7 +148,7 @@ impl Server {
 
     fn lookup(&mut self, path: &Path) -> Option<&mut Supervisor> {
         if self.is_installed_std(path) {
-            return None;
+            return self.std_workspace.as_mut();
         }
         let root = self
             .workspaces
@@ -172,7 +174,7 @@ impl Server {
                     }
                     if note.method == "$/cancelRequest" {
                         self.cancel_request(connection, note)?;
-                    } else if let Err(error) = self.notification(note) {
+                    } else if let Err(error) = self.notification(connection, note) {
                         log_warning(connection, error.to_string())?;
                     }
                 }
@@ -191,7 +193,11 @@ impl Server {
                 Err(RecvTimeoutError::Disconnected) => return Ok(()),
             }
             let now = Instant::now();
-            for supervisor in self.workspaces.values_mut() {
+            for supervisor in self
+                .workspaces
+                .values_mut()
+                .chain(self.std_workspace.iter_mut())
+            {
                 match supervisor.drive(now) {
                     Some(Notice::Current(mode, product)) => {
                         let diagnostics = features::diagnostics(supervisor, &product);
@@ -273,6 +279,12 @@ impl Server {
             return send_value(connection, request.id, Value::Null);
         };
         let now = Instant::now();
+        // The first request from an SDK file may wait for a full source check.
+        let timeout = if self.is_installed_std(&path) {
+            Policy::default().timeout
+        } else {
+            REQUEST_TIMEOUT
+        };
         let query = EditorQuery {
             kind,
             id: request.id,
@@ -280,7 +292,7 @@ impl Server {
             position,
             workspace_instance,
             workspace_revision,
-            deadline: now + REQUEST_TIMEOUT,
+            deadline: now + timeout,
         };
         if !self.answer(connection, &query, now)? {
             if self.waiting.len() == MAX_WAITING_REQUESTS {
@@ -362,15 +374,21 @@ impl Server {
         Ok(())
     }
 
-    fn notification(&mut self, note: Notification) -> Result<()> {
+    fn notification(&mut self, connection: &Connection, note: Notification) -> Result<()> {
         match note.method.as_str() {
             notification::DidOpenTextDocument::METHOD => {
                 let params: DidOpenTextDocumentParams = serde_json::from_value(note.params)?;
                 let doc = params.text_document;
-                if let Some(path) = file_path(&doc.uri)
-                    .filter(|path| is_taro_source(path) && !self.is_installed_std(path))
-                {
-                    if self.lookup(&path).is_none() {
+                if let Some(path) = file_path(&doc.uri).filter(|path| is_taro_source(path)) {
+                    if let Some(root) = self
+                        .installed_std
+                        .as_ref()
+                        .filter(|root| path.starts_with(root))
+                    {
+                        self.std_workspace.get_or_insert_with(|| {
+                            Supervisor::new(root.clone(), self.launch.clone(), Policy::default())
+                        });
+                    } else if self.lookup(&path).is_none() {
                         self.workspaces.insert(
                             path.clone(),
                             Supervisor::new(path.clone(), self.launch.clone(), Policy::default()),
@@ -405,7 +423,15 @@ impl Server {
             notification::DidCloseTextDocument::METHOD => {
                 let params: DidCloseTextDocumentParams = serde_json::from_value(note.params)?;
                 if let Some(path) = file_path(&params.text_document.uri) {
-                    if self.workspaces.remove(&path).is_none()
+                    if self.is_installed_std(&path) {
+                        if let Some(supervisor) = &mut self.std_workspace {
+                            supervisor.close_document(&path);
+                            if supervisor.open_document_uris().next().is_none() {
+                                publish(connection, supervisor, BTreeMap::new(), None)?;
+                                self.std_workspace = None;
+                            }
+                        }
+                    } else if self.workspaces.remove(&path).is_none()
                         && let Some(supervisor) = self.lookup(&path)
                     {
                         supervisor.close_document(&path);

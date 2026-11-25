@@ -1,6 +1,10 @@
 //! Prepare matching standard-library metadata in a disposable session.
 
-use std::{io, path::PathBuf, rc::Rc};
+use std::{
+    io,
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
 use compiler::{
     PackageIndex,
@@ -27,6 +31,20 @@ pub enum Installation {
 }
 
 impl Installation {
+    pub fn is_std_root(&self, root: &Path) -> io::Result<bool> {
+        match self {
+            Self::Sdk(sdk) => Ok(sdk.std == root),
+            Self::Portable(bundle) => Ok(bundle.std_root()? == root),
+        }
+    }
+
+    pub fn verify_browsing_sources(&self) -> io::Result<()> {
+        if let Self::Portable(bundle) = self {
+            bundle.verify_std_sources()?;
+        }
+        Ok(())
+    }
+
     pub fn target(&self, target: Option<&str>) -> io::Result<TargetFacts> {
         match self {
             Self::Sdk(sdk) => sdk.target(target),

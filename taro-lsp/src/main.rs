@@ -87,7 +87,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     } else {
         let installed_std = match flag {
             "--sdk" => Some(sdk::std_root(&source)?),
-            "--bundle" => Some(bundle::std_path(&source)),
+            "--bundle" => Some(bundle::std_path(&source).canonicalize()?),
             _ => None,
         };
         let launch = supervisor::Launch {
