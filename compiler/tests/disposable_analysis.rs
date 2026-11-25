@@ -158,16 +158,30 @@ struct Cancelled;
 fn frozen_and_scratch_allocations_have_independent_lifetimes() {
     let root = files::TempDir::new("disposable-analysis");
     let worker = Worker::new(&root);
+    let edits = std::env::var("TARO_LSP_SOAK_EDITS")
+        .map(|count| {
+            count
+                .parse::<u32>()
+                .expect("TARO_LSP_SOAK_EDITS is an unsigned edit count")
+        })
+        .unwrap_or(16);
+    let asset = worker.active.src.join("payload.bin");
+    let sibling = worker.active.src.join("src/transient.tr");
     let source = "import dep::width\n\
                   const captions: [[string; 2]; 1] = [[\"first\", \"second\"]]\n\
+                  const bytes: [uint8; 4] = #embedBytes(\"../payload.bin\")\n\
                   func buffer() -> [int32; width()] { [1, 2] }\n\
-                  func useWidth() -> usize { width() }";
+                  func useWidth() -> usize { width() }\n\
+                  func selected(_ flag: bool) -> bool { flag }\n\
+                  func selected(_ value: int32) -> int32 { value }\n\
+                  func local() -> int32 { firstName := 42; selected(firstName) }";
     let cancelled = |snapshot: &FrozenDependency| {
         let result = catch_unwind(AssertUnwindSafe(|| worker.analyze(snapshot, 0, true)));
         assert!(result.unwrap_err().is::<Cancelled>());
     };
     // Warm process initialization and the unwind runtime before measuring.
     write_source(&worker.active, source);
+    fs::write(&asset, 0u32.to_le_bytes()).unwrap();
     {
         let snapshot = worker.freeze();
         assert!(worker.analyze(&snapshot, 0, false).complete);
@@ -183,20 +197,43 @@ fn frozen_and_scratch_allocations_have_independent_lifetimes() {
     let delayed = worker.analyze(&snapshot, 1, false);
     assert!(delayed.complete, "{:?}", delayed.diagnostics);
     let holding_reply = live_heap();
-    for revision in 2..18 {
-        let edited = source.replace("first", &format!("revision {revision}"));
+    for edit in 1..=edits {
+        let revision = u64::from(edit) + 1;
+        let edited = if edit % 500 == 0 {
+            source.to_owned()
+        } else {
+            source
+                .replace("\"first\"", &format!("\"revision {revision}\""))
+                .replace("firstName", &format!("name{revision}"))
+                .replace("_ flag: bool", &format!("tag{revision} flag: bool"))
+        };
         write_source(&worker.active, &edited);
+        fs::write(
+            &asset,
+            (if edit % 500 == 0 { 0 } else { edit }).to_le_bytes(),
+        )
+        .unwrap();
+        if edit % 3 == 1 {
+            fs::write(
+                &sibling,
+                format!("func transient{revision}() -> int32 {{ 1 }}"),
+            )
+            .unwrap();
+        }
         let answer = worker.analyze(&snapshot, revision, false);
         assert!(answer.complete, "{:?}", answer.diagnostics);
         drop(answer);
         drop(edited);
+        if edit % 3 == 1 {
+            fs::remove_file(&sibling).unwrap();
+        }
         assert_eq!(live_heap(), holding_reply, "after revision {revision}");
     }
     cancelled(&snapshot);
     assert_eq!(live_heap(), holding_reply, "after cancellation");
 
     write_source(&worker.active, "func broken() { undefinedName() }");
-    let failed = worker.analyze(&snapshot, 18, false);
+    let failed = worker.analyze(&snapshot, u64::from(edits) + 2, false);
     assert!(!failed.complete);
     assert!(!failed.diagnostics.is_empty());
     drop(failed);
@@ -219,5 +256,8 @@ fn frozen_and_scratch_allocations_have_independent_lifetimes() {
 
     drop(snapshot);
     assert_eq!(live_heap(), empty, "after dropping the frozen dependency");
-    println!("Peak requested Rust heap above the frozen baseline: {peak_scratch_bytes} bytes");
+    println!(
+        "Replayed {edits} edits. Frozen payload: {} requested bytes. Peak heap above frozen baseline: {peak_scratch_bytes} bytes.",
+        frozen.0 - empty.0
+    );
 }
