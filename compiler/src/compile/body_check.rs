@@ -3,6 +3,7 @@
 use std::{collections::BTreeMap, ops::ControlFlow, path::Path};
 
 use crate::{
+    diagnostics::Diagnostic,
     hir::{self, HirVisitor},
     sema::{tycheck, validate},
     span::{Position, Span},
@@ -10,7 +11,8 @@ use crate::{
 
 use super::{
     Compiler, TimingReport,
-    analysis_products::{self, AnalysisDiagnostic, SourceRange, TypedOccurrence},
+    analysis_products::{self, AnalysisDiagnostic, AnalysisProduct, SourceRange, TypedOccurrence},
+    closed_body::ClosedBodyRevision,
     context::Gcx,
     declarations::{BodyRecord, DeclarationRecord},
     semantic_revision::{self, PackageSemanticSummary},
@@ -39,6 +41,13 @@ pub enum RequiresFullCheck {
     PackagePreparationFailed,
     DeferredPackageValidation,
     BodyCheckFailed,
+    DifferentialMismatch,
+}
+
+struct CheckedBody {
+    product: BodyProduct,
+    span: Span,
+    closed_revision: Option<ClosedBodyRevision>,
 }
 
 impl Compiler<'_> {
@@ -55,24 +64,53 @@ impl Compiler<'_> {
         position: Position,
         expected_fingerprint: Option<blake3::Hash>,
     ) -> Result<BodyProduct, RequiresFullCheck> {
+        self.check_body_recording(path, position, expected_fingerprint, false)
+            .map(|checked| checked.product)
+    }
+
+    /// Establish the first locally reusable body against a clean package
+    /// result from the same source revision. Cold preparation verifies all
+    /// inputs and compares owned facts before a cheaper path is allowed.
+    pub fn prepare_closed_body_edit(
+        &mut self,
+        path: &Path,
+        position: Position,
+        eager: &AnalysisProduct,
+    ) -> Result<ClosedBodyRevision, RequiresFullCheck> {
+        if !eager.complete
+            || self.context.dcx().sources().workspace_revision() != Some(eager.revision)
+        {
+            return Err(RequiresFullCheck::PackageChanged);
+        }
+        let checked = self.check_body_recording(path, position, None, true)?;
+        if !super::closed_body::matches_eager(&checked.product, eager) {
+            return Err(RequiresFullCheck::DifferentialMismatch);
+        }
+        checked
+            .closed_revision
+            .ok_or(RequiresFullCheck::UnsupportedDeclaration)
+    }
+
+    fn check_body_recording(
+        &mut self,
+        path: &Path,
+        position: Position,
+        expected_fingerprint: Option<blake3::Hash>,
+        prepare_closed_revision: bool,
+    ) -> Result<CheckedBody, RequiresFullCheck> {
         let gcx = self.context;
         let dcx = gcx.dcx();
         dcx.enable_recording();
-        let selected = self.check_body(path, position, expected_fingerprint);
+        let selected = self.check_body(
+            path,
+            position,
+            expected_fingerprint,
+            prepare_closed_revision,
+        );
         let diagnostics = dcx.take_recorded_diagnostics();
-        let (mut product, span) = selected?;
-        product.diagnostics = diagnostics
-            .into_iter()
-            .filter(|diagnostic| {
-                diagnostic
-                    .span
-                    .is_some_and(|location| within(location, span))
-            })
-            .map(|diagnostic| {
-                AnalysisDiagnostic::capture(gcx, diagnostic, std::slice::from_ref(&product.body))
-            })
-            .collect();
-        Ok(product)
+        let mut checked = selected?;
+        capture_body_diagnostics(gcx, &mut checked.product, checked.span, diagnostics);
+        Ok(checked)
     }
 
     fn check_body(
@@ -80,7 +118,8 @@ impl Compiler<'_> {
         path: &Path,
         position: Position,
         expected_fingerprint: Option<blake3::Hash>,
-    ) -> Result<(BodyProduct, Span), RequiresFullCheck> {
+        prepare_closed_revision: bool,
+    ) -> Result<CheckedBody, RequiresFullCheck> {
         use RequiresFullCheck::*;
         let gcx = self.context;
         if gcx.config.is_std_provider
@@ -116,7 +155,16 @@ impl Compiler<'_> {
 
         let summary =
             semantic_revision::summarize(gcx, &ast).map_err(|_| UnavailablePackageInputs)?;
-        let fingerprint = fingerprint_with_loaded_dependencies(gcx, summary)?;
+        let file = prepare_closed_revision
+            .then(|| summary.files.iter().find(|file| file.path == path).cloned())
+            .flatten();
+        let settings = summary.settings;
+        let dependencies = loaded_dependency_keys(gcx)?;
+        let fingerprint = fingerprint_with_loaded_dependencies(
+            gcx.config.identifier.as_str(),
+            summary,
+            &dependencies,
+        )?;
         if expected_fingerprint.is_some_and(|expected| expected != fingerprint) {
             return Err(PackageChanged);
         }
@@ -162,35 +210,66 @@ impl Compiler<'_> {
                 submodules: Vec::new(),
             },
         };
-        let results =
-            tycheck::check_prepared_bodies(&selected_package, gcx).map_err(|_| BodyCheckFailed)?;
-        validate::validate_selected_body(&selected_package, gcx, &results, span)
-            .map_err(|_| BodyCheckFailed)?;
-        let (declaration, body, occurrences) = analysis_products::capture_function(
-            gcx,
-            &selected_package.root.declarations[0],
-            &results,
-        )
-        .ok_or(UnsupportedDeclaration)?;
-        let scope = SourceRange::capture(gcx, span).ok_or(UnsupportedDeclaration)?;
-        Ok((
-            BodyProduct {
-                package_fingerprint: fingerprint,
-                declaration,
-                body,
-                scope,
-                occurrences,
-                diagnostics: Vec::new(),
-            },
+        let product = check_selected_hir(gcx, &selected_package, span, fingerprint)?;
+        let closed_revision = file.and_then(|file| {
+            ClosedBodyRevision::capture(
+                gcx,
+                &selected_package.root.declarations[0],
+                span,
+                &product,
+                super::semantic_revision::SemanticFileInput { settings, file },
+                dependencies,
+            )
+        });
+        Ok(CheckedBody {
+            product,
             span,
-        ))
+            closed_revision,
+        })
     }
 }
 
-fn fingerprint_with_loaded_dependencies(
+pub(super) fn check_selected_hir(
     gcx: Gcx<'_>,
-    mut summary: PackageSemanticSummary,
-) -> Result<blake3::Hash, RequiresFullCheck> {
+    package: &hir::Package,
+    span: Span,
+    fingerprint: blake3::Hash,
+) -> Result<BodyProduct, RequiresFullCheck> {
+    use RequiresFullCheck::*;
+    let results = tycheck::check_prepared_bodies(package, gcx).map_err(|_| BodyCheckFailed)?;
+    validate::validate_selected_body(package, gcx, &results, span).map_err(|_| BodyCheckFailed)?;
+    let (declaration, body, occurrences) =
+        analysis_products::capture_function(gcx, &package.root.declarations[0], &results)
+            .ok_or(UnsupportedDeclaration)?;
+    let scope = SourceRange::capture(gcx, span).ok_or(UnsupportedDeclaration)?;
+    Ok(BodyProduct {
+        package_fingerprint: fingerprint,
+        declaration,
+        body,
+        scope,
+        occurrences,
+        diagnostics: Vec::new(),
+    })
+}
+
+pub(super) fn capture_body_diagnostics(
+    gcx: Gcx<'_>,
+    product: &mut BodyProduct,
+    span: Span,
+    diagnostics: Vec<Diagnostic>,
+) {
+    product.diagnostics = diagnostics
+        .into_iter()
+        .filter(|diagnostic| diagnostic.span.is_some_and(|source| within(source, span)))
+        .map(|diagnostic| {
+            AnalysisDiagnostic::capture(gcx, diagnostic, std::slice::from_ref(&product.body))
+        })
+        .collect();
+}
+
+pub(super) fn loaded_dependency_keys(
+    gcx: Gcx<'_>,
+) -> Result<BTreeMap<String, blake3::Hash>, RequiresFullCheck> {
     let packages = gcx.store.package_mapping.borrow();
     let identities = gcx.store.frozen_dependency_keys.borrow();
     let mut frozen = BTreeMap::new();
@@ -203,18 +282,24 @@ fn fingerprint_with_loaded_dependencies(
             .ok_or(RequiresFullCheck::UnavailablePackageInputs)?;
         frozen.insert(name.to_string(), *identity);
     }
+    Ok(frozen)
+}
 
+fn fingerprint_with_loaded_dependencies(
+    name: &str,
+    mut summary: PackageSemanticSummary,
+    frozen: &BTreeMap<String, blake3::Hash>,
+) -> Result<blake3::Hash, RequiresFullCheck> {
     // Type and conformance lookups can search loaded packages transitively.
     // Include every hydrated identity, including std and indirect imports.
     summary.dependencies.extend(frozen.keys().cloned());
     summary.dependencies.sort_unstable();
     summary.dependencies.dedup();
-    let name = gcx.config.identifier.to_string();
     semantic_revision::resolve_package_fingerprints(
-        &BTreeMap::from([(name.clone(), summary)]),
-        &frozen,
+        &BTreeMap::from([(name.to_owned(), summary)]),
+        frozen,
     )
-    .remove(&name)
+    .remove(name)
     .ok_or(RequiresFullCheck::UnavailablePackageInputs)
 }
 

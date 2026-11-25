@@ -341,6 +341,8 @@ impl HeaderSites<'_> {
             enclosing,
             declaration: component(id)?,
         };
+        #[cfg(test)]
+        gcx.dcx().analysis_work.indexed_declarations.update(|count| count + 1);
         Some(DeclarationRecord { anchor, location })
     }
 

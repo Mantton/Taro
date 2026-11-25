@@ -164,6 +164,13 @@ impl Compiler<'_> {
     /// Summarize an edited root file in the same prepared package context.
     /// A module whose activation depends on siblings needs a package check.
     pub fn summarize_semantic_file(&self, path: &Path) -> Option<SemanticFileInput> {
+        self.parse_semantic_root_file(path).map(|(_, input)| input)
+    }
+
+    pub(super) fn parse_semantic_root_file(
+        &self,
+        path: &Path,
+    ) -> Option<(ast::Package, SemanticFileInput)> {
         let gcx = self.context;
         let dcx = gcx.dcx();
         let sources = dcx.sources();
@@ -192,14 +199,15 @@ impl Compiler<'_> {
             SyntaxMode::Strict,
         )
         .ok()?;
-        let mut file =
-            crate::parse::parser::parse_root_file(lexed, dcx, gcx.config.lint_warnings).ok()?;
-        crate::cfg_eval::filter_file(&mut file, &crate::cfg_eval::target_info(gcx), gcx);
+        let mut package =
+            crate::parse::parser::parse_root_package(lexed, dcx, gcx.config.lint_warnings).ok()?;
+        crate::cfg_eval::filter_package(&mut package, &crate::cfg_eval::target_info(gcx), gcx);
         dcx.ok().ok()?;
-        Some(SemanticFileInput {
+        let input = SemanticFileInput {
             settings: summarize_settings(gcx).ok()?.0,
-            file: summarize_file(gcx, &file).ok()?,
-        })
+            file: summarize_file(gcx, &package.root.files[0]).ok()?,
+        };
+        Some((package, input))
     }
 }
 
@@ -268,6 +276,7 @@ fn summarize_settings(gcx: Gcx<'_>) -> Result<(Hash, Vec<String>), String> {
 
     let settings = (
         &gcx.store.target_facts,
+        config.name.as_str(),
         config.identifier.as_str(),
         config.index.raw(),
         aliases,
@@ -367,6 +376,13 @@ fn summarize_file(gcx: Gcx<'_>, file: &ast::File) -> Result<FileSemanticSummary,
     let source = dcx
         .get_file_content(file.id)
         .ok_or_else(|| format!("cannot read {}", path.display()))?;
+    #[cfg(test)]
+    {
+        dcx.analysis_work.summarized_files.update(|count| count + 1);
+        dcx.analysis_work
+            .summarized_source_bytes
+            .update(|count| count + source.text().len());
+    }
     let mut embedded = EmbeddedInputs {
         gcx,
         assets: BTreeMap::new(),

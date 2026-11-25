@@ -60,18 +60,17 @@ pub(crate) fn parse_package(
     Ok(ast::Package { root })
 }
 
-pub(crate) fn parse_root_file(
+pub(crate) fn parse_root_package(
     file: lexer::File,
     dcx: &DiagCtx,
     lint_warnings: bool,
-) -> Result<ast::File, ReportedError> {
-    let options = ParseOptions {
-        lint_warnings,
-        mode: SyntaxMode::Strict,
+) -> Result<ast::Package, ReportedError> {
+    let root = lexer::Module {
+        name: crate::constants::ROOT_MODULE_NAME.into(),
+        files: vec![file],
+        submodules: Vec::new(),
     };
-    let (file, declarations) = parse_file(file, NextNode::default(), dcx, options)?;
-    pick_module_decl(crate::constants::ROOT_MODULE_NAME, true, declarations, dcx)?;
-    Ok(file)
+    parse_package(lexer::Pacakge { root }, dcx, lint_warnings, SyntaxMode::Strict)
 }
 
 #[derive(Clone, Copy)]

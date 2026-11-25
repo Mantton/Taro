@@ -571,6 +571,8 @@ impl OccurrenceCollector<'_, '_> {
         if let Some(ty) = self.types.try_node_type(id)
             && let Some(source) = SourceRange::capture(self.gcx, span)
         {
+            #[cfg(test)]
+            self.gcx.dcx().analysis_work.copied_occurrences.update(|count| count + 1);
             self.occurrences.push(TypedOccurrence {
                 source,
                 ty: TypeShape::capture(self.gcx, ty),

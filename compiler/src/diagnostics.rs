@@ -30,8 +30,12 @@ pub struct DiagCtx {
 #[derive(Default)]
 pub(crate) struct AnalysisWork {
     pub parsed_files: Cell<usize>,
+    pub summarized_files: Cell<usize>,
+    pub summarized_source_bytes: Cell<usize>,
     pub collected_callable_headers: Cell<usize>,
     pub checked_function_bodies: Cell<usize>,
+    pub indexed_declarations: Cell<usize>,
+    pub copied_occurrences: Cell<usize>,
 }
 
 impl DiagCtx {

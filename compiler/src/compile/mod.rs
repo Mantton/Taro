@@ -25,6 +25,7 @@ pub(crate) mod assets;
 pub mod bench_collector;
 pub mod body_cache;
 pub mod body_check;
+pub mod closed_body;
 pub mod config;
 pub mod context;
 pub mod declarations;
@@ -564,11 +565,7 @@ impl<'state> Compiler<'state> {
         self.lower_parsed_package(package, timings, tolerate_std_item_errors)
     }
 
-    fn parse_source_package(
-        &self,
-        timings: &mut TimingReport,
-        mode: SyntaxMode,
-    ) -> CompileResult<crate::ast::Package> {
+    fn initialize_source_package(&self) {
         self.context
             .store
             .embedded_inputs
@@ -596,6 +593,14 @@ impl<'state> Compiler<'state> {
                 .std_provider_index
                 .set(Some(self.context.config.index));
         }
+    }
+
+    fn parse_source_package(
+        &self,
+        timings: &mut TimingReport,
+        mode: SyntaxMode,
+    ) -> CompileResult<crate::ast::Package> {
+        self.initialize_source_package();
 
         // Tokenization & Parsing
         // Get target triple for file-level cfg evaluation

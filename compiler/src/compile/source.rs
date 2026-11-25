@@ -7,7 +7,10 @@ use std::{
     fs, io,
     ops::Range,
     path::{Path, PathBuf},
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use line_index::{LineCol, LineIndex, TextSize, WideEncoding, WideLineCol};
@@ -160,6 +163,19 @@ pub struct DirectoryEntry {
     pub kind: EntryKind,
 }
 
+/// Identity and revision of a tracked source view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceVersion {
+    owner: u64,
+    revision: u64,
+}
+
+/// The source provider's attestation that only this text changed.
+pub struct SingleFileEdit {
+    pub(super) previous: SourceVersion,
+    pub(super) path: PathBuf,
+}
+
 /// The compiler's view of a set of files. Paths returned from directory
 /// enumeration can be passed directly to read or resolve.
 pub trait SourceProvider {
@@ -168,6 +184,14 @@ pub trait SourceProvider {
     fn read_file(&self, path: &Path) -> io::Result<FileContents>;
 
     fn workspace_revision(&self) -> Option<u64> {
+        None
+    }
+
+    fn source_version(&self) -> Option<SourceVersion> {
+        None
+    }
+
+    fn single_file_edit(&self) -> Option<&SingleFileEdit> {
         None
     }
 
@@ -249,7 +273,9 @@ pub enum FileOverlay {
 /// paths. Unchanged open buffers can share their text and line index via
 /// `Arc`. Obtain a fresh revision after changes to disk or the open buffers.
 pub struct WorkspaceSources {
+    owner: u64,
     revision: u64,
+    single_file_edit: Option<SingleFileEdit>,
     files: BTreeMap<PathBuf, FileOverlay>,
     virtual_entries: BTreeMap<PathBuf, BTreeMap<PathBuf, EntryKind>>,
     paths: ReadCache<DiskPath>,
@@ -303,8 +329,13 @@ impl WorkspaceSources {
                 child = parent;
             }
         }
+        static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
         Ok(Self {
+            owner: NEXT_OWNER
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                .expect("workspace source identities exhausted"),
             revision,
+            single_file_edit: None,
             files,
             virtual_entries,
             paths,
@@ -317,6 +348,40 @@ impl WorkspaceSources {
         self.revision
     }
 
+    /// Apply an editor text replacement after readers of the old view finish.
+    /// Disk changes, file creation and deletion require a fresh source view.
+    pub fn replace_open_text(
+        &mut self,
+        revision: u64,
+        path: &Path,
+        source: Arc<SourceText>,
+    ) -> io::Result<()> {
+        if revision <= self.revision {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "stale editor revision",
+            ));
+        }
+        let path = self.resolve(path)?;
+        let Some(FileOverlay::Contents(FileContents::Text(current))) = self.files.get_mut(&path)
+        else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "file is not an open text buffer",
+            ));
+        };
+        *current = source;
+        self.single_file_edit = Some(SingleFileEdit {
+            previous: SourceVersion {
+                owner: self.owner,
+                revision: self.revision,
+            },
+            path,
+        });
+        self.revision = revision;
+        Ok(())
+    }
+
     fn disk_path(&self, path: &Path) -> io::Result<DiskPath> {
         read_once(&self.paths, path, || resolve_disk_path(path))
     }
@@ -325,6 +390,17 @@ impl WorkspaceSources {
 impl SourceProvider for WorkspaceSources {
     fn workspace_revision(&self) -> Option<u64> {
         Some(self.revision)
+    }
+
+    fn source_version(&self) -> Option<SourceVersion> {
+        Some(SourceVersion {
+            owner: self.owner,
+            revision: self.revision,
+        })
+    }
+
+    fn single_file_edit(&self) -> Option<&SingleFileEdit> {
+        self.single_file_edit.as_ref()
     }
 
     fn resolve(&self, path: &Path) -> io::Result<PathBuf> {
