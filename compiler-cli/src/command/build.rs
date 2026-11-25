@@ -737,6 +737,14 @@ fn build_runtime(
         }
     }
 
+    if cfg!(feature = "release-sdk") {
+        ctx.dcx.emit_error(
+            "runtime archive missing from the Taro SDK; reinstall the matching SDK".into(),
+            None,
+        );
+        return Err(ReportedError);
+    }
+
     // 5. Fallback (Development Mode)
     // If we're strictly in a dev environment (source checkout), we invoke cargo to build it.
     // This supports `cargo run` workflows for compiler developers without needing a full `dist` build.

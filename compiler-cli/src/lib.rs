@@ -18,7 +18,7 @@ pub struct CompileModeOptions {
 }
 
 #[derive(Parser, Clone, Debug)]
-#[command(name = "taro", bin_name = "taro")]
+#[command(name = "taro", bin_name = "taro", version)]
 pub struct Cli {
     /// Print LLVM passed, missed, and analysis remarks matching a pass-name regex.
     #[arg(

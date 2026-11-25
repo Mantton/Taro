@@ -30,6 +30,37 @@ and attached standard-library artifacts are assembled before an existing
 distribution is replaced. A build or bootstrap failure preserves the last
 usable `dist/`; symlink destinations are rejected.
 
+### Stage a macOS SDK
+
+Use the release SDK build to test a relocatable install on a native macOS
+host. It builds the CLI with vendored Git and OpenSSL, includes the LSP, and
+copies std sources before building the attached artifacts. Both Cargo workspaces
+use their committed lockfiles in this build. The loader audit rejects shared
+libraries outside the macOS system paths.
+
+For an LLVM build that links zstd, supply a static archive for the host
+architecture. The path below is an example for an Apple Silicon Homebrew
+build machine.
+
+```sh
+python3 -B development/scripts/build_dist.py --macos-sdk \
+  --static-zstd /opt/homebrew/opt/zstd/lib/libzstd.a \
+  --dist-dir "$PWD/target/taro-0.1.0-macos-arm64"
+COPYFILE_DISABLE=1 tar -czf target/taro-0.1.0-macos-arm64.tar.gz \
+  -C target taro-0.1.0-macos-arm64
+python3 -B development/scripts/smoke_macos_sdk.py target/taro-0.1.0-macos-arm64.tar.gz
+```
+
+The smoke test extracts the archive to a new path, checks native linking with
+only system tools on `PATH`, and verifies editor navigation into and within std.
+Pass `--developer-dir /Library/Developer/CommandLineTools` to test Command Line
+Tools on a host that also has Xcode installed.
+
+Keep the SDK directory together and add its `bin/` to your shell's `PATH`.
+Run `taro --version`, then `taro run hello.tr` from the directory containing
+your program. The Mac needs Apple Command Line Tools or Xcode for native
+linking. The installed SDK provides its runtime and std from the same root.
+
 ## Run the Local Compiler
 
 `run_dist.py` rebuilds the distribution, configures `TARO_HOME`, and invokes

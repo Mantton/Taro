@@ -3,6 +3,9 @@ name = "cli"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+release-sdk = ["git2/vendored-libgit2", "git2/vendored-openssl"]
+
 [dependencies]
 clap = { version = "4.5.20", features = ["derive"] }
 serde = { version = "1.0.219", features = ["derive"] }

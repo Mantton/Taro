@@ -54,6 +54,16 @@ def parse_args(repo_root: Path) -> argparse.Namespace:
         "--target",
         help="Build runtime and attached std artifacts for this target triple.",
     )
+    parser.add_argument(
+        "--macos-sdk",
+        action="store_true",
+        help="Build a relocatable native macOS release SDK including taro-lsp.",
+    )
+    parser.add_argument(
+        "--static-zstd",
+        type=Path,
+        help="Path to libzstd.a when the release LLVM build uses zstd.",
+    )
     return parser.parse_args()
 
 
@@ -88,6 +98,44 @@ def apple_build_env(target: str | None) -> dict[str, str] | None:
 
 def release_flag(profile: str) -> list[str]:
     return ["--release"] if profile == "release" else []
+
+
+def sdk_build_env(build_env: dict[str, str] | None) -> dict[str, str]:
+    env = (build_env if build_env is not None else os.environ).copy()
+    for variable in (
+        "OPENSSL_NO_VENDOR",
+        "AARCH64_APPLE_DARWIN_OPENSSL_NO_VENDOR",
+        "X86_64_APPLE_DARWIN_OPENSSL_NO_VENDOR",
+        "LIBGIT2_NO_VENDOR",
+        "LIBSSH2_SYS_USE_PKG_CONFIG",
+    ):
+        env.pop(variable, None)
+    return env
+
+
+def verify_macos_linkage(binary: Path) -> None:
+    """An SDK executable may load only macOS-provided libraries."""
+    dependencies = subprocess.check_output(["otool", "-L", str(binary)], text=True)
+    for line in dependencies.splitlines()[1:]:
+        dependency = line.strip().partition(" (")[0]
+        if dependency and not dependency.startswith(("/usr/lib/", "/System/Library/")):
+            raise ValueError(f"{binary.name} depends on a non-system library: {dependency}")
+    commands = subprocess.check_output(["otool", "-l", str(binary)], text=True)
+    if any(line.strip() == "cmd LC_RPATH" for line in commands.splitlines()):
+        raise ValueError(f"{binary.name} contains an unexpected library search path")
+
+
+def copy_std_sources(source: Path, destination: Path) -> None:
+    if (source / "src").is_symlink():
+        raise ValueError("SDK standard-library sources must contain regular files")
+    destination.mkdir()
+    shutil.copytree(source / "src", destination / "src", symlinks=True)
+    shutil.copy2(source / "package.toml", destination / "package.toml", follow_symlinks=False)
+    lockfile = source / "package.lock"
+    if lockfile.exists() or lockfile.is_symlink():
+        shutil.copy2(lockfile, destination / "package.lock", follow_symlinks=False)
+    if any(path.is_symlink() for path in destination.rglob("*")):
+        raise ValueError("SDK standard-library sources must contain regular files")
 
 
 def validate_dist_dir(repo_root: Path, dist_dir: Path):
@@ -125,6 +173,15 @@ def main():
     dist_dir = args.dist_dir.absolute()
     std_src = args.std_path.resolve()
     target = args.target
+    macos_sdk = args.macos_sdk
+    if macos_sdk and (sys.platform != "darwin" or profile != "release" or target):
+        raise ValueError("--macos-sdk requires a native macOS release build")
+    zstd_archive = args.static_zstd
+    if zstd_archive:
+        if not macos_sdk or zstd_archive.name != "libzstd.a" or not zstd_archive.is_file():
+            raise ValueError("--static-zstd requires --macos-sdk and a libzstd.a file")
+        zstd_archive = zstd_archive.resolve()
+    cargo_target = repo_root / os.environ.get("CARGO_TARGET_DIR", "target")
     validate_dist_dir(repo_root, dist_dir)
     dist_dir = dist_dir.resolve()
 
@@ -152,21 +209,10 @@ def main():
         runtime_command.extend(["--target", target])
     # Both builds share dependencies; one environment avoids rebuilding them.
     build_env = apple_build_env(target)
+    if macos_sdk:
+        build_env = sdk_build_env(build_env)
+        runtime_command.append("--locked")
     run_command(runtime_command, cwd=repo_root, env=build_env)
-
-    # 2. Build Compiler CLI
-    print("\n--- Building Compiler CLI ---")
-    run_command(
-        [
-            "cargo",
-            "build",
-            "-p",
-            "taro-bin",
-            *release_flag(profile),
-            ],
-        cwd=repo_root,
-        env=build_env,
-    )
 
     # Assemble every artifact before replacing the previous distribution.
     # Keep staging and backup on the destination filesystem so publication is a rename.
@@ -174,6 +220,35 @@ def main():
     temporary = Path(tempfile.mkdtemp(prefix=f".{dist_dir.name}-", dir=dist_dir.parent))
     previous = temporary / "previous"
     try:
+        print("\n--- Building Compiler CLI ---")
+        if macos_sdk:
+            command = [
+                "cargo", "rustc", "--release", "--locked", "-p", "taro-bin",
+                "--features", "release-sdk",
+            ]
+            if zstd_archive:
+                # Apple's linker searches each directory for both archive and
+                # dylib. Put just the archive ahead of LLVM's other search paths.
+                static_libs = temporary / "static"
+                static_libs.mkdir()
+                shutil.copy2(zstd_archive, static_libs / "libzstd.a")
+                command.extend(["--", "-L", f"native={static_libs}"])
+            run_command(command, cwd=repo_root, env=build_env)
+            print("\n--- Building Language Server ---")
+            run_command(
+                [
+                    "cargo", "build", "--release", "--locked", "--bin", "taro-lsp",
+                    "--manifest-path", str(repo_root / "taro-lsp" / "Cargo.toml"),
+                ],
+                cwd=repo_root,
+                env={**build_env, "CARGO_TARGET_DIR": str(cargo_target)},
+            )
+        else:
+            run_command(
+                ["cargo", "build", "-p", "taro-bin", *release_flag(profile)],
+                cwd=repo_root,
+                env=build_env,
+            )
         staged_dist = temporary / "dist"
         staged_dist.mkdir()
         # 3. Create Distribution Structure
@@ -183,11 +258,16 @@ def main():
         bin_dir = staged_dist / "bin"
         bin_dir.mkdir(exist_ok=True)
 
-        src_bin = repo_root / "target" / profile / "taro-bin"
+        src_bin = cargo_target / profile / "taro-bin"
         dst_bin = bin_dir / "taro"
 
         print(f"Copying {src_bin} -> {dst_bin}")
         shutil.copy2(src_bin, dst_bin)
+        if macos_sdk:
+            lsp = bin_dir / "taro-lsp"
+            shutil.copy2(cargo_target / profile / "taro-lsp", lsp)
+            verify_macos_linkage(dst_bin)
+            verify_macos_linkage(lsp)
 
         # lib/taro/runtime[/<target-triple>]/libtaro_runtime.a
         lib_dir = staged_dist / "lib" / "taro" / "runtime"
@@ -202,7 +282,7 @@ def main():
             facts_command.extend(["--target", target])
         run_command(facts_command, cwd=repo_root)
 
-        src_lib = repo_root / "target"
+        src_lib = cargo_target
         if target:
             src_lib = src_lib / target
         src_lib = src_lib / profile / "libtaro_runtime.a"
@@ -217,10 +297,13 @@ def main():
             manifest_command.extend(["--target", target])
         run_command(manifest_command, cwd=repo_root)
 
-        # std - symlink instead of copy for development
         std_dst = staged_dist / "std"
-        print(f"Symlinking {std_src} -> {std_dst}")
-        std_dst.symlink_to(std_src, target_is_directory=True)
+        if macos_sdk:
+            print(f"Copying {std_src} -> {std_dst}")
+            copy_std_sources(std_src, std_dst)
+        else:
+            print(f"Symlinking {std_src} -> {std_dst}")
+            std_dst.symlink_to(std_src, target_is_directory=True)
 
         # 4. Build attached std artifacts into TARO_HOME (dist)
         print("\n--- Building Attached Std Artifacts ---")
@@ -236,7 +319,7 @@ def main():
             "check",
             str(bootstrap_src),
             "--std-path",
-            str(std_src),
+            str(std_dst if macos_sdk else std_src),
             "--build-std",
         ]
         if target:

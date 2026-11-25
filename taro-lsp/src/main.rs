@@ -44,6 +44,9 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             portable = Some(path_argument(arguments.next(), "--bundle")?);
         } else if argument == "--sdk" {
             sdk_home = Some(path_argument(arguments.next(), "--sdk")?);
+        } else if argument == "--version" {
+            println!("taro-lsp {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
         } else if argument == "--help" {
             println!(
                 "Usage: taro-lsp [--stdio] [--sdk <directory> | --bundle <directory>]\n       taro-lsp --prepare-bundle <new-directory> <std-source> <target-facts.toml>..."

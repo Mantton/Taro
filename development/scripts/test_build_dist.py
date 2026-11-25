@@ -29,12 +29,16 @@ class BuildDistributionTests(unittest.TestCase):
         self.dist.mkdir()
         (self.dist / "usable").write_text("old toolchain", encoding="utf-8")
 
-    def build(self, command_runner, dist=None) -> None:
-        args = argparse.Namespace(profile="release", dist_dir=dist or self.dist, std_path=self.std, target=None)
+    def build(self, command_runner, dist=None, *, macos_sdk=False, static_zstd=None) -> None:
+        args = argparse.Namespace(
+            profile="release", dist_dir=dist or self.dist, std_path=self.std,
+            target=None, macos_sdk=macos_sdk, static_zstd=static_zstd,
+        )
         with (
             patch.object(build_dist, "__file__", str(self.repo / "development/scripts/build_dist.py")),
             patch.object(build_dist, "parse_args", return_value=args),
             patch.object(build_dist, "run_command", side_effect=command_runner),
+            patch.object(build_dist.disk_guard, "enforce"),
         ):
             build_dist.main()
 
@@ -94,6 +98,48 @@ class BuildDistributionTests(unittest.TestCase):
             with self.assertRaisesRegex(OSError, "publication failed"):
                 self.build(lambda command, **kwargs: None)
         self.assertEqual((self.dist / "usable").read_text(), "old toolchain")
+
+    def test_sdk_bootstraps_against_its_copied_std(self) -> None:
+        (self.std / "src").mkdir()
+        (self.std / "src/example.tr").write_text("func example() {}")
+        (self.std / "package.toml").write_text("[package]\n")
+        (self.std / "package.lock").write_text("version = 1\n")
+        (self.std / "target").mkdir()
+        (self.std / "target/cache").write_text("local cache")
+        (self.repo / "target/release/taro-lsp").write_bytes(b"language server")
+        zstd = self.root / "libzstd.a"
+        zstd.write_bytes(b"compression archive")
+        commands = []
+
+        def inspect(command, **kwargs):
+            commands.append(command)
+            if "release-sdk" in command:
+                search = Path(command[-1].removeprefix("native="))
+                self.assertEqual(list(search.iterdir()), [search / "libzstd.a"])
+            if "check" in command:
+                staged = Path(kwargs["env"]["TARO_HOME"])
+                self.assertEqual(command[command.index("--std-path") + 1], str(staged / "std"))
+                self.assertFalse((staged / "std").is_symlink())
+                self.assertFalse((staged / "std/target").exists())
+
+        with (
+            patch.object(build_dist.sys, "platform", "darwin"),
+            patch.object(build_dist, "apple_build_env", return_value=None),
+            patch.object(build_dist, "verify_macos_linkage") as audit,
+        ):
+            self.build(inspect, macos_sdk=True, static_zstd=zstd)
+        self.assertEqual([call.args[0].name for call in audit.call_args_list], ["taro", "taro-lsp"])
+        self.assertIn("--locked", next(command for command in commands if "taro-lsp" in command))
+        (self.std / "src/example.tr").unlink()
+        self.assertTrue((self.dist / "std/src/example.tr").is_file())
+        self.assertTrue((self.dist / "std/package.lock").is_file())
+        self.assertEqual((self.dist / "bin/taro-lsp").read_bytes(), b"language server")
+
+    def test_linkage_audit_rejects_homebrew_library(self) -> None:
+        dependencies = "taro:\n\t/opt/homebrew/lib/libssl.4.dylib (compatibility version 4.0)\n"
+        with patch.object(build_dist.subprocess, "check_output", return_value=dependencies):
+            with self.assertRaisesRegex(ValueError, "non-system library"):
+                build_dist.verify_macos_linkage(Path("taro"))
 
     def test_failed_restore_retains_the_previous_distribution_for_recovery(self) -> None:
         rename = Path.rename
