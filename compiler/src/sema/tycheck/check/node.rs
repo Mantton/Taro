@@ -266,6 +266,11 @@ impl<'ctx> Checker<'ctx> {
             // Extern function declaration.
             return;
         };
+        #[cfg(test)]
+        gcx.dcx()
+            .analysis_work
+            .checked_function_bodies
+            .update(|count| count + 1);
 
         // Async functions introduce an async context for their body.
         if node.is_async {

@@ -1,0 +1,11 @@
+func useDispatch() {
+    dispatch := Dispatch {}
+    direct := dispatch.label(Cell[int32] { value: 0 }.read())
+    later := () => {
+        cell := Cell { value: 0 }
+        value := cell.read()
+        label := dispatch.label(value)
+        var _typed: Cell[int64] = cell
+        label
+    }
+}

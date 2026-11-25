@@ -19,6 +19,8 @@ pub mod entry;
 pub mod fuzz_collector;
 pub mod harness;
 pub mod test_collector;
+#[cfg(test)]
+mod analysis_oracle;
 
 pub struct Compiler<'state> {
     pub context: GlobalContext<'state>,

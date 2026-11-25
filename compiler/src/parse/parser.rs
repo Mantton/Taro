@@ -153,6 +153,8 @@ fn parse_file(
     dcx: &DiagCtx,
     options: ParseOptions,
 ) -> Result<(ast::File, Vec<ModuleDecl>), ReportedError> {
+    #[cfg(test)]
+    dcx.analysis_work.parsed_files.update(|count| count + 1);
     let id = file.id;
     let mut parser = Parser::new(file, next.clone());
     if options.lint_warnings {

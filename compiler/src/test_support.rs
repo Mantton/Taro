@@ -81,7 +81,7 @@ pub(crate) fn with_test_gcx_config<R>(
     })
 }
 
-fn with_source_compiler<R>(
+pub(crate) fn with_source_compiler<R>(
     files: &[(&str, &str)],
     is_script: bool,
     harness_mode: HarnessMode,

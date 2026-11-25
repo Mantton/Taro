@@ -1,0 +1,17 @@
+struct Cell[T] { value: T }
+interface Datum[U] {
+    func read() -> U
+}
+
+struct Dispatch {}
+extend Dispatch {
+    func label(_ n: bool) -> int32 { 32 }
+    func label(_ n: string) -> int32 { 64 }
+}
+
+conform Cell[int32] to Datum[bool] {
+    func read() -> bool { true }
+}
+conform Cell[int64] to Datum[string] {
+    func read() -> string { "wide" }
+}

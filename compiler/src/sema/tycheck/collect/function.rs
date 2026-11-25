@@ -160,6 +160,11 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
         );
         gcx.cache_signature(id, signature);
         gcx.cache_type(id, ty);
+        #[cfg(test)]
+        gcx.dcx()
+            .analysis_work
+            .collected_callable_headers
+            .update(|count| count + 1);
         hir::walk_function(self, id, node, fn_ctx)
     }
 }

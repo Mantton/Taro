@@ -16,6 +16,17 @@ use unicode_width::UnicodeWidthChar;
 pub struct DiagCtx {
     cwd: PathBuf,
     inner: RefCell<DiagCtxInner>,
+    #[cfg(test)]
+    pub(crate) analysis_work: AnalysisWork,
+}
+
+/// Work counters at the pass entry points used by the full-analysis oracle.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct AnalysisWork {
+    pub parsed_files: Cell<usize>,
+    pub collected_callable_headers: Cell<usize>,
+    pub checked_function_bodies: Cell<usize>,
 }
 
 impl DiagCtx {
@@ -23,6 +34,8 @@ impl DiagCtx {
         DiagCtx {
             cwd,
             inner: RefCell::new(Default::default()),
+            #[cfg(test)]
+            analysis_work: AnalysisWork::default(),
         }
     }
     pub fn add_file_mapping(&self, path: PathBuf) -> FileID {
