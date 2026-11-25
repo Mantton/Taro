@@ -1,0 +1,30 @@
+struct Queue[T] { value: T }
+struct Stack[T] { value: T }
+extend Queue {
+    enum State { case ready, closed }
+    struct Entry[V](V)
+}
+extend Stack {
+    enum State { case ready, closed }
+}
+func code(_ state: Queue::State) -> int32 {
+    match state {
+        case .ready => 1
+        case .closed => 2
+    }
+}
+func code(_ state: Stack::State) -> int32 {
+    match state {
+        case .ready => 3
+        case .closed => 4
+    }
+}
+func main() {
+    var queue: Queue[int32] = Queue { value: 9 }
+    var state: Queue::State = .closed
+    var other: Stack::State = .ready
+    entry := Queue::Entry[int64](5000000000)
+    assert(queue.value == 9 && code(state) == 2 && code(other) == 3, "distinct owner namespaces")
+    assert(entry.0 == 5000000000, "nested generic constructor")
+    println("nested types")
+}

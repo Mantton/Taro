@@ -1,0 +1,43 @@
+// The cursor shares traversal state across ordinary Iterator method calls.
+static var trace: string = ""
+static var steps: int32 = 0
+func mark(_ value: string) -> int32 { trace = trace + value; 1 }
+struct Input { count: int32 }
+final class Cursor { remaining: int32 }
+extend Cursor { init(_ count: int32) { self.remaining = count } }
+conform Input to Iterable {
+    type Element = int32
+    type Iterator = Cursor
+    func iter() -> Cursor {
+        mark("i")
+        Cursor(self.count)
+    }
+}
+conform Cursor to Iterator {
+    type Element = int32
+    func next() -> int32? {
+        steps += 1
+        assert(steps < 16, "iterator must reach its end")
+        if self.remaining == 0 { mark("e"); return nil }
+        mark("n")
+        self.remaining -= 1
+        return self.remaining
+    }
+}
+func input(_ count: int32) -> Input { mark("s"); Input { count } }
+func capture(fixed: int32, later: int32 = mark("d"), _ values: int32?...) -> Span[int32?] { values }
+func optionalCount(_ values: Optional[int32]...) -> usize { values.len() }
+func consume[S: Iterable[Element = int32]](_ values: S) -> Span[int32?] { capture(fixed: 0, values...) }
+func main() {
+    values := capture(mark("a"), input(2)..., fixed: mark("f"), input(0)..., mark("z"))
+    assert(trace == "asinnefsiezd", "receiver and each contribution must finish in source order")
+    assert(values.len() == 4 && values[1].unwrap() == 1 && values[2].unwrap() == 0, "each yield converts to Optional")
+    trace = ""
+    generic := consume(input(2))
+    assert(trace == "sinned" && generic.len() == 2, "generic user-defined iterable")
+    trace = ""
+    literal := [mark("a"), input(2)..., mark("b")]
+    assert(trace == "asinneb" && literal.len() == 4, "literal exhausts each iterator before the next expression")
+    assert(optionalCount(values...) == 4, "generic type spelling before variadic ellipsis")
+    println("spread order")
+}

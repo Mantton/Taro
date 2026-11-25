@@ -1,0 +1,113 @@
+import std::string::stringFromRunes
+import std::testing::{assertEqual, assertFalse, assertTrue}
+
+@test
+func testStringCaseConversionAndIgnoreCase() {
+    // ASCII case conversion + zero-allocation fast path when unchanged
+    alreadyLower := "hello_123!"
+    before := std::runtime::gcStats()
+    sameLower := alreadyLower.toAsciiLowercase()
+    sameLower2 := alreadyLower.toLowercase()
+    after := std::runtime::gcStats()
+    assertEqual(sameLower, alreadyLower, "already lowercase value")
+    assertEqual(sameLower2, alreadyLower, "toLowercase ASCII fast path")
+    assertEqual(after.allocatedBytes, before.allocatedBytes, "no allocation when already lowercase")
+
+    alreadyUpper := "HELLO_123!"
+    beforeUp := std::runtime::gcStats()
+    sameUpper := alreadyUpper.toAsciiUppercase()
+    sameUpper2 := alreadyUpper.toUppercase()
+    afterUp := std::runtime::gcStats()
+    assertEqual(sameUpper, alreadyUpper, "already uppercase value")
+    assertEqual(sameUpper2, alreadyUpper, "toUppercase ASCII fast path")
+    assertEqual(afterUp.allocatedBytes, beforeUp.allocatedBytes, "no allocation when already uppercase")
+
+    assertEqual("Hello, Taro 42!".toAsciiLowercase(), "hello, taro 42!", "toAsciiLowercase")
+    assertEqual("Hello, Taro 42!".toAsciiUppercase(), "HELLO, TARO 42!", "toAsciiUppercase")
+    assertEqual("Café Éclair".toAsciiLowercase(), "café Éclair", "toAsciiLowercase leaves non-ASCII alone")
+    assertEqual("Café Éclair 🚀".toLowercase(), "café éclair 🚀", "toLowercase Latin-1 + emoji")
+    assertEqual("café éclair 🚀".toUppercase(), "CAFÉ ÉCLAIR 🚀", "toUppercase Latin-1 + emoji")
+    assertEqual("straße".toUppercase(), "STRASSE", "toUppercase ß -> SS")
+    assertEqual("2×3÷1".toUppercase(), "2×3÷1", "math symbols untouched")
+    assertEqual("2×3÷1".toLowercase(), "2×3÷1", "math symbols untouched lower")
+    assertEqual("ΑβΓ Привет".toLowercase(), "αβγ привет", "Greek & Cyrillic lower")
+    assertEqual("αβγ привет".toUppercase(), "ΑΒΓ ПРИВЕТ", "Greek & Cyrillic upper")
+
+    assertTrue("Hello-123".eqIgnoreAsciiCase("hElLo-123"), "eqIgnoreAsciiCase true")
+    assertFalse("Hello".eqIgnoreAsciiCase("Hell"), "eqIgnoreAsciiCase length mismatch")
+    assertFalse("Hello".eqIgnoreAsciiCase("Hxllo"), "eqIgnoreAsciiCase char mismatch")
+    assertFalse("é".eqIgnoreAsciiCase("É"), "eqIgnoreAsciiCase is ASCII-only")
+}
+
+@test
+func testStringSplitWhitespaceStripAndPad() {
+    assertEqual(
+        "  hello   taro\tworld\n".splitWhitespace(),
+        ["hello", "taro", "world"],
+        "splitWhitespace ASCII",
+    )
+    assertTrue("".splitWhitespace().isEmpty(), "splitWhitespace empty")
+    assertTrue("   \t\r\n　".splitWhitespace().isEmpty(), "splitWhitespace only whitespace")
+    assertEqual("single".splitWhitespace(), ["single"], "splitWhitespace single token")
+    assertEqual("a　b\t c".splitWhitespace(), ["a", "b", "c"], "splitWhitespace Unicode U+3000")
+
+    // stripPrefix & stripSuffix (single non-repeating strip)
+    assertEqual("foobar".stripPrefix("foo"), .some("bar"), "stripPrefix match")
+    assertEqual("foofoo".stripPrefix("foo"), .some("foo"), "stripPrefix strips once")
+    assertEqual("foobar".stripPrefix("bar"), .none, "stripPrefix miss")
+    assertEqual("foobar".stripPrefix(""), .some("foobar"), "stripPrefix empty")
+    assertEqual("".stripPrefix(""), .some(""), "stripPrefix empty on empty")
+
+    assertEqual("foobar".stripSuffix("bar"), .some("foo"), "stripSuffix match")
+    assertEqual("barbar".stripSuffix("bar"), .some("bar"), "stripSuffix strips once")
+    assertEqual("foobar".stripSuffix("foo"), .none, "stripSuffix miss")
+    assertEqual("foobar".stripSuffix(""), .some("foobar"), "stripSuffix empty")
+
+    // padStart & padEnd (rune-aware, default space fill, zero-alloc when already long enough)
+    assertEqual("42".padStart(5), "   42", "padStart default space")
+    assertEqual("42".padStart(5, with: '0'), "00042", "padStart custom fill")
+    assertEqual("42".padEnd(5), "42   ", "padEnd default space")
+    assertEqual("42".padEnd(5, with: '.'), "42...", "padEnd custom fill")
+    assertEqual("🚀".padStart(3, with: '·'), "··🚀", "padStart counts runes, not bytes")
+    assertEqual("🚀".padEnd(3, with: '·'), "🚀··", "padEnd counts runes, not bytes")
+
+    longEnough := "hello"
+    beforePad := std::runtime::gcStats()
+    assertEqual(longEnough.padStart(3), "hello", "padStart no-op when >= target")
+    assertEqual(longEnough.padEnd(5), "hello", "padEnd no-op when == target")
+    afterPad := std::runtime::gcStats()
+    assertEqual(afterPad.allocatedBytes, beforePad.allocatedBytes, "pad no-op does not allocate")
+}
+
+@test
+func testStringCharsFromRunesAndJoin() {
+    sample := "hi é 　 🚀!"
+    runes := sample.chars()
+    assertEqual(runes.len(), 9 as usize, "chars rune count")
+    assertEqual(runes[0], 'h', "chars[0]")
+    assertEqual(runes[3], 'é', "chars[3]")
+    assertEqual(runes[5], '　', "chars[5]")
+    assertEqual(runes[7], '🚀', "chars[7]")
+    assertEqual(runes[8], '!', "chars[8]")
+
+    assertEqual(string::fromRunes(runes.asSpan()), sample, "string::fromRunes round-trip")
+    assertEqual(stringFromRunes(runes.asSpan()), sample, "stringFromRunes round-trip")
+    var emptyRunes: [rune] = []
+    assertEqual(string::fromRunes(emptyRunes.asSpan()), "", "fromRunes empty")
+
+    // List[string].join and Span[string].join
+    var emptyWords: [string] = []
+    var singleWord: [string] = ["alone"]
+    beforeEmpty := std::runtime::gcStats()
+    assertEqual(emptyWords.join("-"), "", "join empty list")
+    assertEqual(singleWord.join("-"), "alone", "join singleton returns directly")
+    afterEmpty := std::runtime::gcStats()
+    assertEqual(afterEmpty.allocatedBytes, beforeEmpty.allocatedBytes, "empty/singleton join allocates nothing")
+
+    var words: [string] = ["hello", "taro", "world"]
+    assertEqual(words.join("-"), "hello-taro-world", "List.join")
+    assertEqual(words.asSpan().join(", "), "hello, taro, world", "Span.join")
+    assertEqual(words.join(""), "hellotaroworld", "join empty separator")
+    var empties: [string] = ["", "", ""]
+    assertEqual(empties.join(","), ",,", "join empty elements")
+}

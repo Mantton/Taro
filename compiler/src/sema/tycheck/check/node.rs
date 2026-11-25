@@ -19,7 +19,7 @@ use crate::{
                 StructLiteralGoalData, TupleAccessGoalData, UnOpGoalData,
             },
             utils::{
-                arguments::{match_arguments_to_parameters, validate_arity},
+                arguments::validate_arity,
                 const_eval::eval_const_expression_with_type_results,
                 generics::{
                     GenericsBuilder, const_arg_ty_mismatches,
@@ -74,9 +74,15 @@ mod raw_pointer;
 mod result_conversion_tests;
 #[path = "stmt.rs"]
 mod stmt;
+#[cfg(test)]
+#[path = "syntax_sugar_tests.rs"]
+mod syntax_sugar_tests;
+#[path = "tuple_assignment.rs"]
+mod tuple_assignment;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct ArgumentExpectation<'ctx> {
+    is_lazy: bool,
     ty: Ty<'ctx>,
     expects_async_callable: bool,
 }
@@ -92,7 +98,7 @@ impl<'ctx> Checker<'ctx> {
         self.context
     }
 
-    pub fn check_constant(&mut self, id: DefinitionID, node: &hir::Constant) {
+    pub fn check_constant(&mut self, id: DefinitionID, node: &hir::Constant) -> bool {
         let gcx = self.gcx();
         let expected = gcx.get_type(id);
         let Some(expr) = &node.expr else {
@@ -100,17 +106,21 @@ impl<'ctx> Checker<'ctx> {
                 "constant declarations must have an initializer".into(),
                 Some(node.identifier.span),
             );
-            return;
+            return false;
         };
 
         let provided = self.top_level_check(expr, Some(expected));
         if provided.is_error() {
-            return;
+            return false;
+        }
+
+        if crate::mir::const_eval::hir_expr_needs_mir_const_eval(expr) {
+            return true;
         }
 
         let results = self.results.borrow();
         let Some(value) = eval_const_expression_with_type_results(gcx, expr, &results) else {
-            return;
+            return false;
         };
         drop(results);
 
@@ -121,6 +131,7 @@ impl<'ctx> Checker<'ctx> {
                 kind: ConstKind::Value(value),
             },
         );
+        false
     }
 
     pub fn check_static_variable(&mut self, id: DefinitionID, node: &hir::StaticVariable) {
@@ -222,6 +233,17 @@ impl<'ctx> Checker<'ctx> {
             );
 
             if let Some(expr) = &parameter.default_value {
+                if let Some(bindings) = parameter.caller_bindings {
+                    for (id, param) in bindings.into_iter().zip(gcx.caller_parameters()) {
+                        self.locals.borrow_mut().insert(
+                            id,
+                            crate::sema::tycheck::check::checker::LocalBinding {
+                                ty: param.ty,
+                                mutable: false,
+                            },
+                        );
+                    }
+                }
                 let mut checker = DefaultParamRefChecker {
                     param_ids: &param_ids,
                     param_symbols: &param_symbols,
@@ -250,7 +272,90 @@ impl<'ctx> Checker<'ctx> {
             self.async_depth.set(1);
         }
 
-        if body_return_ty == gcx.types.void {
+        let has_yield = hir::block_contains_yield(body);
+        if node.is_const {
+            if node.is_async {
+                gcx.dcx().emit_error(
+                    "`const` functions cannot be `async`".into(),
+                    Some(node.signature.span),
+                );
+            }
+            if node.is_unsafe {
+                gcx.dcx().emit_error(
+                    "`const` functions cannot be `unsafe`".into(),
+                    Some(node.signature.span),
+                );
+            }
+            if has_yield {
+                gcx.dcx().emit_error(
+                    "`const` functions cannot use `yield`".into(),
+                    Some(node.signature.span),
+                );
+            }
+        }
+        let mut generator_hidden_ty = None;
+        let mut effective_body_return_ty = body_return_ty;
+        let mut is_async_generator = false;
+        if has_yield && node.is_async {
+            gcx.dcx().emit_error(
+                "async generator functions do not take the `async` modifier; return `some AsyncIterator[Element = T]` or `some AsyncIterable[Element = T]` directly"
+                    .into(),
+                Some(node.signature.span),
+            );
+        } else if has_yield && !node.is_async {
+            if let Some(element_ty) = self.extract_sync_generator_element_ty(id, body_return_ty) {
+                self.generator_element_ty.set(Some(element_ty));
+                effective_body_return_ty = gcx.types.void;
+                self.return_ty.set(Some(gcx.types.void));
+                if let Some(sync_gen_def) = gcx.std_item_def(hir::StdItem::SyncGenerator) {
+                    let adt_def = gcx.get_struct_definition(sync_gen_def).adt_def;
+                    let args = gcx.store.interners.intern_generic_args(vec![
+                        crate::sema::models::GenericArgument::Type(element_ty),
+                    ]);
+                    let hidden = Ty::new(TyKind::Adt(adt_def, args), gcx);
+                    generator_hidden_ty = Some(hidden);
+                    gcx.register_sync_generator(id, element_ty);
+                    self.results.borrow_mut().sync_generators.insert(id, element_ty);
+                } else {
+                    gcx.dcx().emit_error(
+                        "synchronous generators require standard library type `SyncGenerator`"
+                            .into(),
+                        Some(node.signature.span),
+                    );
+                    self.generator_element_ty.set(Some(Ty::error(gcx)));
+                }
+            } else if let Some(element_ty) =
+                self.extract_async_generator_element_ty(id, body_return_ty)
+            {
+                is_async_generator = true;
+                self.async_depth.set(1);
+                self.generator_element_ty.set(Some(element_ty));
+                effective_body_return_ty = gcx.types.void;
+                self.return_ty.set(Some(gcx.types.void));
+                if let Some(async_gen_def) = gcx.std_item_def(hir::StdItem::AsyncGenerator) {
+                    let adt_def = gcx.get_struct_definition(async_gen_def).adt_def;
+                    let args = gcx.store.interners.intern_generic_args(vec![
+                        crate::sema::models::GenericArgument::Type(element_ty),
+                    ]);
+                    let hidden = Ty::new(TyKind::Adt(adt_def, args), gcx);
+                    generator_hidden_ty = Some(hidden);
+                    gcx.register_async_generator(id, element_ty);
+                    self.results
+                        .borrow_mut()
+                        .async_generators
+                        .insert(id, element_ty);
+                } else {
+                    gcx.dcx().emit_error(
+                        "async generators require standard library type `AsyncGenerator`"
+                            .into(),
+                        Some(node.signature.span),
+                    );
+                    self.generator_element_ty.set(Some(Ty::error(gcx)));
+                }
+            }
+        }
+
+        if effective_body_return_ty == gcx.types.void {
             // Unit destinations deliberately evaluate and discard their tail
             // in MIR. Only explicit return expressions promise a value here.
             self.check_block(body, None);
@@ -276,6 +381,20 @@ impl<'ctx> Checker<'ctx> {
             }
         }
 
+        if has_yield && !node.is_async {
+            self.generator_element_ty.set(None);
+            self.return_ty.set(Some(body_return_ty));
+            if let Some(hidden) = generator_hidden_ty {
+                self.opaque_return_candidates.borrow_mut().push(
+                    super::checker::OpaqueReturnCandidate {
+                        ty: hidden,
+                        infer_cx: None,
+                        span: node.signature.span,
+                    },
+                );
+            }
+        }
+
         if matches!(
             body_return_ty.kind(),
             TyKind::Alias {
@@ -287,9 +406,93 @@ impl<'ctx> Checker<'ctx> {
             self.finalize_opaque_return(id, node);
         }
 
-        if node.is_async {
+        if node.is_async || is_async_generator {
             self.async_depth.set(0);
         }
+    }
+
+    fn extract_async_generator_element_ty(
+        &self,
+        id: DefinitionID,
+        body_return_ty: Ty<'ctx>,
+    ) -> Option<Ty<'ctx>> {
+        let gcx = self.gcx();
+        if let Some(async_gen_def) = gcx.std_item_def(hir::StdItem::AsyncGenerator)
+            && let TyKind::Adt(adt, args) = body_return_ty.kind()
+            && adt.id == async_gen_def
+            && let Some(crate::sema::models::GenericArgument::Type(elem_ty)) = args.first()
+        {
+            return Some(*elem_ty);
+        }
+        if !crate::sema::tycheck::opaque::is_owner_return(body_return_ty, id) {
+            return None;
+        }
+        let iter_def = gcx.std_item_def(hir::StdItem::AsyncIterator);
+        let iterable_def = gcx.std_item_def(hir::StdItem::AsyncIterable);
+        let constraints = crate::sema::tycheck::constraints::canonical_constraints_of(gcx, id);
+        for constraint in &constraints {
+            if let crate::sema::models::Constraint::Bound { ty, interface } = constraint.value
+                && ty == body_return_ty
+            {
+                for superface in
+                    crate::sema::impl_engine::ref_ops::collect_interface_with_superfaces(
+                        gcx, interface,
+                    )
+                {
+                    if (iter_def == Some(superface.id) || iterable_def == Some(superface.id))
+                        && let Some(binding) = superface
+                            .bindings
+                            .iter()
+                            .find(|b| gcx.symbol_eq(b.name, "Element"))
+                    {
+                        return Some(binding.ty);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn extract_sync_generator_element_ty(
+        &self,
+        id: DefinitionID,
+        body_return_ty: Ty<'ctx>,
+    ) -> Option<Ty<'ctx>> {
+        let gcx = self.gcx();
+        if let Some(sync_gen_def) = gcx.std_item_def(hir::StdItem::SyncGenerator)
+            && let TyKind::Adt(adt, args) = body_return_ty.kind()
+            && adt.id == sync_gen_def
+            && let Some(crate::sema::models::GenericArgument::Type(elem_ty)) = args.first()
+        {
+            return Some(*elem_ty);
+        }
+        if !crate::sema::tycheck::opaque::is_owner_return(body_return_ty, id) {
+            return None;
+        }
+        let iter_def = gcx.std_item_def(hir::StdItem::Iterator);
+        let iterable_def = gcx.std_item_def(hir::StdItem::Iterable);
+        let constraints = crate::sema::tycheck::constraints::canonical_constraints_of(gcx, id);
+        for constraint in &constraints {
+            if let crate::sema::models::Constraint::Bound { ty, interface } = constraint.value
+                && ty == body_return_ty
+            {
+                for superface in
+                    crate::sema::impl_engine::ref_ops::collect_interface_with_superfaces(
+                        gcx, interface,
+                    )
+                {
+                    if (iter_def == Some(superface.id) || iterable_def == Some(superface.id))
+                        && let Some(binding) = superface
+                            .bindings
+                            .iter()
+                            .find(|b| gcx.symbol_eq(b.name, "Element"))
+                    {
+                        return Some(binding.ty);
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn finalize_opaque_return(&self, id: DefinitionID, node: &hir::Function) {
@@ -368,11 +571,11 @@ impl<'ctx> Checker<'ctx> {
                             crate::sema::models::GoalResult::Proven
                         ) {
                             gcx.dcx().emit_error(
-                                format!(
-                                    "type '{}' does not conform to interface '{}'",
-                                    hidden_ty.format(gcx),
-                                    interface.format(gcx)
-                                ),
+                                crate::sema::error::TypeError::NonConformance {
+                                    ty: hidden_ty,
+                                    interface,
+                                }
+                                .format(gcx),
                                 Some(bound.span),
                             );
                         }
@@ -413,9 +616,11 @@ impl<'ctx> Checker<'ctx> {
                     expression.span,
                 );
             }
+            self.finish_member_values(&mut cs);
+            self.finish_enum_patterns(&mut cs);
             cs.solve_all();
 
-            self.commit_constraint_results(&mut cs);
+            self.commit_constraint_results(&mut cs, Some(expression));
 
             let provided = cs.infer_cx.resolve_vars_if_possible(provided);
             if provided.is_infer() {
@@ -446,9 +651,31 @@ impl<'ctx> Checker<'ctx> {
 
     /// Commits all resolved results from a constraint system to the checker's results.
     /// Used when solving sub-expressions in separate constraint systems (e.g., match scrutinee).
-    fn commit_constraint_results(&self, cs: &mut Cs<'ctx>) {
+    fn commit_constraint_results(
+        &self,
+        cs: &mut Cs<'ctx>,
+        root_expr: Option<&hir::Expression>,
+    ) {
+        for site in cs.opaque_return_sites() {
+            if site.node_id.is_none() {
+                self.gcx().dcx().emit_error(
+                    "an opaque-returning function must return a value".into(),
+                    Some(site.span),
+                );
+            } else {
+                self.opaque_return_candidates.borrow_mut().push(
+                    super::checker::OpaqueReturnCandidate {
+                        ty: site.ty,
+                        span: site.span,
+                        infer_cx: Some(cs.infer_cx.clone()),
+                    },
+                );
+            }
+        }
         self.finalize_compound_assignments(cs);
         self.finalize_index_accesses(cs);
+        self.finalize_lazy_arguments(cs, root_expr);
+        self.finalize_closure_captures(cs);
         let expression_types = cs.resolved_expr_types();
 
         // A generic default can finish resolving after method binding. Hidden
@@ -492,18 +719,7 @@ impl<'ctx> Checker<'ctx> {
             }
             self.results.borrow_mut().record_node_type(id, ty);
 
-            // Resolve the environment as well as the signature. Capture types
-            // can depend on numeric/range inference completed after synthesis.
             if let TyKind::Closure { closure_def_id, .. } = ty.kind() {
-                let gcx = self.gcx();
-                if gcx.generics_of(closure_def_id).parent == Some(self.current_def)
-                    && let Some(mut captures) = gcx.get_closure_captures(closure_def_id)
-                {
-                    for capture in &mut captures.captures {
-                        capture.ty = cs.infer_cx.resolve_vars_if_possible(capture.ty);
-                    }
-                    gcx.cache_closure_captures(closure_def_id, captures);
-                }
                 self.update_closure_signature(closure_def_id, ty);
             }
         }
@@ -516,6 +732,29 @@ impl<'ctx> Checker<'ctx> {
             self.results
                 .borrow_mut()
                 .record_node_adjustments(id, adjustments);
+        }
+        for (id, conversion) in cs.resolved_result_propagation_conversions() {
+            let kind = match conversion.kind {
+                crate::sema::tycheck::results::ResultPropagationConversionKind::BoxExistential {
+                    interfaces,
+                } => crate::sema::tycheck::results::ResultPropagationConversionKind::BoxExistential {
+                    interfaces: self.resolve_interface_refs_for_adjustment(cs, interfaces),
+                },
+                crate::sema::tycheck::results::ResultPropagationConversionKind::From {
+                    method_id,
+                    generic_args,
+                } => crate::sema::tycheck::results::ResultPropagationConversionKind::From {
+                    method_id,
+                    generic_args: self.resolve_generic_args_or_error(cs, generic_args),
+                },
+            };
+            let target_ty = cs.infer_cx.resolve_vars_or_error(conversion.target_ty);
+            self.results
+                .borrow_mut()
+                .record_result_propagation_conversion(
+                    id,
+                    crate::sema::tycheck::results::ResultPropagationConversion { kind, target_ty },
+                );
         }
         for (id, info) in cs.resolved_interface_calls() {
             self.results.borrow_mut().record_interface_call(id, info);
@@ -563,6 +802,9 @@ impl<'ctx> Checker<'ctx> {
             Adjustment::BoxExistential { from, interfaces } => Adjustment::BoxExistential {
                 from: cs.infer_cx.resolve_vars_or_error(from),
                 interfaces: self.resolve_interface_refs_for_adjustment(cs, interfaces),
+            },
+            Adjustment::CollectionToSpan { to } => Adjustment::CollectionToSpan {
+                to: cs.infer_cx.resolve_vars_or_error(to),
             },
             Adjustment::ClassUpcast { to } => Adjustment::ClassUpcast {
                 to: cs.infer_cx.resolve_vars_or_error(to),

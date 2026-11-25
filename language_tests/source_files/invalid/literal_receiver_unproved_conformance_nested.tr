@@ -1,0 +1,35 @@
+// An early-bound interface call inside a closure body and inside a match arm
+// still proves its receiver's conformance: the literal defaults to int32 and
+// only Boxed[int64] conforms to Size.
+struct Boxed[T] {
+    value: T
+}
+
+interface Size {
+    func size() -> usize
+}
+
+conform Boxed[int64] to Size {
+    func size() -> usize {
+        8
+    }
+}
+
+func twice(_ work: () -> usize) -> usize {
+    work() + work()
+}
+
+func main() {
+    total := twice(() => {
+        var b = Boxed { value: 0 }
+        return b.size()
+    })
+    println("${total}")
+    kind := 1
+    var none: usize = 0
+    picked := match kind {
+        case 1 => Boxed { value: 0 }.size() + 1
+        case _ => none
+    }
+    println("${picked}")
+}

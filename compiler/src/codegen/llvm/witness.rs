@@ -474,6 +474,28 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         // Get the concrete implementation function
         let impl_instance = self.witness_instance(impl_def_id, args);
         let impl_target_def_id = impl_instance.def_id();
+        // Codegen cannot create bodies. A witness that still names a
+        // requirement without a default body means sema never demanded the
+        // implementation; report it here rather than emitting a trap reached
+        // by the first dynamic call.
+        let bodyless_requirement = self.interface_requirements(iface.id).is_some_and(|req| {
+            req.methods
+                .iter()
+                .any(|method| method.id == impl_target_def_id && method.is_required)
+        });
+        if bodyless_requirement && !self.instance_has_mir_body(impl_instance) {
+            let method = self.gcx.definition_ident(impl_def_id).symbol;
+            self.gcx.dcx().emit_error(
+                format!(
+                    "internal error: `{}: {}` has no implementation of `{}` for dynamic dispatch",
+                    concrete_ty.format(self.gcx),
+                    iface.format(self.gcx),
+                    self.gcx.symbol_text(method),
+                ),
+                self.current_span,
+            );
+            return self.context.ptr_type(AddressSpace::default()).const_null();
+        }
         let (impl_fn, impl_fn_abi) = self.instance_function_with_abi(impl_instance);
 
         // Get the implementation signature

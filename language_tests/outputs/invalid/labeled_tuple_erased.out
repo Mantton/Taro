@@ -1,0 +1,4 @@
+error: no member named 'low' found on type (int32, int32)
+ -> language_tests/source_files/invalid/labeled_tuple_erased.tr:4:12
+	    println(plain.low)
+	            ^^^^^^^^^

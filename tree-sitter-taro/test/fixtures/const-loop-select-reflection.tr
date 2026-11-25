@@ -1,0 +1,10 @@
+const func doubleIt(_ x: int32) -> int32 { return x * 2 }
+
+func work() async {
+    rendered := "${outer: loop { break 42 }}"
+    v := outer: loop { break 1 }
+    w := select { case x = await rx.recv() => x }
+    #for f in #fields(Pair) {
+        #if !f.skipped { println(#typeName(Pair)) }
+    }
+}

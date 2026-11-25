@@ -1,0 +1,2 @@
+func badLimit(_ n: uint8) -> bool { n is 0..=256 }
+func main() {}

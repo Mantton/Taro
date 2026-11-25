@@ -1,0 +1,11 @@
+// An async closure whose output is inferred from a generic type argument kept
+// that inference variable in its cached body output, and MIR validation
+// panicked when it normalized the closure's return slot.
+final class Job[T] { run: any AsyncFn(T) -> T }
+extend[T] Job[T] { init(_ run: any AsyncFn(T) -> T) { self.run = run } }
+
+func main() async {
+    j := Job[int32]((x) async => { return x + 1 })
+    v := await j.run(41)
+    assert(v == 42, "async closure output inferred from a generic argument")
+}

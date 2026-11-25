@@ -1,0 +1,20 @@
+// EXPECT_STDERR_COUNT: 1 unreachable match arm
+func pick(_ n: int8) -> int32 {
+    match n {
+        case -6..0 | 0..=6 => 1
+        case -4..=4 => 2
+        case 6..=9 => 3
+        case _ => 4
+    }
+}
+func main() {
+    assert(pick(-4) == 1 && pick(6) == 1 && pick(7) == 3 && pick(10) == 4, "overlapping arms")
+    var checked: int32 = 0
+    for n in -128_i8..=127_i8 {
+        checked += 1
+        expected := if n >= -6 && n <= 6 { 1 } else if n >= 7 && n <= 9 { 3 } else { 4 }
+        assert(pick(n) == expected, "all int8 inputs")
+    }
+    assert(checked == 256, "entire int8 domain")
+    println("reachability")
+}

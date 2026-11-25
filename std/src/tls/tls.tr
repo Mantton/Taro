@@ -171,3 +171,18 @@ conform Stream to AsyncWriter {
         return .ok(count as usize)
     }
 }
+
+conform ServerConfig to std::io::Closeable {
+    type CloseResult = ()
+    public func close() { self.close() }
+}
+
+conform ClientConfig to std::io::Closeable {
+    type CloseResult = ()
+    public func close() { self.close() }
+}
+
+conform Stream to std::io::Closeable {
+    type CloseResult = Result[(), Error]
+    public func close() -> Result[(), Error] { self.close() }
+}

@@ -31,15 +31,45 @@ pub(crate) fn validate_arity(
 
 /// Match labels first, then positional arguments, retaining source indices per parameter.
 /// Missing arguments are checked separately so callers can supply default providers.
+#[cfg(test)]
 pub(crate) fn match_arguments_to_parameters(
     parameters: &[LabeledFunctionParameter<'_>],
     is_variadic: bool,
     arguments: impl Iterator<Item = (Option<Identifier>, Span)> + Clone,
     skip_labels: bool,
 ) -> Result<Vec<Vec<usize>>, Spanned<ApplyValidationError>> {
+    match_arguments_to_parameters_with_trailing(
+        parameters,
+        is_variadic,
+        arguments,
+        skip_labels,
+        false,
+    )
+}
+
+/// Like [`match_arguments_to_parameters`], except when `trailing_closure_last`
+/// is true the final argument supplies the final parameter without requiring
+/// its label.
+pub(crate) fn match_arguments_to_parameters_with_trailing(
+    parameters: &[LabeledFunctionParameter<'_>],
+    is_variadic: bool,
+    arguments: impl Iterator<Item = (Option<Identifier>, Span)> + Clone,
+    skip_labels: bool,
+    trailing_closure_last: bool,
+) -> Result<Vec<Vec<usize>>, Spanned<ApplyValidationError>> {
     let mut positions = vec![Vec::new(); parameters.len()];
+    let args_vec: Vec<(Option<Identifier>, Span)> = arguments.collect();
+    let trailing_arg_index = if trailing_closure_last && !args_vec.is_empty() {
+        Some(args_vec.len() - 1)
+    } else {
+        None
+    };
+
     if !skip_labels {
-        for (arg_index, (label, span)) in arguments.clone().enumerate() {
+        for (arg_index, &(label, span)) in args_vec.iter().enumerate() {
+            if Some(arg_index) == trailing_arg_index {
+                continue;
+            }
             let Some(label) = label else { continue };
             let Some(param_index) = parameters
                 .iter()
@@ -69,11 +99,32 @@ pub(crate) fn match_arguments_to_parameters(
     }
 
     let mut param_index = 0;
-    for (arg_index, (label, span)) in arguments.enumerate() {
+    for (arg_index, &(label, span)) in args_vec.iter().enumerate() {
+        if Some(arg_index) == trailing_arg_index {
+            let Some(last_param) = parameters.len().checked_sub(1) else {
+                return Err(Spanned::new(
+                    ApplyValidationError::ExtraArgument { arg_index },
+                    span,
+                ));
+            };
+            if !positions[last_param].is_empty() && !is_variadic {
+                return Err(Spanned::new(
+                    ApplyValidationError::ExtraArgument { arg_index },
+                    span,
+                ));
+            }
+            positions[last_param].push(arg_index);
+            continue;
+        }
         if !skip_labels && label.is_some() {
             continue;
         }
-        while param_index < parameters.len() {
+        let max_param = if trailing_arg_index.is_some() && !is_variadic {
+            parameters.len().saturating_sub(1)
+        } else {
+            parameters.len()
+        };
+        while param_index < max_param {
             let param = &parameters[param_index];
             if positions[param_index].is_empty()
                 && (skip_labels || param.label.is_none() || param.default_provider.is_none())
@@ -82,7 +133,7 @@ pub(crate) fn match_arguments_to_parameters(
             }
             param_index += 1;
         }
-        let Some(param) = parameters.get(param_index) else {
+        let Some(param) = (param_index < max_param).then(|| &parameters[param_index]) else {
             if is_variadic && !parameters.is_empty() {
                 positions.last_mut().unwrap().push(arg_index);
                 continue;
@@ -122,6 +173,7 @@ mod tests {
                 label: None,
                 name: label,
                 ty: gcx.types.int,
+                is_lazy: false,
                 default_provider: None,
             };
             let mut optional = param.clone();
@@ -187,6 +239,7 @@ mod tests {
                 label: Some(label),
                 name: label,
                 ty: gcx.types.int,
+                is_lazy: false,
                 default_provider: None,
             }];
             for (arguments, expected_label, provided) in [

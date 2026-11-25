@@ -1,0 +1,4 @@
+error: T needs an explicit ranking
+ -> language_tests/source_files/invalid/on_unsatisfied_opaque.tr:3:33
+	func erase[T](_ item: T) -> some Ranked { item }
+	                                 ^^^^^^

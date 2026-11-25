@@ -1,0 +1,21 @@
+interface Gauge {
+    func read(_ value: int32) -> int32
+    func offset() -> int32
+}
+struct Core { delta: int32 }
+conform Core to Gauge {
+    func read(_ value: int32) -> int32 { value + self.delta }
+    func offset() -> int32 { self.delta }
+}
+struct Wrapper { inner: Core }
+conform Wrapper to Gauge by self.inner {
+    func read(_ value: int32) -> int32 { self.inner.read(value) + 4 }
+}
+func generic[G: Gauge](_ gauge: G) -> int32 { gauge.read(3) + gauge.offset() }
+func erased(_ gauge: any Gauge) -> int32 { gauge.read(3) + gauge.offset() }
+func main() {
+    var gauge = Wrapper { inner: Core { delta: 4 } }
+    assert(generic(gauge) == 15, "generic wrapper witnesses")
+    assert(erased(gauge) == 15, "boxed wrapper witnesses")
+    println("delegation")
+}

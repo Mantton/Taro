@@ -1,0 +1,4 @@
+error: wildcard expressions are only valid as top-level pipe arguments
+ -> language_tests/source_files/invalid/syntax_sugar_ignored_parameter_pipe_scope.tr:3:30
+	func main() { 1 |> apply(_ => _); }
+	                              ^

@@ -1,0 +1,30 @@
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_CONTAINS: error: [E42] disk quota exceeded
+// EXPECT_STDERR_COUNT: 1 error:
+// The error type of `main` only needs to be printable: a concrete type with
+// its own `Display` works without conforming to `std::error::Error`.
+struct QuotaError {
+    code: int32
+    message: string
+}
+
+conform QuotaError to std::fmt::Display {
+    func display(_ into: &std::fmt::Formatter) {
+        into.writeString("[E${self.code}] ${self.message}")
+    }
+}
+
+func reserve(_ bytes: int64) -> Result[int64, QuotaError] {
+    if bytes > 1024 {
+        return .err(QuotaError { code: 42, message: "disk quota exceeded" })
+    }
+    return .ok(bytes)
+}
+
+func main() -> Result[(), QuotaError] {
+    small := reserve(512)!
+    print("reserved ${small}\n")
+    var _ = reserve(4096)!
+    print("unreachable\n")
+    return .ok(())
+}

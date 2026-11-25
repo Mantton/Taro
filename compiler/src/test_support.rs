@@ -8,11 +8,25 @@ use crate::{
     diagnostics::{DiagCtx, DiagnosticRecord},
     hir,
 };
-use std::{fs, path::Path, rc::Rc};
+use std::{cell::Cell, fs, path::Path, rc::Rc};
 
 #[path = "../../test_support.rs"]
 mod files;
 pub(crate) use files::TempDir;
+
+thread_local! {
+    static LINT_WARNINGS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Runs `f` with advisory lint warnings enabled for the packages it compiles.
+/// Other tests compile without them, so an unused local in a test program
+/// does not add a diagnostic.
+pub(crate) fn with_lint_warnings<R>(f: impl FnOnce() -> R) -> R {
+    let previous = LINT_WARNINGS.with(|lints| lints.replace(true));
+    let result = f();
+    LINT_WARNINGS.with(|lints| lints.set(previous));
+    result
+}
 
 fn test_config(root: &Path) -> Config {
     Config {
@@ -32,6 +46,7 @@ fn test_config(root: &Path) -> Config {
         harness_mode: Default::default(),
         std_mode: StdMode::BootstrapStd,
         is_std_provider: true,
+        lint_warnings: LINT_WARNINGS.with(Cell::get),
     }
 }
 
@@ -126,7 +141,7 @@ pub(crate) fn analyze_script<R>(
 }
 
 pub(crate) fn analyze_script_diagnostics(source: &str) -> Vec<DiagnosticRecord> {
-    analyze_diagnostics(&[("main.tr", source)], true, false)
+    analyze_diagnostics(&[("main.tr", source)], true, false, HarnessMode::Test)
 }
 
 pub(crate) fn analyze_language_item_script(
@@ -244,19 +259,28 @@ pub(crate) fn analyze_script_built_mir_with_items<R>(
 }
 
 pub(crate) fn analyze_script_mir_diagnostics(source: &str) -> Vec<DiagnosticRecord> {
-    analyze_diagnostics(&[("main.tr", source)], true, true)
+    analyze_diagnostics(&[("main.tr", source)], true, true, HarnessMode::Test)
 }
 
 pub(crate) fn analyze_package_diagnostics(files: &[(&str, &str)]) -> Vec<DiagnosticRecord> {
-    analyze_diagnostics(files, false, false)
+    analyze_diagnostics(files, false, false, HarnessMode::Test)
+}
+
+/// Like `analyze_package_diagnostics`, but compiled as `check` or `build`
+/// would: `@test` declarations are dropped before type checking.
+pub(crate) fn analyze_package_diagnostics_outside_tests(
+    files: &[(&str, &str)],
+) -> Vec<DiagnosticRecord> {
+    analyze_diagnostics(files, false, false, HarnessMode::None)
 }
 
 fn analyze_diagnostics(
     files: &[(&str, &str)],
     is_script: bool,
     build_mir: bool,
+    harness: HarnessMode,
 ) -> Vec<DiagnosticRecord> {
-    with_source_compiler(files, is_script, HarnessMode::Test, |compiler| {
+    with_source_compiler(files, is_script, harness, |compiler| {
         let result = compiler.analyze_for_diagnostics(build_mir);
         let dcx = compiler.context.dcx();
         // Diagnostic collection continues after semantic errors, but any early

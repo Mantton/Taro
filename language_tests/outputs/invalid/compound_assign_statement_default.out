@@ -1,0 +1,4 @@
+error: no overload matches this call
+ -> language_tests/source_files/invalid/compound_assign_statement_default.tr:4:4
+	    total += big
+	    ^^^^^^^^^^^^

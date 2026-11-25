@@ -1,0 +1,6 @@
+// PACKAGE: nested_types_visibility
+// CHECK_ONLY
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_CONTAINS: type 'Hidden' is not visible here
+// EXPECT_STDERR_CONTAINS: type 'Local' is not visible here
+// EXPECT_STDERR_CONTAINS: type 'Child' is not visible here

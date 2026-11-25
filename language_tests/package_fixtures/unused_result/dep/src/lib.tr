@@ -1,0 +1,30 @@
+// `@discardableResult` declared here must silence calls from the app. This
+// package's own dropped Result must not warn while the app is compiled.
+static var CALLS: int32 = 0
+
+public func calls() -> int32 { CALLS }
+
+@discardableResult
+public func log(_ line: string) -> Result[(), string] { CALLS += 1; .ok(()) }
+
+public func save() -> Result[int32, string] { CALLS += 1; .ok(1) }
+
+public func noisy() {
+    save()
+}
+
+public struct Store {}
+extend Store {
+    @discardableResult
+    public func flush() -> Result[(), string] { CALLS += 1; .ok(()) }
+}
+
+public interface Sink {
+    @discardableResult
+    func emit(_ line: string) -> Result[(), string]
+}
+
+public struct Pipe {}
+conform Pipe to Sink {
+    func emit(_ line: string) -> Result[(), string] { CALLS += 1; .ok(()) }
+}

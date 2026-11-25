@@ -1,0 +1,4 @@
+error: expected [uint8; 3], found [uint8; 4]
+ -> language_tests/source_files/invalid/embedded_assets_length.tr:1:37
+	func main() { var data: [uint8; 3] = #embedBytes("../../package_fixtures/embedded_assets/dep/assets/icon.bin") }
+	                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,74 @@
+// ENV: TARO_GC_STRESS=1
+static var order: int32 = 0
+static var calls: int32 = 0
+type Pair = (int32, int32)
+func identity[T](_ value: T) -> T { value }
+func pair() -> (int32, int32) { calls += 1; order = order * 10 + 1; (10, 20) }
+struct Point { x: int32; y: int32 }
+final class Constructed { readonly x: int32; readonly y: int32 }
+extend Constructed {
+    init() { (self.x, self.y) = (1, 2) }
+}
+struct Slots { value: int32 }
+extend &Slots {
+    subscript(index: int32) -> int32 {
+        get { self.value }
+        set(value) { order = order * 10 + 4; self.value = value + index }
+    }
+}
+func receiver(_ slots: &Slots) -> &Slots { order = order * 10 + 2; slots }
+func key() -> int32 { order = order * 10 + 3; 1 }
+func main() {
+    var (a, b) = (1, 2)
+    (a, b) = (b, a)
+    assert(a == 2 && b == 1, "swap snapshots RHS before writes")
+    var aliased: Pair = (3, 4)
+    (a, b) = identity(aliased)
+    assert(a == 3 && b == 4, "generic and aliased tuple values")
+    (a, a) = (3, 4)
+    assert(a == 4, "repeated destinations: last write wins")
+    (a, (b, _)) = (5, (6, "discarded"))
+    assert(a == 5 && b == 6, "nested tuple and discard")
+    swap := () => { (a, b) = (b, a) }
+    swap()
+    assert(a == 6 && b == 5, "tuple destinations inside a capturing closure")
+    var tuple = (7, 8)
+    (tuple.1, tuple.0) = tuple
+    assert(tuple.0 == 8 && tuple.1 == 7, "tuple variable RHS is a value snapshot")
+    var i: usize = 0
+    var values: [int32; 3] = [0, 0, 0]
+    (i, values[i]) = (1, 9)
+    assert(i == 1 && values[1] == 9 && values[0] == 0, "later destinations observe earlier writes")
+    var point = Point { x: 0, y: 0 }
+    reference := &a
+    (point.x, *reference) = (11, 12)
+    assert(point.x == 11 && a == 12, "field and dereference destinations")
+    var slots = Slots { value: 0 }
+    order = 0
+    (b, receiver(&slots)[key()]) = pair()
+    assert(order == 1234 && calls == 1 && b == 10 && slots.value == 21, "RHS once, receiver once, index once, ordinary setter")
+    var wide: int64 = 0
+    (wide,) = (23,)
+    assert(wide == 23, "contextual numeric literal and singleton tuple")
+    var optional: int32? = .none
+    source := (a, false)
+    (optional, _) = source
+    assert(optional.unwrap() == 12, "ordinary component coercion from existing tuple")
+    var view: [int32; ..] = &values
+    references := (&values, true)
+    (view, _) = references
+    view[0] = 44
+    assert(values[0] == 44, "component collection-to-span coercion")
+    var strings = ("first".concat(" heap"), "second".concat(" heap"))
+    (strings.1, strings.0) = strings
+    std::runtime::collect()
+    assert(strings.0 == "second heap" && strings.1 == "first heap", "snapshot retains GC values")
+    () = ()
+    var unit: () = ((a, b) = (30, 40))
+    assert(a == 30 && b == 40, "assignment is a unit-valued expression")
+    (_, _) = pair()
+    assert(calls == 2, "all-discard tuple still evaluates RHS")
+    object := Constructed()
+    assert(object.x == 1 && object.y == 2, "ordinary one-time readonly field initialization")
+    print("PASS: tuple destructuring assignment\n")
+}

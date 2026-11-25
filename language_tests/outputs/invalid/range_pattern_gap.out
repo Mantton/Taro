@@ -1,0 +1,8 @@
+error: non-exhaustive match, missing '42' case
+ -> language_tests/source_files/invalid/range_pattern_gap.tr:2:4
+    match n {
+    ^^^^^^^^^
+        case 0..42 => true
+        case 43..=255 => false
+    }
+     ^

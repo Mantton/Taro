@@ -532,10 +532,14 @@ conform[Sink: Writer] &Encoder[Sink] to std::encoding::Encoder {
         writeOutput(self.sink, std::fmt::unsignedDecimalString(value), self.location())
     }
 
-    // `encodeFloat` and `encodeDouble` intentionally retain the interface
-    // defaults until std has a locale-independent, shortest-round-trip float
-    // formatter. Approximating through a generic formatter would silently
-    // change values; callers can use `Number` for exact JSON decimals today.
+    public func encodeFloat(_ value: float) -> Result[(), Self::Error] {
+        self.encodeFloatingPoint(std::fmt::finiteFloatString(value))
+    }
+
+    public func encodeDouble(_ value: double) -> Result[(), Self::Error] {
+        self.encodeFloatingPoint(std::fmt::finiteFloatString(value))
+    }
+
     public func encodeDecimal(_ value: string) -> Result[(), Self::Error] {
         match Number::parse(value) {
             case .ok(_) => {
@@ -730,6 +734,22 @@ public func stringifyWithOptions(_ value: &Value, _ options: Options) -> Result[
 }
 
 extend[Sink: Writer] &Encoder[Sink] {
+    func encodeFloatingPoint(_ rendered: Optional[string]) -> Result[(), EncodeError] {
+        match rendered {
+            case .some(text) => {
+                self.prepareValue()!
+                return writeOutput(self.sink, text, self.location())
+            }
+            case .none => {
+                return .err(EncodeError::coding(
+                    .invalidValue,
+                    self.location().render(),
+                    "non-finite floating-point value cannot be encoded as JSON",
+                ))
+            }
+        }
+    }
+
     func locationAt(_ depth: usize) -> EncodeLocation {
         EncodeLocation { frames: &self.frames, depth }
     }

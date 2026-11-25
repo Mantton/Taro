@@ -1,0 +1,4 @@
+error: expected tuple of length 2, found 1
+ -> language_tests/source_files/invalid/syntax_sugar_tuple_arity.tr:2:44
+	func main() { var (a, b) = (1, 2); (a, b) = (3,); }
+	                                            ^^^^

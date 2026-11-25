@@ -1,0 +1,1 @@
+func main() { var data: [uint8; 3] = #embedBytes("../../package_fixtures/embedded_assets/dep/assets/icon.bin") }

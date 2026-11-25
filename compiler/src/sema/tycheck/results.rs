@@ -35,17 +35,23 @@ pub(crate) struct NativeIndex<'ctx> {
 
 #[derive(Debug, Default, Clone)]
 pub struct TypeCheckResults<'ctx> {
+    /// Inclusive scalar bounds after endpoint types and constant names are resolved.
+    pub(crate) pattern_ranges: FxHashMap<hir::NodeID, std::ops::RangeInclusive<i128>>,
     /// `super.init` produces a private base payload, not a published object.
     pub(crate) base_initializer_calls: FxHashSet<hir::NodeID>,
     pub(crate) self_initializer_calls: FxHashSet<hir::NodeID>,
     pub(crate) dynamic_self_calls: FxHashSet<hir::NodeID>,
     pub(crate) dynamic_self_contexts: FxHashMap<DefinitionID, DynamicSelfContext<'ctx>>,
     bound_methods: FxHashMap<hir::NodeID, BoundMethod>,
+    pub(crate) lazy_arguments: FxHashMap<hir::NodeID, hir::Expression>,
     pub(crate) selected_brackets: FxHashMap<hir::NodeID, hir::Expression>,
     pub(crate) native_indices: FxHashMap<hir::NodeID, NativeIndex<'ctx>>,
-    /// Immediate specialized calls keep ordinary method receiver semantics;
-    /// they do not create a temporary bound closure that owns result debts.
-    pub(crate) elaborated_method_calls: FxHashMap<hir::NodeID, hir::Expression>,
+    /// Selected call syntax lowered to a direct specialized method call or
+    /// a positional struct aggregate before THIR construction.
+    pub(crate) elaborated_calls: FxHashMap<hir::NodeID, hir::Expression>,
+    /// Separate coercion sites for RHS tuple projections. Destination nodes
+    /// retain their own reference/place adjustments.
+    pub(crate) tuple_assignment_values: FxHashMap<hir::NodeID, hir::NodeID>,
     /// Compiler-generated bound-method bodies preserve the selected signature,
     /// including explicit generics absent from value parameters/results.
     pub(crate) selected_method_calls:
@@ -59,7 +65,13 @@ pub struct TypeCheckResults<'ctx> {
     value_resolutions: FxHashMap<hir::NodeID, Resolution>,
     instantiations: FxHashMap<hir::NodeID, GenericArguments<'ctx>>,
     async_calls: FxHashSet<hir::NodeID>,
+    async_var_bindings: FxHashSet<hir::NodeID>,
     result_propagation_conversions: FxHashMap<hir::NodeID, ResultPropagationConversion<'ctx>>,
+    pub(crate) sync_generators: FxHashMap<DefinitionID, Ty<'ctx>>,
+    pub(crate) async_generators: FxHashMap<DefinitionID, Ty<'ctx>>,
+    pub(crate) comptime_expansions: FxHashMap<hir::NodeID, Vec<hir::Block>>,
+    pub(crate) type_name_literals: FxHashMap<hir::NodeID, crate::span::Symbol>,
+    pub(crate) for_loop_direct_iterators: FxHashSet<hir::NodeID>,
 }
 
 impl<'ctx> TypeCheckResults<'ctx> {
@@ -72,12 +84,16 @@ impl<'ctx> TypeCheckResults<'ctx> {
             .extend(other.dynamic_self_calls.drain());
         self.dynamic_self_contexts
             .extend(other.dynamic_self_contexts.drain());
+        self.pattern_ranges.extend(other.pattern_ranges.drain());
         self.bound_methods.extend(other.bound_methods.drain());
+        self.lazy_arguments.extend(other.lazy_arguments.drain());
         self.selected_brackets
             .extend(other.selected_brackets.drain());
         self.native_indices.extend(other.native_indices.drain());
-        self.elaborated_method_calls
-            .extend(other.elaborated_method_calls.drain());
+        self.elaborated_calls
+            .extend(other.elaborated_calls.drain());
+        self.tuple_assignment_values
+            .extend(other.tuple_assignment_values.drain());
         self.selected_method_calls
             .extend(other.selected_method_calls.drain());
         self.node_tys.extend(other.node_tys.drain());
@@ -90,8 +106,18 @@ impl<'ctx> TypeCheckResults<'ctx> {
             .extend(other.value_resolutions.drain());
         self.instantiations.extend(other.instantiations.drain());
         self.async_calls.extend(other.async_calls.drain());
+        self.async_var_bindings
+            .extend(other.async_var_bindings.drain());
         self.result_propagation_conversions
             .extend(other.result_propagation_conversions.drain());
+        self.sync_generators.extend(other.sync_generators.drain());
+        self.async_generators.extend(other.async_generators.drain());
+        self.comptime_expansions
+            .extend(other.comptime_expansions.drain());
+        self.type_name_literals
+            .extend(other.type_name_literals.drain());
+        self.for_loop_direct_iterators
+            .extend(other.for_loop_direct_iterators.drain());
     }
 
     pub fn record_bound_method(&mut self, id: hir::NodeID, method: BoundMethod) {
@@ -147,6 +173,10 @@ impl<'ctx> TypeCheckResults<'ctx> {
         self.async_calls.insert(id);
     }
 
+    pub fn record_async_var_binding(&mut self, id: hir::NodeID) {
+        self.async_var_bindings.insert(id);
+    }
+
     pub fn record_result_propagation_conversion(
         &mut self,
         id: hir::NodeID,
@@ -196,6 +226,10 @@ impl<'ctx> TypeCheckResults<'ctx> {
         self.async_calls.contains(&id)
     }
 
+    pub fn is_async_var_binding(&self, id: hir::NodeID) -> bool {
+        self.async_var_bindings.contains(&id)
+    }
+
     pub fn result_propagation_conversion(
         &self,
         id: hir::NodeID,
@@ -206,9 +240,23 @@ impl<'ctx> TypeCheckResults<'ctx> {
 
 #[derive(Debug, Clone, Copy)]
 pub struct ResultPropagationConversion<'ctx> {
-    pub method_id: DefinitionID,
-    pub generic_args: GenericArguments<'ctx>,
+    pub kind: ResultPropagationConversionKind<'ctx>,
     pub target_ty: Ty<'ctx>,
+}
+
+/// How `expr!` turns the operand's error into the enclosing function's error.
+#[derive(Debug, Clone, Copy)]
+pub enum ResultPropagationConversionKind<'ctx> {
+    /// Call `TargetE.from(error)` through the `From[E]` conformance.
+    From {
+        method_id: DefinitionID,
+        generic_args: GenericArguments<'ctx>,
+    },
+    /// Box a concrete error into the existential target, as an ordinary
+    /// coercion to that existential would.
+    BoxExistential {
+        interfaces: &'ctx [crate::sema::models::InterfaceReference<'ctx>],
+    },
 }
 
 /// A method value reuses ordinary closure lowering, with its synthetic receiver

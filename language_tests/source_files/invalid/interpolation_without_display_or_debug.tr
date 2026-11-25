@@ -1,0 +1,15 @@
+// An interpolated value needs Display or Debug; the error suggests Debug.
+struct Plain { value: int32 }
+struct Box[T]: Debug { value: T }
+final class Node { value: int32 }
+interface Named {}
+func show[T](_ value: T) -> string { "${value}" }
+func render(_ node: Node) -> string { "${node}" }
+func renderNamed(_ named: any Named) -> string { "${named}" }
+func main() {
+    plain := Plain { value: 1 }
+    println("${plain}")
+    println("a ${plain} b ${1}")
+    println("${Box { value: plain }}")
+    println("${(plain, 1)}")
+}

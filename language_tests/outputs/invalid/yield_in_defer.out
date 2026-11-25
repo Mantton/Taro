@@ -1,0 +1,4 @@
+error: `yield` is not allowed inside a defer block
+ -> language_tests/source_files/invalid/yield_in_defer.tr:3:8
+	        yield 1
+	        ^^^^^^^

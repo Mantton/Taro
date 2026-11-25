@@ -1,0 +1,34 @@
+struct Cell[T] { value: T }
+
+interface Datum[U] {
+    func read() -> U
+}
+
+conform Cell[int32] to Datum[bool] {
+    func read() -> bool { true }
+}
+conform Cell[int64] to Datum[string] {
+    func read() -> string { "wide" }
+}
+
+struct Dispatch {}
+extend Dispatch {
+    func label(_ n: bool) -> int32 { 32 }
+    func label(_ n: string) -> int32 { 64 }
+    func wrapped(_ n: bool?) -> int32 { 32 }
+    func wrapped(_ n: string?) -> int32 { 64 }
+}
+
+func main() {
+    dispatch := Dispatch {}
+    direct := dispatch.label(Cell { value: 0 }.read())
+    later := () => {
+        cell := Cell { value: 0 }
+        value := cell.read()
+        label := dispatch.wrapped(value)
+        var _typed: Cell[int64] = cell
+        label
+    }
+    typed := dispatch.label(Cell[int32] { value: 0 }.read())
+    println("${direct} ${later()} ${typed}")
+}

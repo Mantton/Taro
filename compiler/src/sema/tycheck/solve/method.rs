@@ -28,6 +28,25 @@ pub(super) struct InterfaceMethodCandidate<'ctx> {
     pub(super) source: DefinitionID,
 }
 
+/// A discovered declaration with its receiver adjustment. Looking it up does
+/// not allocate signature variables or bind the receiver's literal types.
+pub(super) struct MethodCandidate<'ctx> {
+    pub source: DefinitionID,
+    pub receiver: Ty<'ctx>,
+    pub signature: Ty<'ctx>,
+    pub header: super::ExtensionHeaderMatch,
+    pub interface: Option<InterfaceCallInfo>,
+    pub arguments: Option<GenericArguments<'ctx>>,
+    pub deref_steps: usize,
+    pub autoref_cost: u8,
+}
+
+pub(super) enum ReceiverResolution {
+    Ready,
+    Deferred,
+    Inferred,
+}
+
 #[cfg(test)]
 mod concrete_interface_tests {
     #[test]
@@ -182,26 +201,49 @@ impl<'ctx> ConstraintSolver<'ctx> {
     }
 
     #[inline]
-    fn with_receiver_argument(
-        arguments: &[ApplyArgument<'ctx>],
-        receiver: ApplyArgument<'ctx>,
-    ) -> Vec<ApplyArgument<'ctx>> {
-        let mut out = Vec::with_capacity(arguments.len() + 1);
-        out.push(receiver);
-        out.extend_from_slice(arguments);
-        out
+    pub(super) fn method_application(
+        data: &MethodCallData<'ctx>,
+        method_ty: Ty<'ctx>,
+        receiver: Ty<'ctx>,
+        skip_labels: bool,
+        input_only_selection: bool,
+    ) -> ApplyGoalData<'ctx> {
+        let mut arguments = Vec::with_capacity(data.arguments.len() + 1);
+        arguments.push(ApplyArgument {
+            is_spread: false,
+            is_lazy_wrapped: false,
+            contains_await: false,
+            deferred_return_scope: None,
+            id: data.reciever_node,
+            label: None,
+            ty: receiver,
+            span: data.reciever_span,
+        });
+        arguments.extend_from_slice(&data.arguments);
+        ApplyGoalData {
+            call_node_id: data.node_id,
+            callee_node_id: None,
+            call_span: data.span,
+            callee_ty: method_ty,
+            callee_source: None,
+            is_unsafe_context: data.is_unsafe_context,
+            result_ty: data.result,
+            arguments,
+            skip_labels,
+            input_only_selection,
+        }
     }
 
-    pub fn solve_method_call(&mut self, data: MethodCallData<'ctx>) -> SolverResult<'ctx> {
-        self.solve_method_call_with_interface(data, None)
-    }
-
-    pub(super) fn solve_method_call_with_interface(
-        &mut self,
-        data: MethodCallData<'ctx>,
-        required: Option<crate::hir::StdItem>,
-    ) -> SolverResult<'ctx> {
-        self.solve_restricted_method_call(data, required, None)
+    pub fn solve_method_call(&mut self, mut data: MethodCallData<'ctx>) -> SolverResult<'ctx> {
+        if let Some(node) = data.pending_selection.take() {
+            let Some(&source) = self.overload_sources.get(&node) else {
+                return SolverResult::Deferred;
+            };
+            let arguments = self.instantiation_args.get(&node).copied().unwrap_or_default();
+            data.selected = Some((source, arguments));
+        }
+        let interface = data.interface;
+        self.solve_restricted_method_call(data, interface, None)
     }
 
     pub(super) fn solve_native_subscript_call(
@@ -240,10 +282,15 @@ impl<'ctx> ConstraintSolver<'ctx> {
             arguments,
             result,
             span,
-            method_ty,
             ..
         } = &data;
 
+        // The operator goal may retry this lookup before its receiver has a
+        // concrete type. A failed attempt must not leave an unconstrained
+        // signature variable in the shared inference context.
+        let icx = self.icx.clone();
+        let method_ty =
+            std::cell::LazyCell::new(|| data.method_ty.unwrap_or_else(|| icx.next_ty_var(*span)));
         let resolved_receiver = self.structurally_resolve(*receiver);
         // The receiver may be the unresolved result of an overloaded subscript.
         // This also applies through reference/pointer layers. Looking up or
@@ -260,8 +307,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return SolverResult::Solved(vec![obligation]);
         }
 
-        let mut receiver_variable = None;
-        let mut branches = Vec::new();
+        // Operators and native subscripts keep their own lookup; see
+        // `method_interfaces_for_call` for the guard this enables.
+        let literal_guard = required.is_none() && native.is_none();
+        let mut methods = Vec::new();
         let mut seen = FxHashSet::default();
         // Address-derived bodies call their own declared capability,
         // including extra capabilities absent from a get-only bound.
@@ -294,7 +343,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     Ty::new(TyKind::Reference(candidate_ty), self.gcx())
                 };
                 let direct = if let Some(source) = default_address {
-                    vec![source]
+                    vec![(source, super::ExtensionHeaderMatch::Independent)]
                 } else {
                     self.lookup_instance_candidates_method(
                         candidate_ty,
@@ -302,9 +351,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         name.symbol,
                         *span,
                     )
-                    .unwrap_or_default()
                 };
-                for source in direct {
+                for (source, header) in direct {
                     if native.is_some_and(|access| {
                         self.gcx()
                             .native_subscript_for_receiver(source, receiver_ty)
@@ -335,26 +383,21 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     {
                         continue;
                     }
-                    branches.push(
-                        self.method_call_branch(
-                            &data,
-                            source,
-                            receiver_ty,
-                            *receiver_variable
-                                .get_or_insert_with(|| self.icx.next_ty_var(*reciever_span)),
-                            self.gcx().get_type(source),
-                            None,
-                            data.selected.map(|(_, arguments)| arguments),
-                            deref_steps,
-                            autoref_cost,
-                            &prefix,
-                        ),
-                    );
+                    methods.push(MethodCandidate {
+                        source,
+                        receiver: receiver_ty,
+                        signature: self.gcx().get_type(source),
+                        header,
+                        interface: None,
+                        arguments: data.selected.map(|(_, args)| args),
+                        deref_steps,
+                        autoref_cost,
+                    });
                 }
                 if default_address.is_some() {
                     continue;
                 }
-                let interfaces = self.method_interfaces(receiver_ty, *span);
+                let interfaces = self.method_interfaces_for_call(receiver_ty, *span, literal_guard);
                 let Some(interfaces) = interfaces else {
                     continue;
                 };
@@ -378,7 +421,22 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     {
                         continue;
                     }
+                    let duplicate_builtin_operator = seen
+                        .contains(&(candidate.source, receiver_ty, deref_steps, None))
+                        && candidate.instantiation_args.is_some_and(|args| {
+                            crate::mir::primitive_operators::ITEMS.iter().any(|&item| {
+                                self.gcx().std_item_def(item)
+                                    == Some(candidate.call_info.method_interface)
+                                    && crate::mir::primitive_operators::interface_for_type(
+                                        self.gcx(),
+                                        receiver_ty,
+                                        item,
+                                    )
+                                    .is_some_and(|builtin| builtin.arguments == args)
+                            })
+                        });
                     if autoref_cost > 0 && self.gcx().definition_is_clone_method(candidate.source)
+                        || duplicate_builtin_operator
                         || data
                             .selected
                             .is_some_and(|(source, _)| source != candidate.source)
@@ -391,60 +449,59 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     {
                         continue;
                     }
-                    branches.push(
-                        self.method_call_branch(
-                            &data,
-                            candidate.source,
-                            receiver_ty,
-                            *receiver_variable
-                                .get_or_insert_with(|| self.icx.next_ty_var(*reciever_span)),
-                            candidate.candidate_ty,
-                            Some(candidate.call_info),
-                            data.selected
-                                .map(|(_, arguments)| arguments)
-                                .or(candidate.instantiation_args),
-                            deref_steps,
-                            autoref_cost,
-                            &prefix,
-                        ),
-                    );
+                    methods.push(MethodCandidate {
+                        source: candidate.source,
+                        receiver: receiver_ty,
+                        signature: candidate.candidate_ty,
+                        header: super::ExtensionHeaderMatch::Independent,
+                        interface: Some(candidate.call_info),
+                        arguments: data
+                            .selected
+                            .map(|(_, args)| args)
+                            .or(candidate.instantiation_args),
+                        deref_steps,
+                        autoref_cost,
+                    });
                 }
             }
         }
-        if !branches.is_empty() {
+        if literal_guard && !methods.is_empty() && resolved_receiver.contains_inference() {
+            match self.resolve_method_receiver(&data, resolved_receiver, &mut methods) {
+                ReceiverResolution::Ready => {}
+                ReceiverResolution::Deferred => return SolverResult::Deferred,
+                ReceiverResolution::Inferred => {
+                    return self.solve_method_call_at(data, required, native, prefix, visited);
+                }
+            }
+        }
+        if !methods.is_empty() {
             // Native overloads are selected from their inputs. An unresolved
             // key may be produced by another indexed expression; probing now
             // can constrain it to an unrelated range overload and reject its
             // actual producer. Numeric literals still receive normal context,
             // and a single candidate can supply a generic key's expected type.
             if native.is_some()
-                && branches.len() > 1
+                && methods.len() > 1
                 && arguments
                     .iter()
                     .any(|argument| self.structurally_resolve(argument.ty).is_ty_var())
             {
                 return SolverResult::Deferred;
             }
-            let apply = ApplyGoalData {
-                call_node_id: *node_id,
-                callee_node_id: None,
-                call_span: *span,
-                callee_ty: *method_ty,
-                callee_source: None,
-                is_unsafe_context: *is_unsafe_context,
-                result_ty: *result,
-                arguments: Self::with_receiver_argument(
-                    arguments,
-                    ApplyArgument {
-                        id: *reciever_node,
-                        label: None,
-                        ty: receiver_variable.expect("method candidate receiver"),
-                        span: *reciever_span,
-                    },
-                ),
-                skip_labels: required.is_some(),
-                input_only_selection: required.is_some() || native.is_some(),
-            };
+            let variable = self.icx.next_ty_var(*reciever_span);
+            let branches = methods
+                .iter()
+                .map(|candidate| {
+                    self.method_call_branch(&data, *method_ty, variable, candidate, &prefix)
+                })
+                .collect();
+            let apply = Self::method_application(
+                &data,
+                *method_ty,
+                variable,
+                required.is_some(),
+                required.is_some() || native.is_some(),
+            );
             return SolverResult::Solved(vec![
                 Obligation {
                     location: name.span,
@@ -471,21 +528,22 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 }
                 prev = Some(ty);
 
-                if let Some((field, index)) = self.lookup_field(ty, name.symbol) {
+                if let Some((index, field_ty, visibility)) = self.lookup_field(ty, name.symbol) {
                     if !self
                         .gcx()
-                        .is_visibility_allowed(field.visibility, self.current_def)
+                        .is_visibility_allowed(visibility, self.current_def)
                     {
                         // Field exists but is not visible; fall through to error.
                         break;
                     }
 
+                    if let Some(result) = self.solve_early_interface_call(&data, &prefix, true) {
+                        return result;
+                    }
+
                     // Record field index and receiver adjustments.
                     self.record_adjustments(*reciever_node, adjustments);
                     self.record_field_index(*node_id, index);
-
-                    // Create a Member goal: resolves `self.f` to the field type.
-                    let field_ty = field.ty;
 
                     // Create an Apply goal: calls the field value with the arguments.
                     let apply_goal = Obligation {
@@ -521,10 +579,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     .is_some_and(|head| self.has_invisible_instance_member(head, name.symbol))
                     || self
                         .lookup_field(ty, name.symbol)
-                        .is_some_and(|(field, _)| {
+                        .is_some_and(|(_, _, visibility)| {
                             !self
                                 .gcx()
-                                .is_visibility_allowed(field.visibility, self.current_def)
+                                .is_visibility_allowed(visibility, self.current_def)
                         })
             });
             if !hidden {
@@ -554,7 +612,33 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         let final_on = self.structurally_resolve(*receiver);
         if final_on.contains_inference() {
+            if required.is_none()
+                && native.is_none()
+                && default_address.is_none()
+                && let Some(result) = self.solve_early_interface_call(&data, &prefix, false)
+            {
+                return result;
+            }
             return SolverResult::Deferred;
+        }
+
+        if required == Some(crate::hir::StdItem::Closeable)
+            && let Some(id) = required_interface
+        {
+            let arguments = self
+                .gcx()
+                .store
+                .interners
+                .intern_generic_args(vec![GenericArgument::Type(final_on)]);
+            let interface = InterfaceReference {
+                id,
+                arguments,
+                bindings: &[],
+            };
+            return SolverResult::Error(vec![Spanned::new(
+                TypeError::NonConformance { ty: final_on, interface },
+                name.span,
+            )]);
         }
 
         // Check if the member exists but is private before falling back to
@@ -581,7 +665,173 @@ impl<'ctx> ConstraintSolver<'ctx> {
         return SolverResult::Error(vec![Spanned::new(error, name.span)]);
     }
 
-    fn reciever_candidates(
+    /// A specialized implementation's existence cannot supply a receiver
+    /// width. A declared argument or result can, when a viable independent
+    /// signature determines it and all viable signatures agree.
+    fn resolve_method_receiver(
+        &self,
+        data: &MethodCallData<'ctx>,
+        receiver: Ty<'ctx>,
+        methods: &mut Vec<MethodCandidate<'ctx>>,
+    ) -> ReceiverResolution {
+        // A direct method with incompatible inputs must not hide class
+        // interface candidates still waiting for a concrete receiver.
+        if data.selected.is_none()
+            && self
+                .autoderef(receiver)
+                .any(|ty| self.gcx().is_class_type(ty))
+            && !methods
+                .iter()
+                .any(|method| method.header == super::ExtensionHeaderMatch::NeedsLiteralType)
+        {
+            methods.retain(|method| {
+                method.interface.is_some()
+                    || self.probe_method_signature(data, method, &[]).is_some()
+            });
+        }
+        self.resolve_specialized_receivers(receiver, methods, |method, literals| {
+            self.probe_method_signature(data, method, literals)
+        })
+    }
+
+    pub(super) fn resolve_specialized_receivers(
+        &self,
+        receiver: Ty<'ctx>,
+        methods: &mut Vec<MethodCandidate<'ctx>>,
+        probe: impl Fn(&MethodCandidate<'ctx>, &[Ty<'ctx>]) -> Option<Vec<Option<Ty<'ctx>>>>,
+    ) -> ReceiverResolution {
+        use super::ExtensionHeaderMatch::{Independent, NeedsLiteralType};
+        use crate::sema::tycheck::utils::unresolved::inference_variables;
+        if !methods
+            .iter()
+            .any(|method| method.header == NeedsLiteralType)
+        {
+            return ReceiverResolution::Ready;
+        }
+        let literals: Vec<_> = inference_variables(receiver)
+            .into_iter()
+            .filter(|&ty| self.icx.unresolved_numeric_var(ty).is_some())
+            .collect();
+        let mut dependent = false;
+        let mut independent = false;
+        let mut common: Option<Vec<Option<Ty<'ctx>>>> = None;
+        methods.retain(|method| {
+            let Some(widths) = probe(method, &literals) else {
+                return false;
+            };
+            dependent |= method.header == NeedsLiteralType;
+            independent |= method.header == Independent;
+            if let Some(common) = &mut common {
+                for (width, other) in common.iter_mut().zip(widths) {
+                    if *width != other {
+                        *width = None;
+                    }
+                }
+            } else {
+                common = Some(widths);
+            }
+            true
+        });
+        if !dependent {
+            return ReceiverResolution::Ready;
+        }
+        if independent {
+            let mut progress = false;
+            for (literal, width) in literals.into_iter().zip(common.into_iter().flatten()) {
+                if let Some(width) = width {
+                    // Each literal was open on entry; only concrete numeric
+                    // types from rolled-back probes reach this point.
+                    self.unify(literal, width)
+                        .expect("agreed receiver literal type");
+                    progress = true;
+                }
+            }
+            if progress {
+                return ReceiverResolution::Inferred;
+            }
+        }
+        ReceiverResolution::Deferred
+    }
+
+    fn method_header_match(
+        &self,
+        method: DefinitionID,
+        owner: Ty<'ctx>,
+        span: Span,
+    ) -> super::ExtensionHeaderMatch {
+        use super::ExtensionHeaderMatch::{Independent, Mismatch};
+        let Some(extension) = self.gcx().definition_parent(method) else {
+            return Independent;
+        };
+        if self.gcx().definition_kind(extension) != crate::hir::DefinitionKind::Impl {
+            return Independent;
+        }
+        let mut result = self.match_extension_header(extension, owner, owner, span);
+        if result == Mismatch {
+            for ancestor in self.gcx().class_ancestry(owner).into_iter().skip(1) {
+                result = self.match_extension_header(extension, ancestor, owner, span);
+                if result != Mismatch {
+                    break;
+                }
+            }
+        }
+        result
+    }
+
+    /// Probe the declaration and call without defaulting. A pending constraint
+    /// is still possible. Only concrete numeric types can escape the snapshot.
+    fn probe_method_signature(
+        &self,
+        data: &MethodCallData<'ctx>,
+        candidate: &MethodCandidate<'ctx>,
+        literals: &[Ty<'ctx>],
+    ) -> Option<Vec<Option<Ty<'ctx>>>> {
+        self.probe_receiver_widths(literals, |fork| {
+            let signature = self.icx.next_ty_var(data.span);
+            let receiver = self.icx.next_ty_var(data.reciever_span);
+            let branch = self.method_call_branch(data, signature, receiver, candidate, &[]);
+            fork.obligations.push_back(Obligation {
+                location: data.span,
+                goal: branch.goal,
+            });
+            fork.obligations.push_back(Obligation {
+                location: data.span,
+                goal: Goal::Apply(Self::method_application(
+                    data, signature, receiver, false, false,
+                )),
+            });
+        })
+    }
+
+    pub(super) fn probe_receiver_widths(
+        &self,
+        literals: &[Ty<'ctx>],
+        enqueue: impl FnOnce(&mut ConstraintSolver<'ctx>),
+    ) -> Option<Vec<Option<Ty<'ctx>>>> {
+        self.gcx()
+            .dcx()
+            .with_deferred_diagnostics(|| {
+                self.icx.probe(|_| {
+                    let mut fork = self.fork_for_lookup();
+                    enqueue(&mut fork);
+                    let mut driver = super::SolverDriver::new(fork);
+                    driver.allow_fallbacks = false;
+                    driver.solve_to_fixpoint().ok()?;
+                    Some(
+                        literals
+                            .iter()
+                            .map(|&literal| {
+                                let ty = self.icx.shallow_resolve(literal);
+                                (!ty.is_infer()).then_some(ty)
+                            })
+                            .collect(),
+                    )
+                })
+            })
+            .0
+    }
+
+    pub(super) fn reciever_candidates(
         &self,
         base_ty: Ty<'ctx>,
         mut referenceable: bool,
@@ -601,18 +851,15 @@ impl<'ctx> ConstraintSolver<'ctx> {
         candidates
     }
 
-    pub fn lookup_instance_candidates_method(
+    pub(super) fn lookup_instance_candidates_method(
         &self,
         candidate: Ty<'ctx>,
         reciever: Ty<'ctx>,
         name: Symbol,
         span: Span,
-    ) -> Option<Vec<DefinitionID>> {
+    ) -> Vec<(DefinitionID, super::ExtensionHeaderMatch)> {
         let autoreferenced = candidate != reciever;
         let all_candidates = self.lookup_instance_candidates(reciever, name);
-        if all_candidates.is_empty() {
-            return None;
-        }
 
         let mut matching = Vec::with_capacity(all_candidates.len());
         for candidate in all_candidates.into_iter() {
@@ -646,12 +893,37 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 self.type_head_from_type(*ancestor) == self.type_head_from_type(fn_reciever)
             });
             if matches || inherited {
-                matching.push(candidate);
+                let header = self.method_header_match(candidate, reciever, span);
+                if header != super::ExtensionHeaderMatch::Mismatch {
+                    matching.push((candidate, header));
+                }
             }
         }
 
-        self.filter_extension_candidates_in_place(&mut matching, reciever, span);
-        return Some(matching);
+        matching
+    }
+
+    /// The interfaces a method call looks through on one receiver candidate.
+    ///
+    /// While the candidate still holds untyped literals (`Boxed[{integer}]`),
+    /// its own conformance records cannot be matched, so the bounds in scope
+    /// would stand in for them. A bound another call left pending on it
+    /// (`Boxed[{integer}]: A`) is not the set the typed receiver would see;
+    /// such a candidate leaves those to the early binding, which weighs every
+    /// record and bound, or to the deferral. On an unresolved class a known
+    /// ancestor may supply only part of the overload set. Early interface
+    /// lookup considers both the derived class and all its ancestors.
+    fn method_interfaces_for_call(
+        &self,
+        receiver: Ty<'ctx>,
+        span: Span,
+        literal_guard: bool,
+    ) -> Option<&'ctx [InterfaceReference<'ctx>]> {
+        if literal_guard && receiver.contains_inference() && self.gcx().is_class_type(receiver) {
+            return None;
+        }
+        let bounds = !(literal_guard && self.only_open_literals(receiver));
+        self.collect_method_interfaces(receiver, span, bounds)
     }
 
     /// Bounds supplement concrete/blanket conformances; they do not hide them.
@@ -661,10 +933,23 @@ impl<'ctx> ConstraintSolver<'ctx> {
         receiver: Ty<'ctx>,
         span: Span,
     ) -> Option<&'ctx [InterfaceReference<'ctx>]> {
+        self.collect_method_interfaces(receiver, span, true)
+    }
+
+    fn collect_method_interfaces(
+        &self,
+        receiver: Ty<'ctx>,
+        span: Span,
+        bounds: bool,
+    ) -> Option<&'ctx [InterfaceReference<'ctx>]> {
         if let TyKind::BoxedExistential { interfaces } = receiver.kind() {
             return Some(interfaces);
         }
-        let mut interfaces = self.bounds_for_type_in_scope(receiver);
+        let mut interfaces = if bounds {
+            self.bounds_for_member_lookup(receiver)
+        } else {
+            Vec::new()
+        };
         if let Some(callable) = crate::sema::models::callable_interface_ref(self.gcx(), receiver) {
             interfaces.push(callable);
         }
@@ -706,7 +991,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     .collect::<Vec<_>>()
             }));
         }
-        if records.is_empty() {
+        let normalized_self = crate::sema::tycheck::utils::normalize_aliases(self.gcx(), self_ty);
+        let is_tuple = matches!(normalized_self.kind(), TyKind::Tuple(_));
+        if records.is_empty() && !is_tuple {
             return None;
         }
 
@@ -723,6 +1010,13 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
             if !self.extension_target_matches(record.extension, owner, span) {
                 continue;
+            }
+            if !self.visible_traits.is_empty() {
+                self.gcx()
+                    .store
+                    .trait_visibility_uses
+                    .borrow_mut()
+                    .insert(record.interface.id);
             }
             // Every interface argument lives in the extension's coordinates,
             // not only Self. A blanket `T: Select[T]` must become
@@ -742,6 +1036,43 @@ impl<'ctx> ConstraintSolver<'ctx> {
             }
         }
 
+        if is_tuple {
+            for &item in crate::mir::tuple_conformances::CONFORMANCE_ITEMS {
+                let Some(interface_id) = self.gcx().std_item_def(item) else {
+                    continue;
+                };
+                let always_visible = matches!(
+                    item,
+                    crate::hir::StdItem::PartialEq | crate::hir::StdItem::PartialOrd
+                );
+                if !always_visible
+                    && !self.visible_traits.is_empty()
+                    && !self.visible_traits.contains(&interface_id)
+                {
+                    continue;
+                }
+                if !self.visible_traits.is_empty() && self.visible_traits.contains(&interface_id) {
+                    self.gcx()
+                        .store
+                        .trait_visibility_uses
+                        .borrow_mut()
+                        .insert(interface_id);
+                }
+                let mut args = vec![GenericArgument::Type(self_ty)];
+                if crate::mir::tuple_conformances::is_rhs_parameterized(item) {
+                    args.push(GenericArgument::Type(self_ty));
+                }
+                let iface = InterfaceReference {
+                    id: interface_id,
+                    arguments: self.gcx().store.interners.intern_generic_args(args),
+                    bindings: &[],
+                };
+                if seen.insert(iface) {
+                    interfaces.push(iface);
+                }
+            }
+        }
+
         if interfaces.is_empty() {
             return None;
         }
@@ -755,31 +1086,37 @@ impl<'ctx> ConstraintSolver<'ctx> {
         )
     }
 
-    fn method_call_branch(
+    pub(super) fn method_call_branch(
         &self,
         data: &MethodCallData<'ctx>,
-        source: DefinitionID,
-        receiver: Ty<'ctx>,
+        method_ty: Ty<'ctx>,
         variable: Ty<'ctx>,
-        candidate_ty: Ty<'ctx>,
-        call_info: Option<InterfaceCallInfo>,
-        arguments: Option<GenericArguments<'ctx>>,
-        deref_steps: usize,
-        autoref_cost: u8,
+        candidate: &MethodCandidate<'ctx>,
         prefix: &[Adjustment<'ctx>],
     ) -> DisjunctionBranch<'ctx> {
+        let MethodCandidate {
+            source,
+            receiver,
+            signature: candidate_ty,
+            interface: call_info,
+            arguments,
+            deref_steps,
+            autoref_cost,
+            ..
+        } = *candidate;
         let binding = match call_info {
             Some(call_info) => Goal::BindInterfaceMethod(BindInterfaceMethodGoalData {
                 node_id: data.node_id,
-                var_ty: data.method_ty,
+                var_ty: method_ty,
                 candidate_ty,
                 call_info,
                 instantiation_args: arguments,
+                published_projections: Vec::new(),
             }),
             None => Goal::BindOverload(BindOverloadGoalData {
                 static_owner: None,
                 node_id: data.node_id,
-                var_ty: data.method_ty,
+                var_ty: method_ty,
                 candidate_ty,
                 source,
                 instantiation_args: arguments,

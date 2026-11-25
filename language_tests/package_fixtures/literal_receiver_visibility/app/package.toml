@@ -1,0 +1,6 @@
+[package]
+name = "github.com/example/literalreceiverapp"
+kind = "executable"
+
+[require]
+"github.com/example/literalreceiverdep" = { path = "../dep", alias = "dep" }

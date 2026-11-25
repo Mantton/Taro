@@ -8,6 +8,9 @@ mod bench;
 mod build;
 mod check;
 mod compile_paths;
+mod doctest;
+mod fix;
+mod fmt;
 mod incremental;
 mod new;
 mod run;
@@ -56,11 +59,13 @@ pub fn handle(arguments: Cli) -> CommandResult {
     match arguments.command {
         CliCommand::Bench(arguments) => return bench::run(arguments),
         CliCommand::Build(arguments) => {
-            build::run(arguments.common, false, arguments.emit, arguments.lto)?;
+            build::run(arguments.common, false, arguments.emit, arguments.lto, arguments.explain_allocations)?;
             ()
         }
         CliCommand::Check(arguments) => check::run(arguments)?,
         CliCommand::Vet(arguments) => check::run_vet(arguments)?,
+        CliCommand::Fix(arguments) => return fix::run(arguments),
+        CliCommand::Fmt(arguments) => return fmt::run(arguments),
         CliCommand::New(arguments) => new::run(arguments)?,
         CliCommand::Run(arguments) => return run::run(arguments),
         CliCommand::RuntimeManifest(arguments) => {

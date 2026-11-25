@@ -1,0 +1,211 @@
+import std::collections::BitSet
+import std::default::Default
+import std::fmt::debugString
+import std::marker::Clone
+import std::testing::{assertEqual, assertFalse, assertTrue}
+
+@test
+func testBitSetEmptyCapacityAndWordBoundaries() {
+    bs := BitSet::new()
+    assertTrue(bs.isEmpty(), "new BitSet is empty")
+    assertEqual(bs.len(), 0 as usize, "new BitSet len is 0")
+    assertEqual(bs.countOnes(), 0 as usize, "new BitSet countOnes is 0")
+    assertTrue(BitSet::default() == bs, "Default BitSet is empty")
+    assertEqual(debugString(bs), "{}", "empty BitSet debug")
+
+    // contains and remove past current length must not grow backing words!
+    assertFalse(bs.contains(0 as usize), "empty contains 0 false")
+    assertFalse(bs.contains(100000 as usize), "empty contains 100000 false")
+    assertFalse(bs.remove(100000 as usize), "empty remove 100000 false")
+    bs.set(100000 as usize, false)
+    assertEqual(bs.storage.words.len(), 0 as usize, "contains/remove/set(false) must not grow storage")
+
+    pre := BitSet::new(withCapacity: 256 as usize)
+    assertTrue(pre.isEmpty(), "withCapacity BitSet starts empty")
+    assertEqual(pre.storage.words.len(), 0 as usize, "withCapacity keeps word len 0 until insert")
+    assertTrue(pre.storage.words.capacity() >= (4 as usize), "withCapacity pre-allocates word buffer")
+
+    var boundaries: [usize] = [0, 1, 62, 63, 64, 65, 127, 128, 129, 10000]
+    for b in boundaries {
+        assertTrue(bs.insert(b), "first insert at boundary returns true")
+        assertFalse(bs.insert(b), "duplicate insert at boundary returns false")
+    }
+    assertEqual(bs.len(), boundaries.len(), "len matches inserted boundaries")
+    assertEqual(bs.countOnes(), boundaries.len(), "countOnes matches inserted boundaries")
+    assertFalse(bs.isEmpty(), "populated BitSet not empty")
+
+    for b in boundaries {
+        assertTrue(bs.contains(b), "contains boundary bit")
+        assertTrue(b in bs, "Contains operator matches boundary bit")
+    }
+    assertFalse(bs.contains(61 as usize), "adjacent unset bit 61")
+    assertFalse(bs.contains(66 as usize), "adjacent unset bit 66")
+    assertFalse(bs.contains(126 as usize), "adjacent unset bit 126")
+    assertFalse(bs.contains(130 as usize), "adjacent unset bit 130")
+    assertFalse(bs.contains(9999 as usize), "adjacent unset bit 9999")
+    assertFalse(bs.contains(10001 as usize), "adjacent unset bit 10001")
+    assertFalse(bs.contains(500000 as usize), "far out-of-range bit false")
+
+    wordsBefore := bs.storage.words.len()
+    assertFalse(bs.remove(500000 as usize), "out-of-range remove returns false")
+    assertEqual(bs.storage.words.len(), wordsBefore, "out-of-range remove does not grow storage")
+}
+
+@test
+func testBitSetToggleSetSharingCopyCloneAndCanonicalEquality() {
+    a := BitSet::new()
+    alias := a
+    alias.toggle(42 as usize)
+    assertTrue(a.contains(42 as usize), "assignment shares BitSet")
+    assertEqual(a.countOnes(), 1 as usize, "toggle inserted bit")
+
+    a.toggle(42 as usize)
+    assertFalse(a.contains(42 as usize), "second toggle removes bit")
+    assertTrue(a.isEmpty(), "empty after toggle off")
+
+    a.set(500 as usize, true)
+    assertTrue(a.contains(500 as usize), "set(true) inserts")
+    assertTrue(a.remove(500 as usize), "remove returns true for present bit")
+    assertFalse(a.remove(500 as usize), "second remove returns false")
+    assertTrue(a.isEmpty(), "empty after remove")
+
+    // Canonical equality ignores trailing zero words!
+    assertTrue(a == BitSet::new(), "auto-grown then emptied BitSet equals fresh BitSet")
+    assertTrue(BitSet::new() == a, "canonical equality is symmetric")
+
+    x := BitSet::new()
+    y := BitSet::new()
+    var _ = x.insert(0 as usize)
+    var _ = x.insert(63 as usize)
+    var _ = x.insert(64 as usize)
+    var _ = y.insert(0 as usize)
+    var _ = y.insert(63 as usize)
+    var _ = y.insert(64 as usize)
+    var _ = y.insert(5000 as usize)
+    var _ = y.remove(5000 as usize)
+    assertTrue(y.storage.words.len() > x.storage.words.len(), "y retains trailing zero words")
+    assertTrue(x == y, "equal sets ignore trailing zero words")
+    assertTrue(y == x, "equal sets symmetric across word counts")
+
+    z := x.copy()
+    var _ = z.insert(200 as usize)
+    assertFalse(x.contains(200 as usize), "copy is independent")
+    assertTrue(x != z, "different sets are not equal")
+
+    c := x.clone()
+    assertTrue(c == x, "clone equals source")
+    c.clear()
+    assertTrue(c.isEmpty(), "clear empties clone")
+    assertEqual(x.len(), 3 as usize, "clear on clone does not affect source")
+}
+
+@test
+func testBitSetBulkAlgebraAndSelfAliasing() {
+    a := BitSet::new()
+    b := BitSet::new()
+    var _ = a.insert(1 as usize)
+    var _ = a.insert(63 as usize)
+    var _ = a.insert(130 as usize)
+    var _ = b.insert(63 as usize)
+    var _ = b.insert(64 as usize)
+    var _ = b.insert(300 as usize)
+
+    // Non-mutating operations preserve operands
+    u := a.union(b)
+    inter := a.intersection(b)
+    diffAB := a.difference(b)
+    diffBA := b.difference(a)
+    sym := a.symmetricDifference(b)
+
+    assertEqual(debugString(a), "{1, 63, 130}", "a unchanged")
+    assertEqual(debugString(b), "{63, 64, 300}", "b unchanged")
+    assertEqual(debugString(u), "{1, 63, 64, 130, 300}", "union")
+    assertEqual(u.countOnes(), 5 as usize, "union countOnes")
+    assertEqual(debugString(inter), "{63}", "intersection")
+    assertEqual(inter.countOnes(), 1 as usize, "intersection countOnes")
+    assertEqual(debugString(diffAB), "{1, 130}", "a - b")
+    assertEqual(debugString(diffBA), "{64, 300}", "b - a")
+    assertEqual(debugString(sym), "{1, 64, 130, 300}", "symmetricDifference")
+    assertEqual(sym.countOnes(), 4 as usize, "symmetricDifference countOnes")
+
+    // isSubset and isDisjoint (including trailing zero words and mismatched lengths)
+    assertTrue(inter.isSubset(of: a), "intersection subset of a")
+    assertTrue(inter.isSubset(of: b), "intersection subset of b")
+    assertTrue(a.isSubset(of: u), "a subset of union")
+    assertTrue(b.isSubset(of: u), "b subset of union")
+    assertFalse(a.isSubset(of: b), "a not subset of b")
+    assertTrue(a.isSubset(of: a), "self is subset of self")
+    assertTrue(diffAB.isDisjoint(from: b), "a - b is disjoint from b")
+    assertTrue(diffAB.isDisjoint(from: diffBA), "a - b and b - a are disjoint")
+    assertFalse(a.isDisjoint(from: b), "a and b share 63")
+    assertFalse(a.isDisjoint(from: a), "non-empty set not disjoint from itself")
+    assertTrue(BitSet::new().isDisjoint(from: a), "empty set disjoint from any set")
+
+    // Ensure subset works when LHS has longer trailing zero word array than RHS
+    padded := inter.copy()
+    var _ = padded.insert(4000 as usize)
+    var _ = padded.remove(4000 as usize)
+    assertTrue(padded.isSubset(of: inter), "subset ignores trailing zero words")
+
+    // Mutating operations when self is shorter and when self is longer
+    long := b.copy()
+    short := a.copy()
+    long.intersectWith(short)
+    assertEqual(debugString(long), "{63}", "intersectWith clears high words beyond shorter rhs")
+    assertEqual(long.countOnes(), 1 as usize, "intersectWith updates count")
+
+    // Self-aliasing mutating operations
+    s := a.copy()
+    s.unionWith(s)
+    assertTrue(s == a, "self unionWith is identity")
+    s.intersectWith(s)
+    assertTrue(s == a, "self intersectWith is identity")
+    s.differenceWith(s)
+    assertTrue(s.isEmpty(), "self differenceWith empties set")
+
+    s2 := a.copy()
+    s2.symmetricDifferenceWith(s2)
+    assertTrue(s2.isEmpty(), "self symmetricDifferenceWith empties set")
+}
+
+@test
+func testBitSetFastIteration() {
+    bs := BitSet::new()
+    var expected: [usize] = [0, 63, 64, 511, 512, 4095, 10000]
+    for b in expected {
+        var _ = bs.insert(b)
+    }
+    var got: [usize] = []
+    for bit in bs {
+        got.append(bit)
+    }
+    assertTrue(got == expected, "sparse BitSet iteration yields ascending set bits")
+
+    // Dense full word (64..128)
+    dense := BitSet::new()
+    var bit: usize = 64
+    while bit < (128 as usize) {
+        var _ = dense.insert(bit)
+        bit += 1
+    }
+    assertEqual(dense.countOnes(), 64 as usize, "full word countOnes is 64")
+    var nextExpected: usize = 64
+    for actual in dense {
+        assertEqual(actual, nextExpected, "dense word bit order")
+        nextExpected += 1
+    }
+    assertEqual(nextExpected, 128 as usize, "visited all 64 bits in full word")
+}
+
+@test
+@expectPanic
+func testBitSetMutationDuringIterationPanics() {
+    bs := BitSet::new()
+    var _ = bs.insert(1 as usize)
+    var _ = bs.insert(65 as usize)
+    for bit in bs {
+        if bit == (1 as usize) {
+            var _ = bs.insert(129 as usize)
+        }
+    }
+}

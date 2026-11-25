@@ -1,0 +1,4 @@
+// An entry point takes no parameters, whatever it returns.
+func main(_ count: int32) -> Result[(), string] {
+    return .ok(())
+}

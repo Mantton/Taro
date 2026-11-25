@@ -1,0 +1,9 @@
+interface Marker {}
+struct Item: Marker {}
+func mark(_ value: some Marker) {}
+struct Reader {}
+extend Reader { func mark(_ value: some Marker) {}; }
+func main() {
+    mark[Item](Item {})
+    Reader {}.mark[Item](Item {})
+}

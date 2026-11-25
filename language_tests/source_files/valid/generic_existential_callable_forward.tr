@@ -1,0 +1,22 @@
+// A generic forwarding coercion must retain the existing callable table after
+// substitution. Previously codegen matched generic against concrete arguments
+// and silently inserted a null table into the forwarded existential.
+final class ForwardedCallback[T] { callback: any Fn(T, T) -> bool }
+extend[T] ForwardedCallback[T] {
+    init(_ callback: any Fn(T, T) -> bool) { self.callback = callback }
+    func compare(_ a: T, _ b: T) -> bool { self.callback(a, b) }
+}
+struct CallbackFactory[T] {}
+extend[T] CallbackFactory[T] {
+    static func make(_ callback: any Fn(T, T) -> bool) -> ForwardedCallback[T] {
+        ForwardedCallback[T](callback)
+    }
+}
+func main() {
+    var calls = 0
+    var before: any Fn(int32, int32) -> bool = (a, b) => { calls += 1; a < b }
+    forwarded := CallbackFactory[int32]::make(before)
+    std::runtime::collect()
+    assert(forwarded.compare(1, 2) && !forwarded.compare(2, 1), "forwarded ordering")
+    assert(calls == 2, "forwarded capture state")
+}

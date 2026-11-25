@@ -1,0 +1,6 @@
+func main() {
+    var count: int32? = nil
+    count ??= "one"
+    var label: string? = nil
+    label ??= count
+}

@@ -1,0 +1,39 @@
+func sum[T: Numeric](_ values: [T]) -> T {
+    var total = T::zero()
+    for value in values {
+        total = total + value
+    }
+    return total
+}
+
+func scaleAndShift[T: SignedNumeric](_ value: T, _ factor: T) -> T {
+    -(value * factor) + T::one()
+}
+
+func main() {
+    var s: [int32] = [-5_i32, 12_i32, 3_i32]
+    var sOut: int32 = sum(s)
+    assert(sOut == 10_i32)
+
+    var u: [uint64] = [10_u64, 20_u64, 30_u64]
+    var uOut: uint64 = sum(u)
+    assert(uOut == 60_u64)
+
+    var f: [double] = [1.25, 2.5, 0.25]
+    var fOut: double = sum(f)
+    assert(fOut == 4.0)
+
+    var emptyS: [int32] = []
+    var emptyU: [uint64] = []
+    var emptyF: [double] = []
+    assert(sum(emptyS) == 0_i32)
+    assert(sum(emptyU) == 0_u64)
+    assert(sum(emptyF) == 0.0)
+
+    assert(scaleAndShift(3_i32, 4_i32) == -11_i32)
+    assert(scaleAndShift(2.5, 2.0) == -4.0)
+
+    // Ordinary concrete operator selection remains intact.
+    assert(1 + 2 * 3 == 7)
+    assert("a" + "b" == "ab")
+}

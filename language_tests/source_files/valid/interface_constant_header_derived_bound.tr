@@ -1,0 +1,23 @@
+// Component types can be declared after a length that depends on them.
+type StructBytes = [uint8; Container[Payload[Other]]::WIDTH]
+type EnumBytes = [uint8; Container[Choice[Other]]::WIDTH]
+type ClassBytes = [uint8; Container[Leaf[Other]]::WIDTH]
+
+interface FixedWidth { const WIDTH: usize = 3; }
+interface ComparableWidth { const WIDTH: usize = 7; }
+struct Container[T] {}
+struct Payload[T]: PartialEq { value: T }
+enum Choice[T]: PartialEq { case empty; case value(T) }
+class Base[T] { value: T }
+final class Leaf[T]: Base[T], PartialEq {}
+struct Other {}
+conform[T] Container[T] to FixedWidth {}
+conform[T: PartialEq] Container[T] to ComparableWidth {}
+
+// Each concrete payload includes Other, which cannot derive PartialEq.
+func main() {
+    var s: StructBytes = [8; 3]
+    var e: EnumBytes = [8; 3]
+    var c: ClassBytes = [8; 3]
+    println("${s.len()} ${e.len()} ${c.len()} ${Container[Payload[Other]]::WIDTH}")
+}

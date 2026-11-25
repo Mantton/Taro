@@ -1,0 +1,12 @@
+// EXPECT_STDERR_NOT_CONTAINS: error:
+// An async Result `main` that returns `.ok` exits with status 0.
+func load() async -> Result[string, string] {
+    await std::testing::yieldNow()
+    return .ok("loaded")
+}
+
+func main() async -> Result[(), string] {
+    value := await load()!
+    print("${value}\n")
+    return .ok(())
+}

@@ -1,0 +1,40 @@
+enum Token[T] { case first, last, payload(T) }
+type ByteToken = Token[uint8]
+type Same[T] = T
+
+// A constant can refer forward to a specialized constructor or another constant.
+const FORWARDED: ByteToken = FIRST
+const FIRST: Token[uint8] = Token[uint8]::first
+const LAST: ByteToken = ByteToken::last
+const PROJECTED: ByteToken = Same[ByteToken]::last
+const INFERRED: Token[int64] = .last
+const SELECTED: ByteToken = if false { .first } else { .last }
+const NONE: Token[uint8]? = .none
+
+extend Token[uint8] { const DEFAULT_BYTE: Self = Self::first; }
+
+interface Marker {
+    const DEFAULT_TOKEN: Token[Self] = Token::first
+}
+
+// A forward constant requested by a generic default still uses its declared width.
+struct Buffer[const N: uint8 = MASK] {}
+type Byte = uint8
+const MASK: Byte = ~0
+func full(_ value: Buffer[255]) { _ = value }
+
+func index[T](_ value: Token[T]) -> int32 {
+    match value { case .first => 0; case .last => 1; case .payload(_) => 2; }
+}
+
+func main() {
+    var buffer: Buffer = Buffer {}
+    full(buffer)
+    assert(MASK == 255, "declared width of forward constant")
+    const LOCAL: Token[string] = .first
+    assert(index(FORWARDED) == 0 && index(FIRST) == 0, "forward reference")
+    assert(index(LAST) == 1 && index(PROJECTED) == 1, "alias")
+    assert(index(INFERRED) == 1 && index(SELECTED) == 1, "context")
+    assert(index(LOCAL) == 0 && NONE.isNone(), "local and Optional")
+    println("PASS")
+}

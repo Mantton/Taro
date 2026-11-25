@@ -100,6 +100,7 @@ impl<'ctx> FunctionLower<'ctx> {
             self.gcx.get_signature(helper).inputs[0].ty,
             expression.span,
         );
+        let mut prelude = Vec::new();
         let (mut args, order) = self
             .lower_call_args_with_defaults(
                 self.gcx.get_signature(source),
@@ -107,6 +108,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 arguments,
                 &[],
                 expression.span,
+                &mut prelude,
             )
             .expect("required initializer arguments");
         args.insert(0, context);
@@ -123,14 +125,16 @@ impl<'ctx> FunctionLower<'ctx> {
             self.gcx.get_type(helper),
             expression.span,
         );
+        let ty = self.results.node_type(expression.id);
+        let call = ExprKind::Call {
+            callee,
+            args,
+            is_async: false,
+            argument_evaluation_order: order,
+        };
         Expr {
-            kind: ExprKind::Call {
-                callee,
-                args,
-                is_async: false,
-                argument_evaluation_order: order,
-            },
-            ty: self.results.node_type(expression.id),
+            kind: self.after_spread_arguments(prelude, call, ty, expression.span),
+            ty,
             span: expression.span,
         }
     }

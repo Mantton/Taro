@@ -1,0 +1,8 @@
+error: a fixed array requires a statically known spread length
+ -> language_tests/source_files/invalid/collection_spread_fixed.tr:1:50
+	func exact(_ values: List[int32]) -> [int32; 3] { [0, values...] }
+	                                                  ^^^^^^^^^^^^^^
+error: a spread argument requires a variadic parameter
+ -> language_tests/source_files/invalid/collection_spread_fixed.tr:3:51
+	func invalidCall(_ values: Span[int32]) { ordinary(values...) }
+	                                                   ^^^^^^^^^

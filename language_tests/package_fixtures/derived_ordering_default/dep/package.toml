@@ -1,0 +1,3 @@
+[package]
+name = "github.com/example/derived-ordering-default-dep"
+kind = "library"

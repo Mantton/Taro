@@ -1,0 +1,16 @@
+error: expected usize, found string
+ -> language_tests/source_files/invalid/match_arms_disagree.tr:9:18
+	        case _ => "text"
+	                  ^^^^^^
+error: expected {integer(0)}, found string
+ -> language_tests/source_files/invalid/match_arms_disagree.tr:13:18
+	        case _ => "text"
+	                  ^^^^^^
+error: expected {float(0)}, found usize
+ -> language_tests/source_files/invalid/match_arms_disagree.tr:17:18
+	        case _ => n
+	                  ^
+error: expected usize, found bool
+ -> language_tests/source_files/invalid/match_arms_disagree.tr:21:18
+	        case _ => flag
+	                  ^^^^

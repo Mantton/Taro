@@ -1,0 +1,23 @@
+// `()` has no storage, but boxing it into an existential must still record
+// its witness tables: calling through the box used to load a null table.
+interface Describe {
+    func describe() -> string
+}
+
+conform () to Describe {
+    func describe() -> string { "unit" }
+}
+
+func describeAll(_ values: any Describe...) -> string {
+    var text = ""
+    for value in values {
+        text = text + value.describe() + ";"
+    }
+    text
+}
+
+func main() {
+    var boxed: any Describe = ()
+    println(boxed.describe())
+    println(describeAll((), ()))
+}

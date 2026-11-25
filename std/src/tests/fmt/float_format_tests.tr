@@ -1,0 +1,135 @@
+import std::core::doubleToBits
+import std::core::floatToBits
+import std::testing::assertEqual
+
+func floatWithBits(_ bits: uint32) -> float {
+    unsafe { ((&bits as *const uint32) as *const float).read() }
+}
+
+func doubleWithBits(_ bits: uint64) -> double {
+    unsafe { ((&bits as *const uint64) as *const double).read() }
+}
+
+@test
+func testFloatingPointDisplay() {
+    zero := doubleWithBits(0)
+    negativeZero := floatWithBits(0x80000000)
+    whole := doubleWithBits(0x4045000000000000)
+    assertEqual(std::sprintf("%v %v %v", zero, negativeZero, whole), "0 -0 42", "zeros and whole numbers")
+    assertEqual(std::sprintf("%05v", negativeZero), "-0000", "padding follows the minus sign")
+    assertEqual(std::sprintf("%-5v", whole), "42   ", "left alignment")
+    assertEqual("${floatWithBits(0x3dcccccd)} ${whole}", "0.1 42", "interpolation keeps float precision")
+
+    assertEqual(
+        std::sprintf("%v %v %v", doubleWithBits(0xfff8000000000001), floatWithBits(0x7f800000),
+            doubleWithBits(0xfff0000000000000)),
+        "nan inf -inf",
+        "non-finite display",
+    )
+}
+
+@test
+func testFloatingPointDecimalBoundaries() {
+    var smallFixed: double = 0.0001
+    var smallScientific: double = 0.00001
+    var largeFixed: double = 1e15
+    var largeScientific: double = 1e16
+    assertEqual(
+        "${smallFixed} ${smallScientific} ${largeFixed} ${largeScientific}",
+        "0.0001 1e-5 1000000000000000 1e16",
+        "fixed and scientific notation boundaries",
+    )
+    assertEqual(std::sprintf("%v", floatWithBits(1)), "1e-45", "smallest float subnormal")
+    assertEqual(std::sprintf("%v", floatWithBits(0x007fffff)), "1.1754942e-38", "largest float subnormal")
+    assertEqual(std::sprintf("%v", floatWithBits(0x00800000)), "1.1754944e-38", "smallest normal float")
+    assertEqual(std::sprintf("%v", floatWithBits(0x7f7fffff)), "3.4028235e38", "largest finite float")
+    assertEqual(std::sprintf("%v", doubleWithBits(1)), "5e-324", "smallest double subnormal")
+    assertEqual(std::sprintf("%v", doubleWithBits(0x000fffffffffffff)), "2.225073858507201e-308", "largest double subnormal")
+    assertEqual(std::sprintf("%v", doubleWithBits(0x0010000000000000)), "2.2250738585072014e-308", "smallest normal double")
+    assertEqual(std::sprintf("%v", doubleWithBits(0x7fefffffffffffff)), "1.7976931348623157e308", "largest finite double")
+
+    var midpoint: float = 305404.125
+    assertEqual(std::sprintf("%v", midpoint), "305404.12", "decimal tie rounds to even")
+    assertEqual(std::sprintf("%v", doubleWithBits(0x3fefffffffffffff)), "0.9999999999999999", "below a power of two")
+    assertEqual(std::sprintf("%v", doubleWithBits(0x3ff0000000000001)), "1.0000000000000002", "above a power of two")
+}
+
+func checkFloatRoundTrip(_ bits: uint32) {
+    rendered := std::sprintf("%v", floatWithBits(bits))
+    match float::parse(rendered) {
+        case .ok(value) => assertEqual(floatToBits(value), bits, rendered)
+        case .err(_) => std::panic::panic("could not parse formatted float: ${rendered}")
+    }
+}
+
+func checkDoubleRoundTrip(_ bits: uint64) {
+    rendered := std::sprintf("%v", doubleWithBits(bits))
+    match double::parse(rendered) {
+        case .ok(value) => assertEqual(doubleToBits(value), bits, rendered)
+        case .err(_) => std::panic::panic("could not parse formatted double: ${rendered}")
+    }
+}
+
+@test
+func testFloatingPointRoundTripsAcrossExponents() {
+    // Include both signed zeros, exact powers of two, and the largest
+    // significand in each finite binade.
+    var exponent32: uint32 = 0
+    while exponent32 < 255 {
+        bits := exponent32 << 23
+        checkFloatRoundTrip(bits | 0x80000000)
+        checkFloatRoundTrip(bits | 0x007fffff)
+        exponent32 += 1
+    }
+
+    var exponent64: uint64 = 0
+    while exponent64 < 2047 {
+        bits := exponent64 << 52
+        checkDoubleRoundTrip(bits | 0x8000000000000000)
+        checkDoubleRoundTrip(bits | 0x000fffffffffffff)
+        exponent64 += 1
+    }
+}
+
+@test
+func testFloatingPointPrecisionAndScientific() {
+    price := 3.5
+    assertEqual("${price:>8.2}", "    3.50", "right-aligned fixed precision")
+    assertEqual("${price:.0}", "4", "round half to even (3.5 -> 4)")
+    assertEqual("${2.5:.0}", "2", "round half to even (2.5 -> 2)")
+    assertEqual("${0.5:.0}", "0", "round half to even (0.5 -> 0)")
+    assertEqual("${1.5:.0}", "2", "round half to even (1.5 -> 2)")
+    assertEqual("${9.999:.2}", "10.00", "fixed carry across integer boundary")
+    assertEqual("${0.999:.2}", "1.00", "fixed carry from fractional part")
+    assertEqual("${0.0049:.2}", "0.00", "small value rounds to zero")
+    assertEqual("${0.0051:.2}", "0.01", "small value rounds up above midpoint")
+    assertEqual("${0.005:.2}", "0.00", "small midpoint rounds half to even")
+    assertEqual("${0.0001:.6}", "0.000100", "leading fractional zeros with trailing pad")
+    assertEqual("${1e6:.2}", "1000000.00", "large integer exponent in fixed notation")
+    assertEqual("${floatWithBits(0x80000000):.2}", "-0.00", "negative zero preserves sign in fixed")
+    assertEqual("${floatWithBits(0x80000000):.2e}", "-0.00e0", "negative zero preserves sign in scientific")
+
+    assertEqual("${3.5:e}", "3.5e0", "scientific default digits")
+    assertEqual("${42.0:e}", "4.2e1", "scientific positive exponent")
+    assertEqual("${0.00456:.2e}", "4.56e-3", "scientific negative exponent with precision")
+    assertEqual("${9.999:.2e}", "1.00e1", "scientific carry increments exponent")
+    assertEqual("${100.0:e}", "1e2", "scientific single significant digit")
+    assertEqual("${100.0:.2e}", "1.00e2", "scientific trailing zero padding")
+    assertEqual("${0.0:e}", "0e0", "scientific zero")
+    assertEqual("${0.0:.3e}", "0.000e0", "scientific zero with precision")
+
+    nanVal := doubleWithBits(0xfff8000000000001)
+    posInf := floatWithBits(0x7f800000)
+    negInf := doubleWithBits(0xfff0000000000000)
+    assertEqual("${nanVal:.2} ${posInf:e} ${negInf:.2e}", "nan inf -inf", "non-finite ignores precision and e")
+
+    // Sign-aware zero-padding applies only to finite numeric values; non-finite
+    // floats pad with spaces and strings pad without splitting a leading '-'.
+    assertEqual("${3.5:08.2}", "00003.50", "finite positive float zero-pad")
+    assertEqual("${-3.5:08.2}", "-0003.50", "finite negative float sign-aware zero-pad")
+    assertEqual("${posInf:08}", "     inf", "positive infinity pads with spaces")
+    assertEqual("${negInf:08}", "    -inf", "negative infinity pads with spaces")
+    assertEqual("${nanVal:08}", "     nan", "nan pads with spaces")
+    assertEqual("${"-hello":08}", "00-hello", "string starting with minus never splits sign on zero-pad")
+    assertEqual("${"hi":05}", "000hi", "string pads with zeros normally")
+}

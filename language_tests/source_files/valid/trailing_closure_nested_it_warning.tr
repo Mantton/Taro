@@ -1,0 +1,8 @@
+// EXPECT_STDERR_CONTAINS: implicit 'it' parameter shadows an outer 'it' binding
+func main() {
+    matrix := [[-1, 2, -3], [4, -5, 6]]
+    positives := matrix.map { it.filter { it > 0 } }
+    explicit := matrix.map { row => row.filter { it > 0 } }
+    println("${positives:?}")
+    println("${explicit:?}")
+}

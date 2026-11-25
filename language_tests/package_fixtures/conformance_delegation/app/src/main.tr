@@ -1,0 +1,11 @@
+import dep::Scale
+struct Wrapped { factor: dep::Factor }
+conform Wrapped to Scale by self.factor {}
+func check[S: Scale](_ scale: S) -> int32 { scale.adjust(by: 3) }
+func main() {
+    var wrapped = Wrapped { factor: dep::Factor { value: 4 } }
+    assert(check(wrapped) == 12, "imported requirement preserves argument labels")
+    var remote = dep::Remote { factor: dep::Factor { value: 5 } }
+    assert(check(remote) == 15, "a library exports its delegated witness")
+    println("imported requirement")
+}

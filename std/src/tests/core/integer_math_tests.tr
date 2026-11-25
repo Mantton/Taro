@@ -1,0 +1,386 @@
+import std::math
+import std::testing::{assertEqual, assertFalse, assertTrue}
+
+const CONST_I32_MAX: int32 = int32::MAX
+const CONST_I32_MIN: int32 = int32::MIN
+const CONST_U64_BITS: uint32 = uint64::BITS
+const CONST_USIZE_BITS: uint32 = usize::BITS
+const CONST_F64_INF: double = double::INFINITY
+const CONST_F32_NEG_INF: float = float::NEG_INFINITY
+
+@test
+func testIntegerAssociatedConstants() {
+    assertEqual(int8::MIN, -128_i8, "int8::MIN")
+    assertEqual(int8::MAX, 127_i8, "int8::MAX")
+    assertEqual(int8::BITS, 8_u32, "int8::BITS")
+
+    assertEqual(int16::MIN, -32768_i16, "int16::MIN")
+    assertEqual(int16::MAX, 32767_i16, "int16::MAX")
+    assertEqual(int16::BITS, 16_u32, "int16::BITS")
+
+    assertEqual(int32::MIN, -2147483648_i32, "int32::MIN")
+    assertEqual(int32::MAX, 2147483647_i32, "int32::MAX")
+    assertEqual(int32::BITS, 32_u32, "int32::BITS")
+    assertEqual(CONST_I32_MAX, int32::MAX, "const int32::MAX")
+    assertEqual(CONST_I32_MIN, int32::MIN, "const int32::MIN")
+
+    assertEqual(int64::MIN, -9223372036854775808_i64, "int64::MIN")
+    assertEqual(int64::MAX, 9223372036854775807_i64, "int64::MAX")
+    assertEqual(int64::BITS, 64_u32, "int64::BITS")
+
+    assertEqual(uint8::MIN, 0_u8, "uint8::MIN")
+    assertEqual(uint8::MAX, 255_u8, "uint8::MAX")
+    assertEqual(uint8::BITS, 8_u32, "uint8::BITS")
+
+    assertEqual(uint16::MIN, 0_u16, "uint16::MIN")
+    assertEqual(uint16::MAX, 65535_u16, "uint16::MAX")
+    assertEqual(uint16::BITS, 16_u32, "uint16::BITS")
+
+    assertEqual(uint32::MIN, 0_u32, "uint32::MIN")
+    assertEqual(uint32::MAX, 4294967295_u32, "uint32::MAX")
+    assertEqual(uint32::BITS, 32_u32, "uint32::BITS")
+
+    assertEqual(uint64::MIN, 0_u64, "uint64::MIN")
+    assertEqual(uint64::MAX, 18446744073709551615_u64, "uint64::MAX")
+    assertEqual(uint64::BITS, 64_u32, "uint64::BITS")
+    assertEqual(CONST_U64_BITS, 64_u32, "const uint64::BITS")
+
+    assertEqual(usize::MIN, 0 as usize, "usize::MIN")
+    assertEqual(usize::MAX, ~(0 as usize), "usize::MAX")
+    assertEqual(usize::BITS, (std::mem::sizeOf[usize]() * (8 as usize)) as uint32, "usize::BITS")
+    assertEqual(CONST_USIZE_BITS, usize::BITS, "const usize::BITS")
+
+    assertEqual(isize::BITS, usize::BITS, "isize::BITS")
+    assertEqual(isize::MAX, (usize::MAX >> (1 as usize)) as isize, "isize::MAX")
+    assertEqual(isize::MIN, ~isize::MAX, "isize::MIN")
+}
+
+@test
+func testFloatAndDoubleAssociatedConstants() {
+    assertTrue(float::INFINITY.isInfinite(), "float::INFINITY isInfinite")
+    assertTrue(float::INFINITY > float::MAX, "float::INFINITY > float::MAX")
+    assertFalse(float::INFINITY.isFinite(), "float::INFINITY not finite")
+    assertFalse(float::INFINITY.isNaN(), "float::INFINITY not NaN")
+    assertEqual(float::INFINITY.toBits(), 0x7F80_0000_u32, "float::INFINITY bits")
+
+    assertTrue(float::NEG_INFINITY.isInfinite(), "float::NEG_INFINITY isInfinite")
+    assertTrue(float::NEG_INFINITY < float::MIN, "float::NEG_INFINITY < float::MIN")
+    assertEqual(float::NEG_INFINITY.toBits(), 0xFF80_0000_u32, "float::NEG_INFINITY bits")
+    assertEqual(CONST_F32_NEG_INF, float::NEG_INFINITY, "const float::NEG_INFINITY")
+
+    assertTrue(float::NAN.isNaN(), "float::NAN isNaN")
+    assertFalse(float::NAN == float::NAN, "float::NAN != float::NAN")
+    assertFalse(float::NAN.isFinite(), "float::NAN not finite")
+    assertFalse(float::NAN.isInfinite(), "float::NAN not infinite")
+
+    assertEqual(float::MAX.toBits(), 0x7F7F_FFFF_u32, "float::MAX bits")
+    assertEqual(float::MIN.toBits(), 0xFF7F_FFFF_u32, "float::MIN bits")
+    assertEqual(float::EPSILON.toBits(), 0x3400_0000_u32, "float::EPSILON bits")
+    assertTrue((1.0 as float) + float::EPSILON > (1.0 as float), "float 1 + EPSILON > 1")
+    assertEqual(float::fromBits(0x3F80_0000_u32), 1.0 as float, "float::fromBits")
+
+    assertTrue(double::INFINITY.isInfinite(), "double::INFINITY isInfinite")
+    assertTrue(double::INFINITY > double::MAX, "double::INFINITY > double::MAX")
+    assertEqual(double::INFINITY.toBits(), 0x7FF0_0000_0000_0000_u64, "double::INFINITY bits")
+    assertEqual(CONST_F64_INF, double::INFINITY, "const double::INFINITY")
+
+    assertTrue(double::NEG_INFINITY.isInfinite(), "double::NEG_INFINITY isInfinite")
+    assertTrue(double::NEG_INFINITY < double::MIN, "double::NEG_INFINITY < double::MIN")
+    assertEqual(double::NEG_INFINITY.toBits(), 0xFFF0_0000_0000_0000_u64, "double::NEG_INFINITY bits")
+
+    assertTrue(double::NAN.isNaN(), "double::NAN isNaN")
+    assertFalse(double::NAN == double::NAN, "double::NAN != double::NAN")
+    assertFalse(double::NAN.isFinite(), "double::NAN not finite")
+
+    assertEqual(double::MAX.toBits(), 0x7FEF_FFFF_FFFF_FFFF_u64, "double::MAX bits")
+    assertEqual(double::MIN.toBits(), 0xFFEF_FFFF_FFFF_FFFF_u64, "double::MIN bits")
+    assertEqual(double::EPSILON.toBits(), 0x3CB0_0000_0000_0000_u64, "double::EPSILON bits")
+    assertTrue(1.0 + double::EPSILON > 1.0, "double 1 + EPSILON > 1")
+    assertEqual(double::fromBits(0x3FF0_0000_0000_0000_u64), 1.0, "double::fromBits")
+
+    assertEqual((5.0 as float).clamp(0.0 as float, 3.0 as float), 3.0 as float, "float clamp high")
+    assertEqual((-1.0 as float).clamp(0.0 as float, 3.0 as float), 0.0 as float, "float clamp low")
+    assertTrue(float::NAN.clamp(0.0 as float, 3.0 as float).isNaN(), "float clamp NaN")
+    assertEqual(2.5.clamp(0.0, 3.0), 2.5, "double clamp mid")
+    assertTrue(double::NAN.clamp(0.0, 3.0).isNaN(), "double clamp NaN")
+}
+
+@test
+func testBitManipulationAllWidths() {
+    // 8-bit signed & unsigned
+    assertEqual((0_u8).countOnes(), 0_u32, "u8 0 countOnes")
+    assertEqual((0_u8).countZeros(), 8_u32, "u8 0 countZeros")
+    assertEqual((0_u8).leadingZeros(), 8_u32, "u8 0 leadingZeros")
+    assertEqual((0_u8).trailingZeros(), 8_u32, "u8 0 trailingZeros")
+    assertEqual((0_u8).leadingOnes(), 0_u32, "u8 0 leadingOnes")
+    assertEqual((0_u8).trailingOnes(), 0_u32, "u8 0 trailingOnes")
+    assertEqual(uint8::MAX.countOnes(), 8_u32, "u8 MAX countOnes")
+    assertEqual(uint8::MAX.leadingOnes(), 8_u32, "u8 MAX leadingOnes")
+    assertEqual(uint8::MAX.trailingOnes(), 8_u32, "u8 MAX trailingOnes")
+    assertEqual((0b1011_0000_u8).countOnes(), 3_u32, "u8 countOnes")
+    assertEqual((0b1011_0000_u8).leadingZeros(), 0_u32, "u8 leadingZeros")
+    assertEqual((0b1011_0000_u8).trailingZeros(), 4_u32, "u8 trailingZeros")
+    assertEqual((0b1011_0000_u8).rotateLeft(0), 0b1011_0000_u8, "u8 rotl 0")
+    assertEqual((0b1011_0000_u8).rotateLeft(8), 0b1011_0000_u8, "u8 rotl 8")
+    assertEqual((0b1011_0000_u8).rotateLeft(9), 0b0110_0001_u8, "u8 rotl 9")
+    assertEqual((0b1011_0000_u8).rotateRight(4), 0b0000_1011_u8, "u8 rotr 4")
+    assertEqual((0xAB_u8).swapBytes(), 0xAB_u8, "u8 swapBytes identity")
+    assertEqual((0b1011_0000_u8).reverseBits(), 0b0000_1101_u8, "u8 reverseBits")
+
+    assertEqual(int8::MIN.countOnes(), 1_u32, "i8 MIN countOnes")
+    assertEqual(int8::MIN.leadingOnes(), 1_u32, "i8 MIN leadingOnes")
+    assertEqual(int8::MIN.trailingZeros(), 7_u32, "i8 MIN trailingZeros")
+    assertEqual((-1_i8).countOnes(), 8_u32, "i8 -1 countOnes")
+    assertEqual((-1_i8).countZeros(), 0_u32, "i8 -1 countZeros")
+    assertEqual((0x12_i8).swapBytes(), 0x12_i8, "i8 swapBytes")
+    assertEqual((1_i8).reverseBits(), int8::MIN, "i8 reverseBits 1 -> MIN")
+
+    // 16-bit signed & unsigned
+    assertEqual((0_u16).leadingZeros(), 16_u32, "u16 0 lz")
+    assertEqual((0_u16).trailingZeros(), 16_u32, "u16 0 tz")
+    assertEqual((0x1234_u16).swapBytes(), 0x3412_u16, "u16 swapBytes")
+    assertEqual((0x8001_u16).rotateLeft(1), 0x0003_u16, "u16 rotl 1")
+    assertEqual((0x8001_u16).rotateRight(1), 0xC000_u16, "u16 rotr 1")
+    assertEqual((0x0001_u16).reverseBits(), 0x8000_u16, "u16 reverseBits")
+    assertEqual(int16::MIN.leadingOnes(), 1_u32, "i16 MIN leadingOnes")
+    assertEqual((0x1234_i16).swapBytes(), 0x3412_i16, "i16 swapBytes")
+
+    // 32-bit signed & unsigned
+    assertEqual((0_u32).leadingZeros(), 32_u32, "u32 0 lz")
+    assertEqual((0_u32).trailingZeros(), 32_u32, "u32 0 tz")
+    assertEqual((0b1011_0000_u32).countOnes(), 3_u32, "u32 countOnes")
+    assertEqual((0x1234_5678_u32).swapBytes(), 0x7856_3412_u32, "u32 swapBytes")
+    assertEqual((0x1234_5678_u32).rotateLeft(0), 0x1234_5678_u32, "u32 rotl 0")
+    assertEqual((0x1234_5678_u32).rotateLeft(32), 0x1234_5678_u32, "u32 rotl 32")
+    assertEqual((0x1234_5678_u32).rotateLeft(36), 0x2345_6781_u32, "u32 rotl 36")
+    assertEqual((0x1234_5678_u32).rotateLeft(37), (0x1234_5678_u32).rotateLeft(5), "u32 rotl 37 == rotl 5")
+    assertEqual((0x1234_5678_u32).rotateRight(4), 0x8123_4567_u32, "u32 rotr 4")
+    assertEqual((0x1234_5678_u32).rotateRight(36), 0x8123_4567_u32, "u32 rotr 36")
+    assertEqual((0x8000_0001_u32).reverseBits(), 0x8000_0001_u32, "u32 reverseBits palindrome")
+    assertEqual(int32::MIN.trailingZeros(), 31_u32, "i32 MIN tz")
+    assertEqual(int32::MAX.leadingZeros(), 1_u32, "i32 MAX lz")
+    assertEqual(int32::MAX.trailingOnes(), 31_u32, "i32 MAX trailingOnes")
+
+    // 64-bit signed & unsigned
+    assertEqual((0_u64).leadingZeros(), 64_u32, "u64 0 lz")
+    assertEqual((0_u64).trailingZeros(), 64_u32, "u64 0 tz")
+    assertEqual((40_u64).trailingZeros(), 3_u32, "40_u64 tz")
+    assertEqual((0x0123_4567_89AB_CDEF_u64).swapBytes(), 0xEFCD_AB89_6745_2301_u64, "u64 swapBytes")
+    assertEqual((1_u64).rotateLeft(0), 1_u64, "u64 rotl 0")
+    assertEqual((1_u64).rotateLeft(64), 1_u64, "u64 rotl 64")
+    assertEqual((1_u64).rotateLeft(67), 8_u64, "u64 rotl 67")
+    assertEqual((8_u64).rotateRight(67), 1_u64, "u64 rotr 67")
+    assertEqual((1_u64).reverseBits(), 0x8000_0000_0000_0000_u64, "u64 reverseBits")
+    assertEqual(int64::MIN.countOnes(), 1_u32, "i64 MIN countOnes")
+    assertEqual(int64::MIN.leadingOnes(), 1_u32, "i64 MIN leadingOnes")
+
+    // Pointer-sized signed & unsigned
+    assertEqual((0 as usize).leadingZeros(), usize::BITS, "usize 0 lz")
+    assertEqual((0 as usize).trailingZeros(), usize::BITS, "usize 0 tz")
+    assertEqual((0 as isize).leadingZeros(), isize::BITS, "isize 0 lz")
+    assertEqual((0 as isize).trailingZeros(), isize::BITS, "isize 0 tz")
+    assertEqual((1 as usize).rotateLeft(usize::BITS + 3_u32), 8 as usize, "usize rotl BITS+3")
+    assertEqual((8 as usize).rotateRight(usize::BITS + 3_u32), 1 as usize, "usize rotr BITS+3")
+    assertEqual((0x00FF as usize).countOnes(), 8_u32, "usize countOnes")
+    assertEqual((~0 as isize).countOnes(), isize::BITS, "isize -1 countOnes")
+}
+
+@test
+func testUnsignedPowerOfTwoAndIlog2() {
+    assertFalse((0_u8).isPowerOfTwo(), "0 not pot")
+    assertTrue((1_u8).isPowerOfTwo(), "1 pot")
+    assertTrue((2_u8).isPowerOfTwo(), "2 pot")
+    assertFalse((3_u8).isPowerOfTwo(), "3 not pot")
+    assertTrue((128_u8).isPowerOfTwo(), "128 pot")
+    assertFalse((255_u8).isPowerOfTwo(), "255 not pot")
+
+    assertEqual((0_u8).checkedNextPowerOfTwo(), .some(1_u8), "u8 0 nextPot")
+    assertEqual((1_u8).checkedNextPowerOfTwo(), .some(1_u8), "u8 1 nextPot")
+    assertEqual((2_u8).checkedNextPowerOfTwo(), .some(2_u8), "u8 2 nextPot")
+    assertEqual((3_u8).checkedNextPowerOfTwo(), .some(4_u8), "u8 3 nextPot")
+    assertEqual((127_u8).checkedNextPowerOfTwo(), .some(128_u8), "u8 127 nextPot")
+    assertEqual((128_u8).checkedNextPowerOfTwo(), .some(128_u8), "u8 128 nextPot")
+    assertEqual((129_u8).checkedNextPowerOfTwo(), .none, "u8 129 overflow")
+    assertEqual((255_u8).checkedNextPowerOfTwo(), .none, "u8 255 overflow")
+
+    assertEqual((5_u16).nextPowerOfTwo(), 8_u16, "u16 5 nextPot")
+    assertEqual((1000_u32).nextPowerOfTwo(), 1024_u32, "u32 1000 nextPot")
+    assertEqual((1024_u64).nextPowerOfTwo(), 1024_u64, "u64 1024 nextPot")
+    assertEqual((17 as usize).nextPowerOfTwo(), 32 as usize, "usize 17 nextPot")
+    assertEqual(usize::MAX.checkedNextPowerOfTwo(), .none, "usize MAX nextPot overflow")
+
+    assertEqual((1_u8).ilog2(), 0_u32, "u8 ilog2(1)")
+    assertEqual((2_u8).ilog2(), 1_u32, "u8 ilog2(2)")
+    assertEqual((3_u8).ilog2(), 1_u32, "u8 ilog2(3)")
+    assertEqual((128_u8).ilog2(), 7_u32, "u8 ilog2(128)")
+    assertEqual((255_u8).ilog2(), 7_u32, "u8 ilog2(255)")
+    assertEqual((1024_u32).ilog2(), 10_u32, "u32 ilog2(1024)")
+    assertEqual(uint64::MAX.ilog2(), 63_u32, "u64 ilog2(MAX)")
+    assertEqual((64 as usize).ilog2(), 6_u32, "usize ilog2(64)")
+}
+
+@test
+func testSignedAbsSignumPowAndEuclid() {
+    assertEqual((-42_i8).abs(), 42_i8, "i8 abs")
+    assertEqual(int8::MIN.wrappingAbs(), int8::MIN, "i8 MIN wrappingAbs")
+    assertEqual(int8::MIN.unsignedAbs(), 128_u8, "i8 MIN unsignedAbs")
+    assertEqual((-1_i8).unsignedAbs(), 1_u8, "i8 -1 unsignedAbs")
+    assertEqual((0_i8).unsignedAbs(), 0_u8, "i8 0 unsignedAbs")
+    assertEqual((-5_i8).signum(), -1_i8, "i8 neg signum")
+    assertEqual((0_i8).signum(), 0_i8, "i8 zero signum")
+    assertEqual((5_i8).signum(), 1_i8, "i8 pos signum")
+
+    assertEqual(int32::MIN.wrappingAbs(), int32::MIN, "i32 MIN wrappingAbs")
+    assertEqual(int32::MIN.unsignedAbs(), 2147483648_u32, "i32 MIN unsignedAbs")
+    assertEqual(int64::MIN.unsignedAbs(), 9223372036854775808_u64, "i64 MIN unsignedAbs")
+    assertEqual(isize::MIN.wrappingAbs(), isize::MIN, "isize MIN wrappingAbs")
+    assertEqual(isize::MIN.unsignedAbs(), (isize::MAX as usize) + (1 as usize), "isize MIN unsignedAbs")
+
+    // pow / checkedPow / wrappingPow
+    assertEqual((0_i32).pow(0), 1_i32, "0^0 == 1")
+    assertEqual((2_i32).pow(10), 1024_i32, "2^10")
+    assertEqual((-3_i32).pow(3), -27_i32, "(-3)^3")
+    assertEqual((-2_i8).pow(7), -128_i8, "(-2_i8)^7 == i8::MIN without spurious overflow")
+    assertEqual((-2_i8).checkedPow(7), .some(-128_i8), "(-2_i8).checkedPow(7)")
+    assertEqual((2_i8).checkedPow(7), .none, "(2_i8).checkedPow(7) overflows")
+    assertEqual((2_i8).wrappingPow(7), -128_i8, "(2_i8).wrappingPow(7)")
+    assertEqual((16_u8).checkedPow(1), .some(16_u8), "16^1 no extra square")
+    assertEqual((16_u8).checkedPow(2), .none, "16^2 overflows u8")
+    assertEqual((16_u8).wrappingPow(2), 0_u8, "16^2 wraps to 0 in u8")
+    assertEqual((3_u64).pow(10), 59049_u64, "3^10 u64")
+    assertEqual((2 as usize).pow(12), 4096 as usize, "2^12 usize")
+
+    // Euclidean division & remainder across all 4 sign quadrants
+    assertEqual((7_i32).divEuclid(4), 1_i32, "7 divEuclid 4")
+    assertEqual((7_i32).remEuclid(4), 3_i32, "7 remEuclid 4")
+    assertEqual((-7_i32).divEuclid(4), -2_i32, "-7 divEuclid 4")
+    assertEqual((-7_i32).remEuclid(4), 1_i32, "-7 remEuclid 4")
+    assertEqual((-7_i32).divEuclid(-4), 2_i32, "-7 divEuclid -4")
+    assertEqual((-7_i32).remEuclid(-4), 1_i32, "-7 remEuclid -4")
+    assertEqual((7_i32).divEuclid(-4), -1_i32, "7 divEuclid -4")
+    assertEqual((7_i32).remEuclid(-4), 3_i32, "7 remEuclid -4")
+    assertEqual((-8_i32).divEuclid(4), -2_i32, "exact negative dividend")
+    assertEqual((-8_i32).remEuclid(4), 0_i32, "exact negative remainder")
+
+    // MIN divisor edge case on int8
+    assertEqual((-1_i8).divEuclid(int8::MIN), 1_i8, "-1 divEuclid i8::MIN")
+    assertEqual((-1_i8).remEuclid(int8::MIN), 127_i8, "-1 remEuclid i8::MIN == i8::MAX")
+    assertEqual(int8::MIN.divEuclid(int8::MIN), 1_i8, "i8::MIN divEuclid i8::MIN")
+    assertEqual(int8::MIN.remEuclid(int8::MIN), 0_i8, "i8::MIN remEuclid i8::MIN")
+    assertEqual(int8::MIN.divEuclid(3_i8), -43_i8, "i8::MIN divEuclid 3")
+    assertEqual(int8::MIN.remEuclid(3_i8), 1_i8, "i8::MIN remEuclid 3")
+
+    // Unsigned Euclid
+    assertEqual((17_u32).divEuclid(5_u32), 3_u32, "u32 divEuclid")
+    assertEqual((17_u32).remEuclid(5_u32), 2_u32, "u32 remEuclid")
+}
+
+@test
+func testMathAbsClampGcdLcm() {
+    // Literal ergonomics: both int32 and double literals infer cleanly
+    assertEqual(math::abs(-42), 42, "math::abs(-42)")
+    assertEqual(math::abs(-4.2), 4.2, "math::abs(-4.2)")
+    assertEqual(math::abs(-7_i8), 7_i8, "math::abs(i8)")
+    assertEqual(math::abs(-700_i16), 700_i16, "math::abs(i16)")
+    assertEqual(math::abs(-7000000000_i64), 7000000000_i64, "math::abs(i64)")
+    assertEqual(math::abs(-9 as isize), 9 as isize, "math::abs(isize)")
+    assertEqual(math::abs(-2.5 as float), 2.5 as float, "math::abs(float)")
+
+    // clamp on Ord and math::clamp
+    assertEqual(math::clamp(-5, 0, 10), 0, "clamp below")
+    assertEqual(math::clamp(5, 0, 10), 5, "clamp inside")
+    assertEqual(math::clamp(15, 0, 10), 10, "clamp above")
+    assertEqual((15_i32).clamp(0, 10), 10, "method clamp")
+    assertEqual("m".clamp("a", "z"), "m", "string Ord clamp")
+    assertEqual("!".clamp("a", "z"), "a", "string Ord clamp low")
+
+    // gcd & lcm
+    assertEqual(math::gcd(-18, 24), 6, "gcd(-18, 24)")
+    assertEqual(math::gcd(-18, -24), 6, "gcd(-18, -24)")
+    assertEqual(math::gcd(0, 0), 0, "gcd(0, 0)")
+    assertEqual(math::gcd(0, -15), 15, "gcd(0, -15)")
+    assertEqual(math::gcd(-15, 0), 15, "gcd(-15, 0)")
+    assertEqual(math::gcd(int32::MIN, 2), 2, "gcd(i32::MIN, 2) does not trap")
+    assertEqual(math::gcd(int32::MIN, 3), 1, "gcd(i32::MIN, 3) does not trap")
+    assertEqual(math::gcd(48_i64, -18_i64), 6_i64, "gcd i64")
+    assertEqual(math::gcd(48 as isize, -18 as isize), 6 as isize, "gcd isize")
+    assertEqual(math::gcd(48_u32, 18_u32), 6_u32, "gcd u32")
+    assertEqual(math::gcd(48_u64, 18_u64), 6_u64, "gcd u64")
+    assertEqual(math::gcd(48 as usize, 18 as usize), 6 as usize, "gcd usize")
+
+    assertEqual(math::lcm(-18, 24), 72, "lcm(-18, 24)")
+    assertEqual(math::lcm(-4, -6), 12, "lcm(-4, -6)")
+    assertEqual(math::lcm(0, 5), 0, "lcm(0, 5)")
+    assertEqual(math::lcm(int32::MIN, 0), 0, "lcm(i32::MIN, 0)")
+    assertEqual(math::lcm(12_i64, 18_i64), 36_i64, "lcm i64")
+    assertEqual(math::lcm(12 as isize, 18 as isize), 36 as isize, "lcm isize")
+    assertEqual(math::lcm(12_u32, 18_u32), 36_u32, "lcm u32")
+    assertEqual(math::lcm(12_u64, 18_u64), 36_u64, "lcm u64")
+    assertEqual(math::lcm(12 as usize, 18 as usize), 36 as usize, "lcm usize")
+}
+
+@test
+@expectPanic
+func testInt32MinAbsPanics() {
+    _ = int32::MIN.abs()
+}
+
+@test
+@expectPanic
+func testInt8MinAbsPanics() {
+    _ = int8::MIN.abs()
+}
+
+@test
+@expectPanic
+func testIlog2ZeroPanics() {
+    _ = (0_u32).ilog2()
+}
+
+@test
+@expectPanic
+func testNextPowerOfTwoOverflowPanics() {
+    _ = uint8::MAX.nextPowerOfTwo()
+}
+
+@test
+@expectPanic
+func testPowOverflowPanics() {
+    _ = (2_i8).pow(7)
+}
+
+@test
+@expectPanic
+func testDivEuclidZeroPanics() {
+    _ = (7_i32).divEuclid(0)
+}
+
+@test
+@expectPanic
+func testDivEuclidMinNegOnePanics() {
+    _ = int32::MIN.divEuclid(-1)
+}
+
+@test
+@expectPanic
+func testRemEuclidMinNegOnePanics() {
+    _ = int32::MIN.remEuclid(-1)
+}
+
+@test
+@expectPanic
+func testGcdMinZeroPanics() {
+    _ = math::gcd(int32::MIN, 0)
+}
+
+@test
+@expectPanic
+func testClampInvalidBoundsPanics() {
+    _ = math::clamp(5, 10, 2)
+}
+
+@test
+@expectPanic
+func testLcmOverflowPanics() {
+    _ = math::lcm(int32::MAX, int32::MAX - 1)
+}

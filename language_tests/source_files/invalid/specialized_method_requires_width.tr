@@ -1,0 +1,15 @@
+struct Box[T] { value: T }
+extend Box[int64] {
+    func wideOnly() -> int32 { 64 }
+    func pick(_ x: int64) -> int32 { 64 }
+}
+extend[T] Box[T] {
+    func pick(_ x: T) -> int32 { 17 }
+}
+func main() {
+    _ = Box { value: 0 }.wideOnly()
+    // The argument independently requires int64 in the generic signature.
+    // Both it and the specialized signature then match, just as on the typed box.
+    _ = Box { value: 0 }.pick(5000000000_i64)
+    _ = Box[int64] { value: 0 }.pick(5000000000_i64)
+}

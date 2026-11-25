@@ -1,0 +1,9 @@
+// Default is derived for structs only.
+enum Mode: Default {
+    case fast
+    case slow
+}
+final class Config: Default {
+    retries: int32 = 3
+}
+func main() {}

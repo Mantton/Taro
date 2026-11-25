@@ -1,0 +1,7 @@
+interface Width { const WIDTH: usize = 3; }
+interface Marker {}
+struct Plain {}
+struct Box[T] {}
+conform[T: Marker] Box[T] to Width { const WIDTH: usize = 9; }
+type Unsatisfied = [uint8; Box[Plain]::WIDTH]
+func main() {}

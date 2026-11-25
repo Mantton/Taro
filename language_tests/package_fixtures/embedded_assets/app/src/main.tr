@@ -1,0 +1,10 @@
+import dep::{PAGE, ICON, empty}
+func size[const N: usize](_ bytes: [uint8; N]) -> usize { N }
+func main() {
+    assert(PAGE == "café\0\r\n", "UTF-8, NUL and CRLF survive")
+    var copy = ICON
+    assert(copy[0] == 0 && copy[1] == 128 && copy[2] == 255 && copy[3] == 3, "binary bytes survive")
+    copy[0] = 77
+    assert(ICON == [0_u8, 128_u8, 255_u8, 3_u8], "changing the local array preserves the constant")
+    println("${size(ICON)} ${size(empty())}")
+}

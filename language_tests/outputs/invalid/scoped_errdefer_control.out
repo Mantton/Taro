@@ -1,0 +1,4 @@
+error: `return` is not allowed inside a defer block
+ -> language_tests/source_files/invalid/scoped_errdefer_control.tr:2:15
+	    errdefer { return .err(2) }
+	               ^^^^^^^^^^^^^^

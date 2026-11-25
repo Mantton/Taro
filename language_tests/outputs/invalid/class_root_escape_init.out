@@ -1,3 +1,7 @@
+warning: unused variable 'document'; prefix it with '_' if this is intended
+ -> language_tests/source_files/invalid/class_root_escape_init.tr:4:18
+	func main() { var document: Document = Document() }
+	                  ^^^^^^^^
 error: cannot copy, capture, pass, or replace self during class initialization; access its fields instead
  -> language_tests/source_files/invalid/class_root_escape_init.tr:3:54
 	extend Document { init() { self.revision = 1; publish(&self) } }

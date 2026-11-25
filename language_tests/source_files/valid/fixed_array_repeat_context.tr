@@ -1,0 +1,21 @@
+import std::fmt::Display
+
+type Row[T] = [T; 4]
+type Bytes = Row[uint8]
+static var calls: int32 = 0
+func next() -> int64 { calls += 1; 7 }
+func identity[T](_ value: T) -> T { value }
+
+func main() {
+    var bytes: Bytes = [255; 4]
+    var optionals: Row[int64?] = [next(); 4]
+    var values: [any Display; 2] = [7_i64; 2]
+    inferred := identity([3; 4])
+    assert(inferred[2] == 3, "infer a fixed array through a generic parameter")
+    assert(calls == 1 && optionals[3].unwrap() == 7, "evaluate and convert the element once")
+    var empty: [int64?; 0] = [next(); 0]
+    var single: [int64?; 1] = [next(); 1]
+    assert(calls == 3 && single[0].unwrap() == 7, "evaluate zero and singleton repeats once")
+    assert(bytes[3] == 255 && "${values[1]}" == "7", "specialized and erased element types")
+    println("PASS")
+}

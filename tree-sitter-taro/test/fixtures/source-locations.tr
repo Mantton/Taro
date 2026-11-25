@@ -1,0 +1,4 @@
+func report(line: int32 = #line) {
+    where := (#file, line, #function)
+    dbg(where)
+}

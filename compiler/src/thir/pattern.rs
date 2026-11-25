@@ -11,13 +11,35 @@ pub fn pattern_from_hir<'ctx>(
     results: &TypeCheckResults<'ctx>,
     pattern: &hir::Pattern,
 ) -> Pattern<'ctx> {
-    let mut ctx = PatternLoweringContext { gcx, results };
+    // Resolution binds the arm body to the first occurrence of each name.
+    // The decision tree may visit variants in declaration order instead.
+    let mut first = rustc_hash::FxHashMap::default();
+    let mut locals = rustc_hash::FxHashMap::default();
+    if pattern.has_alternatives() {
+        pattern.for_each_binding(&mut |id, name| {
+            let canonical = *first.entry(name.symbol).or_insert(id);
+            if id != canonical {
+                locals.insert(id, canonical);
+            }
+        });
+    }
+    pattern_from_hir_with_locals(gcx, results, pattern, &locals)
+}
+
+pub(super) fn pattern_from_hir_with_locals<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    results: &TypeCheckResults<'ctx>,
+    pattern: &hir::Pattern,
+    locals: &rustc_hash::FxHashMap<NodeID, NodeID>,
+) -> Pattern<'ctx> {
+    let mut ctx = PatternLoweringContext { gcx, results, locals };
     ctx.lower_pattern(pattern)
 }
 
 struct PatternLoweringContext<'ctx, 'r> {
     gcx: GlobalContext<'ctx>,
     results: &'r TypeCheckResults<'ctx>,
+    locals: &'r rustc_hash::FxHashMap<NodeID, NodeID>,
 }
 
 impl<'ctx, 'r> PatternLoweringContext<'ctx, 'r> {
@@ -29,7 +51,7 @@ impl<'ctx, 'r> PatternLoweringContext<'ctx, 'r> {
             hir::PatternKind::Wildcard => PatternKind::Wild,
             hir::PatternKind::Binding { name } => PatternKind::Binding {
                 name: name.symbol,
-                local: pattern.id,
+                local: self.locals.get(&pattern.id).copied().unwrap_or(pattern.id),
                 ty,
             },
 
@@ -61,14 +83,18 @@ impl<'ctx, 'r> PatternLoweringContext<'ctx, 'r> {
                 }
             }
             hir::PatternKind::PathTuple { path, fields, .. } => {
-                let resolution = self.path_resolution(path, pattern.id);
-                let data = self.variant_of_resolution(resolution);
-                let field_count = match data.1.kind {
-                    crate::sema::models::EnumVariantKind::Tuple(variant_fields)
-                    | crate::sema::models::EnumVariantKind::Struct(variant_fields) => {
-                        variant_fields.len()
+                let (variant, field_count) = match ty.kind() {
+                    TyKind::Adt(def, _) if def.kind == crate::sema::models::AdtKind::Struct =>
+                        (None, self.gcx.get_struct_definition(def.id).fields.len()),
+                    _ => {
+                        let data = self.variant_of_resolution(self.path_resolution(path, pattern.id));
+                        let width = match data.1.kind {
+                            crate::sema::models::EnumVariantKind::Tuple(fields) |
+                            crate::sema::models::EnumVariantKind::Struct(fields) => fields.len(),
+                            crate::sema::models::EnumVariantKind::Unit => 0,
+                        };
+                        (Some(data), width)
                     }
-                    crate::sema::models::EnumVariantKind::Unit => 0,
                 };
                 let subpatterns: Vec<_> = self
                     .pattern_field_mapping_with_rest(fields, field_count)
@@ -78,10 +104,9 @@ impl<'ctx, 'r> PatternLoweringContext<'ctx, 'r> {
                         pattern: self.lower_pattern(&fields[pattern_index]),
                     })
                     .collect();
-                PatternKind::Variant {
-                    definition: data.0,
-                    variant: data.1,
-                    subpatterns,
+                match variant {
+                    Some((definition, variant)) => PatternKind::Variant { definition, variant, subpatterns },
+                    None => PatternKind::Leaf { subpatterns },
                 }
             }
             hir::PatternKind::Rest => PatternKind::Wild,
@@ -125,6 +150,17 @@ impl<'ctx, 'r> PatternLoweringContext<'ctx, 'r> {
             hir::PatternKind::Or(pats, _) => {
                 let patterns = pats.iter().map(|p| self.lower_pattern(p)).collect();
                 PatternKind::Or(patterns)
+            }
+            hir::PatternKind::At { binding, pattern } => PatternKind::At {
+                binding: Box::new(self.lower_pattern(binding)),
+                pattern: Box::new(self.lower_pattern(pattern)),
+            },
+            hir::PatternKind::TypeTest { target, binding } => PatternKind::TypeTest {
+                target: self.results.node_type(target.id),
+                binding: binding.as_ref().map(|p| Box::new(self.lower_pattern(p))),
+            },
+            hir::PatternKind::Range { .. } => {
+                PatternKind::Range(self.results.pattern_ranges[&pattern.id].clone())
             }
             hir::PatternKind::Literal { value: lit } => {
                 let ty = self.results.node_type(pattern.id);
@@ -250,11 +286,12 @@ impl<'ctx, 'r> PatternLoweringContext<'ctx, 'r> {
         (def.adt_def, *variant)
     }
 
-    fn lower_literal(&self, lit: &hir::Literal) -> ConstantKind {
+    fn lower_literal(&self, lit: &hir::Literal) -> ConstantKind<'ctx> {
         match lit {
             hir::Literal::Bool(b) => ConstantKind::Bool(*b),
             hir::Literal::Rune(r) => ConstantKind::Rune(*r),
             hir::Literal::String(s) => ConstantKind::String(*s),
+            hir::Literal::Bytes(s) => ConstantKind::Bytes(*s),
             hir::Literal::Integer { value, .. } => ConstantKind::Integer(*value as u64),
             hir::Literal::Float(f) => ConstantKind::Float(*f),
             hir::Literal::Nil => ConstantKind::Unit,

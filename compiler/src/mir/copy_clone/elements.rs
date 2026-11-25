@@ -112,6 +112,7 @@ pub(super) fn build_body<'ctx>(
         start_block,
         phase: MirPhase::CfgClean,
         is_async: false,
+        generator_element_ty: None,
     };
     let mut current = start_block;
     let unwind = resume;

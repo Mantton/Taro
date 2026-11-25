@@ -1,0 +1,4 @@
+error: entry point `main` returning a `Result` must use `()` as its success type, found 'int32'
+ -> language_tests/source_files/invalid/main_result_nonunit_success.tr:2:5
+	func main() -> Result[int32, string] {
+	     ^^^^

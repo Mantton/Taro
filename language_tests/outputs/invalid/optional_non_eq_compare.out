@@ -1,0 +1,4 @@
+error: type 'Optional[Opaque]' does not conform to interface 'PartialEq[Optional[Opaque]]'
+ -> language_tests/source_files/invalid/optional_non_eq_compare.tr:6:8
+	    _ = a == b
+	        ^^^^^^

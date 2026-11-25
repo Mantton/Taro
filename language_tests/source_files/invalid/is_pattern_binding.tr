@@ -1,0 +1,4 @@
+enum Shape { case circle(int32); case box { size: int32 } }
+func badTuple(_ value: Shape) -> bool { value is .circle(radius) }
+func badField(_ value: Shape) -> bool { value is .box { size } }
+func main() {}

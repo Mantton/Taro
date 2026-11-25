@@ -136,7 +136,7 @@ Tuples group multiple values of different types.
 
 ```taro
 ()                      // Empty tuple (unit type)
-(int32,)                // Single-element tuple (trailing comma required)
+(int32,)                // Unlabeled single-element tuple
 (int32, string)         // Two-element tuple
 (int32, string, bool)   // Three-element tuple
 
@@ -146,6 +146,23 @@ Tuples group multiple values of different types.
 // Trailing comma allowed
 (int32, string,)
 ```
+
+A label gives a position a name. You can mix labeled and unlabeled positions.
+A label also makes a singleton such as `(value: 3)` a tuple.
+
+```taro
+func bounds() -> (low: int32, high: int32) { (2, 8) }
+var range = bounds()
+range.high = 9
+var window: (start: int32, end: int32) = range
+assert(window.start == range.0 && window.end == 9, "same positions")
+```
+
+A literal or function return type supplies labels for an inferred value. A
+parameter or explicitly typed local uses its own annotation. Assignments match
+elements in order, so relabeling never reorders values. Labels must be unique
+within a tuple. They have no effect on layout, positional destructuring or
+overload identity.
 
 ---
 
@@ -287,9 +304,36 @@ tail := slice.slice(1, 2) // start, count; shares values[1] and values[2]
 assert(*tail.at(0) == 21, "slices share elements")
 ```
 
-Indexing and `slice(start, count)` check bounds. A slice's pointer keeps its
-GC allocation alive. When a list grows, an existing slice continues to address
-the old allocation and keeps its original length. Slices do not append or resize.
+References to built-in arrays and lists coerce to spans when a span type is
+expected. The element types must match; the conversion shares storage without
+copying elements and uses the same semantics as `.asSpan()`.
+
+```taro
+func inspect(_ values: [int32; ..]) { /* use the elements */ }
+var array: [int32; 3] = [10, 20, 30]
+var list: [int32] = [40, 50, 60]
+inspect(&array)
+inspect(&list)
+var view: [int32; ..] = &array
+reference := &array // Still an array reference: no span type was expected.
+```
+
+The coercion applies in ordinary expected-type positions, including arguments,
+typed bindings, assignments, returns, and field initializers. Existing reference
+values are accepted too; another `&` is not required. Otherwise equivalent exact reference overloads
+are preferred over this conversion. Arrays and lists passed by value do not
+implicitly become spans. Strings, arbitrary user-defined collections, raw
+pointers, and references to span headers have no such coercion. Element-wise
+boxing, numeric conversions, and class upcasts are not performed on a view.
+
+These are writable views. Returning or storing one retains its backing storage;
+array storage may be promoted by the GC backend when it escapes. A list view
+captures the current buffer and length. Removal may shift elements in that
+buffer without changing the view's length; growth or clearing may detach the
+list from the buffer, which remains alive for outstanding views.
+
+This is a type coercion: it never expands one argument into multiple arguments.
+Indexing and `slice(start, count)` check bounds. Slices do not append or resize.
 
 Strings keep their separate immutable representation. Explicit conversions
 between strings and writable byte slices copy bytes. Raw slice construction
@@ -329,6 +373,25 @@ any std::io::Reader & std::io::Writer // Multiple interface bounds
 
 Here `Drawable` is a user-defined interface. Each value has a concrete
 underlying type that implements the listed interfaces.
+
+## Anonymous Generic Parameters
+
+A complete parameter type written as `some Interface` introduces a generic
+parameter. Each occurrence infers its own concrete type at the call.
+
+```taro
+func sumCounts(_ a: some Counted, _ b: some Counted) -> int32 {
+    a.count() + b.count()
+}
+
+func apply(_ n: int32, _ f: some Fn(int32) -> int32) -> int32 { f(n) }
+```
+
+The two inputs to `sumCounts` can have different types. To require the same
+type for both, declare `[T: Counted]` and use `T` twice. Associated-type bounds
+also work, for example `some Iterable[Element = int32]`. Callers can supply
+explicit arguments for named generic parameters. The compiler always infers
+anonymous parameters. A variadic `some Counted...` infers one type for its pack.
 
 ## Opaque Return Types
 
@@ -372,6 +435,7 @@ The `_` type lets the compiler infer the type.
 func main() {
     var x: _ = 42           // Inferred as int32
     var list: [_] = [1, 2]  // Inferred as [int32]
+    println("${x} ${list.len()}")
 }
 ```
 

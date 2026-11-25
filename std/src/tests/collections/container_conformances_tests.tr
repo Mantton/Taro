@@ -1,0 +1,98 @@
+import std::collections::{Deque, Dictionary, List, Set}
+import std::default::Default
+import std::result::Result
+import std::testing::{assertEqual, assertFalse, assertTrue}
+
+struct NonEqPayload { value: int32 }
+
+func makeDefaultContainer[T: Default]() -> T {
+    T::default()
+}
+
+@test
+func testOptionalNilCheckWithoutPayloadPartialEq() {
+    var empty: NonEqPayload? = nil
+    var present: NonEqPayload? = .some(NonEqPayload { value: 9 })
+    assertTrue(empty == nil, "empty == nil")
+    assertTrue(nil == empty, "nil == empty")
+    assertFalse(empty != nil, "!(empty != nil)")
+    assertTrue(present != nil, "present != nil")
+    assertTrue(nil != present, "nil != present")
+    assertFalse(present == nil, "!(present == nil)")
+}
+
+@test
+func testOptionalAndResultConformances() {
+    var a: int32? = nil
+    var b: int32? = .some(10)
+    var c: int32? = .some(20)
+    assertEqual(a, .none, "none == none")
+    assertEqual(b, .some(10), "some == some")
+    assertTrue(a < b && b < c, "Optional Ord")
+
+    var optPairs = Set[(int32?, int32?)]::new()
+    optPairs.insert((nil, 1))
+    optPairs.insert((1, nil))
+    optPairs.insert((nil, nil))
+    assertEqual(optPairs.len(), 3 as usize, "Optional discriminant hashing avoids collision")
+
+    var r1: Result[int32, int32] = .ok(10)
+    var r2: Result[int32, int32] = .err(10)
+    assertTrue(r1 != r2, "ok != err")
+    assertTrue(r1 < r2, "ok < err")
+    var rSet = Set[Result[int32, int32]]::new()
+    rSet.insert(r1)
+    rSet.insert(r2)
+    assertEqual(rSet.len(), 2 as usize, "Result discriminant hashing")
+}
+
+@test
+func testArrayListDequeSetDictionaryConformances() {
+    var freq = Dictionary[[int32; 26], List[string]]::new()
+    var k: [int32; 26] = makeDefaultContainer()
+    k[0] = 2
+    var v: [string] = ["aa"]
+    freq[k] = v
+    assertTrue(k in freq, "fixed array key in Dictionary")
+    assertEqual(freq[k], v, "Dictionary lookup by fixed array")
+
+    var emptyArr: [int32; 0] = makeDefaultContainer()
+    assertEqual(emptyArr.len(), 0 as usize, "zero-sized array Default")
+
+    var rows: [List[int32]] = [[2], [1, 2], [1], [1, 1]]
+    rows.sort()
+    var e0: [int32] = [1]
+    var e1: [int32] = [1, 1]
+    var e2: [int32] = [1, 2]
+    var e3: [int32] = [2]
+    assertEqual(rows[0], e0, "list sort 0")
+    assertEqual(rows[1], e1, "list sort 1")
+    assertEqual(rows[2], e2, "list sort 2")
+    assertEqual(rows[3], e3, "list sort 3")
+
+    var d1 = Deque[int32]::new()
+    d1.pushBack(1)
+    d1.pushBack(2)
+    var d2 = Deque[int32]::new()
+    d2.pushBack(1)
+    d2.pushBack(2)
+    d2.pushBack(3)
+    assertTrue(d1 < d2, "shorter prefix deque is less")
+
+    var s1 = Set[string]::new()
+    s1.insert("x")
+    s1.insert("y")
+    var s2 = Set[string]::new()
+    s2.insert("y")
+    s2.insert("x")
+    assertEqual(s1, s2, "order-independent Set equality")
+
+    var m1 = Dictionary[string, int32?]::new()
+    m1["present_none"] = nil
+    var m2 = Dictionary[string, int32?]::new()
+    m2["present_none"] = nil
+    var m3 = Dictionary[string, int32?]::new()
+    m3["other"] = nil
+    assertEqual(m1, m2, "Dictionary equal with present none")
+    assertFalse(m1 == m3, "Dictionary distinguishes present none from absent key")
+}

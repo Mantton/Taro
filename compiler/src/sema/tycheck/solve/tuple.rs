@@ -50,38 +50,38 @@ impl<'ctx> ConstraintSolver<'ctx> {
             }
             prev = Some(ty);
 
-            match ty.kind() {
-                TyKind::Tuple(elements) => {
-                    if index < elements.len() {
-                        // Autoderef transforms the receiver before field
-                        // projection. Recording it on the `.N` result instead
-                        // asks THIR to dereference an already-projected element
-                        // and leaves codegen projecting from `&(A, B)`.
-                        self.record_adjustments(receiver_node_id, adjustment);
-                        self.record_field_index(node_id, index);
-                        return self.solve_equality(span, result, elements[index]);
-                    } else {
-                        // Index out of bounds for this tuple
-                        let error = Spanned::new(
-                            TypeError::TupleIndexOutOfBounds(ExpectedFound::new(
-                                index + 1,
-                                elements.len(),
-                            )),
-                            span,
-                        );
-                        return SolverResult::Error(vec![error]);
+            let (field_ty, arity) = match ty.kind() {
+                TyKind::Tuple(elements) => (elements.get(index).copied(), elements.len()),
+                TyKind::Adt(def, args) if def.kind == crate::sema::models::AdtKind::Struct => {
+                    let definition = self.gcx().get_struct_definition(def.id);
+                    if !definition.positional { continue; }
+                    if let Some(field) = definition.fields.get(index)
+                        && !self.gcx().is_visibility_allowed(field.visibility, self.current_def)
+                    {
+                        return SolverResult::Error(vec![Spanned::new(
+                            TypeError::FieldNotVisible { name: field.name, struct_ty: ty }, span,
+                        )]);
                     }
+                    let ty = definition.fields.get(index).map(|field| {
+                        super::instantiate_ty_with_args(self.gcx(), field.ty, args)
+                    });
+                    (ty, definition.fields.len())
                 }
-                TyKind::Infer(_) => {
-                    // Start ambiguous if we hit an inference variable
-                    // because it *could* be a tuple eventually.
-                    return SolverResult::Deferred;
-                }
-                _ => {
-                    // Not a tuple, continue autoderefing.
-                    continue;
-                }
-            }
+                TyKind::Infer(_) => return SolverResult::Deferred,
+                _ => continue,
+            };
+            let Some(field_ty) = field_ty else {
+                let error = if matches!(ty.kind(), TyKind::Tuple(_)) {
+                    TypeError::TupleIndexOutOfBounds(ExpectedFound::new(index.saturating_add(1), arity))
+                } else {
+                    TypeError::PositionalFieldOutOfBounds { owner: ty, index, arity }
+                };
+                return SolverResult::Error(vec![Spanned::new(error, span)]);
+            };
+            // Dereference the receiver before projecting its positional field.
+            self.record_adjustments(receiver_node_id, adjustment);
+            self.record_field_index(node_id, index);
+            return self.solve_equality(span, result, field_ty);
         }
 
         match self.custom_deref_fallback(

@@ -1,0 +1,69 @@
+// A line that begins with `else` or `where` continues the previous line.
+
+func classify(_ value: int32) -> string {
+    if value > 10 {
+        return "large"
+    }
+    else if value > 0 {
+        return "small"
+    }
+    else {
+        return "none"
+    }
+}
+
+func positive(_ value: int32) -> bool {
+    guard value > 0
+    else { return false }
+    true
+}
+
+func largest[T](_ values: List[T]) -> T
+    where T: std::cmp::Ord {
+    var best = values[0]
+    for value in values {
+        if value > best {
+            best = value
+        }
+    }
+    best
+}
+
+struct Wrapper[T] {
+    value: T
+}
+
+extend[T] Wrapper[T]
+    where T: std::cmp::Ord {
+    func atLeast(_ other: T) -> bool {
+        self.value >= other
+    }
+}
+
+func main() {
+    assert(classify(20) == "large", "first branch")
+    assert(classify(5) == "small", "else if on a new line")
+    assert(classify(-1) == "none", "else on a new line")
+
+    label := if positive(3) {
+        "yes"
+    }
+    else {
+        "no"
+    }
+    assert(label == "yes", "if expression with else on a new line")
+    assert(!positive(0), "guard else on a new line")
+
+    var items: List[int32] = [4, 9, 2]
+    assert(largest(items) == 9, "where clause on a new line")
+    assert(Wrapper[int32] { value: 3 }.atLeast(2), "extension where clause on a new line")
+
+    var total = 0
+    for item in items
+        where item % 2 == 0 {
+        total += item
+    }
+    assert(total == 6, "for filter on a new line")
+
+    print("else/where continuation: ${classify(5)} ${label} ${largest(items)} ${total}\n")
+}

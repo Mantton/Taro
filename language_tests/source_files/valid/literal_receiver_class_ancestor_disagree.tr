@@ -1,0 +1,96 @@
+// An inferred Derived[int32] sees the same overloads as the typed spelling.
+// A later annotation can still select Derived[int64] and its base-only methods.
+class Base {
+    stamp: int32
+}
+
+extend Base {
+    public init() {
+        self.stamp = 1
+    }
+}
+
+class Derived[T]: Base {
+    value: T
+}
+
+extend[T] Derived[T] {
+    public init(_ value: T) {
+        super.init()
+        self.value = value
+    }
+}
+interface Reader {
+    func read() -> usize
+}
+
+interface Other {
+    func read() -> usize
+}
+
+conform Base to Reader {
+    func read() -> usize {
+        7
+    }
+}
+
+conform Derived[int32] to Other {
+    func read() -> usize {
+        9
+    }
+}
+
+interface Tagged[U] {
+    func tag(_ value: U) -> usize
+}
+
+conform Base to Tagged[bool] {
+    func tag(_ value: bool) -> usize {
+        1
+    }
+}
+
+conform Derived[int32] to Tagged[string] {
+    func tag(_ value: string) -> usize {
+        2
+    }
+}
+
+interface Marked[U] {
+    func mark() -> usize
+}
+
+conform Base to Marked[bool] {
+    func mark() -> usize {
+        1
+    }
+}
+
+conform Derived[int32] to Marked[string] {
+    func mark() -> usize {
+        2
+    }
+}
+
+// The integer-only inherent overload is inapplicable to the string call.
+// A generic inherent signature can still supply the receiver's width.
+extend[T] Derived[T] {
+    func tag(_ n: int8) -> usize { 11 }
+    func accept(_ n: T) -> T { n }
+}
+
+func main() {
+    literal := () => {
+        var d = Derived(0)
+        d.tag("x")
+    }
+    typed := Derived[int32](0).tag("x")
+    wide := () => {
+        var d = Derived(0)
+        n := d.read() + d.mark()
+        var _wide: Derived[int64] = d
+        n
+    }
+    accepted := Derived(0).accept(5000000000_i64)
+    println("${literal()} ${typed} ${wide()} ${accepted}")
+}

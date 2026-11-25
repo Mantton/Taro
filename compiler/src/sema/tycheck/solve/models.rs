@@ -12,6 +12,10 @@ use crate::{
 #[derive(Debug, Clone)]
 pub enum Adjustment<'ctx> {
     Dereference,
+    /// Form a view through a built-in collection's standard-library adapter.
+    CollectionToSpan {
+        to: Ty<'ctx>,
+    },
     /// Call the Deref requirement through its normal conformance witness.
     DerefCall {
         method: DefinitionID,
@@ -44,6 +48,11 @@ pub enum Adjustment<'ctx> {
     /// Contextual success injection, after the payload's ordinary coercions.
     ResultOkWrap {
         generic_args: GenericArguments<'ctx>,
+    },
+    /// Wrap an `any Debug` value in `std::fmt::DebugDisplay`, whose `Display`
+    /// writes the value's `Debug` text. Only string interpolation uses it.
+    DebugDisplay {
+        to: Ty<'ctx>,
     },
     /// Coerce a non-capturing closure to a function pointer
     ClosureToFnPointer {
@@ -94,6 +103,13 @@ pub enum Goal<'ctx> {
         from: Ty<'ctx>,
         to: Ty<'ctx>,
     },
+    /// `target ??= value`: the target must be optional and the value must
+    /// coerce to it.
+    AssignOptional {
+        node_id: NodeID,
+        target: Ty<'ctx>,
+        value: Ty<'ctx>,
+    },
     Cast {
         node_id: NodeID,
         from: Ty<'ctx>,
@@ -107,6 +123,13 @@ pub enum Goal<'ctx> {
     MethodCall(MethodCallData<'ctx>),
     IndexAccess(IndexAccessGoalData<'ctx>),
     StructLiteral(StructLiteralGoalData<'ctx>),
+    SpreadShape {
+        result: Ty<'ctx>,
+        element: Ty<'ctx>,
+        scalars: usize,
+        sources: Vec<Ty<'ctx>>,
+        contextual: bool,
+    },
     CollectionLiteral {
         ty: Ty<'ctx>,
         element: Ty<'ctx>,
@@ -115,6 +138,20 @@ pub enum Goal<'ctx> {
     TupleAccess(TupleAccessGoalData<'ctx>),
     Deref(DerefGoalData<'ctx>),
     DefaultFallback(DefaultFallbackGoalData<'ctx>),
+    ValidateReturn {
+        site: DeferredReturnSite<'ctx>,
+        target: Ty<'ctx>,
+    },
+    /// Validate postfix `!` propagation once overload selection determines
+    /// whether the operand belongs to a `@lazy` closure or the enclosing body.
+    ValidatePropagation {
+        node_id: NodeID,
+        err_ty: Option<Ty<'ctx>>,
+        return_ty: Ty<'ctx>,
+    },
+    /// Release a solved goal's input literals after its generated constraints
+    /// have had a chance to supply their types.
+    ReleaseHeldLiterals(NodeID),
 }
 
 #[derive(Debug, Clone)]
@@ -184,6 +221,10 @@ pub struct BindInterfaceMethodGoalData<'ctx> {
     pub candidate_ty: Ty<'ctx>,
     pub call_info: InterfaceCallInfo,
     pub instantiation_args: Option<GenericArguments<'ctx>>,
+    /// Associated types of the receiver, as they appear in the instantiated
+    /// signature, with the structural results an early binding published for
+    /// them (`early_interface`). Empty for every other binding.
+    pub published_projections: Vec<(Ty<'ctx>, Ty<'ctx>)>,
 }
 
 /// Bind a selected method and publish only its receiver adjustments.
@@ -283,8 +324,11 @@ pub struct IndexAccessGoalData<'ctx> {
 
 #[derive(Debug, Clone)]
 pub struct MethodCallData<'ctx> {
+    pub interface: Option<crate::hir::StdItem>,
     pub receiver_addressable: bool,
     pub selected: Option<(DefinitionID, GenericArguments<'ctx>)>,
+    /// The bracketed callee picks its explicit generic arguments before this call.
+    pub pending_selection: Option<NodeID>,
     pub node_id: NodeID,
     pub receiver: Ty<'ctx>,
     pub reciever_span: Span,
@@ -293,13 +337,66 @@ pub struct MethodCallData<'ctx> {
     pub name: Identifier,
     pub arguments: Vec<ApplyArgument<'ctx>>,
     pub result: Ty<'ctx>,
-    pub method_ty: Ty<'ctx>,
+    /// Source calls carry their signature variable. A synthesized operator
+    /// creates it only after its lookup finds a candidate.
+    pub method_ty: Option<Ty<'ctx>>,
     pub prefer_async: bool,
     pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct DeferredReturnSite<'ctx> {
+    pub node_id: Option<NodeID>,
+    pub ty: Ty<'ctx>,
+    pub span: Span,
+}
+
+impl<'ctx> DeferredReturnSite<'ctx> {
+    pub(super) fn coerce_to(
+        self,
+        gcx: crate::compile::context::Gcx<'ctx>,
+        target: Ty<'ctx>,
+    ) -> Goal<'ctx> {
+        match self.node_id {
+            Some(node_id) => Goal::Coerce {
+                node_id,
+                from: self.ty,
+                to: target,
+            },
+            None => Goal::Equal(gcx.types.void, target),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DeferredPropagationSite<'ctx> {
+    pub node_id: NodeID,
+    pub err_ty: Option<Ty<'ctx>>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DeferredReturnScope<'ctx> {
+    pub return_var: Option<Ty<'ctx>>,
+    pub enclosing_return: Option<Ty<'ctx>>,
+    pub returns: Vec<DeferredReturnSite<'ctx>>,
+    pub propagations: Vec<DeferredPropagationSite<'ctx>>,
+}
+
+impl<'ctx> DeferredReturnScope<'ctx> {
+    pub fn is_empty(&self) -> bool {
+        self.return_var.is_none() && self.propagations.is_empty() && self.returns.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct ApplyArgument<'ctx> {
+    pub is_spread: bool,
+    pub is_lazy_wrapped: bool,
+    pub contains_await: bool,
+    /// Index into `ConstraintSystem::deferred_return_scopes` when this unwrapped
+    /// argument contains `return` or `!` and may select a `@lazy` formal.
+    pub deferred_return_scope: Option<u32>,
     pub id: NodeID,
     pub label: Option<Identifier>,
     pub ty: Ty<'ctx>,
@@ -320,6 +417,7 @@ pub struct UnOpGoalData<'ctx> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BinOpGoalData<'ctx> {
     pub receiver_addressable: bool,
+    pub has_nil_operand: bool,
     pub lhs: Ty<'ctx>,
     pub rhs: Ty<'ctx>,
     pub rho: Ty<'ctx>,

@@ -47,6 +47,7 @@ To reuse an existing distribution directly:
 export TARO_HOME="$PWD/dist"
 dist/bin/taro check examples/hello.tr
 dist/bin/taro run examples/fibonacci.tr
+dist/bin/taro fmt --check examples/
 dist/bin/taro --help
 ```
 
@@ -90,6 +91,20 @@ taro build examples/arithmetic.tr --release \
 Panic reports prefer compact Taro frames. Set `TARO_BACKTRACE=full` for an
 unfiltered native backtrace. Runtime scheduler, I/O, and native-task diagnostics are
 available through `taro run --runtime-stats` and `--runtime-trace`.
+
+## Explain allocations
+
+Run `taro build app.tr --explain-allocations` on a script or a package. The
+compiler writes placement decisions to stderr with a filename, line and
+column. Named locals whose addresses are taken can stay on the stack, escape
+through a return, store or call, or require separate storage across overlapping
+lifetimes. A conservative decision is identified as such. Explicit managed
+allocation sites also report their placement. Existential boxing reports the
+concrete payload size in bytes for the selected target.
+
+The first request for a report rebuilds any package whose cached object lacks
+one. Subsequent reporting builds replay the decisions from metadata. Ordinary
+builds can reuse those objects silently.
 
 ## Configure the Garbage Collector
 
@@ -168,6 +183,11 @@ unsafe native operation needs an explicit liveness use. GC liveness follows
 actual uses rather than lexical scope, and dropping a local does not run a
 language destructor. Native requests retain storage until completion.
 `taro bench --help` documents the measurement and timeout controls.
+
+The harness summarizes completed samples after timing ends. It reports the
+median, nearest-rank 95th percentile, and median absolute deviation in
+nanoseconds per operation. The JSON report also includes samples in
+measurement order.
 
 Repository tooling also provides compiler and showcase diagnostics:
 

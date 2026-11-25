@@ -1,0 +1,4 @@
+error: use of uninitialized local 'n'
+ -> language_tests/source_files/invalid/scoped_errdefer_initialization.tr:6:15
+	    println("${n}")
+	               ^

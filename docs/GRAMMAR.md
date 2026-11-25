@@ -47,7 +47,6 @@ Unescaped keywords and the standalone `_` token are excluded from identifiers.
                          | <integer_literal>
                          | <float_literal>
                          | <string_literal>
-                         | <f_string_literal>
                          | <rune_literal>
 
 <bool_literal>         ::= 'true' | 'false'
@@ -67,16 +66,22 @@ Unescaped keywords and the standalone `_` token are excluded from identifiers.
 
 <exponent>             ::= ( 'e' | 'E' ) [ '+' | '-' ] <decimal_literal>
 
-<string_literal>       ::= '"' { <string_char> } '"'
-<f_string_literal>     ::= 'f"' { <f_string_item> } '"'
-<f_string_item>        ::= <f_string_char>
-                         | '{{'
-                         | '}}'
-                         | '{' <expression> '}'
+<string_literal>       ::= '"' { <string_item> } '"'
+                         | '"""' LF <multiline_body> '"""'
+                         | HASHES '"' <raw_body> '"' HASHES
+                         | HASHES '"""' LF <raw_multiline_body> '"""' HASHES
+<string_item>          ::= <string_char> | '${' <expression> [ ':' <format_spec> ] '}'
+<multiline_body>       ::= { <multiline_char> | '${' <expression> [ ':' <format_spec> ] '}' }
+<raw_body>             ::= { <raw_char> | <raw_interpolation> }
+<raw_multiline_body>   ::= { <raw_multiline_char> | <raw_interpolation> }
+<raw_interpolation>    ::= '$' HASHES '{' <expression> [ ':' <format_spec> ] '}'
+<format_spec>          ::= [ [ <fill_char> ] ( '<' | '>' | '^' ) ] [ '0' ] [ <decimal_digits> ] [ '.' <decimal_digits> ] [ 'x' | 'b' | 'e' | '?' ]
+<multiline_char>       ::= <escape> | '\${' | ? character not beginning an escape, interpolation or triple delimiter, except CR ?
+<raw_char>             ::= ? character not beginning a matched marker or delimiter, except LF or CR ?
+<raw_multiline_char>   ::= ? character not beginning a matched marker or delimiter, except CR ?
 <rune_literal>         ::= '\'' <rune_char> '\''
 
-<string_char>          ::= <escape> | ? any character except quote, backslash, LF or CR ?
-<f_string_char>        ::= <escape> | ? any character except quote, backslash, braces, LF or CR ?
+<string_char>          ::= <escape> | '\${' | ? character not beginning an escape, interpolation or delimiter, except LF or CR ?
 <rune_char>            ::= <escape> | ? one Unicode scalar except quote, backslash, LF, CR or tab ?
 <escape>               ::= '\\' ( 'n' | 'r' | 't' | '0' | '\\' | '"' | '\'' )
                          | '\\x' <hex_digit> <hex_digit>
@@ -88,7 +93,21 @@ Unicode escapes contain one to six hexadecimal digits (underscores do not
 count) and must denote a Unicode scalar value; `\xNN` escapes are ASCII only.
 Source files accept LF and CRLF line endings. Each CRLF pair is normalized
 to LF once before tokenization. Remaining bare CR characters are whitespace
-between tokens, not line breaks. Strings and f-strings occupy one source line.
+between tokens, not line breaks. Bare CR is rejected in literal text.
+
+`HASHES` is one or more `#` characters; the opening and closing counts match.
+Raw text preserves backslashes and recognizes only `$` + the exact hash count +
+`{ expression }` as interpolation. Nonmatching interpolation markers are literal.
+Ordinary quoted strings (including interpolations) occupy one source line.
+Multiline closing delimiters occupy their own line. Boundary newlines and the
+closing delimiter's indentation are excluded; nonblank literal lines must have
+the same indentation prefix. Interpolation expression lines are exempt, and
+inserted values are not reindented. Ordinary multiline text processes escapes;
+raw multiline text does not. Backslash line continuation is unsupported.
+
+Strings without active interpolation remain literal tokens in all literal-only
+contexts. Interpolation uses normal expression lexing, and values are never
+rescanned. See [strings](guide/syntax/lexical.md#string-literals) for examples.
 
 ### Keywords
 
@@ -124,12 +143,12 @@ remain valid identifiers in other contexts; `weak` is an ordinary identifier.
 ```ebnf
 <operator>             ::= '+' | '-' | '*' | '/' | '%'
                          | '=' | ':='
-                         | '&' | '|' | '^' | '~' | '!'
+                         | '&' | '|' | '^' | '~' | '!' | '!in'
                          | '<' | '>' | '<<' | '>>'
                          | '==' | '!=' | '<=' | '>='
                          | '&&' | '||'
                          | '+=' | '-=' | '*=' | '/=' | '%='
-                         | '&=' | '|=' | '^=' | '<<=' | '>>='
+                         | '&=' | '|=' | '^=' | '<<=' | '>>=' | '??='
                          | '->' | '=>'
                          | '..' | '..=' | '...'
                          | '?' | '?.' | '??'
@@ -238,8 +257,9 @@ destructors are removed. Use explicit resource close operations or `defer`.
 
 ```ebnf
 <struct_declaration>   ::= 'struct' <identifier> [ <type_parameters> ]
-                           [ <conformances> ] [ <where_clause> ]
-                           '{' <struct_fields> '}'
+                           ( [ <conformances> ] [ <where_clause> ] '{' <struct_fields> '}'
+                           | '(' [ <type> { ',' <type> } [ ',' ] ] ')'
+                             [ <conformances> ] [ <where_clause> ] )
 
 <struct_fields>        ::= [ <struct_field> { ';' <struct_field> } [ ';' ] ]
 
@@ -349,7 +369,7 @@ individual accessors, which implementations may override independently.
 ### Function Declaration
 
 ```ebnf
-<function_declaration> ::= [ 'unsafe' ] 'func' <identifier> [ <type_parameters> ]
+<function_declaration> ::= [ 'const' ] [ 'unsafe' ] 'func' <identifier> [ <type_parameters> ]
                            <function_signature> [ <where_clause> ] [ <block> ]
 
 <function_signature>   ::= <function_prototype>
@@ -384,8 +404,13 @@ standard-library interfaces; see [Operator Overloading](guide/syntax/declaration
                        ::= 'static' 'var' <identifier> ':' <type> '=' <expression>
 
 <variable_declaration> ::= 'var' <local_pattern> [ ':' <type> ] [ '=' <expression> ]
-                         | <identifier> ':=' <expression>
+                         | <shorthand_pattern> ':=' <expression>
 <local_pattern>        ::= <identifier_pattern> | <wildcard_pattern> | <tuple_pattern>
+<shorthand_pattern>    ::= <identifier_pattern> | <wildcard_pattern> | <shorthand_tuple_pattern>
+<shorthand_tuple_pattern>
+                       ::= '(' ')'
+                         | '(' <shorthand_tuple_elem> ',' [ <shorthand_tuple_elem> { ',' <shorthand_tuple_elem> } [ ',' ] ] ')'
+<shorthand_tuple_elem> ::= <identifier_pattern> | <wildcard_pattern> | <rest_pattern> | <shorthand_tuple_pattern>
 
 <constant_declaration> ::= 'const' <identifier> ':' <type> [ '=' <expression> ]
 ```
@@ -572,6 +597,8 @@ positions. `(T as Interface).Member` selects an associated type explicitly.
                          | <tuple_pattern>
                          | <path_pattern>
                          | <literal_pattern>
+                         | <range_pattern>
+                         | <type_pattern>
 
 <wildcard_pattern>     ::= '_'
 
@@ -592,6 +619,11 @@ positions. `(T as Interface).Member` selects an associated type explicitly.
 
 <match_pattern>        ::= <pattern> { '|' <pattern> }
 
+<type_pattern>         ::= 'is' <type> | <identifier> 'as' <type>
+
+<range_pattern>        ::= <range_bound> ( '..' | '..=' ) <range_bound>
+<range_bound>          ::= [ '-' ] <integer_literal> | <rune_literal> | <path>
+
 <literal_pattern>      ::= <literal>
                          | '-' ( <integer_literal> | <float_literal> )
 
@@ -606,7 +638,7 @@ plain identifier bindings copy references as values. Explicit `*` remains
 available, and all bindings are writable value copies. Qualified path
 patterns resolve enum variants, not arbitrary constants. Numeric literal
 patterns may have a leading minus sign, and integer patterns must fit their
-type. Arbitrary expressions and f-strings with interpolation are rejected;
+type. Arbitrary expressions and interpolated strings are rejected;
 use a guard for those comparisons. See
 [Value Bindings and References](guide/syntax/patterns.md#value-bindings-and-references).
 
@@ -618,14 +650,19 @@ use a guard for those comparisons. See
 <statement>            ::= <declaration_statement>
                          | <expression_statement>
                          | <variable_statement>
-                         | <loop_statement>
                          | <while_statement>
                          | <for_statement>
                          | <return_statement>
+                         | <loop_expression>
                          | <break_statement>
                          | <continue_statement>
+                         | <using_statement>
+                         | <async_variable_statement>
                          | <defer_statement>
+                         | <errdefer_statement>
                          | <guard_statement>
+                         | <comptime_for_statement>
+                         | <comptime_if_statement>
 
 <declaration_statement>::= { <attribute> } <visibility> <function_declaration>
 
@@ -633,7 +670,7 @@ use a guard for those comparisons. See
 
 <variable_statement>   ::= <variable_declaration>
 
-<loop_statement>       ::= [ <label_def> ] 'loop' <block>
+<loop_expression>      ::= [ <label_def> ] 'loop' <block>
 
 <while_statement>      ::= [ <label_def> ] 'while' <expression> <block>
 
@@ -642,13 +679,23 @@ use a guard for those comparisons. See
 
 <return_statement>     ::= 'return' [ <expression> ]
 
-<break_statement>      ::= 'break' [ <identifier> ]
+<break_statement>      ::= 'break' [ <expression> ]
 
 <continue_statement>   ::= 'continue' [ <identifier> ]
 
+<using_statement>      ::= 'using' <identifier> '=' <expression>
+
+<async_variable_statement> ::= 'async' 'var' <identifier> [ ':' <type> ] '=' <expression>
+
 <defer_statement>      ::= 'defer' ( <block> | <expression> )
 
+<errdefer_statement>   ::= 'errdefer' ( <block> | <expression> )
+
 <guard_statement>      ::= 'guard' <expression> 'else' <block>
+
+<comptime_for_statement> ::= '#for' <identifier> 'in' '#fields' '(' <type> ')' <block>
+
+<comptime_if_statement>  ::= '#if' <expression> <block> [ 'else' ( <comptime_if_statement> | <block> ) ]
 
 <label_def>            ::= <identifier> ':'
 ```
@@ -664,7 +711,7 @@ are boolean; binding conditions produce a boolean and introduce bindings.
 
 ### Expression Precedence (Lowest to Highest)
 
-1. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
+1. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`, `??=`
 2. Pipe: `|>`
 3. Ternary: `? :`
 4. Nil-coalescing: `??`
@@ -672,16 +719,17 @@ are boolean; binding conditions produce a boolean and introduce bindings.
 6. Logical OR: `||`
 7. Logical AND: `&&`
 8. Comparison: `<`, `>`, `<=`, `>=`, `==`, `!=`
-9. Bitwise OR: `|`
-10. Bitwise XOR: `^`
-11. Bitwise AND: `&`
-12. Bit shift: `<<`, `>>`
-13. Term: `+`, `-`
-14. Factor: `*`, `/`, `%`
-15. Cast / Type Assertion: `as`, `as?`, `is`
-16. Prefix: `!`, `-`, `~`, `&`, `*`
-17. Postfix: `.`, `()`, `[]`, `!`, `?.`
-18. Primary
+9. Membership: `in`, `!in` (non-associative)
+10. Bitwise OR: `|`
+11. Bitwise XOR: `^`
+12. Bitwise AND: `&`
+13. Bit shift: `<<`, `>>`
+14. Term: `+`, `-`
+15. Factor: `*`, `/`, `%`
+16. Cast / Type Assertion: `as`, `as?`, `is`
+17. Prefix: `!`, `-`, `~`, `&`, `*`
+18. Postfix: `.`, `()`, `[]`, `!`, `?.`
+19. Primary
 
 ```ebnf
 <expression>           ::= <assignment_expression>
@@ -689,7 +737,7 @@ are boolean; binding conditions produce a boolean and introduce bindings.
 <assignment_expression>::= <pipe_expression> [ <assignment_op> <pipe_expression> ]
 
 <assignment_op>        ::= '=' | '+=' | '-=' | '*=' | '/=' | '%='
-                         | '&=' | '|=' | '^=' | '<<=' | '>>='
+                         | '&=' | '|=' | '^=' | '<<=' | '>>=' | '??='
 
 <pipe_expression>      ::= <ternary_expression> { '|>' <ternary_expression> }
 
@@ -697,15 +745,23 @@ are boolean; binding conditions produce a boolean and introduce bindings.
 
 <nil_coalesce_expr>    ::= <range_expression> [ '??' <nil_coalesce_expr> ]
 
-<range_expression>     ::= <or_expression> [ ( '..' | '..=' ) <or_expression> ]
+<range_expression>     ::= <or_expression> [ '..' [ <or_expression> ] | '..=' <or_expression> ]
+                         | '..' [ <or_expression> ]
+                         | '..=' <or_expression>
 
 <or_expression>        ::= <and_expression> { '||' <and_expression> }
 
 <and_expression>       ::= <comparison_expr> { '&&' <comparison_expr> }
 
-<comparison_expr>      ::= <bitor_expression> { <comparison_op> <bitor_expression> }
+<comparison_expr>      ::= <membership_expr> { <comparison_op> <membership_expr> }
 
 <comparison_op>        ::= '<' | '>' | '<=' | '>=' | '==' | '!='
+
+<membership_expr>      ::= <bitor_expression>
+                           [ ( 'in' | '!in' )
+                             ( <bitor_expression> [ '..' [ <bitor_expression> ] | '..=' <bitor_expression> ]
+                             | '..' [ <bitor_expression> ]
+                             | '..=' <bitor_expression> ) ]
 
 <bitor_expression>     ::= <bitxor_expression> { '|' <bitxor_expression> }
 
@@ -719,7 +775,8 @@ are boolean; binding conditions produce a boolean and introduce bindings.
 
 <factor_expression>    ::= <cast_expression> { ( '*' | '/' | '%' ) <cast_expression> }
 
-<cast_expression>      ::= <prefix_expression> { ( 'as' [ '?' ] | 'is' ) <type> }
+<cast_expression>      ::= <prefix_expression> { 'as' [ '?' ] <type> | 'is' ( <type> | <nonbinding_pattern> ) }
+<nonbinding_pattern>   ::= <pattern>  (* without variable bindings *)
 
 <prefix_expression>    ::= <prefix_op> <prefix_expression>
                          | <postfix_expression>
@@ -735,9 +792,13 @@ are boolean; binding conditions produce a boolean and introduce bindings.
                          | '[' <type_argument_list> ']'      /* specialization */
                          | '[' <argument> { ',' <argument> } [ ',' ] ']' /* native indexing */
                          | '!'                               /* Optional/Result propagation */
-                         | '?.' <identifier>                 /* optional chain */
+                         | '?.' ( <identifier>
+                                | <integer_literal>
+                                | '[' <argument> { ',' <argument> } [ ',' ] ']'
+                                | '(' <argument_list> ')' )        /* optional chain */
 
-<argument_list>        ::= [ <argument> { ',' <argument> } [ ',' ] ]
+<argument_list>        ::= [ <call_argument> { ',' <call_argument> } [ ',' ] ]
+<call_argument>        ::= <argument> [ '...' ]
 
 <argument>             ::= [ <label> ] <pipe_expression>
 ```
@@ -747,7 +808,16 @@ following expression: each resolved async call suspends before its result is
 used. Thus `await expr!`, `await operation() + value`, and chained calls are
 valid; parentheses may still narrow the scope. Closure bodies require their
 own markers. Assignments do not chain without explicit grouping. Nil coalescing
-is right-associative.
+is right-associative. `target ??= value` assigns only when the optional target is
+nil; `T??=` in a type annotation still reads as `T??` followed by `=`.
+
+`a in b` calls `b.contains(&a)` through `std::ops::Contains[Element]`, and
+`a !in b` negates it. The container side may be a range, so `x + 1 in 0..n`
+reads as `(x + 1) in (0..n)`, while `&&`, `||`, `==` and `!=` bind more
+loosely. Membership does not chain: `a in b in c` is an error, so group it as
+`(a in b) in c`. `!in` is one token only when `!` touches a whole-word `in`:
+`value !in set` and `value!in set` are negated membership, `value! in set`
+propagates `value` and then tests it, and `!inside` negates an identifier.
 
 ### Primary Expressions
 
@@ -760,6 +830,7 @@ is right-associative.
                          | <dictionary_expression>
                          | <if_expression>
                          | <match_expression>
+                         | <select_expression>
                          | <block_expression>
                          | <closure_expression>
                          | <struct_literal>
@@ -768,8 +839,13 @@ is right-associative.
                          | <paren_expression>
                          | <unsafe_expression>
                          | <await_expression>
+                         | <yield_expression>
+                         | <embed_expression>
+                         | <source_location>
                          | <cfg_check>
+                         | <type_name_expression>
                          | <return_statement>
+                         | <loop_expression>
                          | <break_statement>
                          | <continue_statement>
 
@@ -782,8 +858,10 @@ is right-associative.
 <expression_list>      ::= <expression> { ',' <expression> } [ ',' ]
 
 <array_expression>     ::= '[' ']'
-                         | '[' <expression> { ',' <expression> } [ ',' ] ']'
+                         | '[' <array_element> { ',' <array_element> } [ ',' ] ']'
                          | '[' <expression> ';' <const_expression> ']'   /* repeat */
+
+<array_element>        ::= <expression> [ '...' ]
 
 <dictionary_expression>::= '[' <map_pair_list> ']'
                          | '[' ':' ']'
@@ -794,12 +872,35 @@ is right-associative.
 <wildcard_expression>  ::= '_'
 <unsafe_expression>    ::= 'unsafe' <block>
 <await_expression>     ::= 'await' <expression>
+<yield_expression>     ::= 'yield' <expression>   /* contextual keyword */
+<embed_expression>     ::= ( '#embed' | '#embedBytes' ) '(' <string_literal> ')'
+<source_location>      ::= '#file' | '#line' | '#function'
 <cfg_check>            ::= '#cfg' '(' <cfg_expression> ')'
+<type_name_expression> ::= '#typeName' '(' <type> ')'
 ```
 
 `_` expressions are restricted to one direct argument placeholder in a pipe
-call. Binding conditions are restricted to `if`/`while`/`guard` conditions.
+call, an assignment destination (`_ = value`, which evaluates and discards the
+value), and the leaves of a tuple assignment destination (`(a, _) = pair`).
+Compound assignments (`_ += 1`) still require a place. Binding conditions are
+restricted to `if`/`while`/`guard` conditions.
 Repeat literals require a compile-time count and construct fixed-size arrays.
+
+`yield` is parsed contextually: `yield <expression>` parses as a generator yield
+when followed on the same line by an expression starter (such as a literal,
+identifier, unary operator with no space before `-`, parenthesized expression
+preceded by whitespace, array/tuple, or leading dot), while ordinary identifier
+uses (`yield := 1`, `yield(x)`, `yield.field`, `yield[i]`, `yield - 1`) remain
+valid identifiers. Calling a synchronous generator allocates its suspended frame
+without running the body; side effects begin on the first call to `next()`.
+Stopping iteration early without calling `close()` leaves subsequent yields
+unexecuted and lets the GC reclaim the frame; calling `close()` (directly or via
+`using`) runs active `defer` cleanups once and marks the generator exhausted.
+Async generators return `some AsyncIterator[Element = T]` or
+`some AsyncIterable[Element = T]` (without the `async` function modifier) and
+may use both `await` and `yield` in their bodies; `for await` automatically
+closes its iterator on scope exit, and cancellation while blocked on an inner
+`await` cancels the pending operation and runs active `defer` cleanups once.
 
 ### Control Flow Expressions
 
@@ -813,6 +914,11 @@ Repeat literals require a compile-time count and construct fixed-size arrays.
 <match_arm>            ::= 'case' <match_pattern> [ 'if' <expression> ]
                            '=>' <expression> ';'
                          | '_' '=>' <expression> ';'
+
+<select_expression>    ::= 'select' '{' { <select_arm> } '}'
+
+<select_arm>           ::= 'case' <pattern> '=' 'await' <expression>
+                           '=>' <expression> [ ',' | ';' ]
 
 <block_expression>     ::= <block>
 ```
@@ -854,11 +960,19 @@ in written order before one evaluation of the exact-typed base. A redundant base
 warns and still evaluates. See the
 [expression guide](guide/syntax/expressions.md#struct-and-named-variant-literals).
 
-Bare struct literals are restricted in `if`/`while`/`guard` conditions,
-`for` iterators/filters, and `match` scrutinees. Parentheses, call arguments,
-collection literals, block expressions, and f-string interpolations permit
-struct literals inside their delimiters. The surrounding restriction resumes
-after the closing delimiter.
+Bare struct literals and bare trailing closures are restricted in
+`if`/`while`/`guard` conditions, `for` iterators/filters, and `match`
+scrutinees. Parentheses, call arguments, collection literals, block
+expressions, and string interpolations permit them inside their delimiters.
+The surrounding restriction resumes after the closing delimiter.
+
+A trailing closure `{ [ <closure_params> '=>' ] <block_body> }` on the same
+line as a call supplies the call's final argument and drops that parameter's
+label; a sole trailing closure may omit empty `()`. Headerless trailing
+closures synthesize a single `it` parameter when the body references free `it`
+and zero parameters otherwise. `Name { ... }` retains struct literal
+recognition for explicit field lists, update bases, and uppercase empty or
+single-identifier constructors.
 
 ### Binding Conditions
 
@@ -891,13 +1005,13 @@ support valued predicates and boolean operators, but not the bare flags.
 
 ## Automatic Semicolon Insertion
 
-Taro uses automatic semicolon insertion (ASI). Semicolons are automatically inserted after tokens that can end a statement at a newline or end of file, unless the next line begins with a continuation operator.
+Taro uses automatic semicolon insertion (ASI). Semicolons are automatically inserted after tokens that can end a statement at a newline or end of file, unless the next line begins with a continuation token or the newline is directly inside `( )` or `[ ]`.
 
 **Tokens that can end a statement:**
 - Identifiers, literals (`true`, `false`, `nil`)
 - `break`, `continue`, `return`
 - `)`, `]`, `}`
-- `?`, `!`, `.*`
+- `?`, `!`, `.*`, `..`
 
 **Line continuation starters (suppress ASI):**
 - Binary operators: `+`, `-`, `/`, `%`, `|`, `^`, `&&`, `||`
@@ -905,9 +1019,57 @@ Taro uses automatic semicolon insertion (ASI). Semicolons are automatically inse
 - Comparison operators: `<`, `>`, `<=`, `>=`, `==`, `!=`
 - Shifts: `<<`, `>>`
 - Assignment operators
-- Member/range/optional: `.`, `..`, `..=`, `...`, `?.`, `??`
+- Member/optional/spread: `.`, `...`, `?.`, `??`
+  - Note: `..` and `..=` are **not** line continuation starters so a new line beginning with `..end` or `..=end` outside `()` / `[]` starts a fresh statement rather than continuing the previous line
 - Pipe and arrows: `|>`, `->`, `=>`
-- Keywords: `as`, `is`, `in`
+- Keywords: `as`, `is`, `in`, `!in`, `else`, `where`
+
+`else` appears only after an `if` block or a `guard` condition, and `where`
+only opens a where clause or a `for` filter, so neither can start a statement:
+
+```
+if ready {
+    start()
+}
+else {
+    stop()
+}
+
+guard value > 0
+else { return }
+
+func largest[T](_ values: [T]) -> T
+    where T: Ord {
+    ...
+}
+```
+
+A `{` at the start of a line is not a continuation starter: a newline before it
+still inserts a semicolon, so keep the opening brace of a body on the line that
+ends its header.
+
+**Grouping delimiters:** ASI tracks the innermost open delimiter.
+- Directly inside `( )` or `[ ]`, a newline never inserts a semicolon.
+- Directly inside `{ }`, including braces nested inside parentheses or brackets
+  (blocks, closure bodies, `match` bodies, struct literals), ASI works as
+  described above. String interpolations `${ ... }` follow the same rule as
+  braces.
+- After a closing delimiter, the rule of the enclosing delimiter applies again.
+
+```
+result := compute(
+    base
+        + offset,
+    items.map(item => {
+        log(item)       // statements inside braces still end at newlines
+        item * 2
+    })
+)
+```
+
+Explicit semicolons are unaffected, so `[0; 20]` and `[uint8; 20]` keep
+working. The `;` of a repeat literal or array type must be written; a newline
+does not stand in for it.
 
 ---
 
@@ -939,7 +1101,8 @@ The following remain reserved for future use:
 
 ### Semicolon-Separated Lists
 
-Constructs that use semicolons as separators work naturally with ASI:
+Constructs inside braces that use semicolons as separators work naturally with
+ASI:
 
 | Construct | Separator |
 |-----------|-----------|
@@ -949,28 +1112,34 @@ Constructs that use semicolons as separators work naturally with ASI:
 
 ### Comma-Separated Lists and ASI
 
-For delimited comma-separated lists, **commas are required before newlines**,
-including after the final element when the closing delimiter is on the next
-line. A trailing comma is optional only when the delimiter follows on the same
+Inside `( )` and `[ ]`, newlines do not insert semicolons, so a multi-line list
+needs commas only between elements; a trailing comma is optional whether the
+closing delimiter is on the same line or the next one. Inside `{ }` (struct
+literal fields, import groups), ASI still runs, so **a comma is required before
+every newline**, including after the final element when the `}` is on the next
 line. Enum variants within one `case` do not accept a trailing comma.
 
-| Construct | Separator | Trailing Comma |
-|-----------|-----------|----------------|
-| Enum variants (in a case) | `,` | Not accepted |
-| Function parameters | `,` | Optional |
-| Type parameters | `,` | Optional |
-| Type arguments | `,` | Optional |
-| Call arguments | `,` | Optional |
-| Tuple expressions | `,` | Optional |
-| Array literals | `,` | Optional |
-| Dictionary literals | `,` | Optional |
-| Struct literal fields | `,` | Optional |
-| Import nested items | `,` | Optional |
-| Closure parameters | `,` | Optional |
-| Pattern lists | `,` | Optional |
+| Construct | Delimiter | Separator | Trailing Comma |
+|-----------|-----------|-----------|----------------|
+| Enum variants (in a case) | none | `,` | Not accepted |
+| Function parameters | `( )` | `,` | Optional |
+| Type parameters | `[ ]` | `,` | Optional |
+| Type arguments | `[ ]` | `,` | Optional |
+| Call arguments | `( )` | `,` | Optional |
+| Tuple expressions and types | `( )` | `,` | Optional |
+| Function type parameters | `( )` | `,` | Optional |
+| Attribute arguments | `( )` | `,` | Optional |
+| Array literals | `[ ]` | `,` | Optional |
+| Dictionary literals | `[ ]` | `,` | Optional |
+| Closure parameters | `( )` | `,` | Optional |
+| Pattern lists | `( )` | `,` | Optional |
+| Struct literal fields | `{ }` | `,` | Optional; required before a newline |
+| Import nested items | `{ }` | `,` | Optional; required before a newline |
 
-**Important**: If you write a multiline comma-separated list without commas at the end of lines, ASI will insert semicolons and the parser rejects the inserted semicolon (the exact diagnostic depends on
-the list form).
+**Important**: Inside `( )` and `[ ]`, a missing comma between elements on
+separate lines is reported as ``expected `,` or `)` `` (or `]`) at the second
+element. Inside `{ }`, a missing comma before a newline lets ASI insert a
+semicolon, which the parser rejects.
 
 ---
 
@@ -984,38 +1153,31 @@ struct Point {
 }
 ```
 
-**Comma-Separated Lists**: Commas are **required** after every element whose delimiter or next element
-starts on a new line:
+**Comma-Separated Lists**: Inside `( )` and `[ ]`, commas separate elements and
+newlines are ignored. Inside `{ }`, a comma is **required** after every element
+whose next element or closing `}` starts on a new line:
 ```
-// WRONG - ASI inserts `;` after `a`, causing error
+// WRONG - elements need a separator
 foo(
     a
     b
 )
 
-// CORRECT - comma prevents ASI
+// CORRECT - the trailing comma is optional
 foo(
     a,
-    b,
+    b
 )
 
-// ALSO CORRECT - closing delimiter on the final element's line
-foo(
-    a,
-    b)
-```
-
-More examples:
-```
 arr := [
-    1,          // comma required
-    2,          // comma required
-    3,          // comma required before closing delimiter on next line
+    1,
+    2,
+    3
 ]
 
 user := User {
     id: 1,          // comma required
-    name: "John",   // comma required before closing delimiter on next line
+    name: "John",   // comma required before `}` on the next line
 }
 ```
 
@@ -1048,7 +1210,7 @@ x := Foo { field: value }   // struct literal OK here
 if (Flag { enabled: true }).enabled { } // parentheses distinguish the literal
 ```
 
-Keep `else` on the same line as the preceding `}`. It does not suppress ASI.
+`else` may begin a line after the preceding `}`; it continues the `if`.
 An `if` without `else` has unit type; it does not implicitly produce an optional.
 
 Instance functions use an implicit `self` of exactly their declared target
@@ -1057,10 +1219,12 @@ Explicit receiver parameters are rejected. Use `static func` for receiver-free
 associated functions, including interface requirements. Free and namespace
 functions are receiver-free without `static`.
 
-Local `name := expression` creates a new mutable binding with an inferred type.
-It cannot carry a type annotation and does not update an earlier binding of
-the same name; use assignment for updates. It is unavailable in declaration
-scopes outside function/block bodies and in conditions.
+Local `name := expression` and tuple destructuring `(a, b) := expression` create
+new mutable bindings with inferred types (evaluating the right-hand side before
+shadowing any outer names). They cannot carry type annotations and do not update
+earlier bindings of the same name; use assignment (`=` / `(a, b) = expr`) for
+updates. Shorthand declarations are unavailable in declaration scopes outside
+function/block bodies and in conditions.
 
 Binding conditions are valid directly in the condition or as unparenthesized
 positive `&&` conjuncts. Each

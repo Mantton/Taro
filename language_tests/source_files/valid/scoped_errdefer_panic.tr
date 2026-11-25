@@ -1,0 +1,14 @@
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: panic: during cleanup
+func finish() -> Result[int32, int32] {
+    errdefer println("outer failure")
+    defer println("outer defer")
+    if true {
+        errdefer println("inner failure")
+        defer panic("during cleanup")
+        errdefer println("already retired")
+        return .ok(42)
+    }
+    return .err(0)
+}
+func main() { var _ = finish() }

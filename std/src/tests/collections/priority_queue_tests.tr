@@ -1,0 +1,293 @@
+import std::collections::PriorityQueue
+
+struct PriorityJob { deadline: int32; name: string }
+
+@test
+func testPriorityQueueOrderingAndCopies() {
+    queue := PriorityQueue[int32]::new()
+    std::testing::assertTrue(queue.peek().isNone() && queue.pop().isNone(), "empty heap")
+    for value in [7, 1, 5, 1, 9, -2, 3] { queue.push(value) }
+    alias := queue
+    copy := queue.copy()
+    var actual: [int32] = []
+    while !queue.isEmpty() { actual.append(queue.pop().unwrap()) }
+    std::testing::assertEqual(actual, [-2, 1, 1, 3, 5, 7, 9], "min heap with duplicates")
+    std::testing::assertTrue(alias.isEmpty(), "shared queue")
+    std::testing::assertEqual(copy.len(), 7 as usize, "copy independent")
+    copy.clear()
+    copy.push(4)
+    std::testing::assertEqual(copy.pop().unwrap(), 4, "reuse after clear")
+    maximum := PriorityQueue[int32]::new(by: (a, b) => a > b)
+    for value in actual { maximum.push(value) }
+    for value in [9, 7, 5, 3, 1, 1, -2] {
+        std::testing::assertEqual(maximum.pop().unwrap(), value, "max heap")
+    }
+    std::testing::assertTrue(maximum.pop().isNone(), "max heap drained")
+}
+
+@test
+func testPriorityQueueCustomClosureAndManagedPayloads() {
+    var calls = 0
+    queue := PriorityQueue[PriorityJob]::new(by: (a, b) => {
+        calls += 1
+        if calls % 8 == 0 { std::runtime::collect() }
+        a.deadline < b.deadline
+    })
+    var index: int32 = 31
+    while index >= 0 {
+        queue.push(PriorityJob { deadline: index, name: std::sprintf("job %v", index) })
+        index -= 1
+    }
+    index = 0
+    while !queue.isEmpty() {
+        value := queue.pop().unwrap()
+        std::testing::assertEqual(value.deadline, index, "custom priority")
+        std::testing::assertEqual(value.name, std::sprintf("job %v", index), "managed heap payload")
+        index += 1
+    }
+    std::testing::assertTrue(calls > 0, "captured comparator state")
+}
+
+@test
+func testPriorityQueueAgainstSortedModelAndBudget() {
+    var calls: usize = 0
+    queue := PriorityQueue[int32]::new(by: (a, b) => { calls += 1; a < b })
+    var model: [int32] = []
+    var seed: uint32 = 7
+    var index: int32 = 0
+    while index < 4096 {
+        seed = (seed * 25173_u32 + 13849_u32) % 65536_u32
+        value := (seed % 1000_u32) as int32
+        queue.push(value)
+        model.append(value)
+        if index % 3 == 0 {
+            model.sort()
+            std::testing::assertEqual(queue.pop().unwrap(), model.removeAt(0).unwrap(), "mixed heap model")
+        }
+        index += 1
+    }
+    model.sort()
+    for value in model {
+        std::testing::assertEqual(queue.peek().unwrap(), value, "peek model")
+        std::testing::assertEqual(queue.pop().unwrap(), value, "drain model")
+    }
+    std::testing::assertTrue(queue.isEmpty(), "drained")
+    std::testing::assertTrue(calls < 4096 * 40, "logarithmic heap comparisons")
+}
+
+@test
+@expectPanic("expected heap push failure")
+func testPriorityQueuePushPanicPreservesHeap() {
+    var failing = false
+    queue := PriorityQueue[int32]::new(by: (a, b) => {
+        if failing { std::panic::panic("expected heap push failure") }
+        a < b
+    })
+    queue.push(3)
+    queue.push(5)
+    defer {
+        failing = false
+        std::testing::assertEqual(queue.len(), 2 as usize, "failed push length")
+        std::testing::assertEqual(queue.pop().unwrap(), 3, "failed push first")
+        std::testing::assertEqual(queue.pop().unwrap(), 5, "failed push second")
+    }
+    failing = true
+    queue.push(1)
+}
+
+@test
+@expectPanic("expected heap pop failure")
+func testPriorityQueuePopPanicPreservesHeap() {
+    var failing = false
+    queue := PriorityQueue[int32]::new(by: (a, b) => {
+        if failing { std::panic::panic("expected heap pop failure") }
+        a < b
+    })
+    for value in [3, 1, 4, 2] { queue.push(value) }
+    defer {
+        failing = false
+        std::testing::assertEqual(queue.pop().unwrap(), 1, "failed pop first")
+        std::testing::assertEqual(queue.pop().unwrap(), 2, "failed pop second")
+        std::testing::assertEqual(queue.pop().unwrap(), 3, "failed pop third")
+        std::testing::assertEqual(queue.pop().unwrap(), 4, "failed pop fourth")
+    }
+    failing = true
+    var _ = queue.pop()
+}
+
+@test
+@expectPanic("priority queue mutated during comparison")
+func testPriorityQueueRejectsReentrantMutation() {
+    var queue: PriorityQueue[int32]? = .none
+    heap := PriorityQueue[int32]::new(by: (a, b) => { queue.unwrap().clear(); a < b })
+    queue = .some(heap)
+    heap.push(1)
+    heap.push(2)
+}
+
+@test
+func testPriorityQueuePopAllocatesNothing() {
+    queue := PriorityQueue[int32]::new()
+    var seed: uint32 = 11
+    var index: usize = 0
+    while index < 1024 {
+        seed = (seed * 25173_u32 + 13849_u32) % 65536_u32
+        queue.push(seed as int32)
+        index += 1
+    }
+    before := std::runtime::gcStats()
+    var previous = queue.pop().unwrap()
+    while !queue.isEmpty() {
+        value := queue.pop().unwrap()
+        std::testing::assertTrue(previous <= value, "pops in priority order")
+        previous = value
+    }
+    after := std::runtime::gcStats()
+    // Formerly each pop built a list of the sift path.
+    std::testing::assertEqual(after.allocatedBytes, before.allocatedBytes, "pop must not allocate")
+}
+
+@test
+func testPriorityQueueReserveKeepsContents() {
+    queue := PriorityQueue[int32]::new()
+    queue.push(3)
+    queue.push(1)
+    queue.reserve(64)
+    before := std::runtime::gcStats()
+    var value: int32 = 0
+    while value < 62 { queue.push(value + 10); value += 1 }
+    after := std::runtime::gcStats()
+    std::testing::assertEqual(after.allocatedBytes, before.allocatedBytes, "reserved pushes do not grow")
+    std::testing::assertEqual(queue.len(), 64 as usize, "all elements queued")
+    std::testing::assertEqual(queue.pop().unwrap(), 1, "existing elements keep priority")
+    std::testing::assertEqual(queue.pop().unwrap(), 3, "existing elements keep priority")
+}
+
+@test
+func testPriorityQueuePopComparisonBudget() {
+    // The last element replaces the root and nearly always belongs near a
+    // leaf. Pop should need about log2(n) comparisons, not two per level.
+    var calls: usize = 0
+    queue := PriorityQueue[int32]::new(by: (a, b) => { calls += 1; a < b })
+    count := 4096 as usize
+    var seed: uint32 = 11
+    var index: usize = 0
+    while index < count {
+        seed = (seed * 25173_u32 + 13849_u32) % 65536_u32
+        queue.push(seed as int32)
+        index += 1
+    }
+    calls = 0
+    var previous = queue.pop().unwrap()
+    while !queue.isEmpty() {
+        value := queue.pop().unwrap()
+        std::testing::assertTrue(previous <= value, "ascending drain")
+        previous = value
+    }
+    std::testing::assertTrue(calls <= count * 14, "pop comparisons near log2(n)")
+}
+
+@test
+func testPriorityQueuePopOfEqualPrioritiesStaysAtRoot() {
+    var calls: usize = 0
+    queue := PriorityQueue[int32]::new(by: (a, b) => { calls += 1; a < b })
+    count := 1024 as usize
+    var index: usize = 0
+    while index < count { queue.push(5); index += 1 }
+    calls = 0
+    while !queue.isEmpty() { std::testing::assertEqual(queue.pop().unwrap(), 5, "equal drain") }
+    std::testing::assertTrue(calls <= count * 2, "equal priorities settle without a walk to a leaf")
+}
+
+@test
+func testPriorityQueueNewMaxFromAndFromMax() {
+    // newMax()
+    maxHeap := PriorityQueue[int32]::newMax()
+    for v in [3, 1, 9, 4, 9, -5, 2] { maxHeap.push(v) }
+    var drainedMax: [int32] = []
+    while !maxHeap.isEmpty() { drainedMax.append(maxHeap.pop().unwrap()) }
+    std::testing::assertEqual(drainedMax, [9, 9, 4, 3, 2, 1, -5], "newMax drains descending")
+
+    // Empty, singleton, duplicate inputs
+    var emptyInput: [int32] = []
+    emptyMin := PriorityQueue[int32]::from(emptyInput)
+    std::testing::assertTrue(emptyMin.isEmpty(), "from empty")
+    singleMax := PriorityQueue[int32]::fromMax([42])
+    std::testing::assertEqual(singleMax.pop().unwrap(), 42, "fromMax singleton")
+    dups := PriorityQueue[int32]::from([5, 5, 5, 5])
+    std::testing::assertEqual(dups.len(), 4 as usize, "from duplicates len")
+    while !dups.isEmpty() { std::testing::assertEqual(dups.pop().unwrap(), 5, "from duplicates pop") }
+
+    // Bulk heapify comparison budget < 2n on 1,000 elements + exact match with sorted()
+    var input: [int32] = []
+    var seed: uint32 = 42
+    var i: usize = 0
+    while i < 1000 {
+        seed = (seed * 25173_u32 + 13849_u32) % 65536_u32
+        input.append((seed % 500_u32) as int32 - 250)
+        i += 1
+    }
+    var cmpCalls: usize = 0
+    counted := PriorityQueue[int32]::from(input, by: (a, b) => {
+        cmpCalls += 1
+        a < b
+    })
+    std::testing::assertTrue(cmpCalls < 2000 as usize, "O(n) Floyd heapify uses < 2n comparisons")
+
+    expectedAsc := input.sorted()
+    builtMin := PriorityQueue[int32]::from(input)
+    var actualAsc: [int32] = []
+    while !builtMin.isEmpty() { actualAsc.append(builtMin.pop().unwrap()) }
+    std::testing::assertEqual(actualAsc, expectedAsc, "from matches sorted()")
+
+    var countedAsc: [int32] = []
+    while !counted.isEmpty() { countedAsc.append(counted.pop().unwrap()) }
+    std::testing::assertEqual(countedAsc, expectedAsc, "from(by:) matches sorted()")
+
+    builtMax := PriorityQueue[int32]::fromMax(input)
+    expectedDesc := expectedAsc.copy()
+    expectedDesc.reverse()
+    var actualDesc: [int32] = []
+    while !builtMax.isEmpty() { actualDesc.append(builtMax.pop().unwrap()) }
+    std::testing::assertEqual(actualDesc, expectedDesc, "fromMax matches reversed sorted()")
+
+    // FromIterator via collect
+    var collected: PriorityQueue[int32] = [7, 2, 8, 1, 5].iter().collect()
+    var collectedOut: [int32] = []
+    while !collected.isEmpty() { collectedOut.append(collected.pop().unwrap()) }
+    std::testing::assertEqual(collectedOut, [1, 2, 5, 7, 8], "FromIterator collect min-heap")
+}
+
+@test
+func testPriorityQueueFromGcStressWithStrings() {
+    var names: [string] = []
+    var i: int32 = 0
+    while i < 128 {
+        names.append(std::sprintf("item_%03v", (i * 37) % 128))
+        i += 1
+    }
+    var comparisons: usize = 0
+    heap := PriorityQueue[string]::from(names, by: (a, b) => {
+        comparisons += 1
+        if comparisons % 16 == 0 { std::runtime::collect() }
+        a < b
+    })
+    expected := names.sorted()
+    var actual: [string] = []
+    while !heap.isEmpty() {
+        actual.append(heap.pop().unwrap())
+        if actual.len() % 16 == 0 { std::runtime::collect() }
+    }
+    std::testing::assertEqual(actual, expected, "GC stress string heapify matches sorted")
+}
+
+@test
+@expectPanic("expected heapify failure")
+func testPriorityQueueFromPanicClearsBusyAndPreservesElements() {
+    var count = 0
+    var _ = PriorityQueue[int32]::from([5, 3, 4, 1, 2], by: (a, b) => {
+        count += 1
+        if count == 2 { std::panic::panic("expected heapify failure") }
+        a < b
+    })
+}

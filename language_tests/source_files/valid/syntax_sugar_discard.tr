@@ -1,0 +1,12 @@
+static var calls: int32 = 0
+func value() -> int32 { calls += 1; calls }
+func main() {
+    _ := value()
+    _ := value()
+    assert(calls == 2, "discard initializer evaluated once")
+    _ := { _ := value(); value() }
+    assert(calls == 4, "nested discard declarations introduce no binding")
+    _ := ()
+    _ := [1, 2, 3]
+    print("PASS: discard shorthand\n")
+}

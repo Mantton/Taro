@@ -1,0 +1,4 @@
+error: embedded asset '../../package_fixtures/embedded_assets/dep/assets/icon.bin' is not valid UTF-8
+ -> language_tests/source_files/invalid/embedded_assets_utf8.tr:1:25
+	func main() { var data = #embed("../../package_fixtures/embedded_assets/dep/assets/icon.bin") }
+	                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

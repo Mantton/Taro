@@ -95,7 +95,7 @@ pub trait TypeSuperFoldable<'ctx>: TypeFoldable<'ctx> {
 impl<'ctx> TypeSuperFoldable<'ctx> for Ty<'ctx> {
     fn super_fold_with<F: TypeFolder<'ctx> + ?Sized>(self, folder: &mut F) -> Self {
         if let Some(folded_kind) = fold_ty_kind(folder.gcx(), self.kind(), folder) {
-            Ty::new(folded_kind, folder.gcx())
+            Ty::new(folded_kind, folder.gcx()).with_tuple_labels(self.tuple_labels(), folder.gcx())
         } else {
             self
         }
@@ -302,6 +302,7 @@ impl<'ctx> TypeFoldable<'ctx> for StructDefinition<'ctx> {
         StructDefinition {
             class_info: self.class_info,
             adt_def: self.adt_def,
+            positional: self.positional,
             has_initializer: self.has_initializer,
             repr: self.repr,
             fields,

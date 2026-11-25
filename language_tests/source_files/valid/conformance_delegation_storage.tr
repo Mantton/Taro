@@ -1,0 +1,20 @@
+interface Meter { func advance() -> int32; }
+struct Counter { n: int32 }
+conform &Counter to Meter {
+    func advance() -> int32 { self.n += 1; self.n }
+}
+struct Wrapper { counter: Counter }
+conform &Wrapper to Meter by self.counter {}
+final class Owner { counter: Counter }
+extend Owner {
+    init() { self.counter = Counter { n: 9 } }
+}
+conform Owner to Meter by self.counter {}
+func run[M: Meter](_ meter: M) -> int32 { meter.advance() }
+func main() {
+    var wrapper = Wrapper { counter: Counter { n: 4 } }
+    assert(run(&wrapper) == 5 && wrapper.counter.n == 5, "reborrow the stored field")
+    var owner = Owner()
+    assert(run(owner) == 10 && owner.counter.n == 10, "class handles preserve field storage")
+    println("receiver storage")
+}

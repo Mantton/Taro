@@ -1,0 +1,9 @@
+// The parser reports a joined line before type checking, so the warning
+// appears even when the joined expression does not type check.
+func main() {
+    names := [
+        "first"
+        ("second")
+    ]
+    println("${names}")
+}

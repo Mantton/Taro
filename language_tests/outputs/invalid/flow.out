@@ -1,4 +1,16 @@
 Checking – flow
+warning: unused variable 'greeting'; prefix it with '_' if this is intended
+ -> language_tests/source_files/invalid/flow.tr:4:4
+	    greeting := "hello"
+	    ^^^^^^^^
+warning: unused variable 'value'; prefix it with '_' if this is intended
+ -> language_tests/source_files/invalid/flow.tr:12:4
+	    value := 2
+	    ^^^^^
+warning: unused variable 'copy'; prefix it with '_' if this is intended
+ -> language_tests/source_files/invalid/flow.tr:27:4
+	    copy := value
+	    ^^^^
 error: non-exhaustive match, missing 'false' case
  -> language_tests/source_files/invalid/flow.tr:37:4
     match value {

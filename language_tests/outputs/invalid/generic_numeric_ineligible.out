@@ -1,0 +1,4 @@
+error: type 'string' does not conform to interface 'Numeric'
+ -> language_tests/source_files/invalid/generic_numeric_ineligible.tr:11:9
+	    _ := sum(words)
+	         ^^^

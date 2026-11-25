@@ -47,7 +47,10 @@ pub fn compile_std<'a>(
 
     let index = PackageIndex::new(0);
     // Attached std artifacts are toolchain-level and shared across debug/release user builds.
-    // Keep std canonical (release-like) so --build-std is deterministic per target.
+    // Keep the single attached release artifact canonical (O2, no overflow checks) so release
+    // consumer builds stay free of debug overflow checks, while direct debug builds of std
+    // (`taro build std`, `taro test std`) and consumer-specialized primitive operators honor
+    // `compile_options.overflow_checks`.
     let std_profile = BuildProfile::Release;
     let std_overflow_checks = false;
 
@@ -77,6 +80,7 @@ pub fn compile_std<'a>(
         harness_mode: Default::default(),
         std_mode: StdMode::BootstrapStd,
         is_std_provider: true,
+        lint_warnings: false,
     });
 
     let mut compiler = Compiler::new(ctx, config);
@@ -222,6 +226,7 @@ fn attached_std_codegen_options() -> CodegenOptions {
         optimization: OptimizationMode::Level(OptLevel::O2),
         artifact: ModuleArtifactKind::Object,
         lto: LtoMode::Off,
+        coverage: false,
     }
 }
 

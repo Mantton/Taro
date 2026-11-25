@@ -1,0 +1,16 @@
+error: @deprecated positional argument must be a string literal
+ -> language_tests/source_files/invalid/deprecated_attribute_usage.tr:1:12
+	@deprecated(123)
+	            ^^^
+error: unknown @deprecated argument 'unknown'; expected 'message', 'replace', or 'advisory'
+ -> language_tests/source_files/invalid/deprecated_attribute_usage.tr:4:12
+	@deprecated(unknown = "x")
+	            ^^^^^^^^^^^^^
+error: @deprecated replace value cannot be empty
+ -> language_tests/source_files/invalid/deprecated_attribute_usage.tr:7:12
+	@deprecated(replace = "")
+	            ^^^^^^^^^^^^
+error: duplicate @deprecated attribute
+ -> language_tests/source_files/invalid/deprecated_attribute_usage.tr:11:0
+	@deprecated("two")
+	^^^^^^^^^^^^^^^^^^

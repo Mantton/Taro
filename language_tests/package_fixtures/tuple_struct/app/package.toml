@@ -1,0 +1,6 @@
+[package]
+name = "github.com/example/tuple-struct-app"
+kind = "executable"
+
+[require]
+"github.com/example/tuple-struct-dep" = { path = "../dep", alias = "dep" }

@@ -1,0 +1,4 @@
+error: type 'Handle' does not conform to interface 'Closeable'
+ -> language_tests/source_files/invalid/scoped_using_requires_closeable.tr:6:10
+	    using handle = Handle {}
+	          ^^^^^^

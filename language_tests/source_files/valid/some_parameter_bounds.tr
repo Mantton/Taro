@@ -1,0 +1,54 @@
+interface Weight { func weight() -> int32; }
+struct Light {}
+conform Light to Weight { func weight() -> int32 { 3 }; }
+struct Heavy {}
+conform Heavy to Weight { func weight() -> int32 { 7 }; }
+
+func weigh(_ left: some Weight, _ right: some Weight) -> int32 {
+    left.weight() + right.weight()
+}
+func total(_ values: some Iterable[Element = int32]) -> int32 {
+    var sum: int32 = 0
+    for value in values { sum += value }
+    sum
+}
+func apply(_ x: int32, _ transform: some Fn(int32) -> int32) -> int32 { transform(x) }
+func keep[R = uint8](_ value: some Weight, _ result: R) -> R {
+    assert(value.weight() == 3, "mixed generic arguments")
+    result
+}
+struct Scale {}
+extend Scale {
+    func measure(_ value: some Weight) -> int32 { value.weight() }
+}
+func keepEscaped[`<some 0>`](_ value: some Weight, _ extra: `<some 0>`) -> `<some 0>` {
+    assert(value.weight() == 3, "anonymous type is independent of escaped identifier")
+    extra
+}
+struct Reading { number: int32 }
+extend Reading {
+    init(from value: some Weight) { self.number = value.weight() }
+}
+interface Weigher { func read(_ value: some Weight) -> int32; }
+conform Scale to Weigher {
+    func read[T: Weight](_ value: T) -> int32 { value.weight() }
+}
+func viaRequirement[W: Weigher](_ scale: W) -> int32 { scale.read(Light {}) }
+func sum(_ values: some Weight...) -> int32 {
+    var result: int32 = 0
+    for item in values { result += item.weight() }
+    result
+}
+func main() {
+    assert(keepEscaped(Light {}, "kept") == "kept", "escaped source type")
+    assert(Reading(from: Heavy {}).number == 7, "initializer input")
+    assert(viaRequirement(Scale {}) == 3, "generic interface witness")
+    assert(sum(Heavy {}, Heavy {}) == 14, "homogeneous variadic input")
+    assert(keep[uint8](Light {}, 9) == 9, "explicit named argument")
+    var bound: any Fn(Heavy) -> int32 = Scale {}.measure
+    assert(bound(Heavy {}) == 7, "method value infers its anonymous input")
+    assert(Scale {}.measure(Heavy {}) == 7, "method parameter")
+    println("${weigh(Light {}, Heavy {})}")
+    println("${total([1, 2, 3])}")
+    println("${apply(4, (n) => n + 1)}")
+}

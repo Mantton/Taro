@@ -42,10 +42,15 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             thir::ConstantKind::Bool(b) => ConstantKind::Bool(*b),
             thir::ConstantKind::Rune(r) => ConstantKind::Rune(*r),
             thir::ConstantKind::String(s) => ConstantKind::String(*s),
+            thir::ConstantKind::Bytes(s) => ConstantKind::Bytes(*s),
+            thir::ConstantKind::ConstArray(arr) => ConstantKind::ConstArray(*arr),
             thir::ConstantKind::Integer(i) => ConstantKind::Integer(*i),
             thir::ConstantKind::Float(f) => ConstantKind::Float(*f),
             thir::ConstantKind::Unit => ConstantKind::Unit,
             thir::ConstantKind::ConstParam(param) => ConstantKind::ConstParam(*param),
+            thir::ConstantKind::InterfaceConstant(id, args) => {
+                ConstantKind::InterfaceConstant(*id, *args)
+            }
         };
         Constant { ty: lit.ty, value }
     }

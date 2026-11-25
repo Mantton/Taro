@@ -1,0 +1,9 @@
+func main() {
+    var count = 1
+    while count < 3 {
+        count += 1
+    }
+    else {
+        count = 0
+    }
+}

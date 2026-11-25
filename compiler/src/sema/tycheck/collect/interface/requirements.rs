@@ -134,16 +134,11 @@ impl<'ctx> Actor<'ctx> {
             hir::AssociatedDeclarationKind::Constant(c) => {
                 let icx = DefTyLoweringCtx::new(interface_id, gcx);
                 let ty = icx.lowerer().lower_type(&c.ty);
-                let default = if c.expr.is_some() {
-                    gcx.try_get_const(def_id)
-                } else {
-                    None
-                };
                 let req = InterfaceConstantRequirement {
                     id: def_id,
                     name: node.identifier.symbol,
                     ty,
-                    default,
+                    has_default: c.expr.is_some(),
                 };
                 constants.push(req);
             }

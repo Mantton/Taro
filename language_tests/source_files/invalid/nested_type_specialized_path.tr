@@ -1,0 +1,6 @@
+struct Queue[T] { value: T }
+extend Queue {
+    struct Entry(int64)
+}
+func take(_ value: Queue[int32]::Entry) {}
+func main() {}

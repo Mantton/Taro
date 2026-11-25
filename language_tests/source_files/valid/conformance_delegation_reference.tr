@@ -1,0 +1,21 @@
+interface Meter {
+    func advance(by step: int32)
+    func total() -> int32
+}
+struct Dial { value: int32 }
+conform &Dial to Meter {
+    func advance(by step: int32) { self.value += step }
+    func total() -> int32 { self.value }
+}
+struct BoxedMeter { inner: any Meter, calls: int32 }
+conform &BoxedMeter to Meter by self.inner {
+    func advance(by step: int32) { self.inner.advance(by: step); self.calls += 1 }
+}
+func step[M: Meter](_ meter: M) -> int32 { meter.advance(by: 3); meter.total() }
+func main() {
+    var dial = Dial { value: 4 }
+    var wrapper = BoxedMeter { inner: &dial, calls: 0 }
+    assert(step(&wrapper) == 7, "forward to a boxed field")
+    assert(dial.value == 7 && wrapper.calls == 1, "the override updates the original wrapper")
+    println("stored receiver")
+}

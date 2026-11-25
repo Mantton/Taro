@@ -23,6 +23,11 @@ pub(crate) struct Finding {
 
 /// Inline aggregates propagate @NoCopy. Indirection copies a reference or
 /// handle, not its target, so raw pointers, references and class handles stop.
+pub(crate) fn type_contains_no_copy<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>) -> bool {
+    let mut seen = FxHashSet::default();
+    contains_no_copy(gcx, ty, &mut seen)
+}
+
 fn contains_no_copy<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>, seen: &mut FxHashSet<Ty<'ctx>>) -> bool {
     let ty = normalize_aliases(gcx, ty);
     if !seen.insert(ty) {

@@ -1,0 +1,6 @@
+func size(_ value: (low: int32, high: int32)) -> int32 { value.0 }
+func size(_ value: (start: int32, end: int32)) -> int32 { value.1 }
+func main() {
+    var pair: (int32, int32) = (2, 3)
+    println(size(pair))
+}

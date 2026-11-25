@@ -1,0 +1,40 @@
+// `x ?? fallback`: the fallback takes the payload's type as context, so an
+// untyped literal becomes that type rather than its own default.
+func size[V](_ v: V) -> usize {
+    std::mem::sizeOf[V]()
+}
+
+func lookup(_ hit: bool) -> usize? {
+    if hit {
+        return .some(4)
+    }
+    return nil
+}
+
+func main() {
+    var count: usize? = 4
+    var small: uint8? = nil
+    var wide: int64? = nil
+    var ratio: float? = nil
+
+    var a = count ?? 0
+    printf("%d %d\n", a, size(a))
+    printf("%d\n", count ?? 0)
+    printf("%d %d\n", small ?? 200, size(small ?? 200))
+    printf("%d %d\n", wide ?? 3000000000, size(wide ?? 3))
+    printf("%v %d\n", ratio ?? 1.5, size(ratio ?? 1.5))
+    printf("%d %d\n", lookup(true) ?? 0, lookup(false) ?? 9)
+
+    // A nested Optional and a chain of defaults.
+    var nested: usize?? = .some(nil)
+    printf("%d\n", (nested ?? nil) ?? 5)
+    printf("%d\n", small ?? wide.map(w => w as uint8) ?? 7)
+
+    // Unchanged: int32 payloads, a typed fallback and a typed context.
+    var plain: int32? = nil
+    printf("%d %d\n", plain ?? 6, size(plain ?? 6))
+    var fallback: usize = 8
+    printf("%d\n", count ?? fallback)
+    var typed: int64 = wide ?? 10
+    printf("%d\n", typed)
+}

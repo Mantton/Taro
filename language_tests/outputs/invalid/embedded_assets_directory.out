@@ -1,0 +1,4 @@
+error: embedded asset '.' is not a regular file
+ -> language_tests/source_files/invalid/embedded_assets_directory.tr:1:25
+	func main() { var data = #embedBytes(".") }
+	                         ^^^^^^^^^^^^^^^^

@@ -1,0 +1,31 @@
+// `measure` has its own clause `where Self: Allowed`, and only the reference
+// form &Boxed[int32] is Allowed. The call is not bound before the literal
+// has its type; ordinary lookup then calls it through auto-reference, as it
+// does for `var b: Boxed[int32]`.
+struct Boxed[T] {
+    value: T
+}
+
+interface Allowed {}
+
+interface Measure {
+    func measure() -> usize where Self: Allowed {
+        7
+    }
+}
+
+conform[T] T to Measure {}
+
+conform &Boxed[int32] to Allowed {}
+
+func main() {
+    compute := () => {
+        var b = Boxed { value: 0 }
+        return b.measure()
+    }
+    typed := () => {
+        var b: Boxed[int32] = Boxed { value: 0 }
+        return b.measure() + 1
+    }
+    println("${compute()} ${typed()}")
+}

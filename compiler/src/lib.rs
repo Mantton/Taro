@@ -31,3 +31,25 @@ mod thir;
 mod utils;
 
 pub use span::PackageIndex;
+
+/// Verify that `original` and `formatted` lex cleanly and produce the exact
+/// same semantic token stream (including ASI-inserted semicolons, literals,
+/// and nested string interpolation tokens).
+pub fn verify_format_equivalence(original: &str, formatted: &str) -> Result<(), String> {
+    let file_id = span::FileID::from_raw(0);
+    let orig = parse::lexer::Lexer::new(original, file_id)
+        .tokenize()
+        .map_err(|err| format!("syntax/lex error: {}", err.value))?;
+    let next = parse::lexer::Lexer::new(formatted, file_id)
+        .tokenize()
+        .map_err(|err| format!("formatter internal verification failed to re-lex output: {}", err.value))?;
+    let orig_tokens: Vec<_> = orig.tokens.into_iter().map(|s| s.value).collect();
+    let next_tokens: Vec<_> = next.tokens.into_iter().map(|s| s.value).collect();
+    if orig_tokens != next_tokens {
+        return Err(
+            "formatter safety check detected a token/ASI change; leaving file unmodified"
+                .to_string(),
+        );
+    }
+    Ok(())
+}

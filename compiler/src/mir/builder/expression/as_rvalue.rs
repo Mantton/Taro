@@ -180,7 +180,43 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 });
             }
             ExprKind::Binary { op, lhs, rhs } => {
-                let operand_ty = self.thir.exprs[*lhs].ty;
+                let operand_ty = crate::sema::tycheck::utils::normalize_aliases(
+                    self.gcx,
+                    self.thir.exprs[*lhs].ty,
+                );
+                if matches!(op, BinaryOperator::Eql | BinaryOperator::Neq)
+                    && matches!(
+                        operand_ty.kind(),
+                        TyKind::Adt(def, _)
+                            if self.gcx.std_item_def(crate::hir::StdItem::Optional) == Some(def.id)
+                    )
+                {
+                    let left_local = unpack!(block = self.as_temp(block, *lhs));
+                    let right_local = unpack!(block = self.as_temp(block, *rhs));
+                    let left_discr = self.new_temp_with_ty(self.gcx.types.uint, expr.span);
+                    let right_discr = self.new_temp_with_ty(self.gcx.types.uint, expr.span);
+                    self.push_assign(
+                        block,
+                        Place::from_local(left_discr),
+                        Rvalue::Discriminant {
+                            place: Place::from_local(left_local),
+                        },
+                        expr.span,
+                    );
+                    self.push_assign(
+                        block,
+                        Place::from_local(right_discr),
+                        Rvalue::Discriminant {
+                            place: Place::from_local(right_local),
+                        },
+                        expr.span,
+                    );
+                    return block.and(Rvalue::BinaryOp {
+                        op: *op,
+                        lhs: Operand::Copy(Place::from_local(left_discr)),
+                        rhs: Operand::Copy(Place::from_local(right_discr)),
+                    });
+                }
                 let lhs = unpack!(block = self.as_operand(block, *lhs));
                 let rhs = unpack!(block = self.as_operand(block, *rhs));
                 self.build_binary_op(block, *op, operand_ty, expr.span, lhs, rhs)
@@ -263,8 +299,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             ExprKind::If { .. }
             | ExprKind::Match { .. }
             | ExprKind::Return { .. }
-            | ExprKind::Break
-            | ExprKind::Continue
+            | ExprKind::Loop { .. }
+            | ExprKind::Break { .. }
+            | ExprKind::Continue { .. }
             | ExprKind::Deref(..)
             | ExprKind::Reference { .. }
             | ExprKind::Local(..)
@@ -278,7 +315,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             | ExprKind::Adt(..)
             | ExprKind::Field { .. }
             | ExprKind::Closure { .. }
-            | ExprKind::Await { .. } => {
+            | ExprKind::Await { .. }
+            | ExprKind::Yield { .. }
+            | ExprKind::AwaitAsyncVar { .. }
+            | ExprKind::Select { .. } => {
                 debug_assert!(!matches!(
                     Category::of(&expr.kind),
                     Category::Rvalue(RvalueFunc::AsRvalue) | Category::Constant

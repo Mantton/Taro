@@ -1,0 +1,22 @@
+type Wide = int64
+enum Item { case primary(any std::fmt::Display); case spare(any std::fmt::Display); case done }
+func pick(_ item: Item) -> int64 {
+    match item {
+        case .primary(n as Wide) | .spare(n as int64) if n > 4 => n
+        case .primary(is string) | .spare(is string) => -2
+        case _ => -1
+    }
+}
+func extract[T](_ value: any std::fmt::Display) -> Optional[T] {
+    if case found as T = value { return .some(found) }
+    return .none
+}
+func main() {
+    assert(pick(.primary(5000000000_i64)) == 5000000000_i64, "nested binding")
+    assert(pick(.spare(7_i64)) == 7 && pick(.spare(2_i64)) == -1, "alternative guard")
+    assert(pick(.spare("s")) == -2 && pick(.done) == -1, "unbound nested test")
+    var number: any std::fmt::Display = 8_i64
+    assert(extract[Wide](number).unwrap() == 8 && extract[string](number).isNone(), "generic target")
+    assert(pick(.primary(number)) == 8, "preserve source")
+    println("typed patterns")
+}

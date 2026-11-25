@@ -27,13 +27,20 @@ use crate::{
 };
 use ena::{undo_log::Rollback, unify::UnificationTableStorage};
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use snapshot::IcxEventLogs;
 use std::cell::RefCell;
 
 pub mod keys;
 mod resolve;
 mod snapshot;
+
+/// An integer or float literal variable, identified by its unification root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NumericVar {
+    Int(IntVarID),
+    Float(FloatVarID),
+}
 
 pub struct InferCtx<'ctx> {
     pub gcx: Gcx<'ctx>,
@@ -155,9 +162,14 @@ impl<'ctx> InferCtx<'ctx> {
     where
         F: FnOnce(&self::snapshot::Snapshot<'ctx>) -> R,
     {
+        // A probe's solver takes the pending generic-default fallbacks and
+        // applies them to variables that the rollback resets; keep them
+        // pending for the next probe and for the real solve.
+        let fallbacks = self.inner.borrow().pending_fallbacks.clone();
         let snapshot = self.start_snapshot();
         let r = f(&snapshot);
         self.rollback_to(snapshot);
+        self.inner.borrow_mut().pending_fallbacks = fallbacks;
         r
     }
 }
@@ -444,6 +456,14 @@ impl<'ctx> InferCtx<'ctx> {
     pub fn const_var_root(&self, vid: ConstVarID) -> ConstVarID {
         self.inner.borrow_mut().const_variables().root_var(vid)
     }
+
+    pub fn numeric_var_root(&self, var: NumericVar) -> NumericVar {
+        let mut inner = self.inner.borrow_mut();
+        match var {
+            NumericVar::Int(id) => NumericVar::Int(inner.int_unification_table().find(id)),
+            NumericVar::Float(id) => NumericVar::Float(inner.float_unification_table().find(id)),
+        }
+    }
 }
 
 impl<'ctx> InferCtx<'ctx> {
@@ -452,7 +472,9 @@ impl<'ctx> InferCtx<'ctx> {
     ///
     /// - `IntVar(Unknown)` -> `Int(I32)`
     /// - `FloatVar(Unknown)` -> `Float(F64)`
-    pub fn default_numeric_vars(&self) {
+    ///
+    /// The `held` variables stay unknown.
+    pub fn default_numeric_vars_except(&self, held: &FxHashSet<NumericVar>) {
         let mut inner = self.inner.borrow_mut();
 
         // Default integer vars
@@ -462,6 +484,9 @@ impl<'ctx> InferCtx<'ctx> {
             for i in 0..int_len {
                 let id = IntVarID::new(i as u32);
                 let root = table.find(id);
+                if held.contains(&NumericVar::Int(root)) {
+                    continue;
+                }
                 match table.probe_value(root) {
                     IntVarValue::Unknown => {
                         table.union_value(root, IntVarValue::Signed(IntTy::I32));
@@ -478,6 +503,9 @@ impl<'ctx> InferCtx<'ctx> {
             for i in 0..float_len {
                 let id = FloatVarID::new(i as u32);
                 let root = table.find(id);
+                if held.contains(&NumericVar::Float(root)) {
+                    continue;
+                }
                 match table.probe_value(root) {
                     FloatVarValue::Unknown => {
                         table.union_value(root, FloatVarValue::Known(FloatTy::F64));
@@ -485,6 +513,47 @@ impl<'ctx> InferCtx<'ctx> {
                     _ => {}
                 }
             }
+        }
+    }
+
+    /// Give one unknown numeric literal variable its default.
+    pub fn default_numeric_var(&self, var: NumericVar) {
+        let mut inner = self.inner.borrow_mut();
+        match var {
+            NumericVar::Int(id) => {
+                let mut table = inner.int_unification_table();
+                if matches!(table.probe_value(id), IntVarValue::Unknown) {
+                    table.union_value(id, IntVarValue::Signed(IntTy::I32));
+                }
+            }
+            NumericVar::Float(id) => {
+                let mut table = inner.float_unification_table();
+                if matches!(table.probe_value(id), FloatVarValue::Unknown) {
+                    table.union_value(id, FloatVarValue::Known(FloatTy::F64));
+                }
+            }
+        }
+    }
+
+    /// The unification root of an integer or float literal variable that is
+    /// still unknown. Every other type, including a resolved one, gives None.
+    pub fn unresolved_numeric_var(&self, ty: Ty<'ctx>) -> Option<NumericVar> {
+        let ty = self.shallow_resolve(ty);
+        let mut inner = self.inner.borrow_mut();
+        match ty.kind() {
+            TyKind::Infer(InferTy::IntVar(id)) => {
+                let mut table = inner.int_unification_table();
+                let root = table.find(id);
+                matches!(table.probe_value(root), IntVarValue::Unknown)
+                    .then_some(NumericVar::Int(root))
+            }
+            TyKind::Infer(InferTy::FloatVar(id)) => {
+                let mut table = inner.float_unification_table();
+                let root = table.find(id);
+                matches!(table.probe_value(root), FloatVarValue::Unknown)
+                    .then_some(NumericVar::Float(root))
+            }
+            _ => None,
         }
     }
 

@@ -1,0 +1,8 @@
+interface Duplicate { func duplicate() -> Self; }
+struct Value {}
+conform Value to Duplicate {
+    func duplicate() -> Self { self }
+}
+struct Wrapper { value: Value }
+conform Wrapper to Duplicate by self.value {}
+func main() {}

@@ -1,0 +1,33 @@
+// End-to-end check of Dictionary entry/grouping helpers and PriorityQueue
+// max-heap & O(n) bulk heapify in both debug and release builds.
+
+func main() {
+    graph := Dictionary[int32, List[int32]]::new()
+    graph.getOrInsertWith(1, () => List::new()).append(2)
+    graph.getOrInsertWith(1, () => List::new()).append(3)
+    assert(graph[1] == [2, 3], "getOrInsertWith grouping")
+
+    counts := Dictionary[string, int32]::new()
+    counts.modify("hit", default: 0) { *it += 1 }
+    counts.modify("hit", default: 0) { *it += 1 }
+    counts.modify("miss", default: 0) { *it += 1 }
+    assert(counts["hit"] == 2 && counts["miss"] == 1, "modify counters")
+
+    counts.retain((_k, v) => *v > 1)
+    assert(counts.len() == 1 && counts.contains(&"hit"), "retain")
+
+    maxHeap := PriorityQueue[int32]::newMax()
+    maxHeap.push(4)
+    maxHeap.push(9)
+    maxHeap.push(2)
+    assert(maxHeap.pop() == .some(9), "newMax pop 9")
+    assert(maxHeap.pop() == .some(4), "newMax pop 4")
+
+    built := PriorityQueue[int32]::from([4, 1, 7, 3])
+    assert(built.pop() == .some(1), "from min 1")
+    assert(built.pop() == .some(3), "from min 3")
+
+    builtMax := PriorityQueue[int32]::fromMax([4, 1, 7, 3])
+    assert(builtMax.pop() == .some(7), "fromMax max 7")
+    assert(builtMax.pop() == .some(4), "fromMax max 4")
+}

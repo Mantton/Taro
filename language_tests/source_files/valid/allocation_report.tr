@@ -1,0 +1,50 @@
+interface Code {
+    func code() -> int32
+}
+struct Payload { value: int32 }
+conform Payload to Code {
+    func code() -> int32 { self.value }
+}
+
+@noinline
+func read(_ source: &int32) -> int32 { *source }
+
+@noinline
+func returned() -> &int32 {
+    var escaped: int32 = 9
+    &escaped
+}
+
+@noinline
+func boxed(_ payload: Payload) -> any Code { payload }
+
+type Link = &int32
+struct Slot { pending: Link }
+
+@noinline
+func store(_ target: &Slot) {
+    var saved: int32 = 11
+    target.pending = &saved
+}
+
+struct Jobs { pending: any Fn() -> int32 }
+
+@noinline
+func schedule(_ jobs: &Jobs, _ captured: int32) {
+    jobs.pending = () => captured
+}
+
+func main() {
+    var kept: int32 = 7
+    assert(read(&kept) == 7, "local address")
+    assert(*returned() == 9, "returned address")
+    assert(boxed(Payload { value: 42 }).code() == 42, "boxed payload")
+    var seed: int32 = 0
+    var slot = Slot { pending: &seed }
+    store(&slot)
+    assert(*slot.pending == 11, "stored address")
+    var jobs = Jobs { pending: () => 0 }
+    schedule(&jobs, 13)
+    assert(jobs.pending() == 13, "stored callback")
+    println("7 9 42")
+}

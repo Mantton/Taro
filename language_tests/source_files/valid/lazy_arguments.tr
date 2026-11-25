@@ -1,0 +1,15 @@
+struct Counter { n: int32 }
+extend &Counter {
+    func next() -> int32 { self.n += 1; self.n }
+}
+func ignore(_ value: @lazy int32) -> int32 { 0 }
+func once(_ value: @lazy int32) -> int32 { value() }
+func twice(_ value: @lazy int32) -> int32 { value() * 10 + value() }
+func main() {
+    var counter = Counter { n: 0 }
+    var borrowed = &counter
+    assert(ignore(borrowed.next()) == 0 && counter.n == 0, "unused argument")
+    assert(once(borrowed.next()) == 1 && counter.n == 1, "one evaluation")
+    assert(twice(borrowed.next()) == 23 && counter.n == 3, "each invocation evaluates again")
+    println("lazy arguments")
+}

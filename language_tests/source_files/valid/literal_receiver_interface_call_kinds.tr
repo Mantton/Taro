@@ -1,0 +1,101 @@
+// Early typing of an interface call on a receiver that still holds untyped
+// literals, through a generic conformance, a class receiver and a blanket
+// conformance. Each implementation reports the size of the literal's final
+// type, so int32 and int64 give different results.
+struct Wrapped[T] {
+    value: T
+}
+
+interface Width {
+    func width() -> usize
+}
+
+conform[T] Wrapped[T] to Width {
+    func width() -> usize {
+        std::mem::sizeOf[T]()
+    }
+}
+
+class Holder[T] {
+    value: T
+}
+
+extend[T] Holder[T] {
+    init(_ value: T) {
+        self.value = value
+    }
+}
+
+interface Size {
+    func size() -> usize
+}
+
+conform Holder[int32] to Size {
+    func size() -> usize {
+        40
+    }
+}
+
+conform Holder[int64] to Size {
+    func size() -> usize {
+        80
+    }
+}
+
+struct Pair[A, B] {
+    first: A
+    second: B
+}
+
+interface Measure {
+    func measure() -> usize
+}
+
+conform[T] T to Measure {
+    func measure() -> usize {
+        std::mem::sizeOf[T]()
+    }
+}
+
+func main() {
+    // A single generic conformance.
+    printf("%d %v\n", Wrapped { value: 0 }.width() + 1, Wrapped { value: 0.5 }.width() == 8)
+    wrapped := if true {
+        var value = Wrapped { value: 0 }
+        total := value.width() + 1
+        var _: Wrapped[int64] = value
+        total
+    } else {
+        0
+    }
+    printf("%d\n", wrapped)
+
+    // A class receiver with two conformances.
+    printf("%d %v\n", Holder(0).size() + 1, Holder(0).size() == 40)
+    held := if true {
+        var holder = Holder(0)
+        total := holder.size() + 1
+        var _: Holder[int64] = holder
+        total
+    } else {
+        0
+    }
+    printf("%d\n", held)
+
+    // A blanket conformance; an addressable receiver also finds it through
+    // a reference, and the direct receiver is still the one called.
+    printf(
+        "%d %d\n",
+        Pair { first: 0, second: 0 }.measure() + 1,
+        Pair { first: 0, second: 1.5 }.measure(),
+    )
+    measured := if true {
+        var pair = Pair { first: 0, second: 0 }
+        total := pair.measure() + 1
+        var _: Pair[int8, int8] = pair
+        total
+    } else {
+        0
+    }
+    printf("%d\n", measured)
+}

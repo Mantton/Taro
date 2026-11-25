@@ -1,0 +1,7 @@
+func fail() { panic("attempt") }
+func main() {
+    var x: int32
+    errdefer println("${x}")
+    fail()
+    x = 1
+}

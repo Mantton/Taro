@@ -30,6 +30,25 @@ pub fn ty_contains_unresolved_inference(ty: Ty<'_>) -> bool {
     ty.visit_with(&mut UnresolvedInference)
 }
 
+/// The inference variables of a resolved type.
+pub(crate) fn inference_variables<'ctx>(ty: Ty<'ctx>) -> Vec<Ty<'ctx>> {
+    struct Variables<'ctx>(Vec<Ty<'ctx>>);
+    impl<'ctx> TypeVisitor<'ctx> for Variables<'ctx> {
+        fn visit_ty(&mut self, ty: Ty<'ctx>) -> bool {
+            if matches!(ty.kind(), TyKind::Infer(_)) {
+                if !self.0.contains(&ty) {
+                    self.0.push(ty);
+                }
+                return false;
+            }
+            ty.super_visit_with(self)
+        }
+    }
+    let mut variables = Variables(Vec::new());
+    ty.visit_with(&mut variables);
+    variables.0
+}
+
 /// Concrete code generation requires substitution, inference and alias
 /// normalization to have finished, including in constants and closures.
 pub(crate) fn contains_unresolved_generics<'ctx>(value: impl TypeVisitable<'ctx>) -> bool {

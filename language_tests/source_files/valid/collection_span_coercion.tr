@@ -1,0 +1,91 @@
+// ENV: TARO_GC_STRESS=1
+import std::mem::Span
+
+type IntView = Span[int32]
+type IntArray = [int32; 3]
+type IntList = [int32]
+
+func sumView(_ values: IntView) -> int32 {
+    var total: int32 = 0
+    for value in values { total += value }
+    total
+}
+func genericArrayView[T, const N: usize](_ values: &[T; N]) -> Span[T] { values }
+func genericListView[T](_ values: &[T]) -> Span[T] { values }
+func pass[T](_ values: Span[T]) -> Span[T] { values }
+func choose(_ values: &IntArray) -> int32 { 17 }
+func choose(_ values: IntView) -> bool { false }
+func listChoice(_ values: &IntList) -> int32 { 23 }
+func listChoice(_ values: IntView) -> bool { false }
+func once(_ calls: &int32, _ values: &IntArray) -> &IntArray {
+    *calls += 1
+    values
+}
+@noinline
+func escapedArrayView() -> Span[string] {
+    var values: [string; 2] = ["left".concat(" heap"), "right".concat(" heap")]
+    return &values
+}
+@noinline
+func escapedListView() -> Span[string] {
+    var values: [string] = ["old".concat(" buffer"), "second".concat(" value")]
+    var view: Span[string] = &values
+    values.clear()
+    return view
+}
+struct Holder { values: IntView }
+
+func main() {
+    var array: IntArray = [1, 2, 3]
+    var list: IntList = [4, 5, 6]
+    assert(sumView(&array) == 6 && sumView(&list) == 15, "array/list argument views")
+    assert(choose(&array) == 17 && listChoice(&list) == 23, "exact reference overloads win")
+    var view: IntView = &array
+    view[0] = 10
+    assert(array[0] == 10, "array coercion must not copy backing elements")
+    view = &list
+    view[1] = 50
+    assert(list[1] == 50, "list coercion must share elements")
+    var genericA: IntView = genericArrayView(&array)
+    var genericL: IntView = genericListView(&list)
+    assert(genericA[0] == 10 && genericL[1] == 50, "generic return views")
+    var inferred: IntView = pass(&array)
+    inferred[2] = 30
+    assert(array[2] == 30, "generic span argument inference")
+    holder := Holder { values: &array }
+    holder.values[1] = 20
+    assert(array[1] == 20, "field initializer view")
+    var selected: IntView = if true { &array } else { &list }
+    assert(selected[2] == 30, "branch expectations")
+    var callback: (IntView) -> int32 = sumView
+    assert(callback(&array) == 60, "function-pointer arguments")
+    var calls: int32 = 0
+    assert(sumView(once(&calls, &array)) == 60 && calls == 1, "source expression evaluated once")
+    var optional: IntView? = &array
+    assert(optional.unwrap()[0] == 10, "optional payload coercion")
+
+    var literal: IntView = &[7_i32, 8_i32]
+    assert(literal[0] == 7 && literal[1] == 8, "temporary collection view")
+    literal[0] = 70
+    assert(literal[0] == 70, "temporary backing storage remains writable")
+    var emptyArray: [int32; 0] = []
+    var emptyList: [int32] = []
+    assert(sumView(&emptyArray) == 0 && sumView(&emptyList) == 0, "empty views")
+    assert(sumView(&[9, 10]) == 19, "context supplies temporary literal element type")
+
+    var old: IntView = &list
+    var _ = list.removeAt(0)
+    assert(old.len() == 3 && old[0] == 50 && old[2] == 6, "removal shifts slots without resizing a view")
+    list.reserve(128)
+    old[0] = 99
+    assert(list[0] == 50 && old[0] == 99, "growth detaches storage without retargeting existing views")
+    list.clear()
+    std::runtime::collect()
+    assert(old[1] == 6, "cleared owner does not invalidate its old view")
+    escapedA := escapedArrayView()
+    escapedL := escapedListView()
+    std::runtime::collect()
+    assert(escapedA[0] == "left heap" && escapedA[1] == "right heap", "escaped array storage remains live")
+    assert(escapedL[0] == "old buffer" && escapedL[1] == "second value", "escaped list buffer traces its elements")
+    print("PASS: collection reference-to-span coercion\n")
+}

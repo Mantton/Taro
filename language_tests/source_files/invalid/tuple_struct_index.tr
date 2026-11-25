@@ -1,0 +1,5 @@
+struct Count(int64)
+func main() {
+    n := Count(1)
+    n.1
+}

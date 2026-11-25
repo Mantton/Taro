@@ -1,0 +1,459 @@
+import std::default::Default
+import std::iter::{Iterable, Iterator}
+import std::marker::Clone
+import std::ops::{Contains, PartialEq}
+import std::panic::panic
+
+const BITSET_WORD_BITS: usize = 64
+
+func bitSetWordsForBits(_ bits: usize) -> usize {
+    if bits == 0 {
+        return 0 as usize
+    }
+    ((bits - (1 as usize)) / BITSET_WORD_BITS) + (1 as usize)
+}
+
+final class BitSetStorage {
+    words: List[uint64]
+    count: usize
+    version: usize
+}
+
+extend BitSetStorage {
+    init() {
+        self.words = List[uint64]::new()
+        self.count = 0
+        self.version = 0
+    }
+
+    init(withCapacity bits: usize) {
+        self.words = List[uint64]::new(withCapacity: bitSetWordsForBits(bits))
+        self.count = 0
+        self.version = 0
+    }
+
+    init(copying source: BitSetStorage) {
+        self.words = source.words.copy()
+        self.count = source.count
+        self.version = 0
+    }
+}
+
+/// A shared handle to a dynamic word-packed (`uint64`) bit set.
+/// Assignment shares the bit set; `copy()` creates an independent copy.
+/// Equality is canonical and ignores trailing zero words.
+public struct BitSet {
+    internal storage: BitSetStorage
+}
+
+extend BitSet {
+    /// Creates an empty bit set.
+    public static func new() -> Self {
+        BitSet { storage: BitSetStorage() }
+    }
+
+    /// Creates an empty bit set with pre-allocated capacity for at least `bits` indices.
+    public static func new(withCapacity bits: usize) -> Self {
+        BitSet { storage: BitSetStorage(withCapacity: bits) }
+    }
+
+    /// Returns the number of set bits (`1` bits) in the bit set. O(1).
+    @inline
+    public func len() -> usize {
+        self.storage.count
+    }
+
+    /// Returns the number of set bits (`1` bits) in the bit set. O(1).
+    @inline
+    public func countOnes() -> usize {
+        self.storage.count
+    }
+
+    /// Returns `true` if no bits are set. O(1).
+    @inline
+    public func isEmpty() -> bool {
+        self.storage.count == 0
+    }
+
+    /// Clears all bits and releases backing storage.
+    public func clear() {
+        self.storage.words.clear()
+        self.storage.count = 0
+        self.storage.version += 1
+    }
+
+    /// Returns an independent copy of this bit set.
+    public func copy() -> Self {
+        BitSet { storage: BitSetStorage(copying: self.storage) }
+    }
+
+    func ensureWordCount(_ count: usize) {
+        words := self.storage.words
+        if count > words.len() {
+            words.reserve(count)
+            while words.len() < count {
+                words.append(0_u64)
+            }
+        }
+    }
+
+    func recount() {
+        words := self.storage.words
+        var total: usize = 0
+        var i: usize = 0
+        while i < words.len() {
+            total += words[i].countOnes() as usize
+            i += 1
+        }
+        self.storage.count = total
+    }
+
+    /// Returns `true` if `bit` is set. Does not grow storage past the current word count.
+    @inline
+    public func contains(_ bit: usize) -> bool {
+        wordIndex := bit / BITSET_WORD_BITS
+        words := self.storage.words
+        if wordIndex >= words.len() {
+            return false
+        }
+        mask := 1_u64 << ((bit % BITSET_WORD_BITS) as uint64)
+        (words[wordIndex] & mask) != 0_u64
+    }
+
+    /// Sets `bit`, auto-growing storage if needed. Returns `true` if the bit was newly set.
+    public func insert(_ bit: usize) -> bool {
+        wordIndex := bit / BITSET_WORD_BITS
+        self.ensureWordCount(wordIndex + (1 as usize))
+        mask := 1_u64 << ((bit % BITSET_WORD_BITS) as uint64)
+        words := self.storage.words
+        word := words[wordIndex]
+        if (word & mask) != 0_u64 {
+            return false
+        }
+        words[wordIndex] = word | mask
+        self.storage.count += 1
+        self.storage.version += 1
+        return true
+    }
+
+    /// Clears `bit` if set. Does not grow storage past the current word count.
+    /// Returns `true` if the bit was previously set.
+    public func remove(_ bit: usize) -> bool {
+        wordIndex := bit / BITSET_WORD_BITS
+        words := self.storage.words
+        if wordIndex >= words.len() {
+            return false
+        }
+        mask := 1_u64 << ((bit % BITSET_WORD_BITS) as uint64)
+        word := words[wordIndex]
+        if (word & mask) == 0_u64 {
+            return false
+        }
+        words[wordIndex] = word & ~mask
+        self.storage.count -= 1
+        self.storage.version += 1
+        return true
+    }
+
+    /// Flips `bit` (inserts if absent, removes if present).
+    public func toggle(_ bit: usize) {
+        if self.contains(bit) {
+            var _ = self.remove(bit)
+        } else {
+            var _ = self.insert(bit)
+        }
+    }
+
+    /// Sets `bit` to `enabled` (`true` inserts, `false` removes without growing).
+    public func set(_ bit: usize, _ enabled: bool) {
+        if enabled {
+            var _ = self.insert(bit)
+        } else {
+            var _ = self.remove(bit)
+        }
+    }
+
+    /// Mutates `self` to contain the union (`self | other`). O(words).
+    public func unionWith(_ other: BitSet) {
+        if self.storage === other.storage {
+            return
+        }
+        otherWords := other.storage.words
+        otherLen := otherWords.len()
+        if otherLen == 0 {
+            return
+        }
+        self.ensureWordCount(otherLen)
+        words := self.storage.words
+        var i: usize = 0
+        while i < otherLen {
+            words[i] = words[i] | otherWords[i]
+            i += 1
+        }
+        self.recount()
+        self.storage.version += 1
+    }
+
+    /// Mutates `self` to contain the intersection (`self & other`). O(words).
+    public func intersectWith(_ other: BitSet) {
+        if self.storage === other.storage {
+            return
+        }
+        words := self.storage.words
+        otherWords := other.storage.words
+        selfLen := words.len()
+        otherLen := otherWords.len()
+        shared := if selfLen < otherLen { selfLen } else { otherLen }
+        var i: usize = 0
+        while i < shared {
+            words[i] = words[i] & otherWords[i]
+            i += 1
+        }
+        while i < selfLen {
+            words[i] = 0_u64
+            i += 1
+        }
+        self.recount()
+        self.storage.version += 1
+    }
+
+    /// Mutates `self` to remove every bit present in `other` (`self & ~other`). O(words).
+    public func differenceWith(_ other: BitSet) {
+        if self.storage === other.storage {
+            self.clear()
+            return
+        }
+        words := self.storage.words
+        otherWords := other.storage.words
+        selfLen := words.len()
+        otherLen := otherWords.len()
+        shared := if selfLen < otherLen { selfLen } else { otherLen }
+        var i: usize = 0
+        while i < shared {
+            words[i] = words[i] & ~otherWords[i]
+            i += 1
+        }
+        self.recount()
+        self.storage.version += 1
+    }
+
+    /// Mutates `self` to contain the symmetric difference (`self ^ other`). O(words).
+    public func symmetricDifferenceWith(_ other: BitSet) {
+        if self.storage === other.storage {
+            self.clear()
+            return
+        }
+        otherWords := other.storage.words
+        otherLen := otherWords.len()
+        if otherLen == 0 {
+            return
+        }
+        self.ensureWordCount(otherLen)
+        words := self.storage.words
+        var i: usize = 0
+        while i < otherLen {
+            words[i] = words[i] ^ otherWords[i]
+            i += 1
+        }
+        self.recount()
+        self.storage.version += 1
+    }
+
+    /// Returns a new bit set containing the union of `self` and `other`.
+    public func union(_ other: BitSet) -> BitSet {
+        result := self.copy()
+        result.unionWith(other)
+        result
+    }
+
+    /// Returns a new bit set containing the intersection of `self` and `other`.
+    public func intersection(_ other: BitSet) -> BitSet {
+        result := self.copy()
+        result.intersectWith(other)
+        result
+    }
+
+    /// Returns a new bit set containing bits in `self` that are not in `other`.
+    public func difference(_ other: BitSet) -> BitSet {
+        result := self.copy()
+        result.differenceWith(other)
+        result
+    }
+
+    /// Returns a new bit set containing bits present in exactly one of `self` or `other`.
+    public func symmetricDifference(_ other: BitSet) -> BitSet {
+        result := self.copy()
+        result.symmetricDifferenceWith(other)
+        result
+    }
+
+    /// Returns `true` if every bit set in `self` is also set in `other`. O(words).
+    public func isSubset(of other: BitSet) -> bool {
+        if self.storage.count > other.storage.count {
+            return false
+        }
+        if self.storage === other.storage {
+            return true
+        }
+        words := self.storage.words
+        otherWords := other.storage.words
+        selfLen := words.len()
+        otherLen := otherWords.len()
+        var i: usize = 0
+        while i < selfLen {
+            w := words[i]
+            if w != 0_u64 {
+                ow := if i < otherLen { otherWords[i] } else { 0_u64 }
+                if (w & ~ow) != 0_u64 {
+                    return false
+                }
+            }
+            i += 1
+        }
+        return true
+    }
+
+    /// Returns `true` if `self` and `other` share no set bits. O(words).
+    public func isDisjoint(from other: BitSet) -> bool {
+        if self.storage.count == 0 || other.storage.count == 0 {
+            return true
+        }
+        if self.storage === other.storage {
+            return false
+        }
+        words := self.storage.words
+        otherWords := other.storage.words
+        selfLen := words.len()
+        otherLen := otherWords.len()
+        shared := if selfLen < otherLen { selfLen } else { otherLen }
+        var i: usize = 0
+        while i < shared {
+            if (words[i] & otherWords[i]) != 0_u64 {
+                return false
+            }
+            i += 1
+        }
+        return true
+    }
+}
+
+final class BitSetCursor {
+    storage: BitSetStorage
+    wordIndex: usize
+    currentWord: uint64
+    version: usize
+    exhausted: bool
+}
+
+extend BitSetCursor {
+    init(_ storage: BitSetStorage) {
+        self.storage = storage
+        self.wordIndex = 0
+        self.currentWord = 0_u64
+        self.version = storage.version
+        self.exhausted = false
+    }
+
+    func nextBit() -> usize? {
+        if self.exhausted {
+            return .none
+        }
+        storage := self.storage
+        if storage.version != self.version {
+            panic("bitset changed structurally during iteration")
+        }
+        words := storage.words
+        while self.currentWord == 0_u64 {
+            if self.wordIndex >= words.len() {
+                self.exhausted = true
+                return .none
+            }
+            self.currentWord = words[self.wordIndex]
+            self.wordIndex += 1
+        }
+        tz := self.currentWord.trailingZeros() as usize
+        self.currentWord = self.currentWord & (self.currentWord - 1_u64)
+        baseWord := self.wordIndex - (1 as usize)
+        return .some(baseWord * BITSET_WORD_BITS + tz)
+    }
+}
+
+/// Fast ascending iterator over set bit indices in O(words + set bits).
+public struct BitSetIterator {
+    internal cursor: BitSetCursor
+}
+
+conform BitSetIterator to Iterator {
+    type Element = usize
+
+    public func next() -> usize? {
+        self.cursor.nextBit()
+    }
+}
+
+conform BitSetIterator to Iterable {
+    type Element = usize
+    type Iterator = BitSetIterator
+
+    public func iter() -> Self::Iterator { self }
+}
+
+conform BitSet to Iterable {
+    type Element = usize
+    type Iterator = BitSetIterator
+
+    public func iter() -> Self::Iterator {
+        BitSetIterator { cursor: BitSetCursor(self.storage) }
+    }
+}
+
+conform BitSet to Contains[usize] {
+    public func contains(_ bit: &usize) -> bool {
+        self.contains(*bit)
+    }
+}
+
+conform BitSet to Default {
+    public static func default() -> Self { Self::new() }
+}
+
+conform BitSet to Clone {
+    public func clone() -> Self { self.copy() }
+}
+
+/// Canonical bit-set equality ignoring trailing zero words.
+conform BitSet to PartialEq {
+    public func eq(_ other: Self) -> bool {
+        if self.storage.count != other.storage.count {
+            return false
+        }
+        if self.storage.count == 0 || self.storage === other.storage {
+            return true
+        }
+        lhs := self.storage.words
+        rhs := other.storage.words
+        lhsLen := lhs.len()
+        rhsLen := rhs.len()
+        shared := if lhsLen < rhsLen { lhsLen } else { rhsLen }
+        var i: usize = 0
+        while i < shared {
+            if lhs[i] != rhs[i] {
+                return false
+            }
+            i += 1
+        }
+        while i < lhsLen {
+            if lhs[i] != 0_u64 {
+                return false
+            }
+            i += 1
+        }
+        while i < rhsLen {
+            if rhs[i] != 0_u64 {
+                return false
+            }
+            i += 1
+        }
+        return true
+    }
+}

@@ -1,0 +1,8 @@
+error: unknown associated symbol named 'ALL_CASES' on type 'RawOnly'
+ -> language_tests/source_files/invalid/enum_convenience_opt_ins.tr:3:43
+	func missingCases() { for item in RawOnly::ALL_CASES { println("unexpected") } }
+	                                           ^^^^^^^^^
+error: no member named 'rawValue' found on type CasesOnly
+ -> language_tests/source_files/invalid/enum_convenience_opt_ins.tr:4:29
+	func missingRaw() -> uint8 { CasesOnly::first.rawValue }
+	                             ^^^^^^^^^^^^^^^^^^^^^^^^^

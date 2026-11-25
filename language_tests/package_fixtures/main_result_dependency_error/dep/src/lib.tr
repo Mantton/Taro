@@ -1,0 +1,18 @@
+public struct LookupError {
+    key: string
+}
+
+conform LookupError to std::fmt::Display {
+    public func display(_ into: &std::fmt::Formatter) {
+        into.writeString("no setting named '${self.key}'")
+    }
+}
+
+conform LookupError to std::error::Error {}
+
+public func setting(_ key: string) -> Result[int32, LookupError] {
+    if key == "workers" {
+        return .ok(4)
+    }
+    return .err(LookupError { key })
+}

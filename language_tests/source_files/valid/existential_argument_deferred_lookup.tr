@@ -1,0 +1,123 @@
+// A method call on a receiver whose type still waits for its own literal
+// default (`(0..10).iter()`, `Box { v: 0 }`) is resolved only after that
+// default. Passed straight to an `any` parameter, its result must be boxed
+// once known, rather than having its type fixed to the existential first.
+struct Box[T] {
+    v: T
+}
+
+interface Takes {
+    func takeIt(_ n: usize) -> usize {
+        n
+    }
+
+    func describe() -> any std::fmt::Display {
+        "described"
+    }
+
+    subscript(_ index: usize) -> usize {
+        get {
+            index * 2
+        }
+    }
+}
+
+interface Sized {
+    var size: usize { get }
+}
+
+interface PickNarrow {
+    func pick() -> int32 {
+        1
+    }
+}
+
+interface PickWide {
+    func pick() -> any std::fmt::Display {
+        "wide"
+    }
+}
+
+conform[T] Box[T] to Takes {}
+conform[T] Box[T] to PickNarrow {}
+conform[T] Box[T] to PickWide {}
+conform[T] Box[T] to Sized {
+    var size: usize {
+        get {
+            9
+        }
+    }
+}
+
+func showAll(_ values: any std::fmt::Display...) {
+    for value in values {
+        print("${value} ")
+    }
+    println("|")
+}
+
+func showPair(_ value: any std::fmt::Display, _ count: int32) {
+    println("${value} ${count}")
+}
+
+func choose(_ value: int64) {
+    println("int64 ${value}")
+}
+
+func choose(_ value: any std::fmt::Display) {
+    println("any ${value}")
+}
+
+func run(_ produce: () -> any std::fmt::Display) {
+    println("${produce()}")
+}
+
+func describeSix() -> any std::fmt::Display {
+    return Box { v: 0 }.takeIt(6)
+}
+
+func main() {
+    // printf with the deferred result first, last and in the middle.
+    printf("%d %d\n", (0..10).iter().count(), 1)
+    printf("%d %d\n", 2, (0..10).iter().skip(4).count())
+    printf("%d %d %d\n", 3, (0..10).iter().count(), 4)
+    printf("%d %d %d\n", (0..5).iter().count(), (1..4).iter().count(), 5)
+    printf("%d %d\n", (0..10).iter().map(x => x * 2).filter(x => x > 4).count(), 6)
+
+    // The Box form, an integer and a float literal receiver.
+    printf("%d %d\n", Box { v: 0 }.takeIt(3), 1)
+    printf("%d %d\n", Box { v: 1.5 }.takeIt(4), 2)
+    printf("%v %d\n", Box { v: 0 }.describe(), 3)
+
+    // User functions: a variadic `any` parameter and a plain one.
+    showAll((0..10).iter().count(), 1, Box { v: 2.5 }.takeIt(7))
+    showPair((0..10).iter().count(), 1)
+    showPair(Box { v: 0 }.takeIt(3), 2)
+    showPair(Box { v: 0 }[4], 3)
+    showPair(Box { v: 0 }.size, 4)
+
+    // A local that shares the call's type inside a block.
+    if true {
+        total := (0..10).iter().count()
+        printf("%d %d\n", total, 7)
+    }
+
+    // Annotated locals, collection elements, closure and function results.
+    var annotated: any std::fmt::Display = Box { v: 0 }.takeIt(8)
+    println("${annotated}")
+    var values: [any std::fmt::Display] = [Box { v: 0 }.takeIt(9), "nine"]
+    for value in values {
+        print("${value} ")
+    }
+    println("|")
+    run(() => Box { v: 0 }.takeIt(5))
+    println("${describeSix()}")
+
+    // An overload set: the usize result needs the `any` candidate. A result
+    // that is exactly int64 still selects the int64 candidate.
+    choose(Box { v: 0 }.takeIt(10))
+    choose(Box[int32] { v: 0 }.takeIt(11) as int64)
+
+    // The existential still selects the lookup's candidate by result type.
+    showPair(Box { v: 0 }.pick(), 8)
+}

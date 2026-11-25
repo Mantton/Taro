@@ -1,0 +1,130 @@
+func bump(_ counter: &int32) -> usize {
+    *counter += 1
+    1
+}
+
+func bumpArg(_ counter: &int32) -> int32 {
+    *counter += 1
+    7
+}
+
+func addTwo(_ a: int32, _ b: int32) -> int32 {
+    a + b
+}
+
+func maybeHalf(_ x: int32) -> int32? {
+    if x % 2 == 0 {
+        .some(x / 2)
+    } else {
+        .none
+    }
+}
+
+func callGeneric[F: Fn(int32) -> int32](_ cb: F?, _ value: int32) -> int32? {
+    cb?.(value)
+}
+
+func applyWithTrailing(_ cb: ((int32, (int32) -> int32) -> int32)?, _ x: int32) -> int32? {
+    cb?.(x) { it * 3 }
+}
+
+struct Holder {
+    items: List[int32]
+    onValue: ((int32) -> int32)?
+}
+
+func main() {
+    // List, Array, Dictionary, and Span optional subscripts
+    var listOpt: List[int32]? = .some([10, 20, 30])
+    var listNone: List[int32]? = .none
+    assert((listOpt?.[1] ?? -1) == 20)
+    assert((listNone?.[1] ?? -1) == -1)
+
+    var arrOpt: [int32; 3]? = .some([4, 5, 6])
+    var arrNone: [int32; 3]? = .none
+    assert((arrOpt?.[2] ?? -1) == 6)
+    assert((arrNone?.[0] ?? -1) == -1)
+
+    var dictOpt: Dictionary[string, int32]? = .some(["k": 99])
+    var dictNone: Dictionary[string, int32]? = .none
+    assert((dictOpt?.["k"] ?? -1) == 99)
+    assert((dictNone?.["k"] ?? -1) == -1)
+
+    var base = [100, 200, 300, 400]
+    var spanOpt: Span[int32]? = .some(base.asSpan())
+    var sliced = spanOpt?.[1..3]
+    guard var s = sliced else { panic("expected sliced span") }
+    assert(s.len() == 2 && s[0] == 200 && s[1] == 300)
+
+    // Chained optional subscripts `grid?.[r]?.[c]`
+    var row0: List[int32]? = .some([7, 8, 9])
+    var row1: List[int32]? = .none
+    var gridOpt: List[List[int32]?]? = .some([row0, row1])
+    var gridNone: List[List[int32]?]? = .none
+    assert((gridOpt?.[0]?.[2] ?? -1) == 9)
+    assert((gridOpt?.[1]?.[0] ?? -1) == -1)
+    assert((gridNone?.[0]?.[0] ?? -1) == -1)
+
+    // Optional struct field followed by normal subscript and optional call
+    var holderOpt: Holder? = .some(Holder { items: [11, 22], onValue: .some((x: int32) => x + 5) })
+    var holderNone: Holder? = .none
+    assert((holderOpt?.items[1] ?? -1) == 22)
+    assert((holderNone?.items[1] ?? -1) == -1)
+    assert((holderOpt?.onValue?.(10) ?? -1) == 15)
+    assert((holderNone?.onValue?.(10) ?? -1) == -1)
+
+    // Function pointer, boxed existential `any Fn`, generic `F: Fn`, unit return, and flattening
+    var fnOpt: ((int32, int32) -> int32)? = .some(addTwo)
+    var fnNone: ((int32, int32) -> int32)? = .none
+    assert((fnOpt?.(3, 4) ?? -1) == 7)
+    assert((fnNone?.(3, 4) ?? -1) == -1)
+
+    var offset: int32 = 10
+    var boxedOpt: (any Fn(int32) -> int32)? = .some((x: int32) => x + offset)
+    var boxedNone: (any Fn(int32) -> int32)? = .none
+    assert((boxedOpt?.(5) ?? -1) == 15)
+    assert((boxedNone?.(5) ?? -1) == -1)
+
+    assert((callGeneric(.some((x: int32) => x * 2), 6) ?? -1) == 12)
+    var noGen: ((int32) -> int32)? = .none
+    assert((callGeneric(noGen, 6) ?? -1) == -1)
+
+    // Unit-returning optional call produces `Optional[()]`
+    var ranUnit: int32 = 0
+    var unitCb: (any Fn() -> ())? = .some(() => { ranUnit += 1 })
+    var unitNone: (any Fn() -> ())? = .none
+    assert((unitCb?.()).isSome())
+    assert(ranUnit == 1)
+    assert((unitNone?.()).isNone())
+    assert(ranUnit == 1)
+
+    // Optional-returning callable flattens `T??` to `T?`
+    var halfOpt: ((int32) -> int32?)? = .some(maybeHalf)
+    var halfNone: ((int32) -> int32?)? = .none
+    var evenRes: int32? = halfOpt?.(8)
+    var oddRes: int32? = halfOpt?.(7)
+    var noneRes: int32? = halfNone?.(8)
+    assert((evenRes ?? -1) == 4)
+    assert(oddRes.isNone())
+    assert(noneRes.isNone())
+
+    // Same-line trailing closure with optional call
+    var runner: ((int32, (int32) -> int32) -> int32)? = .some((v: int32, f: (int32) -> int32) => f(v) + 1)
+    assert((applyWithTrailing(runner, 4) ?? -1) == 13)
+    assert((applyWithTrailing(.none, 4) ?? -1) == -1)
+
+    // Short-circuit side-effect checks: skipped on `.none`, evaluated once on `.some`
+    var idxCalls: int32 = 0
+    _ = listNone?.[bump(&idxCalls)]
+    assert(idxCalls == 0)
+    assert((listOpt?.[bump(&idxCalls)] ?? -1) == 20)
+    assert(idxCalls == 1)
+
+    var argCalls: int32 = 0
+    _ = fnNone?.(bumpArg(&argCalls), bumpArg(&argCalls))
+    assert(argCalls == 0)
+    assert((fnOpt?.(bumpArg(&argCalls), 3) ?? -1) == 10)
+    assert(argCalls == 1)
+
+    print("optional chaining subscript call ok\n")
+}

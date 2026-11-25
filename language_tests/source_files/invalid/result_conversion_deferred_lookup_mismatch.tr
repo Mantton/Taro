@@ -1,0 +1,8 @@
+struct Box[T] { value: T }
+interface Count { func count() -> usize; }
+conform Box[int32] to Count { func count() -> usize { 7 }; }
+interface StringCount { func count() -> string; }
+conform Box[int64] to StringCount { func count() -> string { "seven" }; }
+func inferred() -> Result[bool, string] { Box { value: 0 }.count() }
+func annotated() -> Result[bool, string] { Box[int32] { value: 0 }.count() }
+func main() {}

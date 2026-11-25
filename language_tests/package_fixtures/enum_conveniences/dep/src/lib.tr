@@ -1,0 +1,16 @@
+public enum Status[T]: CaseIterable, RawValue[uint16] { case ready = 512, done = 747 }
+public func read[R, T: RawValue[R]](_ value: T) -> R { value.rawValue }
+public type ByteStatus = Status[uint8]
+public const DEFAULT_STATUS: ByteStatus = .ready
+extend[T] Status[T] {
+    public const DEFAULT: Self = .ready
+}
+extend Status[int64] { public const LIMIT: uint16 = 747; }
+public interface Preferred { const PREFERRED: Self; }
+conform[T] Status[T] to Preferred { const PREFERRED: Self = .done; }
+public func preferred[T: Preferred](_ value: T) -> T { T::PREFERRED }
+public func labels[T: CaseIterable](_ value: T) -> string {
+    var result = ""
+    for item in T::ALL_CASES { result = result + item.name }
+    result
+}

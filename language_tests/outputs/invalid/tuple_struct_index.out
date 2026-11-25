@@ -1,0 +1,4 @@
+error: positional field .1 is out of bounds for Count (1 field)
+ -> language_tests/source_files/invalid/tuple_struct_index.tr:4:5
+	    n.1
+	     ^^

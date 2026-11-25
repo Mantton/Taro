@@ -6,7 +6,7 @@ This chapter covers all expression types in Taro, organized by precedence (lowes
 
 From lowest to highest precedence:
 
-1. Assignment: `=`, `+=`, `-=`, etc.
+1. Assignment: `=`, `+=`, `-=`, `??=`, etc.
 2. Pipe: `|>`
 3. Ternary: `? :`
 4. Nil-coalescing: `??`
@@ -14,16 +14,17 @@ From lowest to highest precedence:
 6. Logical OR: `||`
 7. Logical AND: `&&`
 8. Comparison: `<`, `>`, `<=`, `>=`, `==`, `!=`
-9. Bitwise OR: `|`
-10. Bitwise XOR: `^`
-11. Bitwise AND: `&`
-12. Bit shift: `<<`, `>>`
-13. Term: `+`, `-`
-14. Factor: `*`, `/`, `%`
-15. Cast / Type Assertion: `as`, `as?`, `is`
-16. Prefix: `!`, `-`, `~`, `&`, `*`
-17. Postfix: `.`, `()`, `[]` (specialization or indexing), `!`, `?.`
-18. Primary
+9. Membership: `in`, `!in`
+10. Bitwise OR: `|`
+11. Bitwise XOR: `^`
+12. Bitwise AND: `&`
+13. Bit shift: `<<`, `>>`
+14. Term: `+`, `-`
+15. Factor: `*`, `/`, `%`
+16. Cast / Type Assertion: `as`, `as?`, `is`
+17. Prefix: `!`, `-`, `~`, `&`, `*`
+18. Postfix: `.`, `()`, `[]` (specialization or indexing), `!`, `?.`
+19. Primary
 
 `await` scopes the following expression. Async calls complete before their results
 are used: `await operation() + 1` and `await operation()!`.
@@ -38,7 +39,7 @@ are used: `await operation() + 1` and `await operation()!`.
 42                  // Integer
 3.14                // Float
 "hello"             // String
-f"hello, {name}"    // Interpolated string (f-string)
+"hello, ${name}"    // Interpolated string
 'a'                 // Rune
 true                // Bool
 false               // Bool
@@ -75,9 +76,14 @@ out := value;
 
 ### Wildcard
 
-`_` discards a value in a binding pattern (`var _ = expression`). As an
-expression, it is only supported as one top-level argument placeholder on the
-right-hand side of a pipe:
+`_` discards a value in a binding pattern (`var _ = expression` or
+`_ := expression`), as an assignment destination (`_ = expression`), ignores a
+tuple assignment component (`(value, _) = pair`), or consumes an ignored
+closure parameter (`_ => 42`). It never binds a name. `_ = expression`
+evaluates the expression once and drops its value; it is the usual way to
+ignore a `Result` on purpose (see [Unused Results](#unused-results)).
+As a value expression, it is only supported as one top-level argument
+placeholder on the right-hand side of a pipe:
 
 ```taro
 value |> combine(other, _)   // combine(other, value)
@@ -117,6 +123,10 @@ var array: [int32; 3] = [1, 2, 3]
 var zeros: [int32; 10] = [0; 10]
 ```
 
+A repetition evaluates its element once. A fixed-array annotation or type
+alias supplies the element type, including conversions such as wrapping a
+value in an Optional. The count must match the length of the destination.
+
 Element literals default to fixed-size arrays when no collection type is
 determined by context. An expected `List[T]` type selects list construction,
 including when a generic call's other arguments or result determine that type:
@@ -132,6 +142,22 @@ assign(&values, [])
 This applies to literals, not to existing array values: passing an array does
 not implicitly convert it into a list. `[value; count]` requires a compile-time
 count and constructs an array; it does not construct a dynamic list.
+
+Postfix `...` inserts the elements of an `Iterable` into a collection literal.
+Each source is evaluated once and exhausted before the next element expression.
+
+```taro
+var pair: [int32; 2] = [1, 2]
+four := [0, pair..., 3]                // [int32; 4]
+var more: List[int32] = [4, 5]
+values := [four..., more...]           // List[int32]
+var wrapped: List[int32?] = [pair...]  // converts each integer to Optional
+```
+
+A literal preserves a fixed array length when its contributions have a known
+total length. A runtime-length source such as a List or Span produces a List
+and is rejected in a fixed-array context. An explicit List context always
+produces a List. The result owns its element slots.
 
 ---
 
@@ -377,17 +403,120 @@ resultValue!        // Extract T from Result[T, E], or return .err(error)
 - `Optional[T]!` requires the enclosing function, closure, or default-value provider to return `Optional[_]`.
 - `Result[T, E]!` requires the enclosing function, closure, or default-value provider to return `Result[_, TargetE]`.
 - When `E` and `TargetE` are identical, propagation forwards the error directly.
-  Otherwise, `TargetE` must implement `From[E]`; propagation calls that
+- When `TargetE` is an existential such as `any std::error::Error` and `E` is
+  not, propagation boxes the error, as returning it would; `E` must conform to
+  the existential's interfaces.
+- Otherwise, `TargetE` must implement `From[E]`; propagation calls that
   conversion before returning `.err`.
 - `Optional` and `Result` do not mix. You cannot propagate an `Optional` from a `Result` context or vice versa.
 - To propagate an awaited value, write `await expr!` or `(await expr)!`.
+
+### Unused Results
+
+A `Result` that is computed and then thrown away hides its error. The compiler
+warns when the value of an expression whose type is `Result[T, E]` (including
+an alias of it) is not used: an expression statement, the value of an `if`,
+`match` or block used as a statement, or the last expression of a function,
+loop or `defer` body that returns nothing.
+
+```taro
+file.write(data)            // warning: unused 'Result[usize, Error]'; handle it,
+                            // propagate it with `!`, or discard it with `_ = ...`
+file.write(data)!           // propagate the error
+_ = file.write(data)        // discard it on purpose
+match file.write(data) {    // handle it
+    case .ok(_) => {}
+    case .err(error) => report(error)
+}
+```
+
+Binding the value (`var _ = expr`, `_ := expr`, `count := expr`), returning
+it, passing it on, or using it as the value of a block does not warn.
+`Optional` and other types are never reported.
+
+A function whose result is normally ignored can opt out with
+`@discardableResult`. Calls to it, including calls through a generic bound or
+an `any` existential to an interface requirement that carries the attribute,
+do not warn:
+
+```taro
+@discardableResult
+func log(_ line: string) -> Result[(), Error] { ... }
+
+log("started")              // no warning
+```
+
+The warning is reported only for the package being compiled, never for its
+dependencies, and it does not change the exit status of `taro build`, `run`,
+`test` or `check`. A package reused unchanged from the incremental cache is
+not checked again; the warnings stored with its cached metadata are printed
+again instead, so they do not disappear on the second build. The same holds
+for the unused import and unused variable warnings below.
+
+### Unused Imports
+
+An imported name that nothing in its file uses warns once, at the name:
+
+```taro
+import std::fs                              // warning: unused import 'fs'
+import std::fmt::{Display, Formatter}       // warning: unused import 'Formatter'
+```
+
+An import is used when code refers to it as a type, a value, a path prefix
+(`fs::read(...)`), an interface in a conformance list or a bound, or inside a
+string interpolation. Importing an interface also makes its methods callable
+on conforming types, so an interface import is used when a method call finds
+one of its methods, even if the interface is never named. A declaration that
+`@cfg` removes for the current target still counts: an import it names does
+not warn.
+
+Glob imports (`import std::fmt::*`), `export` re-exports, imports inside a
+`namespace` (other code can reach them as `Namespace::Name`) and the prelude
+are never reported. Like the unused `Result` warning, it applies only to the
+package being compiled and does not change the exit status.
+
+### Unused Variables
+
+A local that is declared and never read warns once, at its name:
+
+```taro
+func area(_ shape: Shape) -> int32 {
+    scale := 2      // warning: unused variable 'scale'; prefix it with '_'
+                    // if this is intended
+    match shape {
+        case .rect(width, height) => width   // warning: unused variable 'height'
+        case .circle(radius) => radius * radius
+    }
+}
+```
+
+The check covers `:=` and `var` declarations, tuple and other destructuring
+patterns, and the bindings of `match` arms, `if var`, `guard var`, `while var`
+and `for` loops. A binding repeated across the alternatives of an or-pattern
+is one variable and warns once. A local counts as read when any expression
+reads it, including a closure body, a string interpolation, a `defer` block
+or a compound assignment such as `count += 1`. Assigning it with `=` is not a
+read, so a variable that is only ever assigned still warns.
+
+Names that start with `_` are exempt, as are the parameters of functions,
+methods, initializers and closures, `self`, and the bindings the compiler
+creates for `for` loops, optional chaining and other desugaring. Use `_name`
+to keep a binding on purpose, or `_ = expression` when only the effect of
+the expression matters.
 
 ### Optional Chaining
 
 ```taro
 user?.profile?.name
 object?.method()
+grid?.[row]?.[col]
+callback?.("ready", 200)
 ```
+
+Optional chaining short-circuits when the receiver is `.none`: subsequent
+member accesses, index expressions, and call arguments are skipped and the whole
+chain produces `.none`. Optional chains are read-only expressions and cannot be
+used as assignment targets or reference places (`&`).
 
 ---
 
@@ -403,6 +532,19 @@ a / b               // Division
 a % b               // Remainder
 ```
 
+With overflow checks on (the debug default), integer `+`, `-` and `*` panic on
+overflow; with checks off they wrap. To choose per operation, every integer
+type has `checkedAdd`, `checkedSub` and `checkedMul` (returning `.none` on
+overflow), `wrappingAdd`, `wrappingSub` and `wrappingMul` (two's complement,
+never panic), and `saturatingAdd`, `saturatingSub` and `saturatingMul` (clamp
+to the type's minimum or maximum). They behave the same in every build profile.
+
+```taro
+hash = (hash ^ (byte as uint64)).wrappingMul(0x100000001b3)
+seed = seed.wrappingMul(1664525).wrappingAdd(1013904223)
+count = count.saturatingAdd(1)
+```
+
 ### Comparison
 
 ```taro
@@ -412,6 +554,56 @@ a < b               // Less than
 a > b               // Greater than
 a <= b              // Less or equal
 a >= b              // Greater or equal
+```
+
+### Membership
+
+```taro
+x in 0..width       // (0..width).contains(&x)
+word !in seen       // !seen.contains(&word)
+'a' in "banana"     // a rune
+"nan" in "banana"   // a substring
+key in dictionary   // dictionary keys
+code in [200, 204]  // array elements
+```
+
+`a in b` calls `contains` from `Contains[Element]` on `b`, passing `a` by
+reference, so testing a large value does not copy it and you never write `&`.
+`!in` negates the result. Ranges, `List`, `[T; N]`, `Span`, `Set`, `Deque`,
+`Dictionary` and `Counter` (by key) and `string` (by `rune` or by substring)
+conform; `Optional` does not. The element is evaluated before the container.
+
+The container side binds a range tighter than `in`, and `in` binds tighter
+than `==`, `!=`, `&&` and `||`:
+
+```taro
+x + 1 in 0..n               // (x + 1) in (0..n)
+row in 0..rows && column in 0..columns
+!(item in allowed)          // same as item !in allowed
+```
+
+Membership does not chain: `a in b in c` is an error, so write `(a in b) in c`.
+`!in` needs `!` to touch the word `in`: `value !in set` and `value!in set` are
+negated membership, while `value! in set` propagates `value` first and then
+tests it.
+
+A type takes part by conforming, once per element type it can contain:
+
+```taro
+struct Grid { width: int32; height: int32 }
+struct Cell { column: int32; row: int32 }
+
+conform Grid to Contains[Cell] {
+    func contains(_ cell: &Cell) -> bool {
+        cell.column in 0..self.width && cell.row in 0..self.height
+    }
+}
+
+func countInside[C: Contains[Cell]](_ area: C, _ cells: List[Cell]) -> int32 {
+    var count: int32 = 0
+    for cell in cells where cell in area { count += 1 }
+    count
+}
 ```
 
 ### Logical
@@ -437,6 +629,7 @@ a >> n              // Right shift
 
 ```taro
 x = value           // Simple assignment
+_ = value           // Evaluate value and discard it
 
 // Compound assignments
 x += 1              // Add and assign
@@ -474,6 +667,30 @@ change the original storage, while a class or shared-handle value can mutate
 shared state. There is no fallback from `+=` to `+` followed by assignment, and
 no implicit writeback of a value receiver. `counter += counter` is allowed.
 
+### Assigning a Default
+
+`target ??= value` stores `value` only when `target` is nil:
+
+```taro
+var cache: [string: string?] = [:]
+cache["home"] = nil
+cache["home"] ??= "/Users/ada"   // assigns
+cache["home"] ??= "/tmp"         // keeps "/Users/ada"
+
+var retries: int32? = nil
+retries ??= 3
+```
+
+The target must be an assignable `T?`, and the value may be a `T` or a `T?`.
+The target's own parts, such as a receiver or an index, run once and first;
+the value runs only when the target is nil, so it may be an expensive call,
+an `await` or a `!` propagation. Like the other compound assignments,
+`??=` produces `()`. A subscript target needs an address accessor or a set
+accessor. A dictionary's subscript returns its value type, so
+`counts[word] ??= 0` on `[string: int32]` is an error, and on
+`[string: int32?]` it still panics for a missing key. For a key that may be
+missing, test `word !in counts` first.
+
 Built-in numeric compound assignment writes back to its destination and requires
 writable storage or a native subscript setter. A custom value receiver can operate on a
 getter result without a setter. As with named methods, `readonly` blocks direct
@@ -485,11 +702,50 @@ immutable. A reference receiver still requires addressable storage.
 ## Range Expressions
 
 ```taro
-1..10               // Exclusive range [1, 10)
-1..=10              // Inclusive range [1, 10]
-start..end
-start..=end
+1..10               // Range[T]: half-open [1, 10)
+1..=10              // ClosedRange[T]: inclusive [1, 10]
+start..             // RangeFrom[T]: lower-bounded [start, +∞)
+..end               // RangeTo[T]: upper-bounded (-∞, end)
+..=end              // RangeToInclusive[T]: inclusive upper-bounded (-∞, end]
+..                  // RangeFull: unbounded
+(1..=10).reversed() // 10, 9, ..., 1
 ```
+
+Ranges operate over a bound type that conforms to `Step`. `Range`, `ClosedRange`,
+and `RangeFrom` are `Iterable`; `RangeTo`, `RangeToInclusive`, and `RangeFull`
+are not iterable and are rejected by `for ... in`. An empty or descending bounded
+range (`5..5`, `5..3`, `5..=4`) yields nothing. `reversed()` yields the same
+elements from the high end down; it never steps past either bound, so
+`(0..n).reversed()` is safe for `usize` and a range may end at a type's maximum.
+`RangeFrom` advances lazily on the next `next()` call so yielding `Bound::MAX`
+(for example, `(254_u8..).take(2)`) does not step past the maximum; requesting an
+element beyond `Bound::MAX` invokes `stepForward()` and follows integer overflow
+rules (panicking in debug builds). A custom `Step` type implements `stepForward()`
+and `stepBackward()`.
+
+All six range types support membership tests via `Contains`:
+- `value in start..end` tests `start <= value < end`
+- `value in start..=end` tests `start <= value <= end`
+- `value in start..` tests `start <= value`
+- `value in ..end` tests `value < end`
+- `value in ..=end` tests `value <= end`
+- `value in ..` is always `true`
+
+Range operators are non-associative (`a..b..c` is a syntax error) and `..=`
+always requires an upper bound (`a..=` is rejected). An upper bound after `..`
+is only parsed when it begins on the **same line**, and outside `()` and `[]`,
+`..` / `..=` at the start of a new line do not continue the previous line:
+
+```taro
+r := start..        // ASI inserts `;` after `..`
+nextCall()          // separate statement, not `start..nextCall()`
+```
+
+`Span`, `List`, `[T; N]`, and `string` support slicing with all six range forms
+(`items[1..]`, `items[..3]`, `items[..=2]`, `items[..]`). `string` range
+subscripts slice by **UTF-8 byte offset** (matching `string.sliceBytes`), panicking
+when out of bounds or inverted; use `sliceRunes` when slicing by decoded rune
+count.
 
 ---
 
@@ -502,6 +758,8 @@ optional ?? default
 user?.name ?? "Unknown"
 getValue() ?? computeDefault()
 ```
+
+To store the default back into an optional, use `target ??= default`.
 
 ---
 
@@ -600,7 +858,13 @@ Anonymous functions.
 
 ```taro
 // Basic closure
-(x) => x * 2
+x => x * 2
+(x) => x * 2 // Equivalent parenthesized form
+
+// Ignored parameters still consume arguments, but bind no name
+_ => 42
+(_, value) => value
+(_: int32) => 42
 
 // Empty parameters
 () => 42
@@ -638,11 +902,42 @@ observes the new value, and closure writes are visible to the enclosing code.
 The GC retains escaping variable storage. Copies of a closure share that state.
 There is no `move` capture mode.
 
+Parentheses may be omitted only for one unannotated parameter, including `_`.
+Explicit parameter/result types, explicit async headers, and multiple parameters
+require parentheses. Type inference, contextual async inference, captures, and
+expression/block bodies behave identically in both forms. Nested arrows associate
+to the right: `x => y => x + y` returns a closure capturing `x`.
+
 Named inline fields may be captured separately; overlapping paths merge. Class
 field access captures the class variable so later handle rebinding is observed.
 `Fn` and `AsyncFn` both support repeated stateful calls. Async calls require an
 enclosing `await` expression; independent tasks can invoke the same callable,
 using explicit synchronization when their shared writes need ordering.
+
+### Trailing closures and implicit `it`
+
+When a call's final argument is a closure, it may be written as a brace-delimited
+trailing closure on the same line as the call, omitting that parameter's label.
+When it is the sole argument, empty parentheses may be omitted as well.
+
+```taro
+evens := numbers.filter { it % 2 == 0 }
+sum := combine(base: 5) { a, b => a + b }
+result := await runAsync { await compute() }
+```
+
+- An explicit header (`a, b =>`) declares parameters inside the braces.
+- A headerless body that references a free `it` synthesizes a single `it` parameter;
+  otherwise it takes zero parameters.
+- Shadowing an outer `it` with a nested implicit `it` emits a compiler warning;
+  name parameters explicitly when nesting.
+- A brace on a new line does not attach as a trailing closure.
+- `Name { ... }` retains struct literal recognition for explicit fields, update bases,
+  and uppercase empty or single-identifier constructors.
+- Bare trailing closures are excluded from `if`, `guard`, `while`, `for`, and `match`
+  heads; wrap the call in parentheses when needed inside a condition.
+- Async is inferred from the receiving parameter (`AsyncFn` or `async` function type)
+  or from `await` inside the body.
 
 ### Bound methods
 
@@ -739,7 +1034,7 @@ import std::collections::{List}
 func main() {
     var values = List[int32]::new()
     values.append(7)
-    println(f"{values.len()}")
+    println("${values.len()}")
 }
 ```
 
@@ -783,3 +1078,49 @@ Known Result values are never implicitly nested or unwrapped; nested Results use
 explicit `.ok(innerResult)`. Postfix `!` remains explicit propagation.
 For a unit success, use `()` or a void-valued expression. Empty-return and
 fallible-initializer construction rules remain unchanged.
+
+## Source locations and debug output
+
+`#file` gives the source path relative to the package root, including `src/`.
+In a standalone script it gives the filename. `#line` gives the one-based
+line number as an `int32`. `#function` gives the nearest named function,
+method or initializer. A closure inherits that name. At module scope the
+value is `"<module>"`.
+
+A location in an omitted parameter's default expression describes the call.
+For example, calling `report()` on line 20 prints 20, including when
+`report` comes from another package.
+
+```taro
+func report(line: int32 = #line) {
+    println("${line}")
+}
+```
+
+`dbg(expression)` evaluates its operand once, writes
+`[file:line] expression = value` and a newline to standard error, and
+returns the value with its original type. The type must implement `Debug`.
+The prelude exports `dbg`, so a local declaration can shadow it.
+Passing `dbg` as a function value prints the debug representation alone
+when invoked indirectly.
+
+```taro
+total := dbg(subtotal + tax) * quantity
+```
+
+## Embedded assets
+
+Both directives take a literal path relative to the source file containing the
+directive. A library can embed its own assets and export their values to other
+packages. Changing an asset rebuilds the library and its consumers.
+
+```taro
+const PAGE: string = #embed("../assets/index.html")
+const MAGIC: [uint8; 4] = #embedBytes("../assets/magic.bin")
+```
+
+`#embed` preserves UTF-8 text, including original line endings and embedded
+NULs. `#embedBytes` accepts arbitrary bytes. The file size determines the
+fixed array length, so a local binding such as `icon := #embedBytes("icon.bin")`
+infers it. Both forms support empty files. The compiled program can use the
+values after the files are removed.

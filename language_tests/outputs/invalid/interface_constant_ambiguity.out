@@ -1,0 +1,16 @@
+error: associated constant 'INDEX' is ambiguous on type 'T'
+ -> language_tests/source_files/invalid/interface_constant_ambiguity.tr:5:58
+	func ambiguous[T: Left & Right](_ value: T) -> int32 { T::INDEX }
+	                                                          ^^^^^
+error: associated constant 'INDEX' is ambiguous on type 'Both'
+ -> language_tests/source_files/invalid/interface_constant_ambiguity.tr:7:21
+	    println("${Both::INDEX}")
+	                     ^^^^^
+error: associated constant 'ITEM' is ambiguous on type 'Both'
+ -> language_tests/source_files/invalid/interface_constant_ambiguity.tr:8:21
+	    println("${Both::ITEM}")
+	                     ^^^^
+error: associated constant 'HIDDEN' is not visible on type 'Both'
+ -> language_tests/source_files/invalid/interface_constant_ambiguity.tr:9:21
+	    println("${Both::HIDDEN}")
+	                     ^^^^^^

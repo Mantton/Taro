@@ -1,0 +1,20 @@
+error: @discardableResult requires a function that returns 'Result'; 'count' returns 'int32'
+ -> language_tests/source_files/invalid/discardable_result_return_type.tr:2:0
+	@discardableResult
+	^^^^^^^^^^^^^^^^^^
+error: @discardableResult requires a function that returns 'Result'; 'nothing' returns '()'
+ -> language_tests/source_files/invalid/discardable_result_return_type.tr:5:0
+	@discardableResult
+	^^^^^^^^^^^^^^^^^^
+error: @discardableResult requires a function that returns 'Result'; 'identity' returns 'T'
+ -> language_tests/source_files/invalid/discardable_result_return_type.tr:8:0
+	@discardableResult
+	^^^^^^^^^^^^^^^^^^
+error: @discardableResult requires a function that returns 'Result'; 'maybe' returns 'Optional[int32]'
+ -> language_tests/source_files/invalid/discardable_result_return_type.tr:13:4
+	    @discardableResult
+	    ^^^^^^^^^^^^^^^^^^
+error: @discardableResult requires a function that returns 'Result'; 'next' returns 'int32'
+ -> language_tests/source_files/invalid/discardable_result_return_type.tr:18:4
+	    @discardableResult
+	    ^^^^^^^^^^^^^^^^^^

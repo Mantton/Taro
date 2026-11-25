@@ -36,18 +36,18 @@ pub(super) fn reorder_chain(
                 .all(|id| nodes[*id].scope == nodes[scope[0]].scope),
             "unrelated lexical scopes on one cleanup chain"
         );
-        ordered.extend(
-            scope
-                .iter()
-                .copied()
-                .filter(|id| matches!(nodes[*id].action, CleanupAction::DeferBlock(_))),
-        );
-        ordered.extend(
-            scope
-                .iter()
-                .copied()
-                .filter(|id| !matches!(nodes[*id].action, CleanupAction::DeferBlock(_))),
-        );
+        ordered.extend(scope.iter().copied().filter(|id| {
+            matches!(
+                nodes[*id].action,
+                CleanupAction::DeferBlock(..) | CleanupAction::ScopedTask(..)
+            )
+        }));
+        ordered.extend(scope.iter().copied().filter(|id| {
+            !matches!(
+                nodes[*id].action,
+                CleanupAction::DeferBlock(..) | CleanupAction::ScopedTask(..)
+            )
+        }));
     }
     if ordered == registration {
         return from;
@@ -118,7 +118,7 @@ mod tests {
             scope: CleanupScopeId::from_raw(scope),
             span: Span::empty(FileID::new(0)),
             action: if defer {
-                CleanupAction::DeferBlock(BlockId::from_raw(ordinal))
+                CleanupAction::DeferBlock(crate::hir::DeferKind::Always, BlockId::from_raw(ordinal))
             } else {
                 CleanupAction::EndStorage(LocalId::from_raw(ordinal))
             },
@@ -133,7 +133,8 @@ mod tests {
         while from != target {
             let node = nodes[from.unwrap()];
             result.push(match node.action {
-                CleanupAction::DeferBlock(id) => id.raw(),
+                CleanupAction::DeferBlock(_, id) => id.raw(),
+                CleanupAction::ScopedTask(id) => id,
                 CleanupAction::EndStorage(local) => local.raw(),
             });
             from = node.parent;

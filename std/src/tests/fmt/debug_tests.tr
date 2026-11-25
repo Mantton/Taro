@@ -1,0 +1,128 @@
+import std::cmp::Ordering
+import std::collections::{Counter, Deque, Dictionary, Set}
+import std::fmt::{Debug, debugString}
+import std::mem::Span
+import std::result::Result
+import std::testing::assertEqual
+
+func viaBound[T: Debug](_ value: T) -> string {
+    debugString(value)
+}
+
+@test
+func testDebugScalarsMatchDisplay() {
+    assertEqual(debugString(-12_i8), "-12", "int8")
+    assertEqual(debugString(300_i16), "300", "int16")
+    assertEqual(debugString(-7_i32), "-7", "int32")
+    assertEqual(debugString(9_000_000_000_i64), "9000000000", "int64")
+    assertEqual(debugString(5 as isize), "5", "isize")
+    assertEqual(debugString(255_u8), "255", "uint8")
+    assertEqual(debugString(65535_u16), "65535", "uint16")
+    assertEqual(debugString(7_u32), "7", "uint32")
+    assertEqual(debugString(8_u64), "8", "uint64")
+    assertEqual(debugString(9 as usize), "9", "usize")
+    assertEqual(debugString(true), "true", "bool")
+    assertEqual(debugString(1.5), "1.5", "double")
+    var single: float = 2.5
+    assertEqual(debugString(single), "2.5", "float")
+    assertEqual(debugString(()), "()", "unit")
+}
+
+@test
+func testDebugStringQuotesAndEscapes() {
+    assertEqual(debugString("plain"), "\"plain\"", "plain")
+    assertEqual(debugString(""), "\"\"", "empty")
+    assertEqual(debugString("a\"b\\c"), "\"a\\\"b\\\\c\"", "quote and backslash")
+    assertEqual(debugString("\n\t\r\0"), "\"\\n\\t\\r\\0\"", "named escapes")
+    assertEqual(debugString("\x1b\x7f"), "\"\\x1b\\x7f\"", "control bytes")
+    assertEqual(debugString("\u{85}é"), "\"\\u{85}é\"", "C1 control and non-ASCII")
+    assertEqual(debugString("\${x} $ $"), "\"\\\${x} $ $\"", "interpolation opener")
+    assertEqual(debugString("'"), "\"'\"", "single quote is not escaped in a string")
+}
+
+@test
+func testDebugRuneIsSingleQuoted() {
+    assertEqual(debugString('a'), "'a'", "letter")
+    assertEqual(debugString('\''), "'\\''", "quote")
+    assertEqual(debugString('"'), "'\"'", "double quote is not escaped in a rune")
+    assertEqual(debugString('\n'), "'\\n'", "newline")
+    assertEqual(debugString('\\'), "'\\\\'", "backslash")
+}
+
+@test
+func testDebugOptionalResultAndTuples() {
+    var present: int32? = .some(3)
+    var absent: int32? = .none
+    assertEqual(debugString(present), "some(3)", "some")
+    assertEqual(debugString(absent), "none", "none")
+    var nested: string?? = .some(.some("x"))
+    assertEqual(debugString(nested), "some(some(\"x\"))", "nested optional")
+    var ok: Result[int32, string] = .ok(1)
+    var failed: Result[int32, string] = .err("bad")
+    assertEqual(debugString(ok), "ok(1)", "ok")
+    assertEqual(debugString(failed), "err(\"bad\")", "err")
+    assertEqual(debugString((1, "a")), "(1, \"a\")", "pair")
+    assertEqual(debugString((1, 'b', true)), "(1, 'b', true)", "triple")
+    assertEqual(debugString((1, 2, 3, 4)), "(1, 2, 3, 4)", "four")
+    assertEqual(debugString((1, 2, 3, 4, 5)), "(1, 2, 3, 4, 5)", "five")
+    assertEqual(debugString((1, 2, 3, 4, 5, 6)), "(1, 2, 3, 4, 5, 6)", "six")
+}
+
+@test
+func testDebugSequences() {
+    var empty: [int32] = []
+    assertEqual(debugString(empty), "[]", "empty list")
+    var words: [string] = ["a", "b"]
+    assertEqual(debugString(words), "[\"a\", \"b\"]", "list")
+    var array: [int32; 3] = [1, 2, 3]
+    assertEqual(debugString(array), "[1, 2, 3]", "array")
+    var numbers: [int32] = [4, 5]
+    var span: Span[int32] = numbers.asSpan()
+    assertEqual(debugString(span), "[4, 5]", "span")
+    var deque = Deque[int32]::new()
+    deque.pushBack(1)
+    deque.pushBack(2)
+    assertEqual(debugString(deque), "[1, 2]", "deque")
+    var grid: [[int32]] = [[1], []]
+    assertEqual(debugString(grid), "[[1], []]", "nested list")
+}
+
+@test
+func testDebugHashedCollections() {
+    var set = Set[string]::new()
+    assertEqual(debugString(set), "{}", "empty set")
+    set.insert("x")
+    assertEqual(debugString(set), "{\"x\"}", "set")
+    var dictionary = Dictionary[string, int32]::new()
+    assertEqual(debugString(dictionary), "[:]", "empty dictionary")
+    dictionary["k"] = 1
+    assertEqual(debugString(dictionary), "[\"k\": 1]", "dictionary")
+    var counter = Counter[rune]::new()
+    assertEqual(debugString(counter), "[:]", "empty counter")
+    var _ = counter.increment('z')
+    var _ = counter.increment('z')
+    assertEqual(debugString(counter), "['z': 2]", "counter")
+}
+
+@test
+func testDebugThroughBoundsAndExistentials() {
+    var words: [string] = ["q"]
+    assertEqual(viaBound(words), "[\"q\"]", "generic bound")
+    var erased: any Debug = "e"
+    var into = std::fmt::Formatter::new()
+    erased.debug(&into)
+    assertEqual(into.toString(), "\"e\"", "existential")
+    var unit: any Debug = ()
+    var unitInto = std::fmt::Formatter::new()
+    unit.debug(&unitInto)
+    assertEqual(unitInto.toString(), "()", "boxed unit")
+}
+
+@test
+func testDebugOrdering() {
+    assertEqual(debugString(Ordering::less), "less", "Ordering::less")
+    assertEqual(debugString(Ordering::equal), "equal", "Ordering::equal")
+    assertEqual(debugString(Ordering::greater), "greater", "Ordering::greater")
+    assertEqual(debugString((1_i32).partialCmp(2_i32)), "some(less)", "Optional[Ordering]")
+    assertEqual("${Ordering::greater:?}", "greater", "debug interpolation on Ordering")
+}

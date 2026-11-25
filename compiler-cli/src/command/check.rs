@@ -24,16 +24,22 @@ use rustc_hash::FxHashMap;
 use std::{path::PathBuf, rc::Rc};
 
 pub fn run(arguments: CheckArgs) -> Result<(), ReportedError> {
-    run_with_mode(arguments, false)
+    run_with_mode(arguments.common, false)?;
+    Ok(())
 }
 
 pub fn run_vet(arguments: CheckArgs) -> Result<(), ReportedError> {
-    run_with_mode(arguments, true)
+    run_with_mode(arguments.common, true)?;
+    Ok(())
 }
 
-fn run_with_mode(arguments: CheckArgs, vet: bool) -> Result<(), ReportedError> {
-    let arguments = arguments.common;
+pub fn run_collecting_diagnostics(
+    arguments: CommonCompileArgs,
+) -> Result<Rc<DiagCtx>, ReportedError> {
+    run_with_mode(arguments, false)
+}
 
+fn run_with_mode(arguments: CommonCompileArgs, vet: bool) -> Result<Rc<DiagCtx>, ReportedError> {
     if arguments.is_single_file() {
         run_single_file(arguments, vet)
     } else {
@@ -41,7 +47,7 @@ fn run_with_mode(arguments: CheckArgs, vet: bool) -> Result<(), ReportedError> {
     }
 }
 
-fn run_single_file(arguments: CommonCompileArgs, vet: bool) -> Result<(), ReportedError> {
+fn run_single_file(arguments: CommonCompileArgs, vet: bool) -> Result<Rc<DiagCtx>, ReportedError> {
     let compile_options = arguments.compile_mode_options();
     let profile_dir = profile_dir_name(compile_options.profile);
     let cwd = std::env::current_dir().map_err(|e| {
@@ -90,7 +96,7 @@ fn run_single_file(arguments: CommonCompileArgs, vet: bool) -> Result<(), Report
         arguments.target.clone(),
         compile_options.profile,
     )?;
-    let icx = CompilerContext::new(dcx, store);
+    let icx = CompilerContext::new(dcx.clone(), store);
     let mut package_fingerprints = FxHashMap::default();
     let incremental_enabled = !arguments.no_incremental;
 
@@ -130,6 +136,7 @@ fn run_single_file(arguments: CommonCompileArgs, vet: bool) -> Result<(), Report
         harness_mode: Default::default(),
         std_mode: StdMode::FullStd,
         is_std_provider: false,
+        lint_warnings: true,
     });
 
     let mut compiler = Compiler::new(&icx, config);
@@ -197,10 +204,10 @@ fn run_single_file(arguments: CommonCompileArgs, vet: bool) -> Result<(), Report
             );
         }
     }
-    Ok(())
+    Ok(dcx)
 }
 
-fn run_package(arguments: CommonCompileArgs, vet: bool) -> Result<(), ReportedError> {
+fn run_package(arguments: CommonCompileArgs, vet: bool) -> Result<Rc<DiagCtx>, ReportedError> {
     let compile_options = arguments.compile_mode_options();
     let profile_dir = profile_dir_name(compile_options.profile);
     let cwd = std::env::current_dir().map_err(|e| {
@@ -228,7 +235,7 @@ fn run_package(arguments: CommonCompileArgs, vet: bool) -> Result<(), ReportedEr
         arguments.target.clone(),
         compile_options.profile,
     )?;
-    let icx = CompilerContext::new(dcx, store);
+    let icx = CompilerContext::new(dcx.clone(), store);
     let mut package_fingerprints = FxHashMap::default();
     let incremental_enabled = !arguments.no_incremental;
     let sync_options = arguments.sync_options();
@@ -331,9 +338,7 @@ fn run_package(arguments: CommonCompileArgs, vet: bool) -> Result<(), ReportedEr
             is_script: false,
             profile: compile_options.profile,
             codegen: compile_options.codegen,
-            // std intentionally relies on wrapping arithmetic (e.g. SipHash)
-            // and always compiles without overflow checks, like attached std.
-            overflow_checks: compile_options.overflow_checks && !is_std_package,
+            overflow_checks: compile_options.overflow_checks,
             debug: DebugOptions {
                 dump_mir: false,
                 dump_llvm: false,
@@ -347,6 +352,7 @@ fn run_package(arguments: CommonCompileArgs, vet: bool) -> Result<(), ReportedEr
                 StdMode::FullStd
             },
             is_std_provider: is_std_package,
+            lint_warnings: is_root,
         });
 
         let fingerprint_input =
@@ -427,11 +433,11 @@ fn run_package(arguments: CommonCompileArgs, vet: bool) -> Result<(), ReportedEr
 
         package_fingerprints.insert(
             config.identifier.to_string(),
-            fingerprint_input.package_fingerprint,
+            compiler.context.fingerprint_with_embedded_inputs(fingerprint_input.package_fingerprint),
         );
     }
 
-    Ok(())
+    Ok(dcx)
 }
 
 fn compile_std<'a>(

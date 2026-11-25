@@ -2449,6 +2449,9 @@ impl Scheduler {
         if let Some(held) = crate::task::end_poll_holds() {
             self.release_held_spawn(held);
         }
+        for held in crate::task::take_extra_held_spawns() {
+            self.release_held_spawn(held);
+        }
         if let (Some(threshold), Some(started)) = (self.blocking_warn_threshold, poll_started) {
             let elapsed = started.elapsed();
             if elapsed >= threshold {

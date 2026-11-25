@@ -55,40 +55,162 @@
         "strings": {
             "patterns": [
                 {
-                    "name": "string.quoted.double.interpolated.taro",
-                    "begin": "f\"",
-                    "end": "\"",
+                    "name": "string.quoted.raw.taro",
+                    "begin": "(?<!#)(#{5,})(\"\"\"|\")",
+                    "end": "\\2\\1"
+                },
+                {
+                    "name": "string.quoted.triple.raw.taro",
+                    "begin": "(?<!#)####\"\"\"",
+                    "end": "\"\"\"####",
                     "patterns": [
                         {
-                            "name": "constant.character.escape.taro",
-                            "match": "\\\\."
-                        },
-                        {
-                            "name": "constant.character.escape.taro",
-                            "match": "\\{\\{|\\}\\}"
-                        },
-                        {
                             "name": "meta.interpolation.taro",
-                            "begin": "\\{",
+                            "begin": "\\$####\\{",
                             "end": "\\}",
                             "patterns": [
                                 {
-                                    "include": "#numbers"
-                                },
+                                    "include": "#interpolation-expression"
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "name": "string.quoted.double.raw.taro",
+                    "begin": "(?<!#)####\"",
+                    "end": "\"####",
+                    "patterns": [
+                        {
+                            "name": "meta.interpolation.taro",
+                            "begin": "\\$####\\{",
+                            "end": "\\}",
+                            "patterns": [
                                 {
-                                    "include": "#keywords"
-                                },
+                                    "include": "#interpolation-expression"
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "name": "string.quoted.triple.raw.taro",
+                    "begin": "(?<!#)###\"\"\"",
+                    "end": "\"\"\"###",
+                    "patterns": [
+                        {
+                            "name": "meta.interpolation.taro",
+                            "begin": "\\$###\\{",
+                            "end": "\\}",
+                            "patterns": [
                                 {
-                                    "include": "#constants"
-                                },
+                                    "include": "#interpolation-expression"
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "name": "string.quoted.double.raw.taro",
+                    "begin": "(?<!#)###\"",
+                    "end": "\"###",
+                    "patterns": [
+                        {
+                            "name": "meta.interpolation.taro",
+                            "begin": "\\$###\\{",
+                            "end": "\\}",
+                            "patterns": [
                                 {
-                                    "include": "#operators"
-                                },
+                                    "include": "#interpolation-expression"
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "name": "string.quoted.triple.raw.taro",
+                    "begin": "(?<!#)##\"\"\"",
+                    "end": "\"\"\"##",
+                    "patterns": [
+                        {
+                            "name": "meta.interpolation.taro",
+                            "begin": "\\$##\\{",
+                            "end": "\\}",
+                            "patterns": [
                                 {
-                                    "include": "#functions"
-                                },
+                                    "include": "#interpolation-expression"
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "name": "string.quoted.double.raw.taro",
+                    "begin": "(?<!#)##\"",
+                    "end": "\"##",
+                    "patterns": [
+                        {
+                            "name": "meta.interpolation.taro",
+                            "begin": "\\$##\\{",
+                            "end": "\\}",
+                            "patterns": [
                                 {
-                                    "include": "#types"
+                                    "include": "#interpolation-expression"
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "name": "string.quoted.triple.raw.taro",
+                    "begin": "(?<!#)#\"\"\"",
+                    "end": "\"\"\"#",
+                    "patterns": [
+                        {
+                            "name": "meta.interpolation.taro",
+                            "begin": "\\$#\\{",
+                            "end": "\\}",
+                            "patterns": [
+                                {
+                                    "include": "#interpolation-expression"
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "name": "string.quoted.double.raw.taro",
+                    "begin": "(?<!#)#\"",
+                    "end": "\"#",
+                    "patterns": [
+                        {
+                            "name": "meta.interpolation.taro",
+                            "begin": "\\$#\\{",
+                            "end": "\\}",
+                            "patterns": [
+                                {
+                                    "include": "#interpolation-expression"
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "name": "string.quoted.triple.taro",
+                    "begin": "\"\"\"",
+                    "end": "\"\"\"",
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.taro",
+                            "match": "\\\\(?:u\\{[0-9a-fA-F_]+\\}|x[0-9a-fA-F]{2}|\\$\\{|.)"
+                        },
+                        {
+                            "name": "meta.interpolation.taro",
+                            "begin": "\\$\\{",
+                            "end": "\\}",
+                            "patterns": [
+                                {
+                                    "include": "#interpolation-expression"
                                 }
                             ]
                         }
@@ -101,7 +223,17 @@
                     "patterns": [
                         {
                             "name": "constant.character.escape.taro",
-                            "match": "\\\\."
+                            "match": "\\\\(?:u\\{[0-9a-fA-F_]+\\}|x[0-9a-fA-F]{2}|\\$\\{|.)"
+                        },
+                        {
+                            "name": "meta.interpolation.taro",
+                            "begin": "\\$\\{",
+                            "end": "\\}",
+                            "patterns": [
+                                {
+                                    "include": "#interpolation-expression"
+                                }
+                            ]
                         }
                     ]
                 },
@@ -112,7 +244,7 @@
                     "patterns": [
                         {
                             "name": "constant.character.escape.taro",
-                            "match": "\\\\."
+                            "match": "\\\\(?:u\\{[0-9a-fA-F_]+\\}|x[0-9a-fA-F]{2}|\\$\\{|.)"
                         }
                     ]
                 }
@@ -123,6 +255,14 @@
                 {
                     "name": "keyword.operator.cast.taro",
                     "match": "\\bas(?:\\?|!)(?!\\w)"
+                },
+                {
+                    "name": "keyword.control.taro",
+                    "match": "\\berrdefer\\b(?=[ \\t]*(?!(?:as|is|in)\\b)[A-Za-z_0-9{~#\"'])"
+                },
+                {
+                    "name": "keyword.control.taro",
+                    "match": "\\busing(?=[ \\t]+[A-Za-z_][A-Za-z0-9_]*[ \\t]*=(?!=))"
                 },
                 {
                     "name": "keyword.control.taro",
@@ -263,6 +403,10 @@
                     "match": ":="
                 },
                 {
+                    "name": "keyword.operator.membership.taro",
+                    "match": "!in\\b"
+                },
+                {
                     "name": "keyword.operator.comparison.taro",
                     "match": "(===|==|!=|<=|>=)"
                 },
@@ -272,7 +416,7 @@
                 },
                 {
                     "name": "keyword.operator.assignment.compound.taro",
-                    "match": "(\\+=|\\-=|\\*=|\\/=|%=|&=|\\|=|\\^=|<<=|>>=)"
+                    "match": "(\\?\\?=|\\+=|\\-=|\\*=|\\/=|%=|&=|\\|=|\\^=|<<=|>>=)"
                 },
                 {
                     "name": "keyword.operator.bitwise.taro",
@@ -301,6 +445,46 @@
                 {
                     "name": "keyword.operator.taro",
                     "match": "(\\+|\\-|\\*|\\/|%|\\^|&|\\||!|~|<|>|=|\\?|\\.|:)"
+                }
+            ]
+        },
+        "interpolation-expression": {
+            "patterns": [
+                {
+                    "include": "#comments"
+                },
+                {
+                    "include": "#strings"
+                },
+                {
+                    "include": "#interpolation-braces"
+                },
+                {
+                    "include": "#numbers"
+                },
+                {
+                    "include": "#keywords"
+                },
+                {
+                    "include": "#constants"
+                },
+                {
+                    "include": "#operators"
+                },
+                {
+                    "include": "#functions"
+                },
+                {
+                    "include": "#types"
+                }
+            ]
+        },
+        "interpolation-braces": {
+            "begin": "\\{",
+            "end": "\\}",
+            "patterns": [
+                {
+                    "include": "#interpolation-expression"
                 }
             ]
         }

@@ -1,0 +1,5 @@
+func work() -> Result[int32, int32] {
+    errdefer { return .err(2) }
+    return .ok(1)
+}
+func main() {}

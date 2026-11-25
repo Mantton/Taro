@@ -154,6 +154,7 @@ pub fn instantiate_signature_with_args<'ctx>(
             label: param.label,
             name: param.name,
             ty: param.ty.fold_with(&mut folder),
+            is_lazy: param.is_lazy,
             default_provider: param.default_provider,
         })
         .collect();

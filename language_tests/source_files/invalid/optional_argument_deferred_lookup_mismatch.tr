@@ -1,0 +1,35 @@
+// A lookup result that waited for its receiver's literal default is checked
+// against the Optional's payload once known: a mismatched result and an
+// unmet bound are still reported.
+struct Box[T] {
+    v: T
+}
+
+interface Named {
+    func name() -> string {
+        "box"
+    }
+}
+
+interface Mark {}
+
+interface Bounded {
+    func bounded() -> usize {
+        5
+    }
+}
+
+conform[T] Box[T] to Named {}
+conform[T: Mark] Box[T] to Bounded {}
+
+func pick(_ x: usize?, _ y: int32) -> usize {
+    x ?? 0
+}
+
+func main() {
+    var concrete = "box"
+    var direct: usize? = concrete
+    var named: usize? = Box { v: 0 }.name()
+    printf("%d\n", pick(Box { v: 0 }.name(), 1))
+    var bounded: usize? = Box { v: 0 }.bounded()
+}

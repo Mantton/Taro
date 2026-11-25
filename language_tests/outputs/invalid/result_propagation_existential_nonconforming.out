@@ -1,0 +1,4 @@
+error: type 'Plain' does not conform to interface 'Error'
+ -> language_tests/source_files/invalid/result_propagation_existential_nonconforming.tr:12:13
+	    value := fail()!
+	             ^^^^^^^

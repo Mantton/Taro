@@ -1,0 +1,40 @@
+extend Store {
+    enum State { case cold, hot }
+    struct Marker(int32)
+    struct T(int32)
+    interface Named {
+        func name() -> string
+    }
+    class Token {}
+    struct Entry[V] { value: V, state: State }
+}
+struct Store[T] { value: T }
+extend Store::Token { init() {} }
+extend[T] Store[T] {
+    func copy() -> T { self.value }
+    func state() -> State { .hot }
+    func initial() -> Self::State { Self::State::cold }
+    func marker() -> Self::Marker { Self::Marker(8) }
+}
+extend Store::Entry {
+    struct Inner(int64)
+}
+struct Label {}
+conform Label to Store::Named {
+    func name() -> string { "nested" }
+}
+func read[N: Store::Named](_ value: N) -> string { value.name() }
+func main() {
+    var token: Store::Token = Store::Token()
+    assert(read(Label {}) == "nested", "nested interface bounds")
+    var storage: Store[int32] = Store { value: 3 }
+    assert(storage.marker().0 == 8, "self-qualified constructor")
+    assert(storage.copy() == 3, "extension parameter shadows sibling")
+    var state: Store::State = storage.state()
+    var entry = Store::Entry[int64] { value: 5000000000, state: state }
+    var inner = Store::Entry::Inner(entry.value)
+    var marker = Store::Marker(3)
+    var Store::Marker(n) = marker
+    assert(n == 3 && inner.0 == 5000000000, "nested constructor and pattern")
+    println("nested edges")
+}

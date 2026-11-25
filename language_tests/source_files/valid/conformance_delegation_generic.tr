@@ -1,0 +1,16 @@
+interface Echo {
+    func echo[T](_ value: T, repeatBy count: int32 = 2) -> T
+}
+struct Identity {}
+conform Identity to Echo {
+    func echo[T](_ value: T, repeatBy count: int32 = 2) -> T { value }
+}
+struct Relay[Inner] { inner: Inner }
+conform[Inner] Relay[Inner] to Echo by self.inner where Inner: Echo {}
+func use[E: Echo](_ wrapper: E) -> string { wrapper.echo("generic") }
+func main() {
+    var relay = Relay { inner: Identity {} }
+    assert(use(relay) == "generic", "method and conformance generic coordinates")
+    assert(relay.echo(42, repeatBy: 3) == 42, "concrete calls use the same witness")
+    println("generic delegation")
+}

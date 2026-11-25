@@ -47,9 +47,12 @@ pub fn merge_linear_blocks(body: &mut Body<'_>) {
             }
             if let TerminatorKind::Yield {
                 cancel_complete, ..
+            }
+            | TerminatorKind::GeneratorYield {
+                cancel_complete, ..
             } = term.kind
             {
-                // The cancellation marker must survive until async lowering,
+                // The cancellation marker must survive until async/generator lowering,
                 // even if its cleanup path diverges.
                 pred_count[cancel_complete.index()] += 1;
             }
@@ -96,6 +99,9 @@ pub fn prune_unreachable_blocks(body: &mut Body<'_>) {
         if let Some(term) = &body.basic_blocks[block].terminator {
             stack.extend(term.kind.successors());
             if let TerminatorKind::Yield {
+                cancel_complete, ..
+            }
+            | TerminatorKind::GeneratorYield {
                 cancel_complete, ..
             } = term.kind
             {
@@ -221,6 +227,9 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
                     mark_operand_used(value, &mut used);
                     mark_place_used(resume_arg, &mut used);
                 }
+                TerminatorKind::GeneratorYield { value, .. } => {
+                    mark_operand_used(value, &mut used);
+                }
                 TerminatorKind::Return => {
                     used[body.return_local.index()] = true;
                 }
@@ -317,6 +326,9 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
                 } => {
                     remap_operand(value);
                     remap_place(resume_arg);
+                }
+                TerminatorKind::GeneratorYield { value, .. } => {
+                    remap_operand(value);
                 }
                 TerminatorKind::Goto { .. }
                 | TerminatorKind::Return

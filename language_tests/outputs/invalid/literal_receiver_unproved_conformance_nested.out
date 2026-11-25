@@ -1,0 +1,8 @@
+error: type 'Boxed[int32]' does not conform to interface 'Size'
+ -> language_tests/source_files/invalid/literal_receiver_unproved_conformance_nested.tr:25:17
+	        return b.size()
+	                 ^^^^
+error: type 'Boxed[int32]' does not conform to interface 'Size'
+ -> language_tests/source_files/invalid/literal_receiver_unproved_conformance_nested.tr:31:37
+	        case 1 => Boxed { value: 0 }.size() + 1
+	                                     ^^^^

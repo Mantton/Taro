@@ -1,0 +1,4 @@
+error: expected tuple of length 3, found 2
+ -> language_tests/source_files/invalid/tuple_shorthand_arity_mismatch.tr:2:4
+	    (a, b) := (1, 2, 3)
+	    ^^^^^^

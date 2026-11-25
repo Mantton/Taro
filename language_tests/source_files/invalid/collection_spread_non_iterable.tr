@@ -1,0 +1,4 @@
+func main() {
+    var n: int32 = 1
+    var values: List[int32] = [n...]
+}

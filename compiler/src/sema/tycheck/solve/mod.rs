@@ -5,13 +5,13 @@ use crate::{
         error::SpannedErrorList,
         models::{
             AliasKind, ConstKind, Constraint, GenericArgument, GenericArguments,
-            GenericParameterDefinition, GenericParameterDefinitionKind, InterfaceReference, Ty,
-            TyKind,
+            GenericParameterDefinition, GenericParameterDefinitionKind, InferTy,
+            InterfaceReference, Ty, TyKind, TyVarID,
         },
         resolve::models::DefinitionID,
         tycheck::{
             constraints::canonical_constraints_of,
-            infer::InferCtx,
+            infer::{InferCtx, NumericVar},
             lower::{DefTyLoweringCtx, TypeLowerer},
             utils::generics::GenericsBuilder,
             utils::{
@@ -34,8 +34,10 @@ mod adt;
 mod apply;
 mod cast;
 mod coerce;
+mod collection_span;
 mod conformance_inference;
 mod deref;
+mod early_interface;
 mod index;
 mod interface;
 mod member;
@@ -46,6 +48,19 @@ mod op;
 mod overload;
 mod tuple;
 mod unify;
+
+#[derive(Clone)]
+pub(super) struct PendingMemberValue<'ctx> {
+    pub member: Rc<crate::hir::Expression>,
+    pub selection: Ty<'ctx>,
+    pub value: Ty<'ctx>,
+}
+
+pub(super) struct PendingEnumPattern<'ctx> {
+    pub pattern: crate::hir::Pattern,
+    pub scrutinee: Ty<'ctx>,
+    pub autoderef: bool,
+}
 
 pub struct ConstraintSystem<'ctx> {
     pub infer_cx: Rc<InferCtx<'ctx>>,
@@ -58,6 +73,11 @@ pub struct ConstraintSystem<'ctx> {
     pub field_indices: FxHashMap<NodeID, usize>,
     pub property_reads: FxHashMap<NodeID, ResolvedPropertyRead>,
     overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
+    /// Unwrapped call arguments selected for a `@lazy` parameter by overload resolution.
+    lazy_argument_targets: FxHashMap<NodeID, Ty<'ctx>>,
+    deferred_return_scopes: Vec<DeferredReturnScope<'ctx>>,
+    result_propagation_conversions:
+        FxHashMap<NodeID, crate::sema::tycheck::results::ResultPropagationConversion<'ctx>>,
     value_resolutions: FxHashMap<NodeID, Resolution>,
     instantiation_args: FxHashMap<NodeID, GenericArguments<'ctx>>,
     opening_calls: FxHashSet<NodeID>,
@@ -70,6 +90,14 @@ pub struct ConstraintSystem<'ctx> {
     visible_traits: Rc<FxHashSet<DefinitionID>>,
     error_count_at_start: usize,
     isolated_goals: bool,
+    /// Closures whose capture types belong to this inference context.
+    pub(super) capturing_closures: Vec<DefinitionID>,
+    /// Member selections that may need a captured receiver once the lookup resolves.
+    pub(super) pending_member_values: VecDeque<PendingMemberValue<'ctx>>,
+    /// Shorthand constructors whose expected enum comes from an enclosing call.
+    pub(super) pending_enum_patterns: Vec<PendingEnumPattern<'ctx>>,
+    /// Receiver conformances that early-bound interface calls still prove.
+    receiver_proofs: Vec<early_interface::ReceiverProof<'ctx>>,
 }
 
 struct SolverOutputs<'ctx> {
@@ -79,8 +107,12 @@ struct SolverOutputs<'ctx> {
     field_indices: FxHashMap<NodeID, usize>,
     property_reads: FxHashMap<NodeID, ResolvedPropertyRead>,
     overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
+    lazy_argument_targets: FxHashMap<NodeID, Ty<'ctx>>,
+    result_propagation_conversions:
+        FxHashMap<NodeID, crate::sema::tycheck::results::ResultPropagationConversion<'ctx>>,
     value_resolutions: FxHashMap<NodeID, Resolution>,
     instantiation_args: FxHashMap<NodeID, GenericArguments<'ctx>>,
+    receiver_proofs: Vec<early_interface::ReceiverProof<'ctx>>,
 }
 
 impl<'ctx> ConstraintSystem<'ctx> {
@@ -121,6 +153,9 @@ impl<'ctx> ConstraintSystem<'ctx> {
             field_indices: Default::default(),
             property_reads: Default::default(),
             overload_sources: Default::default(),
+            lazy_argument_targets: Default::default(),
+            deferred_return_scopes: Default::default(),
+            result_propagation_conversions: Default::default(),
             value_resolutions: Default::default(),
             instantiation_args: Default::default(),
             opening_calls: Default::default(),
@@ -130,6 +165,10 @@ impl<'ctx> ConstraintSystem<'ctx> {
             visible_traits,
             error_count_at_start,
             isolated_goals: false,
+            capturing_closures: vec![],
+            pending_member_values: VecDeque::new(),
+            pending_enum_patterns: Vec::new(),
+            receiver_proofs: Vec::new(),
         }
     }
 
@@ -244,8 +283,8 @@ impl<'ctx> ConstraintSystem<'ctx> {
                 None => constraint.value,
             };
             let constraint = self.infer_cx.resolve_vars_if_possible(constraint);
-            if let Constraint::Bound { .. } = constraint {
-                self.env.add_constraint(constraint);
+            if let Constraint::Bound { ty, interface } = constraint {
+                self.env.add_pending_bound(ty, interface);
             }
             if abstract_self {
                 // Defaults may still be inference variables. Keep the witness
@@ -382,12 +421,51 @@ impl<'ctx> ConstraintSystem<'ctx> {
         self.interface_calls.clone()
     }
 
+    pub(super) fn bound_method_source(&self, id: NodeID) -> Option<DefinitionID> {
+        if self.field_indices.contains_key(&id) || self.property_reads.contains_key(&id) {
+            return None;
+        }
+        self.overload_sources.get(&id).copied()
+    }
+
     pub fn resolved_field_indices(&self) -> FxHashMap<NodeID, usize> {
         self.field_indices.clone()
     }
 
     pub fn resolved_property_reads(&self) -> FxHashMap<NodeID, ResolvedPropertyRead> {
         self.property_reads.clone()
+    }
+
+    pub fn opaque_return_sites(&self) -> impl Iterator<Item = &DeferredReturnSite<'ctx>> {
+        self.deferred_return_scopes
+            .iter()
+            .filter(|scope| {
+                scope.return_var.is_some_and(|ty| {
+                    crate::sema::tycheck::opaque::is_owner_return(
+                        self.infer_cx.resolve_vars_if_possible(ty),
+                        self.current_def,
+                    )
+                })
+            })
+            .flat_map(|scope| &scope.returns)
+    }
+
+    pub fn register_deferred_return_scope(&mut self, scope: DeferredReturnScope<'ctx>) -> u32 {
+        let index = self.deferred_return_scopes.len() as u32;
+        self.deferred_return_scopes.push(scope);
+        index
+    }
+
+    pub fn resolved_result_propagation_conversions(
+        &self,
+    ) -> FxHashMap<NodeID, crate::sema::tycheck::results::ResultPropagationConversion<'ctx>> {
+        self.result_propagation_conversions.clone()
+    }
+
+    pub fn take_lazy_argument_targets(&mut self) -> Vec<(NodeID, Ty<'ctx>)> {
+        let mut targets: Vec<_> = self.lazy_argument_targets.drain().collect();
+        targets.sort_by_key(|(id, _)| *id);
+        targets
     }
 
     pub fn resolved_overload_sources(
@@ -441,27 +519,11 @@ impl<'ctx> ConstraintSystem<'ctx> {
         let ty = self.infer_cx.resolve_vars_if_possible(ty);
         normalize_ty(self.infer_cx.clone(), ty, &self.env)
     }
-
-    pub fn merge(&mut self, other: ConstraintSystem<'ctx>) {
-        self.obligations.extend(other.obligations);
-        self.expr_tys.extend(other.expr_tys);
-        self.integer_literals.extend(other.integer_literals);
-        self.adjustments.extend(other.adjustments);
-        self.interface_calls.extend(other.interface_calls);
-        self.locals.borrow_mut().extend(other.locals.into_inner());
-        self.field_indices.extend(other.field_indices);
-        self.property_reads.extend(other.property_reads);
-        self.overload_sources.extend(other.overload_sources);
-        self.value_resolutions.extend(other.value_resolutions);
-        self.instantiation_args.extend(other.instantiation_args);
-        self.opening_calls.extend(other.opening_calls);
-        self.env.extend_from(&other.env);
-    }
 }
 
 impl<'ctx> ConstraintSystem<'ctx> {
     pub fn solve_all(&mut self) {
-        self.solve_internal(true);
+        self.solve_internal(true, None);
     }
 
     /// Keep an unfinished call's overload binding out of argument elaboration,
@@ -511,16 +573,181 @@ impl<'ctx> ConstraintSystem<'ctx> {
         result
     }
 
-    pub fn solve_intermediate(&mut self) {
-        self.solve_internal(false);
+    pub(super) fn defer_member_value(
+        &mut self,
+        expression: &crate::hir::Expression,
+        selection: Ty<'ctx>,
+    ) -> Ty<'ctx> {
+        let value = self.infer_cx.next_ty_var(expression.span);
+        self.pending_member_values.push_back(PendingMemberValue {
+            member: Rc::new(expression.clone()),
+            selection,
+            value,
+        });
+        value
     }
 
-    fn solve_internal(&mut self, check_unresolved: bool) {
+    pub(super) fn finish_member_value(&mut self, actual: Ty<'ctx>) {
+        let pending = self.pending_member_values.pop_front().expect("pending member");
+        // Publish the value before retrying consumers. A waiting coercion can
+        // now box the closure or wrap it in Optional with the right layout.
+        self.obligations.push_front(Obligation {
+            location: pending.member.span,
+            goal: Goal::Equal(pending.value, actual),
+        });
+    }
+
+    pub(super) fn pending_member(&mut self, id: NodeID) -> Option<&mut MemberGoalData<'ctx>> {
+        self.obligations.iter_mut().find_map(|obligation| match &mut obligation.goal {
+            Goal::Member(data) if data.node_id == id => Some(data),
+            _ => None,
+        })
+    }
+
+    /// Unknown integer and float literal variables in `ty`, by root.
+    pub fn numeric_vars_in(&self, ty: Ty<'ctx>) -> Vec<NumericVar> {
+        numeric_vars_in(&self.infer_cx, ty)
+    }
+
+    pub fn solve_intermediate(&mut self) {
+        self.solve_internal(false, None);
+    }
+
+    /// Default only the literals needed by the operand's producers. Siblings
+    /// can still take their type from the enclosing expression.
+    fn solve_intermediate_defaulting_only(&mut self, scope: Vec<Ty<'ctx>>) {
+        self.solve_internal(false, Some(scope.into()));
+    }
+
+    /// Resolve the pending operations that produce a type. For example,
+    /// matching a local initialized by a pending method call can require
+    /// defaulting the receiver of that call. Walk backwards from the local
+    /// through its producers; siblings of the match have no constraints yet.
+    pub fn solve_producers(&mut self, ty: Ty<'ctx>) -> Ty<'ctx> {
+        self.without_fallbacks(|cs| cs.solve_intermediate());
+        let resolved = self.structurally_resolve(ty);
+        if !resolved.has_inference_variables() {
+            return resolved;
+        }
+        let roots_in = |ty| {
+            crate::sema::tycheck::utils::unresolved::inference_variables(
+                self.infer_cx.resolve_vars_if_possible(ty),
+            )
+            .into_iter()
+            .filter_map(|ty| match ty.kind() {
+                TyKind::Infer(InferTy::TyVar(id)) => Some(self.infer_cx.ty_var_root(id)),
+                _ => None,
+            })
+        };
+        let mut pending: Vec<_> = roots_in(resolved).collect();
+        if pending.is_empty() {
+            // Optional[{integer}] already has the shape needed by its
+            // patterns. Leave its payload open for the surrounding expression.
+            return resolved;
+        }
+
+        let mut producers: FxHashMap<TyVarID, Vec<Ty<'ctx>>> = FxHashMap::default();
+        for obligation in &self.obligations {
+            let mut record = |result, input| {
+                for root in roots_in(result) {
+                    producers.entry(root).or_default().push(input);
+                }
+            };
+            let goal = &obligation.goal;
+            if let Some((receiver, arguments)) = receiver_lookup(goal) {
+                let result = lookup_result(goal).expect("receiver lookup has a result");
+                record(result, receiver);
+                if let Some((_, arguments)) = arguments {
+                    for arg in arguments {
+                        record(result, arg.ty);
+                    }
+                }
+                continue;
+            }
+            match goal {
+                Goal::BinaryOp(data) => {
+                    record(data.rho, data.lhs);
+                    record(data.rho, data.rhs);
+                }
+                Goal::UnaryOp(data) => record(data.rho, data.lhs),
+                Goal::Apply(data) => {
+                    record(data.result_ty, data.callee_ty);
+                    for arg in &data.arguments {
+                        record(data.result_ty, arg.ty);
+                    }
+                }
+                // A local initialization may be waiting on a projection
+                // from a qualified interface method, as in a lowered for loop.
+                Goal::Coerce { from, to, .. } => record(*to, *from),
+                Goal::ConstraintEqual(a, b) => {
+                    record(*a, *b);
+                    record(*b, *a);
+                }
+                Goal::Deref(data) => record(data.result_ty, data.operand_ty),
+                Goal::TupleAccess(data) => record(data.result, data.receiver),
+                _ => {}
+            }
+        }
+        let mut scope = FxHashSet::default();
+        while let Some(root) = pending.pop() {
+            if let Some(inputs) = producers.remove(&root) {
+                for input in inputs {
+                    if scope.insert(input) {
+                        pending.extend(roots_in(input));
+                    }
+                }
+            }
+        }
+        self.solve_intermediate_defaulting_only(scope.into_iter().collect());
+        self.structurally_resolve(ty)
+    }
+
+    /// Obtain the outer type required by an operation such as Optional
+    /// propagation. An associated type can depend on the width of its
+    /// receiver even after the call that produced it has been solved.
+    pub fn solve_for_structure(&mut self, ty: Ty<'ctx>) -> Ty<'ctx> {
+        let ty = self.solve_producers(ty);
+        self.resolve_projection_head(ty)
+    }
+
+    /// Inspect the outer projection only. For a tuple or enum, a subpattern
+    /// may need a projection while an independent payload stays open.
+    pub fn resolve_projection_head(&mut self, ty: Ty<'ctx>) -> Ty<'ctx> {
+        let is_projection = |ty: Ty<'ctx>| matches!(
+            ty.kind(),
+            TyKind::Alias { kind: AliasKind::Projection, .. }
+        );
+        if !is_projection(ty) {
+            return ty;
+        }
+        let ty = self.structurally_resolve(ty);
+        if is_projection(ty) && !self.numeric_vars_in(ty).is_empty() {
+            self.solve_intermediate_defaulting_only(vec![ty]);
+            return self.structurally_resolve(ty);
+        }
+        ty
+    }
+
+    /// Render an already rejected operand with its ordinary numeric defaults
+    /// (`5 ?? 1` reports int32) without binding a sibling use during recovery.
+    pub fn format_rejected_operand(&self, ty: Ty<'ctx>) -> String {
+        self.infer_cx.probe(|_| {
+            for var in self.numeric_vars_in(ty) {
+                self.infer_cx.default_numeric_var(var);
+            }
+            self.infer_cx
+                .resolve_vars_if_possible(ty)
+                .format(self.infer_cx.gcx)
+        })
+    }
+
+    fn solve_internal(&mut self, check_unresolved: bool, default_scope: Option<Rc<[Ty<'ctx>]>>) {
         let gcx = self.infer_cx.gcx;
 
         let solver = ConstraintSolver {
             icx: self.infer_cx.clone(),
             coercions: 0,
+            boxings: 0,
             obligations: std::mem::take(&mut self.obligations),
             adjustments: std::mem::take(&mut self.adjustments),
             interface_calls: std::mem::take(&mut self.interface_calls),
@@ -528,6 +755,11 @@ impl<'ctx> ConstraintSystem<'ctx> {
             field_indices: std::mem::take(&mut self.field_indices),
             property_reads: std::mem::take(&mut self.property_reads),
             overload_sources: std::mem::take(&mut self.overload_sources),
+            lazy_argument_targets: std::mem::take(&mut self.lazy_argument_targets),
+            deferred_return_scopes: Rc::new(self.deferred_return_scopes.clone()),
+            result_propagation_conversions: std::mem::take(
+                &mut self.result_propagation_conversions,
+            ),
             value_resolutions: std::mem::take(&mut self.value_resolutions),
             instantiation_args: std::mem::take(&mut self.instantiation_args),
             opening_calls: self.opening_calls.clone(),
@@ -535,12 +767,24 @@ impl<'ctx> ConstraintSystem<'ctx> {
             assumption_constraints: self.assumption_constraints,
             param_env: self.env.clone(),
             visible_traits: self.visible_traits.clone(),
+            held_literals: FxHashMap::default(),
+            deferred: VecDeque::new(),
+            pending_member_values: self.pending_member_values.iter().map(|p| p.value).collect(),
+            lookups_have_waiters: false,
+            receiver_proofs: std::mem::take(&mut self.receiver_proofs),
+            default_scope,
         };
 
         let mut driver = SolverDriver::new(solver);
         driver.default_collection_literals = check_unresolved;
         driver.allow_fallbacks = !self.isolated_goals;
-        let result = driver.solve_to_fixpoint();
+        let mut result = driver.solve_to_fixpoint();
+        if check_unresolved && result.is_ok() {
+            let errors = driver.check_receiver_proofs();
+            if !errors.is_empty() {
+                result = Err(errors);
+            }
+        }
 
         // Pull collected outputs back out of the solver/driver.
         let outputs = driver.into_parts();
@@ -556,8 +800,11 @@ impl<'ctx> ConstraintSystem<'ctx> {
         self.field_indices = outputs.field_indices;
         self.property_reads = outputs.property_reads;
         self.overload_sources = outputs.overload_sources;
+        self.lazy_argument_targets = outputs.lazy_argument_targets;
+        self.result_propagation_conversions = outputs.result_propagation_conversions;
         self.value_resolutions = outputs.value_resolutions;
         self.instantiation_args = outputs.instantiation_args;
+        self.receiver_proofs = outputs.receiver_proofs;
 
         if result.is_ok() {
             if check_unresolved && gcx.dcx().error_count() == self.error_count_at_start {
@@ -676,6 +923,10 @@ struct ConstraintSolver<'ctx> {
     pub icx: Rc<InferCtx<'ctx>>,
     /// Tie-break equally ranked overloads by the number of argument conversions.
     coercions: u32,
+    /// How many of those conversions boxed a concrete value into an
+    /// existential. Among overloads that need as many conversions, the one
+    /// that erases fewer argument types wins. See `solve_disjunction`.
+    boxings: u32,
     obligations: VecDeque<Obligation<'ctx>>,
     adjustments: FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
     interface_calls: FxHashMap<NodeID, InterfaceCallInfo>,
@@ -683,6 +934,10 @@ struct ConstraintSolver<'ctx> {
     pub field_indices: FxHashMap<NodeID, usize>,
     pub property_reads: FxHashMap<NodeID, ResolvedPropertyRead>,
     overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
+    lazy_argument_targets: FxHashMap<NodeID, Ty<'ctx>>,
+    deferred_return_scopes: Rc<Vec<DeferredReturnScope<'ctx>>>,
+    result_propagation_conversions:
+        FxHashMap<NodeID, crate::sema::tycheck::results::ResultPropagationConversion<'ctx>>,
     value_resolutions: FxHashMap<NodeID, Resolution>,
     instantiation_args: FxHashMap<NodeID, GenericArguments<'ctx>>,
     opening_calls: FxHashSet<NodeID>,
@@ -690,6 +945,25 @@ struct ConstraintSolver<'ctx> {
     assumption_constraints: &'ctx [Constraint<'ctx>],
     param_env: ParamEnv<'ctx>,
     visible_traits: Rc<FxHashSet<DefinitionID>>,
+    /// The input literals of goals that were still waiting when numeric
+    /// defaults were chosen, keyed by the goal's node. See
+    /// `SolverDriver::hold_literals`.
+    held_literals: FxHashMap<NodeID, Vec<NumericVar>>,
+    /// Waiting obligations stay visible to nested overload probes. In
+    /// particular, probing the consumer of a lookup needs its producer.
+    deferred: VecDeque<Obligation<'ctx>>,
+    /// Values produced by the checker once a pending receiver capture is known.
+    pending_member_values: Vec<Ty<'ctx>>,
+    /// Some coercion has waited for a lookup here or in the solver this one
+    /// probes for. See `SolverDriver::take_coercions_awaiting`.
+    lookups_have_waiters: bool,
+    /// Receiver conformances that early-bound interface calls still prove.
+    /// See `early_interface`.
+    receiver_proofs: Vec<early_interface::ReceiverProof<'ctx>>,
+    /// The types whose unknown literals this solve may default, or `None`
+    /// when it may default any. See
+    /// `ConstraintSystem::solve_intermediate_defaulting_only`.
+    default_scope: Option<Rc<[Ty<'ctx>]>>,
 }
 
 impl<'ctx> ConstraintSolver<'ctx> {
@@ -711,6 +985,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
         source: crate::sema::resolve::models::DefinitionID,
     ) {
         self.overload_sources.insert(node_id, source);
+    }
+
+    pub fn record_lazy_argument_target(&mut self, node_id: NodeID, param_ty: Ty<'ctx>) {
+        self.lazy_argument_targets.insert(node_id, param_ty);
     }
 
     pub fn record_value_resolution(&mut self, node_id: NodeID, resolution: Resolution) {
@@ -765,8 +1043,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 // its associated-type equalities refer to the caller's actual
                 // types rather than stale inference variables.
                 let constraint = self.icx.resolve_vars_if_possible(constraint);
-                if let Constraint::Bound { .. } = constraint {
-                    self.param_env.add_constraint(constraint);
+                if let Constraint::Bound { ty, interface } = constraint {
+                    self.param_env.add_pending_bound(ty, interface);
                 }
                 let goal = match constraint {
                     Constraint::TypeEquality(lhs, rhs) => Goal::ConstraintEqual(lhs, rhs),
@@ -791,33 +1069,72 @@ impl<'ctx> ConstraintSolver<'ctx> {
             .collect()
     }
 
-    pub(crate) fn bounds_for_type_in_scope(&self, ty: Ty<'ctx>) -> Vec<InterfaceReference<'ctx>> {
+    /// A call introduces requirements to prove. Only the caller's declared
+    /// bounds supply members, including when an argument reads a member of
+    /// the same interface as the callee.
+    fn bounds_for_member_lookup(&self, ty: Ty<'ctx>) -> Vec<InterfaceReference<'ctx>> {
+        let declared = ParamEnv::new(self.assumption_constraints.to_vec());
+        self.bounds_for_type(ty, &declared)
+    }
+
+    fn bounds_for_type(&self, ty: Ty<'ctx>, env: &ParamEnv<'ctx>) -> Vec<InterfaceReference<'ctx>> {
         let ty = self.structurally_resolve(ty);
-        self.param_env.bounds_for_type(self.gcx(), ty, |bound_ty| {
+        env.bounds_for_type(self.gcx(), ty, |bound_ty| {
             let bound_ty = self.structurally_resolve(bound_ty);
             bound_ty == ty || self.icx.probe(|_| self.unify(bound_ty, ty).is_ok())
         })
     }
 
-    pub(crate) fn filter_extension_candidates_in_place(
+    /// Probe a single implementation header without letting it choose a width for
+    /// a literal in the original receiver (which may be a derived class).
+    fn match_extension_header(
         &self,
-        candidates: &mut Vec<crate::sema::resolve::models::DefinitionID>,
+        extension: DefinitionID,
+        owner: Ty<'ctx>,
         receiver: Ty<'ctx>,
         span: Span,
-    ) {
-        candidates.retain(|candidate| {
-            let Some(parent) = self.gcx().definition_parent(*candidate) else {
-                return true;
-            };
-
-            if self.gcx().definition_kind(parent)
-                != crate::sema::resolve::models::DefinitionKind::Impl
-            {
-                return true;
+    ) -> ExtensionHeaderMatch {
+        let Some(target) = self.gcx().get_impl_target_ty(extension) else {
+            return ExtensionHeaderMatch::Mismatch;
+        };
+        let before = if receiver.contains_inference() {
+            numeric_vars_in(&self.icx, receiver)
+        } else {
+            Vec::new()
+        };
+        self.icx.probe(|_| {
+            let args = self.icx.fresh_args_for_def(extension, span);
+            let target = instantiate_ty_with_args(self.gcx(), target, args);
+            if self.unify(owner, target).is_err() {
+                return ExtensionHeaderMatch::Mismatch;
             }
-
-            self.extension_target_matches(parent, receiver, span)
-        });
+            // A same-type clause can spell the same specialization as a
+            // concrete argument in the header. Leave unresolved projections
+            // to the ordinary obligations on the selected declaration.
+            for clause in canonical_constraints_of(self.gcx(), extension) {
+                if let Constraint::TypeEquality(left, right) =
+                    instantiate_constraint_with_args(self.gcx(), clause.value, args)
+                {
+                    let left = self.structurally_resolve(left);
+                    let right = self.structurally_resolve(right);
+                    if !has_unresolvable_projection(&self.icx, left)
+                        && !has_unresolvable_projection(&self.icx, right)
+                        && self.unify(left, right).is_err()
+                    {
+                        return ExtensionHeaderMatch::Mismatch;
+                    }
+                }
+            }
+            if before.is_empty() {
+                return ExtensionHeaderMatch::Independent;
+            }
+            let after = numeric_vars_in(&self.icx, receiver);
+            if after.len() == before.len() && before.iter().all(|var| after.contains(var)) {
+                ExtensionHeaderMatch::Independent
+            } else {
+                ExtensionHeaderMatch::NeedsLiteralType
+            }
+        })
     }
 
     pub(crate) fn extension_target_matches(
@@ -1019,6 +1336,11 @@ impl<'ctx> ConstraintSolver<'ctx> {
             Goal::BinaryOp(data) => self.solve_binary(*data),
             Goal::AssignOp(data) => self.solve_assign_op(*data),
             Goal::Coerce { node_id, from, to } => self.solve_coerce(location, *node_id, *from, *to),
+            Goal::AssignOptional {
+                node_id,
+                target,
+                value,
+            } => self.solve_assign_optional(location, *node_id, *target, *value),
             Goal::Cast {
                 node_id,
                 from,
@@ -1034,13 +1356,131 @@ impl<'ctx> ConstraintSolver<'ctx> {
             Goal::MethodCall(data) => self.solve_method_call(data.clone()),
             Goal::IndexAccess(data) => self.solve_index_access(data.clone()),
             Goal::StructLiteral(data) => self.solve_struct_literal(data.clone()),
+            Goal::SpreadShape {
+                result,
+                element,
+                scalars,
+                sources,
+                contextual,
+            } => {
+                self.solve_spread_shape(location, *result, *element, *scalars, sources, *contextual)
+            }
             Goal::CollectionLiteral { ty, element, len } => {
                 self.solve_collection_literal(location, *ty, *element, *len)
             }
             Goal::TupleAccess(data) => self.solve_tuple_access(data.clone()),
             Goal::Deref(data) => self.solve_deref(data.clone()),
             Goal::DefaultFallback(_) => SolverResult::Deferred,
+            Goal::ValidateReturn { site, target } => {
+                let target = self.icx.resolve_vars_if_possible(*target);
+                if target.is_infer() {
+                    return SolverResult::Deferred;
+                }
+                if crate::sema::tycheck::opaque::is_owner_return(target, self.current_def) {
+                    // Hidden-type inference uses only committed return sites.
+                    return SolverResult::Solved(vec![]);
+                }
+                let goal = site.coerce_to(self.gcx(), target);
+                SolverResult::Solved(vec![Obligation { location, goal }])
+            }
+            Goal::ValidatePropagation {
+                node_id,
+                err_ty,
+                return_ty,
+            } => self.solve_validate_propagation(location, *node_id, *err_ty, *return_ty),
+            Goal::ReleaseHeldLiterals(node) => {
+                self.finish_holding(*node);
+                SolverResult::Solved(vec![])
+            }
         }
+    }
+
+    /// The goal at `node` has stopped waiting and has given its inputs what
+    /// type it could. Its held literals that are still unknown take their
+    /// defaults, except those that another goal still waiting holds too: that
+    /// goal may yet give them a type.
+    fn finish_holding(&mut self, node: NodeID) {
+        let Some(vars) = self.held_literals.remove(&node) else {
+            return;
+        };
+        let scope = self.defaultable_numeric_vars();
+        for var in vars {
+            if !self.holds_numeric_root(self.icx.numeric_var_root(var)) {
+                self.default_numeric_var_in(scope.as_ref(), var);
+            }
+        }
+    }
+
+    /// Default the held literals of the goal at `node` that are still
+    /// unknown. Overload selection has verified that its candidates can
+    /// accept those defaults.
+    pub(super) fn release_held_literals(&mut self, node: NodeID) {
+        if let Some(vars) = self.held_literals.remove(&node) {
+            let scope = self.defaultable_numeric_vars();
+            for var in vars {
+                self.default_numeric_var_in(scope.as_ref(), var);
+            }
+        }
+    }
+
+    fn release_all_held_literals(&mut self) {
+        let scope = self.defaultable_numeric_vars();
+        for (_, vars) in std::mem::take(&mut self.held_literals) {
+            for var in vars {
+                self.default_numeric_var_in(scope.as_ref(), var);
+            }
+        }
+    }
+
+    /// The unknown literals, by root, that this solve may default, or `None`
+    /// when it may default any.
+    fn defaultable_numeric_vars(&self) -> Option<FxHashSet<NumericVar>> {
+        let scope = self.default_scope.as_ref()?;
+        Some(
+            scope
+                .iter()
+                .flat_map(|ty| numeric_vars_in(&self.icx, *ty))
+                .collect(),
+        )
+    }
+
+    fn default_numeric_var_in(&self, scope: Option<&FxHashSet<NumericVar>>, var: NumericVar) {
+        if scope.is_none_or(|scope| scope.contains(&self.icx.numeric_var_root(var))) {
+            self.icx.default_numeric_var(var);
+        }
+    }
+
+    /// Whether a type variable is the result of a member lookup that has not
+    /// resolved yet, either still queued or deferred until its receiver is
+    /// known (`Box { v: 0 }.takeIt(3)` waits for the literal's default), or
+    /// of an operator that waits for its operands (`list.count() + 1`).
+    /// That goal will give the variable its type.
+    pub(super) fn awaits_lookup(&self, var: TyVarID) -> bool {
+        let root = self.icx.ty_var_root(var);
+        let is_root = |ty: Ty<'ctx>| match self.icx.shallow_resolve(ty).kind() {
+            TyKind::Infer(InferTy::TyVar(other)) => self.icx.ty_var_root(other) == root,
+            _ => false,
+        };
+        self.deferred
+            .iter()
+            .chain(&self.obligations)
+            .filter_map(|obligation| lookup_result(&obligation.goal))
+            .chain(self.pending_member_values.iter().copied())
+            .any(is_root)
+    }
+
+    fn is_held_literal(&self, ty: Ty<'ctx>) -> bool {
+        self.icx
+            .unresolved_numeric_var(ty)
+            .is_some_and(|root| self.holds_numeric_root(root))
+    }
+
+    fn holds_numeric_root(&self, root: NumericVar) -> bool {
+        // Literals can unify after a hold is recorded.
+        self.held_literals
+            .values()
+            .flatten()
+            .any(|var| self.icx.numeric_var_root(*var) == root)
     }
 
     fn solve_equality(
@@ -1078,6 +1518,18 @@ impl<'ctx> ConstraintSolver<'ctx> {
         if has_unresolvable_projection(&self.icx, lhs)
             || has_unresolvable_projection(&self.icx, rhs)
         {
+            let projection = if lhs.is_ty_var() {
+                Some((lhs, rhs))
+            } else if rhs.is_ty_var() {
+                Some((rhs, lhs))
+            } else {
+                None
+            };
+            if let Some((variable, source)) = projection
+                && let Some(published) = self.publish_projection_equality(source, location)
+            {
+                return self.solve_equality(location, variable, published);
+            }
             let mut pairs = Vec::new();
             match (lhs.kind(), rhs.kind()) {
                 (TyKind::Adt(a, left), TyKind::Adt(b, right))
@@ -1155,9 +1607,28 @@ impl<'ctx> ConstraintSolver<'ctx> {
             }
         }
         ConstraintSolver {
+            obligations,
+            // Retry pending producers in the probe. Its argument coercions
+            // can then see the same result types as the enclosing solve.
+            deferred: self
+                .deferred
+                .iter()
+                .filter(|obligation| lookup_result(&obligation.goal).is_some())
+                .cloned()
+                .collect(),
+            ..self.fork_for_lookup()
+        }
+    }
+
+    /// Test one lookup in the caller's environment without importing other
+    /// work from the surrounding expression.
+    fn fork_for_lookup(&self) -> ConstraintSolver<'ctx> {
+        ConstraintSolver {
             icx: self.icx.clone(),
             coercions: self.coercions,
-            obligations,
+            boxings: self.boxings,
+            obligations: VecDeque::new(),
+            deferred: VecDeque::new(),
             // Probes need satisfiability and weakening costs, not collected outputs.
             adjustments: FxHashMap::default(),
             interface_calls: FxHashMap::default(),
@@ -1165,6 +1636,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
             field_indices: FxHashMap::default(),
             property_reads: FxHashMap::default(),
             overload_sources: FxHashMap::default(),
+            lazy_argument_targets: FxHashMap::default(),
+            deferred_return_scopes: self.deferred_return_scopes.clone(),
+            result_propagation_conversions: FxHashMap::default(),
             value_resolutions: FxHashMap::default(),
             instantiation_args: FxHashMap::default(),
             opening_calls: self.opening_calls.clone(),
@@ -1172,6 +1646,15 @@ impl<'ctx> ConstraintSolver<'ctx> {
             assumption_constraints: self.assumption_constraints,
             param_env: self.param_env.clone(),
             visible_traits: self.visible_traits.clone(),
+            // The caller supplies the literal types to probe. Holds belong to
+            // goals in the caller's queue.
+            held_literals: FxHashMap::default(),
+            pending_member_values: self.pending_member_values.clone(),
+            lookups_have_waiters: self.lookups_have_waiters,
+            // A probe defaults no more than the solve it probes for.
+            default_scope: self.default_scope.clone(),
+            // A probe's calls are bound again in the solver it probes for.
+            receiver_proofs: Vec::new(),
         }
     }
 }
@@ -1220,7 +1703,6 @@ fn rank_branches<'ctx>(
 
 struct SolverDriver<'ctx> {
     solver: ConstraintSolver<'ctx>,
-    deferred: VecDeque<Obligation<'ctx>>,
     errors: SpannedErrorList<'ctx>,
     defaulted: bool,
     default_collection_literals: bool,
@@ -1233,7 +1715,6 @@ impl<'ctx> SolverDriver<'ctx> {
     fn new(solver: ConstraintSolver<'ctx>) -> SolverDriver<'ctx> {
         SolverDriver {
             solver,
-            deferred: VecDeque::new(),
             errors: vec![],
             defaulted: false,
             default_collection_literals: false,
@@ -1243,7 +1724,7 @@ impl<'ctx> SolverDriver<'ctx> {
 
     fn into_parts(mut self) -> SolverOutputs<'ctx> {
         let mut obligations = std::mem::take(&mut self.solver.obligations);
-        obligations.append(&mut self.deferred);
+        obligations.append(&mut self.solver.deferred);
         SolverOutputs {
             obligations,
             adjustments: self.solver.adjustments,
@@ -1251,8 +1732,11 @@ impl<'ctx> SolverDriver<'ctx> {
             field_indices: self.solver.field_indices,
             property_reads: self.solver.property_reads,
             overload_sources: self.solver.overload_sources,
+            lazy_argument_targets: self.solver.lazy_argument_targets,
+            result_propagation_conversions: self.solver.result_propagation_conversions,
             value_resolutions: self.solver.value_resolutions,
             instantiation_args: self.solver.instantiation_args,
+            receiver_proofs: self.solver.receiver_proofs,
         }
     }
 
@@ -1274,6 +1758,7 @@ impl<'ctx> SolverDriver<'ctx> {
             let made_progress = self.drain_queue();
 
             if !self.errors.is_empty() {
+                self.remove_dependent_conformance_errors();
                 return Err(std::mem::take(&mut self.errors));
             }
 
@@ -1284,50 +1769,202 @@ impl<'ctx> SolverDriver<'ctx> {
             if !self.defaulted {
                 // Use constraints learned during this round before choosing
                 // defaults. A deferred literal may now have a concrete context.
-                if made_progress && !self.deferred.is_empty() {
-                    self.solver.obligations.append(&mut self.deferred);
+                if made_progress && !self.solver.deferred.is_empty() {
+                    self.requeue_deferred();
                     continue;
                 }
                 self.defaulted = true;
                 // Closure checking and overload probes can run before the
                 // enclosing call has supplied a collection's element type.
                 let awaiting_collection_context = !self.default_collection_literals
-                    && self.deferred.iter().any(|obligation| {
-                        matches!(obligation.goal, Goal::CollectionLiteral { ty, .. }
+                    && self.solver.deferred.iter().any(|obligation| {
+                        matches!(obligation.goal, Goal::CollectionLiteral { ty, .. } | Goal::SpreadShape { result: ty, .. }
                             if self.solver.icx.resolve_vars_if_possible(ty).is_infer()
                                 || has_unresolvable_projection(&self.solver.icx, ty))
                     });
                 if self.allow_fallbacks {
                     if !awaiting_collection_context {
-                        self.solver.icx.default_numeric_vars();
+                        let scope = self.solver.defaultable_numeric_vars();
+                        let held = self.hold_literals(scope.as_ref());
+                        match scope {
+                            None => self.solver.icx.default_numeric_vars_except(&held),
+                            Some(scope) => {
+                                for var in scope {
+                                    if !held.contains(&var) {
+                                        self.solver.icx.default_numeric_var(var);
+                                    }
+                                }
+                            }
+                        }
                     }
                     self.apply_default_fallbacks();
                 }
-                if !self.deferred.is_empty() {
-                    self.solver.obligations.append(&mut self.deferred);
+                if !self.solver.deferred.is_empty() {
+                    self.requeue_deferred();
                 }
                 continue;
             }
 
-            if !self.deferred.is_empty() {
-                if made_progress {
-                    self.solver.obligations.append(&mut self.deferred);
-                    continue;
-                }
-
-                // No progress after defaulting; let unresolved inference vars report errors.
-                return Ok(());
+            if !self.solver.deferred.is_empty() && made_progress {
+                self.requeue_deferred();
+                continue;
             }
 
+            // A producer-only solve can run before its surrounding application
+            // supplies the missing operand. Leave its held inputs open for the
+            // next pass. A complete solve can exhaust the remaining defaults.
+            if !self.solver.held_literals.is_empty() && self.solver.default_scope.is_none() {
+                self.solver.release_all_held_literals();
+                self.requeue_deferred();
+                continue;
+            }
+
+            // No progress after defaulting; let unresolved inference vars report errors.
             return Ok(());
         }
+    }
+
+    /// At fallback, default the literals needed to unblock a goal before
+    /// defaulting the inputs that goal can type. In `[1, 2].map(f).count() + 1`,
+    /// the array needs an element type for lookup, but the addend can take
+    /// its type from the count. A literal used in both roles is a prerequisite.
+    fn hold_literals(&mut self, scope: Option<&FxHashSet<NumericVar>>) -> FxHashSet<NumericVar> {
+        let icx = &self.solver.icx;
+        let mut prerequisites = FxHashSet::default();
+        let mut by_node: FxHashMap<NodeID, Vec<NumericVar>> = FxHashMap::default();
+        let mut needs = |ty| prerequisites.extend(numeric_vars_in(icx, ty));
+        let mut input = |node, ty| {
+            for var in numeric_vars_in(icx, ty) {
+                if scope.is_none_or(|scope| scope.contains(&var)) {
+                    let vars = by_node.entry(node).or_default();
+                    if !vars.contains(&var) {
+                        vars.push(var);
+                    }
+                }
+            }
+        };
+        for obligation in &self.solver.deferred {
+            if let Some((receiver, call)) = receiver_lookup(&obligation.goal) {
+                needs(receiver);
+                if let Some((node, arguments)) = call {
+                    for arg in arguments {
+                        input(node, arg.ty);
+                    }
+                }
+                continue;
+            }
+            let (node, lhs, rhs) = match &obligation.goal {
+                Goal::BinaryOp(data) => (data.node_id, data.lhs, data.rhs),
+                Goal::AssignOp(data) => (data.node_id, data.lhs, data.rhs),
+                Goal::UnaryOp(data) => {
+                    needs(data.lhs);
+                    continue;
+                }
+                _ => continue,
+            };
+            // Both a binary operator and an intrinsic compound write can
+            // type either operand once the other operand's producer resolves.
+            let awaits_type = |ty| {
+                self.solver
+                    .operand_awaits_type(self.solver.structurally_resolve(ty))
+            };
+            match (awaits_type(lhs), awaits_type(rhs)) {
+                (true, false) => {
+                    needs(lhs);
+                    input(node, rhs);
+                }
+                (false, true) => {
+                    needs(rhs);
+                    input(node, lhs);
+                }
+                _ => {
+                    needs(lhs);
+                    needs(rhs);
+                }
+            }
+        }
+        let mut held = FxHashSet::default();
+        by_node.retain(|_, vars| {
+            vars.retain(|var| !prerequisites.contains(var));
+            held.extend(vars.iter().copied());
+            !vars.is_empty()
+        });
+        self.solver.held_literals = by_node;
+        held
+    }
+
+    /// If an operand already failed a bound required to form a nominal type,
+    /// reporting a failed use of that ill-formed type in the enclosing
+    /// expression adds no information (e.g. RangeIterator[double]: Iterator).
+    fn remove_dependent_conformance_errors(&mut self) {
+        use crate::sema::error::TypeError;
+        if self.errors.len() < 2 {
+            return;
+        }
+        let failed: Vec<_> = self
+            .errors
+            .iter()
+            .filter_map(|error| match error.value {
+                TypeError::NonConformance { ty, interface } => Some((ty, interface, error.span)),
+                _ => None,
+            })
+            .collect();
+        let gcx = self.solver.gcx();
+        self.errors.retain(|error| {
+            let TypeError::NonConformance { ty, .. } = error.value else {
+                return true;
+            };
+            let TyKind::Adt(def, args) = ty.kind() else {
+                return true;
+            };
+            if args.len() != gcx.generics_of(def.id).total_count() {
+                return true;
+            }
+            !canonical_constraints_of(gcx, def.id)
+                .into_iter()
+                .any(|bound| {
+                    let Constraint::Bound {
+                        ty: subject,
+                        interface,
+                    } = instantiate_constraint_with_args(gcx, bound.value, args)
+                    else {
+                        return false;
+                    };
+                    args.iter().any(|arg| arg.ty() == Some(subject))
+                        && failed.iter().any(|&(other, required, span)| {
+                            let pos = |p: crate::span::Position| (p.line, p.offset);
+                            subject == other
+                                && interface == required
+                                && span.file == error.span.file
+                                && pos(error.span.start) <= pos(span.start)
+                                && pos(span.end) <= pos(error.span.end)
+                        })
+                })
+        });
     }
 
     fn drain_queue(&mut self) -> bool {
         let mut made_progress = false;
         while let Some(obligation) = self.solver.obligations.pop_front() {
-            match self.solver.solve(&obligation) {
-                SolverResult::Deferred => self.deferred.push_back(obligation),
+            let mut result = self.solver.solve(&obligation);
+            if let SolverResult::Solved(obligations) = &mut result
+                && self.solver.lookups_have_waiters
+                && let Some(lookup) = lookup_result(&obligation.goal)
+            {
+                obligations.extend(self.take_coercions_awaiting(lookup));
+            }
+            if let SolverResult::Solved(obligations) = &mut result
+                && !self.solver.held_literals.is_empty()
+                && let Some(node) = holding_node(&obligation.goal)
+                && self.solver.held_literals.contains_key(&node)
+            {
+                obligations.push(Obligation {
+                    location: obligation.location,
+                    goal: Goal::ReleaseHeldLiterals(node),
+                });
+            }
+            match result {
+                SolverResult::Deferred => self.solver.deferred.push_back(obligation),
                 SolverResult::Solved(mut obligations) => {
                     made_progress = true;
                     for obligation in obligations.drain(..).rev() {
@@ -1341,9 +1978,47 @@ impl<'ctx> SolverDriver<'ctx> {
         made_progress
     }
 
+    /// Queue the deferred goals again. Their lookups are found in the queue now.
+    fn requeue_deferred(&mut self) {
+        self.solver.obligations.append(&mut self.solver.deferred);
+    }
+
+    /// Take the boxing and wrapping coercions that wait for a lookup's
+    /// result, so they run right after the lookup's own goals, where binding
+    /// the result to the target type used to run. Its overloads are then
+    /// probed with the coercion in view, and its argument literals are not
+    /// released before the coercion has seen the result.
+    fn take_coercions_awaiting(&mut self, lookup: Ty<'ctx>) -> Vec<Obligation<'ctx>> {
+        let icx = self.solver.icx.clone();
+        let gcx = self.solver.gcx();
+        let waits = |to| coerce::lookup_dependent_target(gcx, icx.shallow_resolve(to));
+        let root_of = |ty: Ty<'ctx>| match icx.shallow_resolve(ty).kind() {
+            TyKind::Infer(InferTy::TyVar(var)) => Some(icx.ty_var_root(var)),
+            _ => None,
+        };
+        let Some(root) = root_of(lookup) else {
+            return vec![];
+        };
+        let awaits = |obligation: &Obligation<'ctx>| {
+            matches!(obligation.goal, Goal::Coerce { from, to, .. }
+                if root_of(from) == Some(root) && waits(to))
+        };
+        let mut taken = vec![];
+        for queue in [&mut self.solver.deferred, &mut self.solver.obligations] {
+            if !queue.iter().any(awaits) {
+                continue;
+            }
+            let (waiting, rest): (VecDeque<_>, VecDeque<_>) =
+                std::mem::take(queue).into_iter().partition(awaits);
+            *queue = rest;
+            taken.extend(waiting);
+        }
+        taken
+    }
+
     fn apply_default_fallbacks(&mut self) {
         let mut remaining = VecDeque::new();
-        while let Some(obligation) = self.deferred.pop_front() {
+        while let Some(obligation) = self.solver.deferred.pop_front() {
             let goal = obligation.goal;
             let location = obligation.location;
             if self.default_collection_literals
@@ -1363,20 +2038,39 @@ impl<'ctx> SolverDriver<'ctx> {
                     self.errors.extend(errors);
                 }
                 remaining.push_back(Obligation { goal, location });
+            } else if self.default_collection_literals
+                && let Goal::SpreadShape {
+                    result,
+                    element,
+                    scalars,
+                    sources,
+                    ..
+                } = &goal
+                && self.solver.icx.resolve_vars_if_possible(*result).is_infer()
+            {
+                if let SolverResult::Error(errors) = self
+                    .solver
+                    .solve_spread_shape(location, *result, *element, *scalars, sources, false)
+                {
+                    self.errors.extend(errors);
+                }
+                remaining.push_back(Obligation { goal, location });
             } else if let Goal::DefaultFallback(data) = goal {
                 self.attempt_default_fallback(data, location);
             } else {
                 remaining.push_back(Obligation { goal, location });
             }
         }
-        self.deferred = remaining;
+        self.solver.deferred = remaining;
     }
 
     fn attempt_default_fallback(&mut self, data: DefaultFallbackGoalData<'ctx>, span: Span) {
         match (data.infer_var, data.default) {
             (GenericArgument::Type(var), GenericArgument::Type(default)) => {
                 let resolved = self.solver.icx.resolve_vars_if_possible(var);
-                if resolved.is_infer() {
+                // Without holding, this literal would already have its numeric
+                // default here, and the fallback would not apply.
+                if resolved.is_infer() && !self.solver.is_held_literal(resolved) {
                     let _ = self.solver.solve_equality(span, var, default);
                 }
             }
@@ -1389,6 +2083,81 @@ impl<'ctx> SolverDriver<'ctx> {
             _ => {}
         }
     }
+}
+
+/// The receiver of a goal that looks a member up on it, and for calls, the
+/// call node and its arguments (without the receiver).
+fn receiver_lookup<'a, 'ctx>(
+    goal: &'a Goal<'ctx>,
+) -> Option<(Ty<'ctx>, Option<(NodeID, &'a [ApplyArgument<'ctx>])>)> {
+    match goal {
+        Goal::MethodCall(data) => Some((data.receiver, Some((data.node_id, &data.arguments)))),
+        Goal::IndexAccess(data) => Some((data.receiver, Some((data.nodes.call, &data.keys)))),
+        Goal::Member(data) => Some((data.receiver, None)),
+        _ => None,
+    }
+}
+
+/// The node of a goal that can hold input literals: a call, a subscript or
+/// an operator. An operator's node is the node of its operator method call
+/// too (`solve_operator_method`).
+fn holding_node(goal: &Goal<'_>) -> Option<NodeID> {
+    match goal {
+        Goal::MethodCall(data) => Some(data.node_id),
+        Goal::IndexAccess(data) => Some(data.nodes.call),
+        Goal::BinaryOp(data) => Some(data.node_id),
+        Goal::AssignOp(data) => Some(data.node_id),
+        _ => None,
+    }
+}
+
+/// The type that a `receiver_lookup` goal gives its result, or that an
+/// operator gives its own. An operator waits for an unresolved operand, such
+/// as a lookup's result (`list.count() + 1`), and only then gives its result
+/// a type; binding that result to a coercion's target first would reject
+/// the operator's actual result.
+fn lookup_result<'ctx>(goal: &Goal<'ctx>) -> Option<Ty<'ctx>> {
+    match goal {
+        Goal::MethodCall(data) => Some(data.result),
+        Goal::IndexAccess(data) => Some(data.output),
+        Goal::Member(data) => Some(data.result),
+        Goal::BinaryOp(data) => Some(data.rho),
+        Goal::UnaryOp(data) => Some(data.rho),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExtensionHeaderMatch {
+    Mismatch,
+    Independent,
+    NeedsLiteralType,
+}
+
+/// Unknown integer and float literal variables in a type, by root.
+fn numeric_vars_in<'ctx>(icx: &InferCtx<'ctx>, ty: Ty<'ctx>) -> Vec<NumericVar> {
+    use crate::sema::tycheck::visit::{TypeSuperVisitable, TypeVisitable, TypeVisitor};
+    struct Collect<'a, 'ctx> {
+        icx: &'a InferCtx<'ctx>,
+        vars: Vec<NumericVar>,
+    }
+    impl<'ctx> TypeVisitor<'ctx> for Collect<'_, 'ctx> {
+        fn visit_ty(&mut self, ty: Ty<'ctx>) -> bool {
+            if let Some(var) = self.icx.unresolved_numeric_var(ty) {
+                if !self.vars.contains(&var) {
+                    self.vars.push(var);
+                }
+                return false;
+            }
+            ty.super_visit_with(self)
+        }
+    }
+    let mut collect = Collect {
+        icx,
+        vars: Vec::new(),
+    };
+    icx.resolve_vars_if_possible(ty).visit_with(&mut collect);
+    collect.vars
 }
 
 /// Check if a type contains a projection whose self-type is an unresolved inference variable.

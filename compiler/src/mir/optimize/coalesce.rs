@@ -592,7 +592,10 @@ fn record_terminator_use_counts(term: &TerminatorKind<'_>, use_counts: &mut [usi
         }
 
         TerminatorKind::SwitchInt { discr, .. } => record_operand_use_count(discr, use_counts),
-        TerminatorKind::Yield { value, .. } => record_operand_use_count(value, use_counts),
+        TerminatorKind::Yield { value, .. }
+        | TerminatorKind::GeneratorYield { value, .. } => {
+            record_operand_use_count(value, use_counts)
+        }
         TerminatorKind::Return
         | TerminatorKind::Goto { .. }
         | TerminatorKind::UnresolvedGoto

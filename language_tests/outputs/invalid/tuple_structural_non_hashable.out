@@ -1,0 +1,12 @@
+error: type '(Opaque, int32)' does not conform to interface 'Hashable'
+ -> language_tests/source_files/invalid/tuple_structural_non_hashable.tr:6:12
+	    var s = Set[(Opaque, int32)]::new()
+	            ^^^^^^^^^^^^^^^^^^^^
+error: type '(Opaque, int32)' does not conform to interface 'Hashable'
+ -> language_tests/source_files/invalid/tuple_structural_non_hashable.tr:6:12
+	    var s = Set[(Opaque, int32)]::new()
+	            ^^^^^^^^^^^^^^^^^^^^^^^^^
+error: type '(Opaque, int32)' does not conform to interface 'Hashable'
+ -> language_tests/source_files/invalid/tuple_structural_non_hashable.tr:7:6
+	    s.insert((Opaque { x: 1 }, 2))
+	      ^^^^^^

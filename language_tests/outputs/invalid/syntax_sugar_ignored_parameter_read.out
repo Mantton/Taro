@@ -1,0 +1,4 @@
+error: disallowed wildcard expression
+ -> language_tests/source_files/invalid/syntax_sugar_ignored_parameter_read.tr:3:25
+	func main() { apply(_ => _); }
+	                         ^

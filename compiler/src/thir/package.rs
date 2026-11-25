@@ -10,10 +10,7 @@ use crate::{
             lower::{TypeLowerer, item::DefTyLoweringCtx},
             results::TypeCheckResults,
             solve::Adjustment,
-            utils::{
-                arguments::match_arguments_to_parameters,
-                instantiate::{instantiate_signature_with_args, instantiate_ty_with_args},
-            },
+            utils::instantiate::{instantiate_signature_with_args, instantiate_ty_with_args},
         },
     },
     thir::{
@@ -24,6 +21,9 @@ use crate::{
 };
 use index_vec::IndexVec;
 use rustc_hash::FxHashMap;
+
+#[path = "spread.rs"]
+mod spread;
 
 #[path = "fallible_init.rs"]
 mod fallible_init;
@@ -40,10 +40,58 @@ pub fn build_package<'ctx>(
         validate_entry_point(&package, gcx)?
     };
     let mut package = Actor::run(package, gcx, results, entry)?;
+    // A `Result`-returning `main` runs behind a wrapper that reports its error
+    // and yields the exit status. The wrapper's match is checked below like
+    // any other.
+    if let Some(main) = package.entry
+        && let Some(result_entry) = crate::compile::entry::result_entry(gcx, main)
+    {
+        let is_async = package
+            .functions
+            .get(&main)
+            .is_some_and(|function| function.is_async);
+        let wrapper = thir::main_result::synthesize_entry(gcx, main, is_async, result_entry);
+        package.entry = Some(wrapper.id);
+        package.functions.insert(wrapper.id, wrapper);
+    }
     thir::passes::exhaustiveness::run(&mut package, gcx)?;
     thir::passes::flow::run(&mut package, gcx)?;
     gcx.dcx().ok()?;
     Ok(package)
+}
+
+pub(crate) fn lower_const_function<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    results: std::rc::Rc<TypeCheckResults<'ctx>>,
+    id: DefinitionID,
+    node: &hir::Function,
+    fn_ctx: hir::FunctionContext,
+) -> CompileResult<ThirFunction<'ctx>> {
+    let errors_before = gcx.dcx().error_count();
+    let (mut func, _) = FunctionLower::lower(gcx, results, id, node, fn_ctx);
+    thir::passes::exhaustiveness::check_function(&mut func, gcx);
+    thir::passes::flow::check_function(&func, gcx);
+    if gcx.dcx().error_count() > errors_before {
+        return Err(crate::error::ReportedError);
+    }
+    Ok(func)
+}
+
+pub(crate) fn lower_const_initializer<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    results: std::rc::Rc<TypeCheckResults<'ctx>>,
+    id: DefinitionID,
+    expr: &hir::Expression,
+    expected: Ty<'ctx>,
+) -> CompileResult<ThirFunction<'ctx>> {
+    let errors_before = gcx.dcx().error_count();
+    let (mut func, _) = FunctionLower::lower_default_provider(gcx, results, id, expr, None);
+    thir::passes::exhaustiveness::check_function(&mut func, gcx);
+    thir::passes::flow::check_const_initializer(&func, expected, gcx);
+    if gcx.dcx().error_count() > errors_before {
+        return Err(crate::error::ReportedError);
+    }
+    Ok(func)
 }
 
 /// Codec synthesis reuses the ordinary class publication wrapper. Its private
@@ -111,24 +159,30 @@ impl<'ctx> Actor<'ctx> {
             }
         }
 
-        // Synthesize THIR for any registered synthetic methods (e.g., derived Clone)
-        let synthetic_functions = crate::thir::synthesize::synthesize_all(gcx);
-        for func in synthetic_functions {
-            actor.functions.insert(func.id, func);
-        }
-
         // Synthesize default value providers
         let default_exprs = gcx.store.default_value_exprs.borrow();
-        for (id, expr) in default_exprs.iter() {
+        for (id, (expr, caller_bindings)) in default_exprs.iter() {
             if id.package() != gcx.package_index() {
                 continue;
             }
-            let (func, nested_closures) =
-                FunctionLower::lower_default_provider(gcx, actor.results.clone(), *id, expr);
+            let (func, nested_closures) = FunctionLower::lower_default_provider(
+                gcx,
+                actor.results.clone(),
+                *id,
+                expr,
+                *caller_bindings,
+            );
             actor.functions.insert(*id, func);
             for closure_func in nested_closures {
                 actor.functions.insert(closure_func.id, closure_func);
             }
+        }
+        drop(default_exprs);
+        // Finalized existential coercions (including default expressions) can
+        // register callable adapters that were not provable during inference.
+        // Materialize them only after all ordinary expressions are lowered.
+        for func in crate::thir::synthesize::synthesize_all(gcx) {
+            actor.functions.insert(func.id, func);
         }
         crate::thir::erased_async_self::run(gcx, &mut actor.functions);
         // Default expressions can themselves introduce opened default calls.
@@ -155,6 +209,7 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
                 self.results.clone(),
                 id,
                 &storage.initializer,
+                None,
             );
             self.functions.insert(id, function);
             for closure in closures {
@@ -185,6 +240,10 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
 mod dynamic_self;
 #[path = "subscript.rs"]
 mod subscript;
+#[path = "tuple_assignment.rs"]
+mod tuple_assignment;
+#[path = "optional_assignment.rs"]
+mod optional_assignment;
 
 struct FunctionLower<'ctx> {
     gcx: GlobalContext<'ctx>,
@@ -830,6 +889,7 @@ impl<'ctx> FunctionLower<'ctx> {
         results: std::rc::Rc<TypeCheckResults<'ctx>>,
         id: DefinitionID,
         expr: &hir::Expression,
+        caller_bindings: Option<[hir::NodeID; 3]>,
     ) -> (ThirFunction<'ctx>, Vec<ThirFunction<'ctx>>) {
         let mut lower = FunctionLower {
             gcx,
@@ -839,7 +899,20 @@ impl<'ctx> FunctionLower<'ctx> {
                 body: None,
                 constructor_self: None,
                 span: expr.span,
-                params: vec![],
+                params: caller_bindings
+                    .into_iter()
+                    .flat_map(|bindings| {
+                        bindings
+                            .into_iter()
+                            .zip(gcx.caller_parameters())
+                            .map(|(id, param)| Param {
+                                id,
+                                name: param.name,
+                                ty: param.ty,
+                                span: expr.span,
+                            })
+                    })
+                    .collect(),
                 stmts: IndexVec::new(),
                 blocks: IndexVec::new(),
                 exprs: IndexVec::new(),
@@ -865,6 +938,712 @@ impl<'ctx> FunctionLower<'ctx> {
 
         lower.func.body = Some(block_id);
         (lower.func, lower.nested_closures)
+    }
+
+    fn lower_dbg_call(
+        &mut self,
+        reporter: DefinitionID,
+        callee: hir::NodeID,
+        arg: &hir::ExpressionArgument,
+        ty: Ty<'ctx>,
+        span: crate::span::Span,
+    ) -> Expr<'ctx> {
+        // Resolve the public function normally. Only direct calls
+        // to std's definition carry an original operand spelling.
+        let arguments = self
+            .results
+            .instantiation(callee)
+            .expect("generic dbg call");
+        let signature =
+            instantiate_signature_with_args(self.gcx, self.gcx.get_signature(reporter), arguments);
+        let target = self.push_expr(
+            ExprKind::Zst {
+                id: reporter,
+                generic_args: Some(arguments),
+            },
+            Ty::from_labeled_signature(self.gcx, &signature),
+            span,
+        );
+        let value = self.lower_expr(&arg.expression);
+        let text = self
+            .gcx
+            .dcx()
+            .source_text(arg.span)
+            .unwrap_or_else(|| "<value>".into());
+        let spelling = hir::Literal::String(self.gcx.intern_symbol(&text));
+        let mut args = vec![value];
+        for (literal, input) in [
+            spelling,
+            self.gcx
+                .source_location(crate::ast::SourceLocation::File, span),
+            self.gcx
+                .source_location(crate::ast::SourceLocation::Line, span),
+        ]
+        .iter()
+        .zip(&signature.inputs[1..])
+        {
+            let constant = Constant {
+                ty: input.ty,
+                value: self.lower_literal(literal),
+            };
+            args.push(self.push_expr(ExprKind::Literal(constant), input.ty, span));
+        }
+        Expr {
+            kind: ExprKind::Call {
+                callee: target,
+                args,
+                is_async: false,
+                argument_evaluation_order: None,
+            },
+            ty,
+            span,
+        }
+    }
+
+    fn push_string_literal(&mut self, text: &str, span: crate::span::Span) -> ExprId {
+        let symbol = self.gcx.intern_symbol(text);
+        let literal = hir::Literal::String(symbol);
+        let ty = self.gcx.types.string;
+        let constant = Constant {
+            ty,
+            value: self.lower_literal(&literal),
+        };
+        self.push_expr(ExprKind::Literal(constant), ty, span)
+    }
+
+    fn push_u8_literal(&mut self, value: u8, span: crate::span::Span) -> ExprId {
+        let ty = self.gcx.types.uint8;
+        let constant = Constant {
+            ty,
+            value: ConstantKind::Integer(value as u64),
+        };
+        self.push_expr(ExprKind::Literal(constant), ty, span)
+    }
+
+    fn push_unit_expr(&mut self, span: crate::span::Span) -> ExprId {
+        self.push_expr(
+            ExprKind::Tuple { fields: vec![] },
+            self.gcx.types.void,
+            span,
+        )
+    }
+
+    fn push_synthetic_let(
+        &mut self,
+        name: &str,
+        init: ExprId,
+        ty: Ty<'ctx>,
+        span: crate::span::Span,
+    ) -> (hir::NodeID, StmtId) {
+        let id = self.fresh_synthetic_local();
+        let stmt = self.push_stmt(Stmt {
+            kind: StmtKind::Let {
+                id,
+                pattern: thir::Pattern {
+                    ty,
+                    span,
+                    kind: thir::PatternKind::Binding {
+                        name: self.gcx.intern_symbol(name),
+                        local: id,
+                        ty,
+                    },
+                },
+                expr: Some(init),
+                ty,
+                mutable: false,
+            },
+            span,
+        });
+        (id, stmt)
+    }
+
+    fn format_assert_operand_debug(
+        &mut self,
+        local: hir::NodeID,
+        local_ty: Ty<'ctx>,
+        span: crate::span::Span,
+    ) -> ExprId {
+        let Some(debug_iface) = self.gcx.std_item_def(hir::StdItem::Debug) else {
+            return self.push_string_literal("<non-Debug>", span);
+        };
+        let Some(debug_string_def) = self.gcx.std_item_def(hir::StdItem::DebugString) else {
+            return self.push_string_literal("<non-Debug>", span);
+        };
+
+        let mut value_expr = self.push_expr(ExprKind::Local(local), local_ty, span);
+        let mut value_ty = local_ty;
+        while let TyKind::Reference(inner) = value_ty.kind() {
+            value_expr = self.push_expr(ExprKind::Deref(value_expr), inner, span);
+            value_ty = inner;
+        }
+
+        if value_ty.is_error()
+            || value_ty.is_infer()
+            || matches!(value_ty.kind(), TyKind::Never)
+        {
+            return self.push_string_literal("<non-Debug>", span);
+        }
+
+        let constraints: Vec<_> = self
+            .gcx
+            .canonical_constraints_of(self.func.id)
+            .into_iter()
+            .map(|c| c.value)
+            .collect();
+        let param_env = self.gcx.store.arenas.global.alloc_slice_clone(&constraints);
+        let goal = crate::sema::models::InterfaceGoal {
+            interface_id: debug_iface,
+            self_ty: value_ty,
+            interface_args: crate::sema::models::GenericArguments::empty(),
+            bindings: &[],
+            param_env,
+        };
+        if self.gcx.prove_interface_goal(
+            goal,
+            crate::sema::models::SelectionMode::Typecheck,
+        ) != crate::sema::models::GoalResult::Proven
+        {
+            return self.push_string_literal("<non-Debug>", span);
+        }
+
+        let fn_args = self
+            .gcx
+            .store
+            .interners
+            .intern_generic_args(vec![GenericArgument::Type(value_ty)]);
+        let signature = instantiate_signature_with_args(
+            self.gcx,
+            self.gcx.get_signature(debug_string_def),
+            fn_args,
+        );
+        let callee = self.push_expr(
+            ExprKind::Zst {
+                id: debug_string_def,
+                generic_args: Some(fn_args),
+            },
+            Ty::from_labeled_signature(self.gcx, &signature),
+            span,
+        );
+        self.push_expr(
+            ExprKind::Call {
+                callee,
+                args: vec![value_expr],
+                is_async: false,
+                argument_evaluation_order: None,
+            },
+            self.gcx.types.string,
+            span,
+        )
+    }
+
+    fn build_assert_fail_call(
+        &mut self,
+        reporter: DefinitionID,
+        expr_text: &str,
+        left_text: &str,
+        left_val: ExprId,
+        right_text: &str,
+        right_val: ExprId,
+        msg_arg: Option<&hir::ExpressionArgument>,
+        span: crate::span::Span,
+    ) -> ExprId {
+        let signature = self.gcx.get_signature(reporter);
+        let target = self.push_expr(
+            ExprKind::Zst {
+                id: reporter,
+                generic_args: None,
+            },
+            Ty::from_labeled_signature(self.gcx, &signature),
+            span,
+        );
+        let file_lit = self
+            .gcx
+            .source_location(crate::ast::SourceLocation::File, span);
+        let line_lit = self
+            .gcx
+            .source_location(crate::ast::SourceLocation::Line, span);
+        let file_expr = {
+            let ty = signature.inputs[1].ty;
+            let constant = Constant {
+                ty,
+                value: self.lower_literal(&file_lit),
+            };
+            self.push_expr(ExprKind::Literal(constant), ty, span)
+        };
+        let line_expr = {
+            let ty = signature.inputs[2].ty;
+            let constant = Constant {
+                ty,
+                value: self.lower_literal(&line_lit),
+            };
+            self.push_expr(ExprKind::Literal(constant), ty, span)
+        };
+        let mut args = vec![
+            self.push_string_literal(expr_text, span),
+            file_expr,
+            line_expr,
+            self.push_string_literal(left_text, span),
+            left_val,
+            self.push_string_literal(right_text, span),
+            right_val,
+        ];
+        if let Some(msg) = msg_arg {
+            args.push(self.lower_call_argument(msg));
+        }
+        self.push_expr(
+            ExprKind::Call {
+                callee: target,
+                args,
+                is_async: false,
+                argument_evaluation_order: None,
+            },
+            self.gcx.types.void,
+            span,
+        )
+    }
+
+    fn try_lower_assert_call(
+        &mut self,
+        callee: &hir::Expression,
+        arguments: &[hir::ExpressionArgument],
+        ty: Ty<'ctx>,
+        span: crate::span::Span,
+    ) -> Option<Expr<'ctx>> {
+        let callee_id = self.resolve_direct_callee_id(callee)?;
+        let is_assert = self.gcx.std_item_def(hir::StdItem::Assert) == Some(callee_id)
+            || self.gcx.std_item_def(hir::StdItem::AssertWithMessage) == Some(callee_id);
+        let is_debug_assert = self.gcx.std_item_def(hir::StdItem::DebugAssert) == Some(callee_id)
+            || self.gcx.std_item_def(hir::StdItem::DebugAssertWithMessage) == Some(callee_id);
+        if !is_assert && !is_debug_assert {
+            return None;
+        }
+        if !(arguments.len() == 1 || arguments.len() == 2) {
+            return None;
+        }
+
+        // In release builds, debugAssert is a complete no-op: neither the
+        // condition nor the lazy message evaluates.
+        if is_debug_assert
+            && self.gcx.config.profile != crate::compile::config::BuildProfile::Debug
+        {
+            return Some(Expr {
+                kind: ExprKind::Tuple { fields: vec![] },
+                ty,
+                span,
+            });
+        }
+
+        let msg_arg = arguments.get(1);
+        let reporter = if msg_arg.is_some() {
+            self.gcx.std_item_def(hir::StdItem::AssertFailWithMessage)?
+        } else {
+            self.gcx.std_item_def(hir::StdItem::AssertFail)?
+        };
+
+        let cond_arg = &arguments[0];
+        let cond_expr = &cond_arg.expression;
+        let expr_text = self
+            .gcx
+            .dcx()
+            .source_text(cond_arg.span)
+            .unwrap_or_else(|| "<condition>".into());
+
+        let no_cond_adjustments = self
+            .results
+            .node_adjustments(cond_expr.id)
+            .is_none_or(|adjustments| adjustments.is_empty());
+        let operand_is_no_copy = |expr: &hir::Expression| {
+            self.results
+                .try_node_type(expr.id)
+                .is_some_and(|operand_ty| crate::mir::vet::type_contains_no_copy(self.gcx, operand_ty))
+        };
+        match &cond_expr.kind {
+            hir::ExpressionKind::Binary(
+                op @ (hir::BinaryOperator::Eql
+                | hir::BinaryOperator::Neq
+                | hir::BinaryOperator::Lt
+                | hir::BinaryOperator::Leq
+                | hir::BinaryOperator::Gt
+                | hir::BinaryOperator::Geq
+                | hir::BinaryOperator::IdentityEql
+                | hir::BinaryOperator::IdentityNeq
+                | hir::BinaryOperator::In
+                | hir::BinaryOperator::NotIn),
+                lhs,
+                rhs,
+            ) if no_cond_adjustments && !operand_is_no_copy(lhs) && !operand_is_no_copy(rhs) => {
+                let lhs_init = self.lower_expr(lhs);
+                let lhs_ty = self.func.exprs[lhs_init].ty;
+                let rhs_init = self.lower_expr(rhs);
+                let rhs_ty = self.func.exprs[rhs_init].ty;
+
+                let (lhs_local, lhs_stmt) =
+                    self.push_synthetic_let("$assert_lhs", lhs_init, lhs_ty, lhs.span);
+                let (rhs_local, rhs_stmt) =
+                    self.push_synthetic_let("$assert_rhs", rhs_init, rhs_ty, rhs.span);
+
+                let lhs_use = self.push_expr(ExprKind::Local(lhs_local), lhs_ty, lhs.span);
+                let rhs_use = self.push_expr(ExprKind::Local(rhs_local), rhs_ty, rhs.span);
+
+                let cmp_kind = if matches!(
+                    op,
+                    hir::BinaryOperator::In | hir::BinaryOperator::NotIn
+                ) {
+                    let def_id = self
+                        .results
+                        .overload_source(cond_expr.id)
+                        .expect("membership resolves to Contains.contains");
+                    let elem_ref = self.push_expr(
+                        ExprKind::Reference { expr: lhs_use },
+                        Ty::new(TyKind::Reference(lhs_ty), self.gcx),
+                        lhs.span,
+                    );
+                    let callee_ty = self.gcx.get_type(def_id);
+                    let generic_args = self.results.instantiation(cond_expr.id);
+                    let op_callee = self.push_expr(
+                        ExprKind::Zst {
+                            id: def_id,
+                            generic_args,
+                        },
+                        callee_ty,
+                        cond_expr.span,
+                    );
+                    let call = ExprKind::Call {
+                        argument_evaluation_order: None,
+                        callee: op_callee,
+                        args: vec![rhs_use, elem_ref],
+                        is_async: false,
+                    };
+                    if *op == hir::BinaryOperator::NotIn {
+                        let operand = self.push_expr(call, self.gcx.types.bool, cond_expr.span);
+                        ExprKind::Unary {
+                            op: mir::UnaryOperator::LogicalNot,
+                            operand,
+                        }
+                    } else {
+                        call
+                    }
+                } else if let Some(def_id) = self.results.overload_source(cond_expr.id) {
+                    let callee_ty = self.gcx.get_type(def_id);
+                    let generic_args = self.results.instantiation(cond_expr.id);
+                    let op_callee = self.push_expr(
+                        ExprKind::Zst {
+                            id: def_id,
+                            generic_args,
+                        },
+                        callee_ty,
+                        cond_expr.span,
+                    );
+                    ExprKind::Call {
+                        argument_evaluation_order: None,
+                        callee: op_callee,
+                        args: vec![lhs_use, rhs_use],
+                        is_async: false,
+                    }
+                } else if matches!(
+                    op,
+                    hir::BinaryOperator::IdentityEql | hir::BinaryOperator::IdentityNeq
+                ) {
+                    ExprKind::ClassIdentity {
+                        lhs: lhs_use,
+                        rhs: rhs_use,
+                        equal: *op == hir::BinaryOperator::IdentityEql,
+                    }
+                } else {
+                    ExprKind::Binary {
+                        op: bin_op(*op),
+                        lhs: lhs_use,
+                        rhs: rhs_use,
+                    }
+                };
+                let cond_val = self.push_expr(cmp_kind, self.gcx.types.bool, cond_expr.span);
+
+                let lhs_text = self
+                    .gcx
+                    .dcx()
+                    .source_text(lhs.span)
+                    .unwrap_or_else(|| "<left>".into());
+                let rhs_text = self
+                    .gcx
+                    .dcx()
+                    .source_text(rhs.span)
+                    .unwrap_or_else(|| "<right>".into());
+                let left_val = self.format_assert_operand_debug(lhs_local, lhs_ty, lhs.span);
+                let right_val = self.format_assert_operand_debug(rhs_local, rhs_ty, rhs.span);
+                let fail_call = self.build_assert_fail_call(
+                    reporter,
+                    &expr_text,
+                    &lhs_text,
+                    left_val,
+                    &rhs_text,
+                    right_val,
+                    msg_arg,
+                    span,
+                );
+                let then_expr = self.push_unit_expr(span);
+                let if_expr = self.push_expr(
+                    ExprKind::If {
+                        cond: cond_val,
+                        then_expr,
+                        else_expr: Some(fail_call),
+                    },
+                    self.gcx.types.void,
+                    span,
+                );
+                let block_id = BlockId::from_raw(self.func.blocks.len() as u32);
+                self.func.blocks.push(Block {
+                    id: block_id,
+                    stmts: vec![lhs_stmt, rhs_stmt],
+                    expr: Some(if_expr),
+                });
+                Some(Expr {
+                    kind: ExprKind::Block(block_id),
+                    ty,
+                    span,
+                })
+            }
+            hir::ExpressionKind::Binary(hir::BinaryOperator::BoolAnd, lhs, rhs)
+                if no_cond_adjustments =>
+            {
+                // Short-circuiting `lhs && rhs`: encode outcome as u8:
+                // 0 => lhs false (rhs skipped), 1 => lhs true & rhs false, 2 => passed.
+                let lhs_val = self.lower_expr(lhs);
+                let rhs_val = self.lower_expr(rhs);
+                let passed = self.push_u8_literal(2, span);
+                let rhs_failed = self.push_u8_literal(1, span);
+                let lhs_failed = self.push_u8_literal(0, span);
+                let inner_if = self.push_expr(
+                    ExprKind::If {
+                        cond: rhs_val,
+                        then_expr: passed,
+                        else_expr: Some(rhs_failed),
+                    },
+                    self.gcx.types.uint8,
+                    span,
+                );
+                let state_init = self.push_expr(
+                    ExprKind::If {
+                        cond: lhs_val,
+                        then_expr: inner_if,
+                        else_expr: Some(lhs_failed),
+                    },
+                    self.gcx.types.uint8,
+                    span,
+                );
+                let (state_local, state_stmt) = self.push_synthetic_let(
+                    "$assert_and_state",
+                    state_init,
+                    self.gcx.types.uint8,
+                    span,
+                );
+                let state_read_1 =
+                    self.push_expr(ExprKind::Local(state_local), self.gcx.types.uint8, span);
+                let two = self.push_u8_literal(2, span);
+                let is_ok = self.push_expr(
+                    ExprKind::Binary {
+                        op: mir::BinaryOperator::Eql,
+                        lhs: state_read_1,
+                        rhs: two,
+                    },
+                    self.gcx.types.bool,
+                    span,
+                );
+                let state_read_2 =
+                    self.push_expr(ExprKind::Local(state_local), self.gcx.types.uint8, span);
+                let zero_1 = self.push_u8_literal(0, span);
+                let skipped_1 = self.push_expr(
+                    ExprKind::Binary {
+                        op: mir::BinaryOperator::Eql,
+                        lhs: state_read_2,
+                        rhs: zero_1,
+                    },
+                    self.gcx.types.bool,
+                    span,
+                );
+                let false_str_1 = self.push_string_literal("false", lhs.span);
+                let true_str = self.push_string_literal("true", lhs.span);
+                let left_val = self.push_expr(
+                    ExprKind::If {
+                        cond: skipped_1,
+                        then_expr: false_str_1,
+                        else_expr: Some(true_str),
+                    },
+                    self.gcx.types.string,
+                    lhs.span,
+                );
+                let state_read_3 =
+                    self.push_expr(ExprKind::Local(state_local), self.gcx.types.uint8, span);
+                let zero_2 = self.push_u8_literal(0, span);
+                let skipped_2 = self.push_expr(
+                    ExprKind::Binary {
+                        op: mir::BinaryOperator::Eql,
+                        lhs: state_read_3,
+                        rhs: zero_2,
+                    },
+                    self.gcx.types.bool,
+                    span,
+                );
+                let not_eval_str = self.push_string_literal("<not evaluated>", rhs.span);
+                let false_str_2 = self.push_string_literal("false", rhs.span);
+                let right_val = self.push_expr(
+                    ExprKind::If {
+                        cond: skipped_2,
+                        then_expr: not_eval_str,
+                        else_expr: Some(false_str_2),
+                    },
+                    self.gcx.types.string,
+                    rhs.span,
+                );
+                let lhs_text = self
+                    .gcx
+                    .dcx()
+                    .source_text(lhs.span)
+                    .unwrap_or_else(|| "<left>".into());
+                let rhs_text = self
+                    .gcx
+                    .dcx()
+                    .source_text(rhs.span)
+                    .unwrap_or_else(|| "<right>".into());
+                let fail_call = self.build_assert_fail_call(
+                    reporter,
+                    &expr_text,
+                    &lhs_text,
+                    left_val,
+                    &rhs_text,
+                    right_val,
+                    msg_arg,
+                    span,
+                );
+                let then_expr = self.push_unit_expr(span);
+                let if_expr = self.push_expr(
+                    ExprKind::If {
+                        cond: is_ok,
+                        then_expr,
+                        else_expr: Some(fail_call),
+                    },
+                    self.gcx.types.void,
+                    span,
+                );
+                let block_id = BlockId::from_raw(self.func.blocks.len() as u32);
+                self.func.blocks.push(Block {
+                    id: block_id,
+                    stmts: vec![state_stmt],
+                    expr: Some(if_expr),
+                });
+                Some(Expr {
+                    kind: ExprKind::Block(block_id),
+                    ty,
+                    span,
+                })
+            }
+            hir::ExpressionKind::Binary(hir::BinaryOperator::BoolOr, lhs, rhs)
+                if no_cond_adjustments =>
+            {
+                // Short-circuiting `lhs || rhs`: if lhs is true, rhs is never evaluated.
+                // On failure, both lhs and rhs evaluated to false.
+                let lhs_val = self.lower_expr(lhs);
+                let rhs_val = self.lower_expr(rhs);
+                let lhs_text = self
+                    .gcx
+                    .dcx()
+                    .source_text(lhs.span)
+                    .unwrap_or_else(|| "<left>".into());
+                let rhs_text = self
+                    .gcx
+                    .dcx()
+                    .source_text(rhs.span)
+                    .unwrap_or_else(|| "<right>".into());
+                let left_val = self.push_string_literal("false", lhs.span);
+                let right_val = self.push_string_literal("false", rhs.span);
+                let fail_call = self.build_assert_fail_call(
+                    reporter,
+                    &expr_text,
+                    &lhs_text,
+                    left_val,
+                    &rhs_text,
+                    right_val,
+                    msg_arg,
+                    span,
+                );
+                let ok_inner = self.push_unit_expr(span);
+                let inner_if = self.push_expr(
+                    ExprKind::If {
+                        cond: rhs_val,
+                        then_expr: ok_inner,
+                        else_expr: Some(fail_call),
+                    },
+                    self.gcx.types.void,
+                    span,
+                );
+                let ok_outer = self.push_unit_expr(span);
+                Some(Expr {
+                    kind: ExprKind::If {
+                        cond: lhs_val,
+                        then_expr: ok_outer,
+                        else_expr: Some(inner_if),
+                    },
+                    ty,
+                    span,
+                })
+            }
+            hir::ExpressionKind::Unary(hir::UnaryOperator::LogicalNot, inner)
+                if no_cond_adjustments && self.results.overload_source(cond_expr.id).is_none() =>
+            {
+                let inner_val = self.lower_expr(inner);
+                let inner_text = self
+                    .gcx
+                    .dcx()
+                    .source_text(inner.span)
+                    .unwrap_or_else(|| "<value>".into());
+                let left_val = self.push_string_literal("true", inner.span);
+                let empty_val = self.push_string_literal("", span);
+                let fail_call = self.build_assert_fail_call(
+                    reporter,
+                    &expr_text,
+                    &inner_text,
+                    left_val,
+                    "",
+                    empty_val,
+                    msg_arg,
+                    span,
+                );
+                let ok_expr = self.push_unit_expr(span);
+                Some(Expr {
+                    kind: ExprKind::If {
+                        cond: inner_val,
+                        then_expr: fail_call,
+                        else_expr: Some(ok_expr),
+                    },
+                    ty,
+                    span,
+                })
+            }
+            _ => {
+                let cond_val = self.lower_expr(cond_expr);
+                let empty_1 = self.push_string_literal("", span);
+                let empty_2 = self.push_string_literal("", span);
+                let fail_call = self.build_assert_fail_call(
+                    reporter,
+                    &expr_text,
+                    "",
+                    empty_1,
+                    "",
+                    empty_2,
+                    msg_arg,
+                    span,
+                );
+                let ok_expr = self.push_unit_expr(span);
+                Some(Expr {
+                    kind: ExprKind::If {
+                        cond: cond_val,
+                        then_expr: ok_expr,
+                        else_expr: Some(fail_call),
+                    },
+                    ty,
+                    span,
+                })
+            }
+        }
     }
 
     fn lower_indirect_call(
@@ -933,6 +1712,16 @@ impl<'ctx> FunctionLower<'ctx> {
         }
     }
 
+    fn lower_call_argument(&mut self, arg: &hir::ExpressionArgument) -> ExprId {
+        let results = self.results.clone();
+        self.lower_expr(
+            results
+                .lazy_arguments
+                .get(&arg.expression.id)
+                .unwrap_or(&arg.expression),
+        )
+    }
+
     fn lower_call_args(
         &mut self,
         arguments: &[hir::ExpressionArgument],
@@ -940,7 +1729,7 @@ impl<'ctx> FunctionLower<'ctx> {
     ) -> Vec<ExprId> {
         let mut args = Vec::with_capacity(arguments.len() + leading_args.len());
         args.extend_from_slice(leading_args);
-        args.extend(arguments.iter().map(|arg| self.lower_expr(&arg.expression)));
+        args.extend(arguments.iter().map(|arg| self.lower_call_argument(arg)));
         args
     }
 
@@ -951,6 +1740,7 @@ impl<'ctx> FunctionLower<'ctx> {
         arguments: &[hir::ExpressionArgument],
         leading_args: &[ExprId],
         span: crate::span::Span,
+        prelude: &mut Vec<StmtId>,
     ) -> Option<(Vec<ExprId>, Option<Vec<usize>>)> {
         let generic_args = self.results.instantiation(callee_generic_node);
         let opening = generic_args.and_then(|arguments| {
@@ -979,34 +1769,78 @@ impl<'ctx> FunctionLower<'ctx> {
 
         let param_offset = leading_args.len();
         let params = signature.inputs.get(param_offset..)?;
-        let positions = match_arguments_to_parameters(
+        let trailing_closure = arguments
+            .last()
+            .is_some_and(|arg| self.gcx.is_trailing_closure_argument(arg.expression.id));
+        let positions = crate::sema::tycheck::utils::arguments::match_arguments_to_parameters_with_trailing(
             params,
             signature.is_variadic,
             arguments
                 .iter()
                 .map(|arg| (arg.label.map(|label| label.identifier), arg.expression.span)),
             false,
+            trailing_closure,
         )
         .ok()?;
         let mut final_args =
             Vec::with_capacity(signature.inputs.len().max(arguments.len() + param_offset));
-        final_args.extend_from_slice(leading_args);
-        let supplied: Vec<_> = arguments
+        let has_spread = arguments
             .iter()
-            .map(|argument| self.lower_expr(&argument.expression))
-            .collect();
+            .any(|arg| matches!(arg.expression.kind, hir::ExpressionKind::Spread(_)));
+        let (leading_args, supplied) = if has_spread {
+            let tail = positions.last()?;
+            self.prepare_spread_call(
+                arguments,
+                leading_args,
+                tail,
+                signature.inputs.last()?.ty,
+                prelude,
+                span,
+            )
+        } else {
+            (
+                leading_args.to_vec(),
+                arguments
+                    .iter()
+                    .map(|arg| self.lower_call_argument(arg))
+                    .collect(),
+            )
+        };
+        final_args.extend_from_slice(&leading_args);
         let mut supplied_positions = vec![usize::MAX; arguments.len()];
         let mut defaults = Vec::new();
         let mut opened_default = false;
 
         for (param_idx, arg_indices) in positions.iter().enumerate() {
             let param = &signature.inputs[param_offset + param_idx];
-            if !arg_indices.is_empty() {
+            if has_spread && param_idx + 1 == positions.len() {
+                // All contributions share one completed Span. Only its first
+                // index occupies an ABI argument or needs an evaluation slot.
+                let first = *arg_indices.first()?;
+                supplied_positions[first] = final_args.len();
+                final_args.push(supplied[first]);
+            } else if !arg_indices.is_empty() {
                 for &argument in arg_indices {
                     supplied_positions[argument] = final_args.len();
                     final_args.push(supplied[argument]);
                 }
             } else if let Some(provider_id) = param.default_provider {
+                let provider_inputs = &self.gcx.get_signature(provider_id).inputs;
+                let mut args =
+                    Vec::with_capacity(provider_inputs.len() + usize::from(opening.is_some()));
+                for (input, location) in provider_inputs.iter().zip(crate::ast::SourceLocation::ALL)
+                {
+                    let literal = self.gcx.source_location(location, span);
+                    let value = self.lower_literal(&literal);
+                    args.push(self.push_expr(
+                        ExprKind::Literal(Constant {
+                            ty: input.ty,
+                            value,
+                        }),
+                        input.ty,
+                        span,
+                    ));
+                }
                 if let Some((source, plan)) = opening {
                     let argument = if plan.input < param_offset {
                         leading_args[plan.input]
@@ -1021,6 +1855,7 @@ impl<'ctx> FunctionLower<'ctx> {
                     let ty = Ty::new(TyKind::Reference(plan.erased), self.gcx);
                     let source_ref =
                         self.push_expr(ExprKind::Reference { expr: referent }, ty, span);
+                    args.insert(0, source_ref);
                     let helper = self.gcx.erased_default(source, provider_id, plan.parameter);
                     let signature = instantiate_signature_with_args(
                         self.gcx,
@@ -1038,7 +1873,7 @@ impl<'ctx> FunctionLower<'ctx> {
                     let call = self.push_expr(
                         ExprKind::Call {
                             callee,
-                            args: vec![source_ref],
+                            args,
                             is_async: false,
                             argument_evaluation_order: None,
                         },
@@ -1050,7 +1885,11 @@ impl<'ctx> FunctionLower<'ctx> {
                     final_args.push(call);
                     continue;
                 }
-                let inputs = self.gcx.store.interners.intern_ty_list(Vec::new());
+                let inputs = self
+                    .gcx
+                    .store
+                    .interners
+                    .intern_ty_list(provider_inputs.iter().map(|input| input.ty).collect());
                 let provider_ty = self.gcx.store.interners.intern_ty(TyKind::FnPointer {
                     effects: Default::default(),
                     inputs,
@@ -1068,7 +1907,7 @@ impl<'ctx> FunctionLower<'ctx> {
                     ExprKind::Call {
                         argument_evaluation_order: None,
                         callee: provider,
-                        args: vec![],
+                        args,
                         is_async: false,
                     },
                     param.ty,
@@ -1087,7 +1926,11 @@ impl<'ctx> FunctionLower<'ctx> {
         }
 
         let evaluation_order: Vec<_> = (0..leading_args.len())
-            .chain(supplied_positions)
+            .chain(
+                supplied_positions
+                    .into_iter()
+                    .filter(|index| *index != usize::MAX),
+            )
             .chain(defaults)
             .collect();
         debug_assert_eq!(evaluation_order.len(), final_args.len());
@@ -1255,6 +2098,7 @@ impl<'ctx> FunctionLower<'ctx> {
             .or_else(|| self.results.instantiation(expr.id));
         let context_ty = self.gcx.get_signature(helper).inputs[0].ty;
         let context = self.push_expr(ExprKind::Local(context), context_ty, expr.span);
+        let mut prelude = Vec::new();
         let (mut args, evaluation) = self
             .lower_call_args_with_defaults(
                 self.gcx.get_signature(source),
@@ -1262,6 +2106,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 arguments,
                 &[],
                 expr.span,
+                &mut prelude,
             )
             .expect("convenience delegation arguments");
         args.insert(0, context);
@@ -1283,7 +2128,8 @@ impl<'ctx> FunctionLower<'ctx> {
             self.gcx.get_signature(helper).output,
             generic_args.unwrap_or(GenericArguments::empty()),
         );
-        let value = self.push_expr(
+        let call = self.after_spread_arguments(
+            prelude,
             ExprKind::Call {
                 callee,
                 args,
@@ -1293,6 +2139,7 @@ impl<'ctx> FunctionLower<'ctx> {
             result_ty,
             expr.span,
         );
+        let value = self.push_expr(call, result_ty, expr.span);
         let value = if propagate {
             self.propagate_initializer(value, expr.span)
         } else {
@@ -1348,6 +2195,7 @@ impl<'ctx> FunctionLower<'ctx> {
             self.gcx.get_signature(helper).output,
             generic_args.unwrap_or(GenericArguments::empty()),
         );
+        let mut prelude = Vec::new();
         let (args, argument_evaluation_order) = self
             .lower_call_args_with_defaults(
                 self.gcx.get_signature(source),
@@ -1355,6 +2203,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 arguments,
                 &[],
                 expr.span,
+                &mut prelude,
             )
             .expect("base constructor arguments");
         let callee = self.push_expr(
@@ -1365,7 +2214,8 @@ impl<'ctx> FunctionLower<'ctx> {
             self.gcx.get_type(helper),
             expr.span,
         );
-        let value = self.push_expr(
+        let call = self.after_spread_arguments(
+            prelude,
             ExprKind::Call {
                 callee,
                 args,
@@ -1375,6 +2225,7 @@ impl<'ctx> FunctionLower<'ctx> {
             payload,
             expr.span,
         );
+        let value = self.push_expr(call, payload, expr.span);
         let value = if propagate {
             self.propagate_initializer(value, expr.span)
         } else {
@@ -1536,17 +2387,20 @@ impl<'ctx> FunctionLower<'ctx> {
                 })
             }
             hir::StatementKind::Variable(local) => Some(self.lower_local(local)),
-            hir::StatementKind::Loop { block, .. } => {
+            hir::StatementKind::Loop { label, block } => {
                 let block_id = self.lower_block(block);
                 Some(Stmt {
-                    kind: StmtKind::Loop { block: block_id },
+                    kind: StmtKind::Loop {
+                        label: label.map(|l| l.identifier.symbol),
+                        block: block_id,
+                    },
                     span: stmt.span,
                 })
             }
-            hir::StatementKind::Defer(block) => {
+            hir::StatementKind::Defer(kind, block) => {
                 let block_id = self.lower_block(block);
                 Some(Stmt {
-                    kind: StmtKind::Defer(block_id),
+                    kind: StmtKind::Defer(*kind, block_id),
                     span: stmt.span,
                 })
             }
@@ -1565,16 +2419,88 @@ impl<'ctx> FunctionLower<'ctx> {
                     span: stmt.span,
                 })
             }
+            hir::StatementKind::ComptimeFor { .. } | hir::StatementKind::ComptimeIf { .. } => {
+                let blocks = self
+                    .results
+                    .comptime_expansions
+                    .get(&stmt.id)
+                    .cloned()
+                    .unwrap_or_default();
+                if blocks.is_empty() {
+                    return None;
+                }
+                if blocks.len() == 1 {
+                    let block_id = self.lower_block(&blocks[0]);
+                    let expr_id = self.push_expr(
+                        ExprKind::Block(block_id),
+                        self.gcx.types.void,
+                        stmt.span,
+                    );
+                    return Some(Stmt {
+                        kind: StmtKind::Expr(expr_id),
+                        span: stmt.span,
+                    });
+                }
+                let mut inner_stmts = Vec::with_capacity(blocks.len());
+                for blk in &blocks {
+                    let block_id = self.lower_block(blk);
+                    let expr_id =
+                        self.push_expr(ExprKind::Block(block_id), self.gcx.types.void, blk.span);
+                    inner_stmts.push(self.push_stmt(Stmt {
+                        kind: StmtKind::Expr(expr_id),
+                        span: blk.span,
+                    }));
+                }
+                let outer_id = BlockId::from_raw(self.func.blocks.len() as u32);
+                self.func.blocks.push(Block {
+                    id: outer_id,
+                    stmts: inner_stmts,
+                    expr: None,
+                });
+                let outer_expr =
+                    self.push_expr(ExprKind::Block(outer_id), self.gcx.types.void, stmt.span);
+                Some(Stmt {
+                    kind: StmtKind::Expr(outer_expr),
+                    span: stmt.span,
+                })
+            }
         }
     }
 
     fn lower_local(&mut self, local: &hir::Local) -> Stmt<'ctx> {
+        if local.is_async {
+            let ty = self.results.node_type(local.pattern.id);
+            let hir::PatternKind::Binding { name } = local.pattern.kind else {
+                unreachable!("async var requires a named binding")
+            };
+            let closure = self.lower_expr(
+                local
+                    .initializer
+                    .as_deref()
+                    .expect("async var requires an initializer"),
+            );
+            return Stmt {
+                kind: StmtKind::AsyncLet {
+                    local: local.pattern.id,
+                    name: name.symbol,
+                    ty,
+                    closure,
+                },
+                span: local.pattern.span,
+            };
+        }
         let ty = self.results.node_type(local.id);
         let pattern = pattern_from_hir(self.gcx, self.results.as_ref(), &local.pattern);
         let expr = local
             .initializer
             .as_deref()
             .map(|expr| self.lower_expr(expr));
+        if local.pattern.has_alternatives()
+            && let Some(input) = expr
+            && let Some(stmt) = self.lower_alternative_local(local, input, &pattern)
+        {
+            return stmt;
+        }
         Stmt {
             kind: StmtKind::Let {
                 id: local.id,
@@ -1584,6 +2510,129 @@ impl<'ctx> FunctionLower<'ctx> {
                 mutable: local.mutability == hir::Mutability::Mutable,
             },
             span: local.pattern.span,
+        }
+    }
+
+    /// Select each bound value from the matching variant before initializing
+    /// the declaration. A tuple of these values can use ordinary field copies.
+    fn lower_alternative_local(
+        &mut self,
+        local: &hir::Local,
+        input: ExprId,
+        pattern: &thir::Pattern<'ctx>,
+    ) -> Option<Stmt<'ctx>> {
+        let mut names = indexmap::IndexMap::new();
+        let mut occurrences = Vec::new();
+        local.pattern.for_each_binding(&mut |id, name| {
+            names.entry(name.symbol).or_insert((id, name));
+            occurrences.push((id, name.symbol));
+        });
+        if occurrences.len() == names.len() || !thir::match_tree::is_irrefutable(self.gcx, pattern) {
+            return None;
+        }
+        let span = local.pattern.span;
+        let mut fields = Vec::new();
+        let mut subpatterns = Vec::new();
+        let mut types = Vec::new();
+        let mut selected = FxHashMap::default();
+        for (index, (id, name)) in names.into_values().enumerate() {
+            let ty = self.results.node_type(id);
+            let binding = self.fresh_synthetic_local();
+            selected.insert(name.symbol, binding);
+            fields.push(self.push_expr(ExprKind::Local(binding), ty, name.span));
+            types.push(ty);
+            subpatterns.push(thir::FieldPattern {
+                index: FieldIndex::from_usize(index),
+                pattern: thir::Pattern {
+                    kind: thir::PatternKind::Binding { local: id, name: name.symbol, ty },
+                    ty,
+                    span: name.span,
+                },
+            });
+        }
+        let locals = occurrences.into_iter().map(|(id, name)| (id, selected[&name])).collect();
+        let arm_pattern = thir::pattern::pattern_from_hir_with_locals(
+            self.gcx, self.results.as_ref(), &local.pattern, &locals,
+        );
+        let ty = Ty::new(TyKind::Tuple(self.gcx.store.interners.intern_ty_list(types)), self.gcx);
+        let body = self.push_expr(ExprKind::Tuple { fields }, ty, span);
+        let arm = self.func.arms.push(thir::Arm {
+            pattern: Box::new(arm_pattern), guard: None, body, span,
+        });
+        let value = self.push_expr(
+            ExprKind::Match { scrutinee: input, arms: vec![arm], binding_condition: false },
+            ty, span,
+        );
+        Some(Stmt {
+            kind: StmtKind::Let {
+                id: local.id,
+                pattern: thir::Pattern { kind: thir::PatternKind::Leaf { subpatterns }, ty, span },
+                expr: Some(value),
+                ty,
+                mutable: local.mutability == hir::Mutability::Mutable,
+            },
+            span,
+        })
+    }
+
+    fn lower_boolean_pattern(
+        &mut self,
+        value: &hir::Expression,
+        pattern: &hir::Pattern,
+        span: crate::span::Span,
+    ) -> ExprKind<'ctx> {
+        let scrutinee = self.lower_expr(value);
+        let pattern = pattern_from_hir(self.gcx, self.results.as_ref(), pattern);
+
+        // Create the "true" arm for when the pattern matches
+        let true_lit = self.push_expr(
+            ExprKind::Literal(Constant {
+                ty: self.gcx.types.bool,
+                value: ConstantKind::Bool(true),
+            }),
+            self.gcx.types.bool,
+            span,
+        );
+        let true_arm_id = {
+            let id = thir::ArmId::from_raw(self.func.arms.len() as u32);
+            self.func.arms.push(thir::Arm {
+                pattern: Box::new(pattern),
+                guard: None,
+                body: true_lit,
+                span: span,
+            });
+            id
+        };
+
+        // Create the "false" arm (wildcard) for when the pattern doesn't match
+        let false_lit = self.push_expr(
+            ExprKind::Literal(Constant {
+                ty: self.gcx.types.bool,
+                value: ConstantKind::Bool(false),
+            }),
+            self.gcx.types.bool,
+            span,
+        );
+        let wild_pattern = thir::Pattern {
+            ty: self.results.node_type(value.id),
+            span: span,
+            kind: thir::PatternKind::Wild,
+        };
+        let false_arm_id = {
+            let id = thir::ArmId::from_raw(self.func.arms.len() as u32);
+            self.func.arms.push(thir::Arm {
+                pattern: Box::new(wild_pattern),
+                guard: None,
+                body: false_lit,
+                span: span,
+            });
+            id
+        };
+
+        ExprKind::Match {
+            scrutinee,
+            arms: vec![true_arm_id, false_arm_id],
+            binding_condition: true,
         }
     }
 
@@ -1652,6 +2701,64 @@ impl<'ctx> FunctionLower<'ctx> {
                         is_async: false,
                     },
                     ty: result,
+                    span,
+                }
+            }
+            Adjustment::CollectionToSpan { to } => {
+                let TyKind::Reference(collection) = ty.kind() else {
+                    unreachable!()
+                };
+                let (name, arguments) = match collection.kind() {
+                    TyKind::Array { element, len } => (
+                        "__array_as_span",
+                        vec![GenericArgument::Type(element), GenericArgument::Const(len)],
+                    ),
+                    TyKind::Adt(definition, arguments)
+                        if Some(definition.id) == self.gcx.std_item_def(hir::StdItem::List) =>
+                    {
+                        ("__list_as_span", arguments.to_vec())
+                    }
+                    _ => {
+                        unreachable!("collection-to-span adjustment requires a built-in collection")
+                    }
+                };
+                let Ok(adapter) = crate::mir::optimize::async_transform::find_std_function(
+                    self.gcx,
+                    "collections",
+                    name,
+                    span,
+                ) else {
+                    // The lookup emitted a diagnostic. Do not turn a missing
+                    // compiler/std adapter into a compiler panic.
+                    return Expr {
+                        kind: ExprKind::Literal(Constant {
+                            ty: self.gcx.types.error,
+                            value: ConstantKind::Unit,
+                        }),
+                        ty: self.gcx.types.error,
+                        span,
+                    };
+                };
+                let arguments = self.gcx.store.interners.intern_generic_args(arguments);
+                let adapter_ty =
+                    instantiate_ty_with_args(self.gcx, self.gcx.get_type(adapter), arguments);
+                let callee = self.push_expr(
+                    ExprKind::Zst {
+                        id: adapter,
+                        generic_args: Some(arguments),
+                    },
+                    adapter_ty,
+                    span,
+                );
+                let receiver = self.push_expr(expr.kind, ty, expr.span);
+                Expr {
+                    kind: ExprKind::Call {
+                        callee,
+                        args: vec![receiver],
+                        argument_evaluation_order: None,
+                        is_async: false,
+                    },
+                    ty: to,
                     span,
                 }
             }
@@ -1795,6 +2902,26 @@ impl<'ctx> FunctionLower<'ctx> {
                     span,
                 }
             }
+            Adjustment::DebugDisplay { to } => {
+                let TyKind::Adt(definition, generic_args) = to.kind() else {
+                    unreachable!("DebugDisplay adjustment targets the std adapter struct")
+                };
+                let value = self.push_expr(expr.kind, expr.ty, expr.span);
+                Expr {
+                    kind: ExprKind::Adt(thir::AdtExpression {
+                        base: None,
+                        definition,
+                        variant_index: None,
+                        generic_args,
+                        fields: vec![thir::FieldExpression {
+                            index: FieldIndex::from_usize(0),
+                            expression: value,
+                        }],
+                    }),
+                    ty: to,
+                    span,
+                }
+            }
             Adjustment::Ignore(_) => expr,
             Adjustment::ClosureToFnPointer { closure_def_id } => {
                 // Get the fn pointer type from the target type (set by type inference)
@@ -1855,10 +2982,11 @@ impl<'ctx> FunctionLower<'ctx> {
             };
         }
         if matches!(expr.kind, hir::ExpressionKind::Call { .. })
-            && let Some(selected) = self.results.elaborated_method_calls.get(&expr.id).cloned()
+            && let Some(selected) = self.results.elaborated_calls.get(&expr.id).cloned()
         {
             return self.lower_expr_unadjusted(&selected);
         }
+        let mut prelude = Vec::new();
         let kind = match &expr.kind {
             hir::ExpressionKind::MemberBrackets { .. } => {
                 let selected = self
@@ -1885,7 +3013,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 args.extend(
                     index
                         .iter()
-                        .map(|argument| self.lower_expr(&argument.expression)),
+                        .map(|argument| self.lower_call_argument(argument)),
                 );
                 let accessor = if info.use_address {
                     info.address.expect("validated address accessor")
@@ -1927,7 +3055,17 @@ impl<'ctx> FunctionLower<'ctx> {
                 let value = self.lower_literal(lit);
                 ExprKind::Literal(Constant { ty, value })
             }
+            hir::ExpressionKind::Spread(source) => {
+                let source = self.lower_expr(source);
+                return self.func.exprs[source].clone();
+            }
             hir::ExpressionKind::Array(items) => {
+                if items
+                    .iter()
+                    .any(|item| matches!(item.kind, hir::ExpressionKind::Spread(_)))
+                {
+                    return self.lower_spread_literal(items, ty, span);
+                }
                 let elements: Vec<_> = items.iter().map(|e| self.lower_expr(e)).collect();
                 let list_def_id = self.gcx.std_item_def(hir::StdItem::List);
                 if let TyKind::Adt(def, args) = ty.kind()
@@ -2009,6 +3147,22 @@ impl<'ctx> FunctionLower<'ctx> {
                 self.lower_path_expression(expr, res)
             }
             hir::ExpressionKind::Call { callee, arguments } => {
+                if self.results.for_loop_direct_iterators.contains(&expr.id)
+                    && arguments.len() == 1
+                {
+                    let inner = self.lower_expr(&arguments[0].expression);
+                    let block_id = BlockId::from_raw(self.func.blocks.len() as u32);
+                    self.func.blocks.push(Block {
+                        id: block_id,
+                        stmts: vec![],
+                        expr: Some(inner),
+                    });
+                    return Expr {
+                        kind: ExprKind::Block(block_id),
+                        ty,
+                        span,
+                    };
+                }
                 if self.results.dynamic_self_calls.contains(&expr.id) {
                     return self.lower_dynamic_self_call(expr, callee, arguments);
                 }
@@ -2024,13 +3178,17 @@ impl<'ctx> FunctionLower<'ctx> {
                     // evaluate in source order. Reordering the expression vector
                     // would reorder observable argument side effects.
                     let signature = self.gcx.get_signature(ctor_id);
-                    let positions = match_arguments_to_parameters(
+                    let trailing_closure = arguments
+                        .last()
+                        .is_some_and(|arg| self.gcx.is_trailing_closure_argument(arg.expression.id));
+                    let positions = crate::sema::tycheck::utils::arguments::match_arguments_to_parameters_with_trailing(
                         &signature.inputs,
                         false,
                         arguments.iter().map(|arg| {
                             (arg.label.map(|label| label.identifier), arg.expression.span)
                         }),
                         false,
+                        trailing_closure,
                     )
                     .expect("typechecked enum constructor arguments");
                     let mut field_indices = vec![0; arguments.len()];
@@ -2060,6 +3218,16 @@ impl<'ctx> FunctionLower<'ctx> {
                     };
                 }
 
+                if let [arg] = arguments.as_slice()
+                    && let Some(dbg) = self.gcx.std_item_def(hir::StdItem::DebugValue)
+                    && self.resolve_direct_callee_id(callee) == Some(dbg)
+                    && let Some(reporter) = self.gcx.std_item_def(hir::StdItem::DebugValueAt)
+                {
+                    return self.lower_dbg_call(reporter, callee.id, arg, ty, span);
+                }
+                if let Some(assert_expr) = self.try_lower_assert_call(callee, arguments, ty, span) {
+                    return assert_expr;
+                }
                 // Normal function call
                 let thir_callee = self.lower_expr(callee);
                 let (final_args, argument_evaluation_order) =
@@ -2071,6 +3239,7 @@ impl<'ctx> FunctionLower<'ctx> {
                             arguments,
                             &[],
                             expr.span,
+                            &mut prelude,
                         )
                         .unwrap_or_else(|| {
                             debug_assert!(
@@ -2092,6 +3261,11 @@ impl<'ctx> FunctionLower<'ctx> {
                     span,
                 )
             }
+            hir::ExpressionKind::Binary(
+                op @ (hir::BinaryOperator::In | hir::BinaryOperator::NotIn),
+                lhs,
+                rhs,
+            ) => return self.lower_membership(expr, *op, lhs, rhs),
             hir::ExpressionKind::Binary(op, lhs, rhs) => {
                 // Check if this is an operator method call
                 if let Some(def_id) = self.results.overload_source(expr.id) {
@@ -2184,25 +3358,31 @@ impl<'ctx> FunctionLower<'ctx> {
                 ExprKind::ExistentialTryCast { value, target }
             }
             hir::ExpressionKind::TypeIs(value, target) => {
-                let value = self.lower_expr(value);
-                let lowerer = DefTyLoweringCtx::new(self.func.id, self.gcx);
-                let target = lowerer.lowerer().lower_type(target);
-                ExprKind::ExistentialTypeIs { value, target }
+                if matches!(
+                    self.results.value_resolution(target.id),
+                    Some(hir::Resolution::Definition(_, hir::DefinitionKind::VariantConstructor(_)))
+                ) {
+                    self.lower_boolean_pattern(value, &target.qualified_case_pattern(), expr.span)
+                } else {
+                    let value = self.lower_expr(value);
+                    let lowerer = DefTyLoweringCtx::new(self.func.id, self.gcx);
+                    let target = lowerer.lowerer().lower_type(target);
+                    ExprKind::ExistentialTypeIs { value, target }
+                }
             }
             hir::ExpressionKind::Assign(lhs, rhs) => {
-                let results = self.results.clone();
-                let lhs = results.selected_brackets.get(&lhs.id).unwrap_or(lhs);
-                if let Some(entry) = self.native_index_info(lhs) {
-                    self.lower_native_index_set(
-                        lhs,
-                        rhs,
-                        entry.setter.expect("validated set accessor"),
-                    )
+                if matches!(
+                    lhs.kind,
+                    hir::ExpressionKind::Tuple(_, _) | hir::ExpressionKind::Discard
+                ) {
+                    self.lower_tuple_assignment(lhs, rhs)
                 } else {
-                    let target = self.lower_expr(lhs);
                     let value = self.lower_expr(rhs);
-                    ExprKind::Assign { target, value }
+                    self.lower_assignment_with_value(lhs, value)
                 }
+            }
+            hir::ExpressionKind::AssignOptional(lhs, rhs) => {
+                self.lower_assign_optional(expr, lhs, rhs)
             }
             hir::ExpressionKind::AssignOp(op, lhs, rhs) => {
                 let results = self.results.clone();
@@ -2272,6 +3452,30 @@ impl<'ctx> FunctionLower<'ctx> {
                     binding_condition: false,
                 }
             }
+            hir::ExpressionKind::Select(node) => {
+                let arms = node
+                    .arms
+                    .iter()
+                    .map(|arm| {
+                        let closure = self.lower_expr(&arm.operation);
+                        let closure_ty = self.func.exprs[closure].ty;
+                        let value_ty = match closure_ty.kind() {
+                            TyKind::Closure { output, .. } => output,
+                            _ => self.results.node_type(arm.pattern.id),
+                        };
+                        let pattern = pattern_from_hir(self.gcx, self.results.as_ref(), &arm.pattern);
+                        let body = self.lower_expr(&arm.body);
+                        crate::thir::SelectArm {
+                            pattern,
+                            value_ty,
+                            closure,
+                            body,
+                            span: arm.span,
+                        }
+                    })
+                    .collect();
+                ExprKind::Select { arms }
+            }
             hir::ExpressionKind::Return { value } => {
                 let value = value
                     .as_deref()
@@ -2302,8 +3506,23 @@ impl<'ctx> FunctionLower<'ctx> {
                 });
                 ExprKind::Return { value }
             }
-            hir::ExpressionKind::Break { .. } => ExprKind::Break,
-            hir::ExpressionKind::Continue { .. } => ExprKind::Continue,
+            hir::ExpressionKind::Loop { label, block } => {
+                let body = self.lower_block(block);
+                ExprKind::Loop {
+                    label: label.map(|l| l.identifier.symbol),
+                    body,
+                }
+            }
+            hir::ExpressionKind::Break { label, value } => {
+                let value = value.as_deref().map(|expr| self.lower_expr(expr));
+                ExprKind::Break {
+                    label: label.map(|l| l.symbol),
+                    value,
+                }
+            }
+            hir::ExpressionKind::Continue { label } => ExprKind::Continue {
+                label: label.map(|l| l.symbol),
+            },
             hir::ExpressionKind::Block(block) => {
                 let block_id = self.lower_block(block);
                 ExprKind::Block(block_id)
@@ -2325,8 +3544,8 @@ impl<'ctx> FunctionLower<'ctx> {
             }
             hir::ExpressionKind::MethodCall {
                 receiver,
-                name: _,
                 arguments,
+                ..
             } => {
                 if self.results.self_initializer_calls.contains(&expr.id) {
                     return self.lower_self_initializer(expr, receiver, arguments, false);
@@ -2345,6 +3564,7 @@ impl<'ctx> FunctionLower<'ctx> {
                             arguments,
                             &receiver_args,
                             expr.span,
+                            &mut prelude,
                         )
                         .unwrap_or_else(|| {
                             debug_assert!(
@@ -2377,6 +3597,7 @@ impl<'ctx> FunctionLower<'ctx> {
                     let recv_ty = self.func.exprs[recv].ty;
 
                     let callee_ty = match recv_ty.kind() {
+                        TyKind::Tuple(fields) => fields[field_index],
                         TyKind::Adt(..) => {
                             let struct_def = self
                                 .gcx
@@ -2516,6 +3737,7 @@ impl<'ctx> FunctionLower<'ctx> {
                     let capture_expr = self.lower_expr(&method.receiver);
                     let function = self.lower_closure_body(&method.closure);
                     self.nested_closures.push(function);
+                    self.demand_callable_adapter(ty, span);
                     ExprKind::Closure {
                         def_id: method.closure.def_id,
                         kind: info.kind,
@@ -2555,7 +3777,7 @@ impl<'ctx> FunctionLower<'ctx> {
                     return self.func.exprs[field].clone();
                 }
             }
-            hir::ExpressionKind::Tuple(elems) => {
+            hir::ExpressionKind::Tuple(elems, _) => {
                 let fields = elems.iter().map(|e| self.lower_expr(&e)).collect();
                 ExprKind::Tuple { fields }
             }
@@ -2569,61 +3791,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 }
             }
             hir::ExpressionKind::PatternBinding(condition) => {
-                // Lower `case pattern = expr` to a match that returns true if the pattern matches.
-                // match expr { case pattern => true, case _ => false }
-                let scrutinee = self.lower_expr(&condition.expression);
-                let pattern = pattern_from_hir(self.gcx, self.results.as_ref(), &condition.pattern);
-
-                // Create the "true" arm for when the pattern matches
-                let true_lit = self.push_expr(
-                    ExprKind::Literal(Constant {
-                        ty: self.gcx.types.bool,
-                        value: ConstantKind::Bool(true),
-                    }),
-                    self.gcx.types.bool,
-                    condition.span,
-                );
-                let true_arm_id = {
-                    let id = thir::ArmId::from_raw(self.func.arms.len() as u32);
-                    self.func.arms.push(thir::Arm {
-                        pattern: Box::new(pattern),
-                        guard: None,
-                        body: true_lit,
-                        span: condition.span,
-                    });
-                    id
-                };
-
-                // Create the "false" arm (wildcard) for when the pattern doesn't match
-                let false_lit = self.push_expr(
-                    ExprKind::Literal(Constant {
-                        ty: self.gcx.types.bool,
-                        value: ConstantKind::Bool(false),
-                    }),
-                    self.gcx.types.bool,
-                    condition.span,
-                );
-                let wild_pattern = thir::Pattern {
-                    ty: self.results.node_type(condition.expression.id),
-                    span: condition.span,
-                    kind: thir::PatternKind::Wild,
-                };
-                let false_arm_id = {
-                    let id = thir::ArmId::from_raw(self.func.arms.len() as u32);
-                    self.func.arms.push(thir::Arm {
-                        pattern: Box::new(wild_pattern),
-                        guard: None,
-                        body: false_lit,
-                        span: condition.span,
-                    });
-                    id
-                };
-
-                ExprKind::Match {
-                    scrutinee,
-                    arms: vec![true_arm_id, false_arm_id],
-                    binding_condition: true,
-                }
+                self.lower_boolean_pattern(&condition.expression, &condition.pattern, condition.span)
             }
             hir::ExpressionKind::Closure(closure) => {
                 // Get closure capture information from type checking phase
@@ -2668,6 +3836,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 // Generate THIR function for the closure body
                 let closure_func = self.lower_closure_body(closure);
                 self.nested_closures.push(closure_func);
+                self.demand_callable_adapter(ty, span);
 
                 ExprKind::Closure {
                     def_id: closure.def_id,
@@ -2681,7 +3850,23 @@ impl<'ctx> FunctionLower<'ctx> {
                 let value = self.lower_expr(inner);
                 return self.func.exprs[value].clone();
             }
-            hir::ExpressionKind::Malformed => {
+            hir::ExpressionKind::Yield(inner) => {
+                let value = self.lower_expr(inner);
+                ExprKind::Yield { value }
+            }
+            hir::ExpressionKind::TypeName(_) => {
+                let symbol = self
+                    .results
+                    .type_name_literals
+                    .get(&expr.id)
+                    .copied()
+                    .unwrap_or_else(|| self.gcx.intern_symbol(""));
+                ExprKind::Literal(Constant {
+                    ty,
+                    value: ConstantKind::String(symbol),
+                })
+            }
+            hir::ExpressionKind::Discard | hir::ExpressionKind::Malformed => {
                 unreachable!("malformed expression should not reach THIR lowering");
             }
         };
@@ -2703,7 +3888,12 @@ impl<'ctx> FunctionLower<'ctx> {
                     value = self.push_expr(ExprKind::Await { future: value }, raw, span);
                 }
                 return Expr {
-                    kind: ExprKind::ClassSelfResult { value },
+                    kind: self.after_spread_arguments(
+                        prelude,
+                        ExprKind::ClassSelfResult { value },
+                        ty,
+                        span,
+                    ),
                     ty,
                     span,
                 };
@@ -2712,12 +3902,47 @@ impl<'ctx> FunctionLower<'ctx> {
         if matches!(kind, ExprKind::Call { is_async: true, .. }) {
             let future = self.push_expr(kind, ty, span);
             return Expr {
-                kind: ExprKind::Await { future },
+                kind: self.after_spread_arguments(prelude, ExprKind::Await { future }, ty, span),
                 ty,
                 span,
             };
         }
-        Expr { kind, ty, span }
+        Expr {
+            kind: self.after_spread_arguments(prelude, kind, ty, span),
+            ty,
+            span,
+        }
+    }
+
+    /// Demand the `call` adapter of a closure from its final type. Any
+    /// closure can be erased later, including inside a generic body that
+    /// codegen specializes after THIR synthesis, when no body can be created.
+    /// Inference has finished here; the solver may still hold variables.
+    fn demand_callable_adapter(&self, ty: Ty<'ctx>, span: crate::span::Span) {
+        let Some(interface) = crate::sema::models::callable_interface_ref(self.gcx, ty) else {
+            return;
+        };
+        for interface in
+            crate::sema::impl_engine::ref_ops::collect_interface_with_superfaces(self.gcx, interface)
+        {
+            let Some(goal) = interface.to_goal(self.gcx, &[]) else {
+                continue;
+            };
+            if self
+                .gcx
+                .build_conformance_witness(goal, crate::sema::models::SelectionMode::Typecheck)
+                .is_err()
+            {
+                self.gcx.dcx().emit_error(
+                    format!(
+                        "internal error: closure `{}` does not conform to `{}`",
+                        ty.format(self.gcx),
+                        interface.format(self.gcx),
+                    ),
+                    Some(span),
+                );
+            }
+        }
     }
 
     fn is_refined_class_self_call(
@@ -2734,11 +3959,12 @@ impl<'ctx> FunctionLower<'ctx> {
                 .is_some_and(|method| method.returns_self)
     }
 
-    fn lower_literal(&self, lit: &hir::Literal) -> ConstantKind {
+    fn lower_literal(&self, lit: &hir::Literal) -> ConstantKind<'ctx> {
         match lit {
             hir::Literal::Bool(b) => ConstantKind::Bool(*b),
             hir::Literal::Rune(r) => ConstantKind::Rune(*r),
             hir::Literal::String(s) => ConstantKind::String(*s),
+            hir::Literal::Bytes(s) => ConstantKind::Bytes(*s),
             hir::Literal::Integer { value, .. } => ConstantKind::Integer(*value as u64),
             hir::Literal::Float(f) => ConstantKind::Float(*f),
             hir::Literal::Nil => ConstantKind::Unit,
@@ -2980,6 +4206,15 @@ impl<'ctx> FunctionLower<'ctx> {
                 id,
                 DefinitionKind::Constant | DefinitionKind::AssociatedConstant,
             ) => {
+                if self.gcx.definition_parent(id).is_some_and(|parent| {
+                    self.gcx.definition_kind(parent) == DefinitionKind::Interface
+                }) && let Some(args) = self.results.instantiation(expr.id)
+                {
+                    return ExprKind::Literal(Constant {
+                        ty: instantiate_ty_with_args(self.gcx, self.gcx.get_type(id), args),
+                        value: ConstantKind::InterfaceConstant(id, args),
+                    });
+                }
                 let Some(constant) = self.gcx.try_get_const(id) else {
                     self.gcx
                         .dcx()
@@ -2989,9 +4224,18 @@ impl<'ctx> FunctionLower<'ctx> {
                         value: ConstantKind::Unit,
                     });
                 };
+                let constant_ty = self
+                    .results
+                    .instantiation(expr.id)
+                    .map_or(constant.ty, |args| {
+                        instantiate_ty_with_args(self.gcx, constant.ty, args)
+                    });
                 if let ConstKind::Value(ConstValue::EnumUnitVariant(ctor_id)) = constant.kind {
                     let (definition, variant_index) = self.enum_variant_from_ctor(ctor_id);
-                    let TyKind::Adt(_, generic_args) = constant.ty.kind() else {
+                    let TyKind::Adt(_, generic_args) =
+                        crate::sema::tycheck::utils::normalize_aliases(self.gcx, constant_ty)
+                            .kind()
+                    else {
                         self.gcx.dcx().emit_error(
                             "constant enum unit variant has an invalid type".into(),
                             Some(expr.span),
@@ -3020,7 +4264,7 @@ impl<'ctx> FunctionLower<'ctx> {
                     });
                 };
                 ExprKind::Literal(Constant {
-                    ty: constant.ty,
+                    ty: constant_ty,
                     value,
                 })
             }
@@ -3091,19 +4335,24 @@ impl<'ctx> FunctionLower<'ctx> {
                         return ExprKind::Local(remapped);
                     }
                 }
-                // Not a capture - regular local variable
+                // Not a capture - regular local variable or scoped async var
+                if self.results.is_async_var_binding(id) {
+                    return ExprKind::AwaitAsyncVar { local: id };
+                }
                 ExprKind::Local(id)
             }
             _ => unreachable!(),
         }
     }
 
-    fn const_kind_to_thir(&self, kind: ConstKind) -> Option<ConstantKind> {
+    fn const_kind_to_thir(&self, kind: ConstKind) -> Option<ConstantKind<'ctx>> {
         match kind {
             ConstKind::Value(value) => Some(match value {
                 ConstValue::Bool(b) => ConstantKind::Bool(b),
                 ConstValue::Rune(r) => ConstantKind::Rune(r),
                 ConstValue::String(s) => ConstantKind::String(s),
+                ConstValue::Bytes(s) => ConstantKind::Bytes(s),
+                ConstValue::Array(arr) => ConstantKind::ConstArray(arr),
                 ConstValue::Integer(i) => ConstantKind::Integer(i as u64),
                 ConstValue::Float(f) => ConstantKind::Float(f),
                 ConstValue::Unit => ConstantKind::Unit,
@@ -3194,6 +4443,60 @@ impl<'ctx> FunctionLower<'ctx> {
             span: arm.span,
         });
         id
+    }
+
+    /// `element in container` is `container.contains(&element)`, and `!in`
+    /// negates it. The element is still evaluated first, as written.
+    fn lower_membership(
+        &mut self,
+        expr: &hir::Expression,
+        op: hir::BinaryOperator,
+        element: &hir::Expression,
+        container: &hir::Expression,
+    ) -> Expr<'ctx> {
+        let ty = self.results.node_type(expr.id);
+        let span = expr.span;
+        let def_id = self
+            .results
+            .overload_source(expr.id)
+            .expect("membership resolves to Contains.contains");
+        let element = self.lower_expr(element);
+        let (element_ty, element_span) = {
+            let element = &self.func.exprs[element];
+            (element.ty, element.span)
+        };
+        let element = self.push_expr(
+            ExprKind::Reference { expr: element },
+            Ty::new(TyKind::Reference(element_ty), self.gcx),
+            element_span,
+        );
+        let container = self.lower_expr(container);
+        let callee_ty = self.gcx.get_type(def_id);
+        let generic_args = self.results.instantiation(expr.id);
+        let callee = self.push_expr(
+            ExprKind::Zst {
+                id: def_id,
+                generic_args,
+            },
+            callee_ty,
+            span,
+        );
+        let call = ExprKind::Call {
+            argument_evaluation_order: Some(vec![1, 0]),
+            callee,
+            args: vec![container, element],
+            is_async: false,
+        };
+        let kind = if op == hir::BinaryOperator::NotIn {
+            let operand = self.push_expr(call, ty, span);
+            ExprKind::Unary {
+                op: mir::UnaryOperator::LogicalNot,
+                operand,
+            }
+        } else {
+            call
+        };
+        Expr { kind, ty, span }
     }
 
     fn lower_propagate_expr(
@@ -3430,29 +4733,46 @@ impl<'ctx> FunctionLower<'ctx> {
         let err_value = self.push_expr(ExprKind::Local(err_local), err_ty, span);
         let err_value =
             if let Some(conversion) = self.results.result_propagation_conversion(expr.id) {
-                let callee_ty = instantiate_ty_with_args(
-                    self.gcx,
-                    self.gcx.get_type(conversion.method_id),
-                    conversion.generic_args,
-                );
-                let callee = self.push_expr(
-                    ExprKind::Zst {
-                        id: conversion.method_id,
-                        generic_args: Some(conversion.generic_args),
-                    },
-                    callee_ty,
-                    span,
-                );
-                self.push_expr(
-                    ExprKind::Call {
-                        argument_evaluation_order: None,
-                        callee,
-                        args: vec![err_value],
-                        is_async: false,
-                    },
-                    conversion.target_ty,
-                    span,
-                )
+                use crate::sema::tycheck::results::ResultPropagationConversionKind;
+                match conversion.kind {
+                    ResultPropagationConversionKind::From {
+                        method_id,
+                        generic_args,
+                    } => {
+                        let callee_ty = instantiate_ty_with_args(
+                            self.gcx,
+                            self.gcx.get_type(method_id),
+                            generic_args,
+                        );
+                        let callee = self.push_expr(
+                            ExprKind::Zst {
+                                id: method_id,
+                                generic_args: Some(generic_args),
+                            },
+                            callee_ty,
+                            span,
+                        );
+                        self.push_expr(
+                            ExprKind::Call {
+                                argument_evaluation_order: None,
+                                callee,
+                                args: vec![err_value],
+                                is_async: false,
+                            },
+                            conversion.target_ty,
+                            span,
+                        )
+                    }
+                    ResultPropagationConversionKind::BoxExistential { interfaces } => self
+                        .push_expr(
+                            ExprKind::BoxExistential {
+                                value: err_value,
+                                interfaces,
+                            },
+                            conversion.target_ty,
+                            span,
+                        ),
+                }
             } else {
                 err_value
             };

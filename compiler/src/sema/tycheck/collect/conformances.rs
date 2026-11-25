@@ -28,55 +28,169 @@ use std::rc::Rc;
 #[path = "g31_tests.rs"]
 mod g31_tests;
 
-pub fn run(package: &hir::Package, context: Gcx) -> CompileResult<()> {
-    Actor::run(package, context)
+/// Retain only header syntax until selection needs a record. A conformance
+/// target can itself contain an array length supplied by a later declaration.
+pub(crate) enum Header {
+    Inline(hir::Conformances),
+    Explicit {
+        target: hir::Type,
+        interface: hir::Type,
+    },
+}
+
+impl Header {
+    fn mentions(&self, gcx: Gcx<'_>, interface: DefinitionID) -> bool {
+        let matches = |path: &hir::ResolvedPath| {
+            let resolution = match path {
+                hir::ResolvedPath::Resolved(path) => &path.resolution,
+                hir::ResolvedPath::Relative(_, segment) => &segment.resolution,
+            };
+            resolution.definition_id().is_some_and(|id| {
+                id == interface
+                    || gcx.try_get_interface_alias(id).is_some_and(|expanded| {
+                        expanded.iter().any(|reference| reference.id == interface)
+                    })
+            })
+        };
+        match self {
+            Self::Inline(interfaces) => interfaces.bounds.iter().any(|bound| matches(&bound.path)),
+            Self::Explicit { interface, .. } => {
+                matches!(&interface.kind, hir::TypeKind::Nominal(path) if matches(path))
+            }
+        }
+    }
+}
+
+pub fn register(package: &hir::Package, gcx: Gcx<'_>) -> Vec<DefinitionID> {
+    struct Register<'ctx> {
+        gcx: Gcx<'ctx>,
+        order: Vec<DefinitionID>,
+    }
+    impl HirVisitor for Register<'_> {
+        fn visit_declaration(&mut self, declaration: &hir::Declaration) {
+            let id = declaration.id;
+            let (head, header, generics) = match &declaration.kind {
+                hir::DeclarationKind::Impl(node) => {
+                    let (Some(interface), Some(head)) =
+                        (&node.interface, self.gcx.get_impl_type_head(id))
+                    else {
+                        return;
+                    };
+                    (
+                        head,
+                        Header::Explicit {
+                            target: (*node.target).clone(),
+                            interface: (**interface).clone(),
+                        },
+                        &node.generics,
+                    )
+                }
+                hir::DeclarationKind::Struct(node) => {
+                    let Some(mut interfaces) = node.conformances.clone() else {
+                        return;
+                    };
+                    if node.class_header.is_some() {
+                        self.gcx
+                            .store
+                            .pending_class_bases
+                            .borrow_mut()
+                            .insert(id, interfaces.clone());
+                        interfaces.bounds.retain(|b| {
+                            super::class_hierarchy::is_interface_bound(self.gcx, &b.path)
+                        });
+                    }
+                    (
+                        TypeHead::Nominal(id),
+                        Header::Inline(interfaces),
+                        &node.generics,
+                    )
+                }
+                hir::DeclarationKind::Enum(node) => {
+                    let Some(interfaces) = node.conformances.clone() else {
+                        return;
+                    };
+                    (
+                        TypeHead::Nominal(id),
+                        Header::Inline(interfaces),
+                        &node.generics,
+                    )
+                }
+                _ => return,
+            };
+            self.order.push(id);
+            self.gcx
+                .store
+                .pending_conformances
+                .borrow_mut()
+                .insert(id, (head, header, generics.clone()));
+        }
+    }
+    let mut visitor = Register {
+        gcx,
+        order: Vec::new(),
+    };
+    hir::walk_package(&mut visitor, package);
+    visitor.order
+}
+
+pub fn finish(order: Vec<DefinitionID>, gcx: Gcx<'_>) -> CompileResult<()> {
+    for id in order {
+        collect_header(gcx, id);
+    }
+    gcx.dcx().ok()
+}
+
+fn collect_header(gcx: Gcx<'_>, id: DefinitionID) {
+    let Some((_, header, generics)) = gcx.store.pending_conformances.borrow_mut().remove(&id)
+    else {
+        return;
+    };
+    if !gcx.with_type_database(id.package(), |db| db.def_to_constraints.contains_key(&id)) {
+        super::constraints::collect_header_constraints(gcx, id, &generics);
+    }
+    let mut actor = Actor { context: gcx };
+    match header {
+        Header::Inline(interfaces) => actor.collect_inline_conformance(id, &interfaces),
+        Header::Explicit { target, interface } => {
+            if gcx.get_impl_target_ty(id).is_none() {
+                super::super::impls::target::cache_target(gcx, id, &target);
+            }
+            actor.collect_impl_conformance(id, &interface);
+        }
+    }
+}
+
+/// Supply declarations of this interface that can apply to the receiver, in
+/// source order. Taking the pending header before lowering its target guards
+/// recursive requests without caching a partially built record.
+pub(crate) fn ensure_candidates<'ctx>(gcx: Gcx<'ctx>, receiver: Ty<'ctx>, interface: DefinitionID) {
+    if gcx.store.pending_conformances.borrow().is_empty() {
+        return;
+    }
+    let heads: Vec<_> = gcx
+        .class_ancestry(receiver)
+        .into_iter()
+        .chain([receiver])
+        .filter_map(super::super::utils::type_head_from_value_ty)
+        .collect();
+    let mut owners: Vec<_> = gcx
+        .store
+        .pending_conformances
+        .borrow()
+        .iter()
+        .filter(|(_, (head, header, _))| {
+            (heads.contains(head) || head.is_blanket()) && header.mentions(gcx, interface)
+        })
+        .map(|(&owner, _)| owner)
+        .collect();
+    owners.sort_unstable();
+    for owner in owners {
+        collect_header(gcx, owner);
+    }
 }
 
 struct Actor<'ctx> {
     context: Gcx<'ctx>,
-}
-
-impl<'ctx> Actor<'ctx> {
-    fn new(context: Gcx<'ctx>) -> Actor<'ctx> {
-        Actor { context }
-    }
-
-    fn run(package: &hir::Package, context: Gcx<'ctx>) -> CompileResult<()> {
-        let mut actor = Actor::new(context);
-        hir::walk_package(&mut actor, package);
-        context.dcx().ok()
-    }
-}
-
-impl<'ctx> HirVisitor for Actor<'ctx> {
-    fn visit_declaration(&mut self, declaration: &hir::Declaration) -> Self::Result {
-        match &declaration.kind {
-            hir::DeclarationKind::Impl(node) => {
-                if let Some(interface) = &node.interface {
-                    self.collect_impl_conformance(declaration.id, interface);
-                }
-            }
-            hir::DeclarationKind::Struct(node) => {
-                if let Some(conformances) = &node.conformances {
-                    if node.class_header.is_some() {
-                        let mut interfaces = conformances.clone();
-                        interfaces.bounds.retain(|bound| {
-                            super::class_hierarchy::is_interface_bound(self.context, &bound.path)
-                        });
-                        self.collect_inline_conformance(declaration.id, &interfaces);
-                    } else {
-                        self.collect_inline_conformance(declaration.id, conformances);
-                    }
-                }
-            }
-            hir::DeclarationKind::Enum(node) => {
-                if let Some(conformances) = &node.conformances {
-                    self.collect_inline_conformance(declaration.id, conformances);
-                }
-            }
-            _ => {}
-        }
-    }
 }
 
 impl<'ctx> Actor<'ctx> {
@@ -189,16 +303,10 @@ impl<'ctx> Actor<'ctx> {
                 // Register the conformance
                 let is_conditional = !self.context.canonical_constraints_of(type_id).is_empty()
                     || (!self.context.generics_of(type_id).is_empty()
-                        && [
-                            StdItem::Clone,
-                            StdItem::PartialEq,
-                            StdItem::Hashable,
-                            StdItem::Equatable,
-                            StdItem::Encodable,
-                            StdItem::Decodable,
-                        ]
-                        .iter()
-                        .any(|item| self.context.std_item_def(*item) == Some(reference.id)));
+                        && StdItem::ALL_INTERFACES.iter().any(|item| {
+                            item.is_derivable()
+                                && self.context.std_item_def(*item) == Some(reference.id)
+                        }));
                 let record = ConformanceRecord {
                     target: ty_key,
                     interface: reference,
@@ -671,7 +779,7 @@ func main() {}
                     )
                 }));
             *gcx.store.std_items.borrow_mut() = Some((gcx.package_index(), registry));
-            let actor = Actor::new(gcx);
+            let actor = Actor { context: gcx };
             assert!(actor.is_compiler_only_interface(tuple));
             assert!(!actor.is_compiler_only_interface(ordinary));
         });

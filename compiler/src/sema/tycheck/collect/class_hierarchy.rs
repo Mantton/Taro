@@ -3,7 +3,7 @@
 use crate::{
     compile::context::Gcx,
     error::CompileResult,
-    hir::{self, HirVisitor},
+    hir,
     sema::{
         models::{StructField, TyKind},
         tycheck::{
@@ -14,69 +14,72 @@ use crate::{
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
-pub fn run(package: &hir::Package, gcx: Gcx<'_>) -> CompileResult<()> {
-    struct Collector {
-        classes: Vec<(hir::DefinitionID, hir::Struct)>,
+pub fn finish_bases(gcx: Gcx<'_>) -> CompileResult<()> {
+    let mut pending: Vec<_> = gcx
+        .store
+        .pending_class_bases
+        .borrow()
+        .keys()
+        .copied()
+        .collect();
+    pending.sort_unstable();
+    for id in pending {
+        ensure_base(gcx, id);
     }
-    impl HirVisitor for Collector {
-        fn visit_declaration(&mut self, node: &hir::Declaration) {
-            if let hir::DeclarationKind::Struct(value) = &node.kind
-                && value.class_header.is_some()
-            {
-                self.classes.push((node.id, value.clone()));
-            }
-            hir::walk_declaration(self, node);
+    gcx.dcx().ok()
+}
+
+/// Resolving a conformance target can require a constant inherited from a
+/// class declared later. Resolve the base link independently of payload layout.
+pub(crate) fn ensure_base(gcx: Gcx<'_>, id: hir::DefinitionID) {
+    let Some(bounds) = gcx.store.pending_class_bases.borrow_mut().remove(&id) else {
+        return;
+    };
+    let mut selected_base = None;
+    for bound in &bounds.bounds {
+        if is_interface_bound(gcx, &bound.path) {
+            continue;
         }
-    }
-    let mut collector = Collector { classes: vec![] };
-    hir::walk_package(&mut collector, package);
-    for (id, class) in &collector.classes {
-        let Some(bounds) = &class.conformances else {
+        let node = hir::Type {
+            id: bound.id,
+            span: bound.span,
+            kind: hir::TypeKind::Nominal(bound.path.clone()),
+        };
+        let ty = crate::sema::tycheck::utils::normalize_aliases(
+            gcx,
+            DefTyLoweringCtx::new(id, gcx).lowerer().lower_type(&node),
+        );
+        let Some(base) = gcx.class_info(ty) else {
+            gcx.dcx().emit_error(
+                "class inheritance requires a class base".into(),
+                Some(bound.span),
+            );
             continue;
         };
-        let mut selected_base = None;
-        for bound in &bounds.bounds {
-            if is_interface_bound(gcx, &bound.path) {
-                continue;
-            }
-            let node = hir::Type {
-                id: bound.id,
-                span: bound.span,
-                kind: hir::TypeKind::Nominal(bound.path.clone()),
-            };
-            let ty = crate::sema::tycheck::utils::normalize_aliases(
-                gcx,
-                DefTyLoweringCtx::new(*id, gcx).lowerer().lower_type(&node),
+        if selected_base.is_some() {
+            gcx.dcx().emit_error(
+                "a class may inherit from only one base class".into(),
+                Some(bound.span),
             );
-            let Some(base) = gcx.class_info(ty) else {
-                gcx.dcx().emit_error(
-                    "class inheritance requires a class base".into(),
-                    Some(bound.span),
-                );
-                continue;
-            };
-            if selected_base.is_some() {
-                gcx.dcx().emit_error(
-                    "a class may inherit from only one base class".into(),
-                    Some(bound.span),
-                );
-                continue;
-            }
-            if base.is_final {
-                gcx.dcx()
-                    .emit_error("cannot inherit from a final class".into(), Some(bound.span));
-            }
-            selected_base = Some(ty);
+            continue;
         }
-        let mut definition = gcx.get_struct_definition(*id).clone();
-        definition.class_info.as_mut().unwrap().base = selected_base;
-        gcx.cache_struct_definition(*id, definition);
+        if base.is_final {
+            gcx.dcx()
+                .emit_error("cannot inherit from a final class".into(), Some(bound.span));
+        }
+        selected_base = Some(ty);
     }
-    gcx.dcx().ok()?;
-    let own: FxHashMap<_, _> = collector
-        .classes
+    let mut definition = gcx.get_struct_definition(id).clone();
+    definition.class_info.as_mut().unwrap().base = selected_base;
+    gcx.cache_struct_definition(id, definition);
+}
+
+/// Flatten layout once all declared field types are available. Base links
+/// already participate in conformance selection for declaration headers.
+pub(super) fn flatten_fields(classes: &[hir::DefinitionID], gcx: Gcx<'_>) -> CompileResult<()> {
+    let own: FxHashMap<_, _> = classes
         .iter()
-        .map(|(id, _)| (*id, gcx.get_struct_definition(*id).fields.to_vec()))
+        .map(|&id| (id, gcx.get_struct_definition(id).fields.to_vec()))
         .collect();
     fn flatten<'ctx>(
         gcx: Gcx<'ctx>,
@@ -132,7 +135,7 @@ pub fn run(package: &hir::Package, gcx: Gcx<'_>) -> CompileResult<()> {
     }
     let mut active = FxHashSet::default();
     let mut done = FxHashSet::default();
-    for (id, _) in collector.classes {
+    for &id in classes {
         flatten(gcx, id, &own, &mut active, &mut done);
     }
     gcx.dcx().ok()

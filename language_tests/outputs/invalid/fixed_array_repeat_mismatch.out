@@ -1,0 +1,16 @@
+error: expected [uint8; 2], found [uint8; 3]
+ -> language_tests/source_files/invalid/fixed_array_repeat_mismatch.tr:4:29
+	    var wrongLength: Small = [1; 3]
+	                             ^^^^^^
+error: repeat expressions are only valid for fixed-size array types
+ -> language_tests/source_files/invalid/fixed_array_repeat_mismatch.tr:5:27
+	    var wrongKind: Count = [1; 2]
+	                           ^^^^^^
+error: expected usize, found [{integer(0)}; 2]
+ -> language_tests/source_files/invalid/fixed_array_repeat_mismatch.tr:5:27
+	    var wrongKind: Count = [1; 2]
+	                           ^^^^^^
+error: integer literal '256' is out of range for type 'uint8'
+ -> language_tests/source_files/invalid/fixed_array_repeat_mismatch.tr:6:31
+	    var wrongElement: Small = [256; 2]
+	                               ^^^

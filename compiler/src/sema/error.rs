@@ -19,14 +19,41 @@ impl<T> ExpectedFound<T> {
 
 #[derive(Debug, Clone)]
 pub enum TypeError<'ctx> {
+    DynamicArraySpread,
+    MissingSpreadList,
+    SpreadLengthOverflow,
     Mutability(ExpectedFound<Ty<'ctx>>),
     TyMismatch(ExpectedFound<Ty<'ctx>>),
     TupleArity(ExpectedFound<usize>),
     TupleIndexOutOfBounds(ExpectedFound<usize>),
+    PositionalFieldOutOfBounds { owner: Ty<'ctx>, index: usize, arity: usize },
     Apply(ApplyValidationError),
     NoOverloadMatches,
+    /// No overload matches, and the only candidate that accepts the arguments
+    /// requires a conformance the type lacks.
+    NoOverloadMeetsRequirement {
+        ty: Ty<'ctx>,
+        interface: InterfaceReference<'ctx>,
+    },
     AmbiguousOverload,
+    /// A `${...}` value whose type has neither `Display` nor `Debug`.
+    NotInterpolatable {
+        ty: Ty<'ctx>,
+        suggestion: Option<String>,
+    },
     ExplicitMethodArguments(String),
+    AmbiguousConstant {
+        name: Symbol,
+        on: Ty<'ctx>,
+    },
+    NoApplicableConstant {
+        name: Symbol,
+        on: Ty<'ctx>,
+    },
+    ConstantNotVisible {
+        name: Symbol,
+        on: Ty<'ctx>,
+    },
     AmbiguousProperty {
         name: Symbol,
         on: Ty<'ctx>,
@@ -87,6 +114,18 @@ pub enum TypeError<'ctx> {
         lhs: Ty<'ctx>,
         rhs: Ty<'ctx>,
     },
+    /// `element in container` without a `Contains[Element]` conformance.
+    InvalidMembership {
+        op: BinaryOperator,
+        element: Ty<'ctx>,
+        container: Ty<'ctx>,
+    },
+    /// `target ??= value` whose target is not an optional.
+    OptionalAssignmentTarget { target: Ty<'ctx> },
+    /// `target ??= value` whose value is neither `T` nor `T?`.
+    OptionalAssignmentValue { target: Ty<'ctx>, value: Ty<'ctx> },
+    OptionalPropagationReturnType { found: Ty<'ctx> },
+    ResultPropagationReturnType { found: Ty<'ctx> },
     NonConformance {
         ty: Ty<'ctx>,
         interface: InterfaceReference<'ctx>,
@@ -116,6 +155,9 @@ pub type SpannedErrorList<'ctx> = Vec<SpannedError<'ctx>>;
 impl<'ctx> TypeError<'ctx> {
     pub fn format(self, gcx: Gcx<'ctx>) -> String {
         match self {
+            TypeError::DynamicArraySpread => "a fixed array requires a statically known spread length".into(),
+            TypeError::MissingSpreadList => "dynamic collection spread requires the standard List type".into(),
+            TypeError::SpreadLengthOverflow => "collection spread length exceeds the maximum array length".into(),
             TypeError::Mutability(ef) => {
                 format!(
                     "mutability mismatch: expected {}, found {} (reference mutabilities differ)",
@@ -134,16 +176,39 @@ impl<'ctx> TypeError<'ctx> {
                 "expected tuple of length {}, found {}",
                 ef.expected, ef.found
             ),
+            TypeError::PositionalFieldOutOfBounds { owner, index, arity } => format!(
+                "positional field .{index} is out of bounds for {} ({} {})",
+                owner.format(gcx), arity, if arity == 1 { "field" } else { "fields" }
+            ),
             TypeError::TupleIndexOutOfBounds(ef) => format!(
                 "expected tuple with at least {} elements, found {}",
                 ef.expected, ef.found
             ),
             TypeError::Apply(e) => e.format(gcx),
             TypeError::NoOverloadMatches => "no overload matches this call".into(),
+            TypeError::NoOverloadMeetsRequirement { ty, interface } => crate::sema::bound_diagnostic::message(gcx, interface.id, ty).unwrap_or_else(|| format!(
+                "no overload matches this call: the candidate that accepts these arguments requires type '{}' to conform to interface '{}'",
+                ty.format(gcx),
+                interface.format(gcx)
+            )),
+            TypeError::NotInterpolatable { ty, suggestion } => {
+                let mut message = format!(
+                    "cannot interpolate a value of type '{}': it conforms to neither 'Display' nor 'Debug'",
+                    ty.format(gcx)
+                );
+                if let Some(suggestion) = suggestion {
+                    message.push_str("; ");
+                    message.push_str(&suggestion);
+                }
+                message
+            }
             TypeError::ExplicitMethodArguments(message) => message.clone(),
             TypeError::AmbiguousOverload => {
                 "ambiguous overload; unable to pick a best candidate".into()
             }
+            TypeError::AmbiguousConstant { name, on } => format!("associated constant '{name}' is ambiguous on type '{}'", on.format(gcx)),
+            TypeError::NoApplicableConstant { name, on } => format!("no applicable conformance supplies associated constant '{name}' on type '{}'", on.format(gcx)),
+            TypeError::ConstantNotVisible { name, on } => format!("associated constant '{name}' is not visible on type '{}'", on.format(gcx)),
             TypeError::AmbiguousProperty {
                 name,
                 on,
@@ -237,6 +302,45 @@ impl<'ctx> TypeError<'ctx> {
                     rhs.format(gcx)
                 )
             }
+            TypeError::InvalidMembership {
+                op,
+                element,
+                container,
+            } => {
+                let element = element.format(gcx);
+                let container = container.format(gcx);
+                format!(
+                    "'{}' cannot be used with '{element}' and '{container}': '{container}' does not conform to 'Contains[{element}]'",
+                    op.symbol(),
+                )
+            }
+            TypeError::OptionalAssignmentTarget { target } => format!(
+                "'??=' needs an optional target, found '{}'",
+                target.format(gcx)
+            ),
+            TypeError::OptionalPropagationReturnType { found } => format!(
+                "Optional propagation requires an enclosing Optional return type, found '{}'",
+                found.format(gcx)
+            ),
+            TypeError::ResultPropagationReturnType { found } => format!(
+                "Result propagation requires an enclosing Result return type, found '{}'",
+                found.format(gcx)
+            ),
+            TypeError::OptionalAssignmentValue { target, value } => {
+                let wrapped = target.format(gcx);
+                let inner = match target.kind() {
+                    crate::sema::models::TyKind::Adt(_, args) => args
+                        .first()
+                        .and_then(|arg| arg.ty())
+                        .map(|ty| ty.format(gcx))
+                        .unwrap_or_else(|| wrapped.clone()),
+                    _ => wrapped.clone(),
+                };
+                format!(
+                    "'??=' cannot assign '{}' to a '{wrapped}' target: expected '{inner}' or '{wrapped}'",
+                    value.format(gcx)
+                )
+            }
             TypeError::InvalidAssignOp { op, lhs, rhs } => {
                 format!(
                     "cannot apply compound assignment operator '{:?}=' to types {} and {}",
@@ -246,11 +350,11 @@ impl<'ctx> TypeError<'ctx> {
                 )
             }
             TypeError::NonConformance { ty, interface } => {
-                format!(
+                crate::sema::bound_diagnostic::message(gcx, interface.id, ty).unwrap_or_else(|| format!(
                     "type '{}' does not conform to interface '{}'",
                     ty.format(gcx),
                     interface.format(gcx)
-                )
+                ))
             }
 
             TypeError::ArgCountMismatch(expected, found) => {
@@ -309,6 +413,8 @@ impl<'ctx> TypeError<'ctx> {
 // Validation errors
 #[derive(Debug, Clone, Copy)]
 pub enum ApplyValidationError {
+    SpreadOutsideVariadic,
+    LazyArgumentContainsAwait,
     ArityMismatch {
         expected_min: usize,
         expected_max: Option<usize>,
@@ -331,6 +437,12 @@ pub enum ApplyValidationError {
 impl ApplyValidationError {
     fn format_with_symbol(self, mut symbol_text: impl FnMut(Symbol) -> String) -> String {
         match self {
+            ApplyValidationError::SpreadOutsideVariadic => {
+                "a spread argument requires a variadic parameter".into()
+            }
+            ApplyValidationError::LazyArgumentContainsAwait => {
+                "lazy argument cannot contain 'await'".into()
+            }
             ApplyValidationError::ArityMismatch {
                 expected_min,
                 expected_max,

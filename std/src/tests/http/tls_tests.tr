@@ -38,6 +38,6 @@ func httpTLSStreamsWithExplicitTrustAndRejectsUntrustedCertificates() async {
     wrongName := std::sprintf("https://127.0.0.1:%d/ok", server.localAddress().unwrap().port)
     std::assert((await client.get(wrongName)).isErr(), "explicit roots still enforce hostname verification")
     server.close().unwrap(); (await running.result()).unwrap().unwrap()
-    alias := config; config.close()
+    _alias := config; config.close()
     std::assert(std::tls::ServerConfig::fromPEM("invalid", TLS_TEST_KEY).isErr(), "invalid certificate is rejected")
 }

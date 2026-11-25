@@ -1,6 +1,6 @@
 use crate::{
     error::ReportedError,
-    span::{FileID, Span},
+    span::{FileID, Span, Symbol},
 };
 use colored::{ColoredString, Colorize};
 use ecow::EcoString;
@@ -40,6 +40,28 @@ impl DiagCtx {
             .iter_enumerated()
             .map(|(id, path)| (id, path.clone()))
             .collect()
+    }
+
+    pub fn register_function_span(&self, body: Span, name: Symbol) {
+        self.inner
+            .borrow_mut()
+            .functions
+            .entry(body.file)
+            .or_default()
+            .push((body, name));
+    }
+
+    /// Lowering registers outer bodies before their nested declarations.
+    pub fn enclosing_function(&self, span: Span) -> Option<Symbol> {
+        let inner = self.inner.borrow();
+        inner
+            .functions
+            .get(&span.file)?
+            .iter()
+            .rev()
+            .find_map(|(body, name)| {
+                (body.start <= span.start && span.end <= body.end).then_some(*name)
+            })
     }
 
     pub fn has_error(&self) -> bool {
@@ -103,6 +125,39 @@ impl Drop for DeferredDiagnostics<'_> {
 }
 
 impl DiagCtx {
+    pub fn record_source(&self, file: FileID, source: String) {
+        self.inner
+            .borrow_mut()
+            .file_content_mappings
+            .insert(file, source.into());
+    }
+
+    /// Lexer columns count Unicode scalars. Index line starts on the first
+    /// source-text request, then translate only the two endpoint columns.
+    pub fn source_text(&self, span: Span) -> Option<EcoString> {
+        let text = self.get_file_content(span.file)?;
+        let mut inner = self.inner.borrow_mut();
+        let starts = inner.line_starts.entry(span.file).or_insert_with(|| {
+            std::iter::once(0)
+                .chain(text.match_indices('\n').map(|(byte, _)| byte + 1))
+                .collect()
+        });
+        let byte_offset = |p: crate::span::Position| {
+            let start = *starts.get(p.line)?;
+            let line = &text[start..starts.get(p.line + 1).copied().unwrap_or(text.len())];
+            let byte = line
+                .char_indices()
+                .map(|(i, _)| i)
+                .chain(std::iter::once(line.len()))
+                .nth(p.offset)?;
+            Some(start + byte)
+        };
+        Some(
+            text.get(byte_offset(span.start)?..byte_offset(span.end)?)?
+                .into(),
+        )
+    }
+
     fn get_file_content(&self, id: FileID) -> Option<EcoString> {
         let stored = { self.inner.borrow().file_content_mappings.get(&id).cloned() };
 
@@ -162,16 +217,30 @@ impl DiagCtx {
             let count = inner.error_count.get();
             inner.error_count.set(count + 1);
         }
+        if matches!(diagnostic.level, DiagnosticLevel::Warn) {
+            inner.warnings.push((
+                diagnostic.message.clone(),
+                diagnostic.span,
+                diagnostic.suggestion.clone(),
+            ));
+        }
+        if let Some(suggestion) = &diagnostic.suggestion {
+            inner.suggestions.push(suggestion.clone());
+        }
         drop(inner);
 
         let recording = self.inner.borrow().recording;
         if recording {
             self.inner.borrow_mut().recorded.push(DiagnosticRecord {
                 message: diagnostic.message.clone(),
+                span: diagnostic.span,
             });
         } else {
             if let Some(message) = self.format(&diagnostic, false) {
                 eprintln!("{}", message);
+                if let Some(suggestion) = &diagnostic.suggestion {
+                    eprintln!("help: {}", suggestion.message);
+                }
                 for note in &diagnostic.children {
                     if let Some(m) = self.format(&note, false) {
                         eprintln!("{}", m);
@@ -192,6 +261,64 @@ impl DiagCtx {
 
     pub fn emit_warning(&self, message: String, span: Option<Span>) {
         self.emit(Diagnostic::new(message, span, DiagnosticLevel::Warn));
+    }
+
+    pub fn emit_warning_with_suggestion(
+        &self,
+        message: String,
+        span: Option<Span>,
+        suggestion: Option<Suggestion>,
+    ) {
+        let mut diag = Diagnostic::new(message, span, DiagnosticLevel::Warn);
+        diag.suggestion = suggestion;
+        self.emit(diag);
+    }
+
+    pub fn suggestions(&self) -> Vec<Suggestion> {
+        self.inner.borrow().suggestions.clone()
+    }
+
+    pub fn machine_applicable_suggestions(&self) -> Vec<Suggestion> {
+        self.inner
+            .borrow()
+            .suggestions
+            .iter()
+            .filter(|s| s.applicability == Applicability::MachineApplicable)
+            .cloned()
+            .collect()
+    }
+
+    /// The number of warnings emitted so far; a mark for `warnings_since`.
+    pub fn warning_count(&self) -> usize {
+        self.inner.borrow().warnings.len()
+    }
+
+    /// The warnings emitted after `mark`, in order.
+    pub fn warnings_since(&self, mark: usize) -> Vec<(String, Option<Span>)> {
+        self.inner
+            .borrow()
+            .warnings
+            .get(mark..)
+            .map(|slice| {
+                slice
+                    .iter()
+                    .map(|(msg, span, _)| (msg.clone(), *span))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The warnings and optional fix suggestions emitted after `mark`, in order.
+    pub fn warnings_with_suggestions_since(
+        &self,
+        mark: usize,
+    ) -> Vec<(String, Option<Span>, Option<Suggestion>)> {
+        self.inner
+            .borrow()
+            .warnings
+            .get(mark..)
+            .map(<[_]>::to_vec)
+            .unwrap_or_default()
     }
 }
 
@@ -249,12 +376,34 @@ impl DiagCtx {
 struct DiagCtxInner {
     has_error: Cell<bool>,
     error_count: Cell<usize>,
+    functions: FxHashMap<FileID, Vec<(Span, Symbol)>>,
     file_mappings: IndexVec<FileID, PathBuf>,
+    line_starts: FxHashMap<FileID, Vec<usize>>,
     file_content_mappings: FxHashMap<FileID, EcoString>,
     emitted_diagnostic_keys: FxHashSet<String>,
     recording: bool,
     recorded: Vec<DiagnosticRecord>,
     deferred: Vec<Vec<Diagnostic>>,
+    /// Every warning emitted, in order, so a package's warnings can be stored
+    /// with its cached metadata and replayed when the cache is reused.
+    warnings: Vec<(String, Option<Span>, Option<Suggestion>)>,
+    suggestions: Vec<Suggestion>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Applicability {
+    /// Safe to apply automatically with `taro fix`.
+    MachineApplicable,
+    /// Advisory replacement for humans; never applied automatically.
+    MaybeIncorrect,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Suggestion {
+    pub message: String,
+    pub span: Span,
+    pub replacement: String,
+    pub applicability: Applicability,
 }
 
 #[derive(Debug, Clone)]
@@ -264,6 +413,7 @@ pub struct Diagnostic {
     pub level: DiagnosticLevel,
     pub span: Option<Span>,
     pub children: Vec<Diagnostic>,
+    pub suggestion: Option<Suggestion>,
 }
 
 /// Both syntactic readings of a member bracket suffix are resolved, but only
@@ -282,6 +432,7 @@ impl Diagnostic {
             level,
             span,
             children: vec![],
+            suggestion: None,
         }
     }
 
@@ -321,6 +472,7 @@ impl std::fmt::Display for DiagnosticLevel {
 #[derive(Debug, Clone)]
 pub struct DiagnosticRecord {
     pub message: String,
+    pub span: Option<Span>,
 }
 
 impl DiagCtx {
@@ -447,6 +599,25 @@ fn display_width_between(line: &str, start: usize, end: usize) -> usize {
 mod tests {
     use super::{DiagnosticLevel, caret_prefix, display_width_between, print_span_error};
     use crate::span::{FileID, Position, Span};
+
+    #[test]
+    fn warnings_since_a_mark_are_the_later_distinct_warnings() {
+        let context = super::DiagCtx::new(std::path::PathBuf::from("."));
+        context.enable_recording();
+        context.emit_warning("earlier".into(), None);
+        let mark = context.warning_count();
+        context.emit_error("not a warning".into(), None);
+        context.emit_warning("later".into(), None);
+        context.emit_warning("later".into(), None);
+        let (_, discarded) =
+            context.with_deferred_diagnostics(|| context.emit_warning("discarded".into(), None));
+        assert_eq!(discarded.len(), 1);
+        assert_eq!(
+            context.warnings_since(mark),
+            vec![("later".to_string(), None)]
+        );
+        assert!(context.warnings_since(mark + 5).is_empty());
+    }
 
     #[test]
     fn deferred_diagnostics_commit_only_the_selected_branch_and_restore_after_panic() {

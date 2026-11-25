@@ -1,0 +1,257 @@
+import std::collections::List
+
+struct StableRecord { key: int32; sequence: int32; payload: string }
+
+@test
+func testStableSortAndCopySemantics() {
+    var records: [StableRecord] = [
+        StableRecord { key: 2, sequence: 0, payload: "zero" },
+        StableRecord { key: 1, sequence: 1, payload: "one" },
+        StableRecord { key: 2, sequence: 2, payload: "two" },
+        StableRecord { key: 1, sequence: 3, payload: "three" },
+    ]
+    sorted := records.sorted(by: (a, b) => a.key < b.key)
+    std::testing::assertEqual(sorted.map((r) => r.sequence), [1, 3, 0, 2], "stable ties")
+    std::testing::assertEqual(records[0].sequence, 0, "sorted preserves source")
+    alias := records
+    slot := records.at(0)
+    records.sort(by: (a, b) => a.key > b.key)
+    std::testing::assertEqual(alias.map((r) => r.sequence), [0, 2, 1, 3], "sort shares storage")
+    records.sort(by: (a, b) => a.key < b.key)
+    std::testing::assertEqual(slot.sequence, 1, "sort commits into existing buffer")
+    std::testing::assertEqual(records[0].payload, "one", "managed payload retained")
+}
+
+@test
+func testSortShapesAndComparisonBudget() {
+    for count in [0 as usize, 1, 2, 3, 7, 31, 64, 129, 4096] {
+        var calls: usize = 0
+        values := List[int32]::generate(count: count, by: (i) => (count - i) as int32)
+        values.sort(by: (a, b) => { calls += 1; a < b })
+        std::testing::assertTrue(calls <= count * 12, "comparison budget")
+        if count < 2 { std::testing::assertEqual(calls, 0 as usize, "trivial sort skips callback") }
+        var index: usize = 0
+        while index < count {
+            std::testing::assertEqual(values[index], (index as int32) + 1, "reverse input")
+            index += 1
+        }
+        values.sort()
+        equal := List[int32]::repeating(7, count: count)
+        equal.sort()
+        std::testing::assertEqual(equal, List[int32]::repeating(7, count: count), "all equal")
+    }
+}
+
+@test
+func testStableSortAcrossRunsAndMerges() {
+    for count in [33 as usize, 100, 1000] {
+        records := List[StableRecord]::generate(count: count, by: (i) => StableRecord { key: ((i * 7) % 5) as int32, sequence: i as int32, payload: "" })
+        sorted := records.sorted(by: (a, b) => a.key < b.key)
+        records.sort(by: (a, b) => a.key < b.key)
+        std::testing::assertEqual(records.map((r) => r.sequence), sorted.map((r) => r.sequence), "sort and sorted agree")
+        var index: usize = 1
+        while index < count {
+            previous := records[index - 1]
+            current := records[index]
+            std::testing::assertTrue(previous.key < current.key || (previous.key == current.key && previous.sequence < current.sequence), "stable ascending keys")
+            index += 1
+        }
+    }
+}
+
+@test
+@expectPanic("expected merge failure")
+func testComparatorPanicDuringMergePreservesOriginal() {
+    values := List[int32]::generate(count: 100, by: (i) => (100 - i) as int32)
+    expected := values.copy()
+    defer { std::testing::assertEqual(values, expected, "panic preserves original order") }
+    var calls: usize = 0
+    values.sort(by: (a, b) => {
+        calls += 1
+        // Reverse input: the three full runs of 32 and the run of 4 take 392
+        // calls, the first merge pass 36, so call 430 is in the final merge.
+        if calls == 430 { std::panic::panic("expected merge failure") }
+        a < b
+    })
+}
+
+@test
+func testShortSortsUseOneScratchBuffer() {
+    for count in [2 as usize, 8, 32] {
+        values := List[int32]::generate(count: count, by: (i) => (count - i) as int32)
+        copyStart := std::runtime::gcStats()
+        var copy = values.copy()
+        copyEnd := std::runtime::gcStats()
+        oneCopy := copyEnd.allocatedBytes - copyStart.allocatedBytes
+        sortStart := std::runtime::gcStats()
+        values.sort()
+        sortEnd := std::runtime::gcStats()
+        // Formerly sort made two full copies before comparing anything.
+        std::testing::assertTrue(sortEnd.allocatedBytes - sortStart.allocatedBytes <= oneCopy, "sort allocates at most one scratch list")
+        sortedStart := std::runtime::gcStats()
+        copy = copy.sorted()
+        sortedEnd := std::runtime::gcStats()
+        // Formerly sorted copied, then sorted the copy with two more.
+        std::testing::assertTrue(sortedEnd.allocatedBytes - sortedStart.allocatedBytes <= oneCopy, "sorted builds its result once")
+        std::testing::assertEqual(values, copy, "sort and sorted agree")
+        std::testing::assertEqual(values[0], 1, "ascending")
+    }
+}
+
+@test
+func testSortManagedValuesAcrossCollection() {
+    values := List[string]::generate(count: 32, by: (i) => std::sprintf("value %v", 31 - i))
+    var comparisons: usize = 0
+    values.sort(by: (a, b) => {
+        comparisons += 1
+        if comparisons % 8 == 0 { std::runtime::collect() }
+        a.byteLen() < b.byteLen()
+    })
+    std::runtime::collect()
+    std::testing::assertEqual(values.len(), 32 as usize, "all strings remain")
+    std::testing::assertEqual(values[0], "value 9", "stable shorter strings")
+    std::testing::assertEqual(values[10], "value 31", "stable longer strings")
+}
+
+@test
+@expectPanic("expected sort failure")
+func testComparatorPanicPreservesOriginal() {
+    var values: [int32] = [4, 2, 3, 1]
+    defer { std::testing::assertEqual(values, [4, 2, 3, 1], "panic preserves original order") }
+    values.sort(by: (a, b) => {
+        if a == 1 { std::panic::panic("expected sort failure") }
+        a < b
+    })
+}
+
+@test
+@expectPanic("list changed structurally during sort")
+func testSortRejectsStructuralMutation() {
+    var values: [int32] = [3, 2, 1]
+    values.sort(by: (a, b) => { values.append(4); a < b })
+}
+
+@test
+@expectPanic("list changed structurally during sort")
+func testSortRejectsReentrantSort() {
+    var values: [int32] = [3, 2, 1]
+    values.sort(by: (a, b) => { values.sort(); a < b })
+}
+
+@test
+@expectPanic("list changed structurally during iteration")
+func testSortInvalidatesCursor() {
+    var values: [int32] = [3, 2, 1]
+    cursor := values.iter()
+    values.sort()
+    var _ = cursor.next()
+}
+
+@test
+func testListReverseInPlaceAndReversedCopy() {
+    for count in [0 as usize, 1, 2, 3, 8, 33] {
+        values := List[int32]::generate(count: count, by: (i) => i as int32)
+        expected := List[int32]::generate(count: count, by: (i) => (count - 1 - i) as int32)
+        alias := values
+        copy := values.reversed()
+        std::testing::assertEqual(copy, expected, "reversed copy")
+        std::testing::assertEqual(values, List[int32]::generate(count: count, by: (i) => i as int32), "reversed leaves receiver")
+        values.reverse()
+        std::testing::assertEqual(values, expected, "reverse in place")
+        std::testing::assertEqual(alias, expected, "reverse shares storage")
+        if count > 0 {
+            copy[0] = 100
+            std::testing::assertEqual(values[0], (count - 1) as int32, "copy is independent")
+        }
+    }
+}
+
+@test
+func testListReverseKeepsBufferAndAllocatesNothing() {
+    var records: [StableRecord] = [
+        StableRecord { key: 1, sequence: 0, payload: "first" },
+        StableRecord { key: 2, sequence: 1, payload: "second" },
+        StableRecord { key: 3, sequence: 2, payload: "third" },
+    ]
+    slot := records.at(0)
+    span := records.asSpan()
+    start := std::runtime::gcStats()
+    records.reverse()
+    end := std::runtime::gcStats()
+    std::testing::assertEqual(end.allocatedBytes - start.allocatedBytes, 0 as uint64, "reverse allocates nothing")
+    std::testing::assertEqual(slot.payload, "third", "element reference addresses the buffer")
+    std::testing::assertEqual(span[2].payload, "first", "span addresses the buffer")
+    var nested: [[int32]] = [[1], [2]]
+    shallow := nested.reversed()
+    shallow[1][0] = 9
+    std::testing::assertEqual(nested[0][0], 9, "reversed copies nested handles shallowly")
+}
+
+@test
+@expectPanic("list changed structurally during iteration")
+func testListReverseInvalidatesCursor() {
+    var values: [int32] = [1, 2]
+    cursor := values.iter()
+    values.reverse()
+    var _ = cursor.next()
+}
+
+@test
+func testListReverseOfTrivialListKeepsCursor() {
+    var single: [int32] = [4]
+    cursor := single.iter()
+    single.reverse()
+    var empty: [int32] = []
+    emptyCursor := empty.iter()
+    empty.reverse()
+    std::testing::assertEqual(cursor.next().unwrap(), 4, "single-element reverse keeps cursor")
+    std::testing::assertTrue(emptyCursor.next().isNone(), "empty reverse keeps cursor")
+}
+
+@test
+func testGeneratorsAndNestedEquality() {
+    var visits: [usize] = []
+    matrix := List[List[int32]]::generate(count: 3, by: (i) => {
+        visits.append(i)
+        List[int32]::repeating(0, count: 2)
+    })
+    matrix[0][1] = 7
+    std::testing::assertEqual(visits, [0 as usize, 1, 2], "factory order")
+    var expected: [[int32]] = [[0, 7], [0, 0], [0, 0]]
+    std::testing::assertEqual(matrix, expected, "independent rows and nested equality")
+    var row: [int32] = [1]
+    repeated := List[List[int32]]::repeating(row, count: 2)
+    repeated[0][0] = 9
+    std::testing::assertEqual(repeated[1][0], 9, "repeating shares nested handles")
+    var calls = 0
+    empty := List[int32]::generate(count: 0, by: (_) => { calls += 1; 0 })
+    std::testing::assertTrue(empty.isEmpty() && calls == 0, "empty generation")
+    var first: [int32] = [1, 2]
+    var reversed: [int32] = [2, 1]
+    var shorter: [int32] = [1]
+    std::testing::assertTrue(first != reversed && shorter != first, "ordered equality")
+}
+
+@test
+func testBinarySearchBoundaries() {
+    var values: [int32] = [1, 2, 2, 2, 4]
+    for target in [0, 1, 2, 3, 4, 5] {
+        var lower: usize = 0
+        var upper: usize = 0
+        for value in values {
+            if value < target { lower += 1 }
+            if value <= target { upper += 1 }
+        }
+        std::testing::assertEqual(values.lowerBound(target), lower, "lower bound oracle")
+        std::testing::assertEqual(values.upperBound(target), upper, "upper bound oracle")
+        found := values.binarySearch(target)
+        std::testing::assertTrue(found.isSome() == (lower < upper), "search presence")
+        if lower < upper { std::testing::assertEqual(found.unwrap(), lower, "first duplicate") }
+    }
+    var empty: [int32] = []
+    std::testing::assertTrue(empty.lowerBound(1) == 0 && empty.upperBound(1) == 0 && empty.binarySearch(1).isNone(), "empty search")
+    descending := values.sorted(by: (a, b) => a > b)
+    std::testing::assertEqual(descending.lowerBound(2, by: (a, b) => a > b), 1 as usize, "descending lower")
+    std::testing::assertEqual(descending.upperBound(2, by: (a, b) => a > b), 4 as usize, "descending upper")
+    std::testing::assertEqual(descending.binarySearch(2, by: (a, b) => a > b).unwrap(), 1 as usize, "descending search")
+}

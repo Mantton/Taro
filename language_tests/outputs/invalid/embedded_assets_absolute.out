@@ -1,0 +1,4 @@
+error: embedded asset path must be a nonempty relative path
+ -> language_tests/source_files/invalid/embedded_assets_absolute.tr:1:25
+	func main() { var data = #embed("/asset.txt") }
+	                         ^^^^^^^^^^^^^^^^^^^^

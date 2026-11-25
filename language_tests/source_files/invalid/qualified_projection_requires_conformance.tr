@@ -1,0 +1,17 @@
+// Publishing a bool result still requires the defaulted receiver to conform.
+struct Box[T] { value: T }
+interface Read {
+    type Output
+    func read() -> Self::Output
+}
+conform Box[int64] to Read {
+    type Output = bool
+    func read() -> bool { true }
+}
+func main() {
+    check := () => {
+        result := Read::read(Box { value: 0 })
+        if result { 1 } else { 0 }
+    }
+    println("${check()}")
+}

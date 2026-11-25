@@ -1,0 +1,22 @@
+struct Recorder { n: int32 }
+extend &Recorder {
+    func step() -> int32 { self.n += 1; self.n }
+}
+func ordered(_ first: int32, later value: @lazy int32, last end: int32) -> int32 {
+    first * 100 + end * 10 + value()
+}
+func fallback[T](_ preferred: T?, or other: @lazy T) -> T {
+    match preferred {
+        case .some(value) => value
+        case .none => other()
+    }
+}
+func main() {
+    var record = Recorder { n: 0 }
+    var borrowed = &record
+    assert(ordered(borrowed.step(), later: borrowed.step(), last: borrowed.step()) == 123, "eager arguments precede forcing")
+    var preferred: int64? = .some(5000000000)
+    var wide: int64 = fallback(preferred, or: 6000000000)
+    assert(wide == 5000000000, "generic argument retains result context")
+    println("lazy order")
+}

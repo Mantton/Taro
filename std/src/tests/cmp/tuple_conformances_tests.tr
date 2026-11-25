@@ -1,0 +1,62 @@
+import std::collections::{Dictionary, PriorityQueue, Set}
+import std::fmt::debugString
+import std::testing::{assertEqual, assertFalse, assertTrue}
+
+@test
+func testTupleUnitAndSingletonConformances() {
+    assertTrue(() == (), "unit eq")
+    assertFalse(() != (), "unit neq")
+    assertTrue(().cmp(()).isEqual(), "unit ord")
+    assertTrue(().partialCmp(()).unwrap().isEqual(), "unit partialOrd")
+    assertEqual(debugString(()), "()", "unit debug")
+
+    assertEqual((5_i32,), (5_i32,), "singleton eq")
+    assertTrue((1_i32,) < (2_i32,), "singleton lt")
+    assertTrue((2_i32,).cmp((1_i32,)).isGreater(), "singleton cmp")
+    assertEqual(debugString((5_i32,)), "(5,)", "singleton debug")
+}
+
+@test
+func testTupleCollectionsAndOrdering() {
+    var visited = Set[(usize, usize)]::new()
+    visited.insert((0, 0))
+    visited.insert((0, 0))
+    visited.insert((0, 1))
+    visited.insert((1, 0))
+    assertEqual(visited.len(), 3 as usize, "distinct tuple hashes")
+    assertTrue((0, 0) in visited && (0, 1) in visited && (1, 0) in visited, "tuple set membership")
+
+    var map = Dictionary[(int32, string), int64]::new()
+    map[(1, "a")] = 100
+    map[(1, "b")] = 200
+    assertEqual(map[(1, "a")], 100_i64, "dict lookup a")
+    assertEqual(map[(1, "b")], 200_i64, "dict lookup b")
+
+    var pq = PriorityQueue[(int64, usize)]::new()
+    pq.push((10, 2))
+    pq.push((5, 3))
+    pq.push((5, 1))
+    assertEqual(pq.pop().unwrap(), (5_i64, 1 as usize), "pq pop 1")
+    assertEqual(pq.pop().unwrap(), (5_i64, 3 as usize), "pq pop 2")
+    assertEqual(pq.pop().unwrap(), (10_i64, 2 as usize), "pq pop 3")
+
+    var list: [(int32, int32)] = [(2, 1), (1, 5), (1, 2), (2, 0)]
+    list.sort()
+    assertEqual(list[0], (1, 2), "sort 0")
+    assertEqual(list[1], (1, 5), "sort 1")
+    assertEqual(list[2], (2, 0), "sort 2")
+    assertEqual(list[3], (2, 1), "sort 3")
+}
+
+@test
+func testTuplePartialOrdNanAndDefault() {
+    nan := 0.0 / 0.0
+    assertTrue((1.0, nan).partialCmp((1.0, 2.0)).isNone(), "nan second component")
+    assertFalse((1.0, nan) < (1.0, 2.0), "nan lt false")
+    assertFalse((1.0, nan) <= (1.0, 2.0), "nan le false")
+    assertFalse((1.0, nan) > (1.0, 2.0), "nan gt false")
+    assertFalse((1.0, nan) >= (1.0, 2.0), "nan ge false")
+    assertTrue((0.0, nan) < (1.0, nan), "earlier component short-circuits before nan")
+
+    assertEqual(debugString(((1_i32, 2_i32), true)), "((1, 2), true)", "nested debug")
+}

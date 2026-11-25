@@ -1,0 +1,4 @@
+interface Reset { func reset(); }
+struct Counter {}
+conform Counter to Reset by self.missing {}
+func main() {}

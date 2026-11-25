@@ -1,0 +1,1268 @@
+import std::cmp::{Ord, Ordering, PartialOrd}
+import std::default::Default
+import std::iter::{FromIterator, Iterable, Iterator}
+import std::marker::Clone
+import std::ops::{Contains, Fn, PartialEq}
+import std::panic::panic
+import std::range::{ClosedRange, Range}
+
+// Branching factor B = 6: non-root nodes hold 5..=11 keys and 6..=12 children.
+const BTREE_MIN_KEYS: usize = 5
+const BTREE_MAX_KEYS: usize = 11
+const BTREE_MAX_CHILDREN: usize = 12
+
+final class BTreeNode[Key: Ord, Value] {
+    len: usize
+    isLeaf: bool
+    keys: [Key?; 11]
+    values: [Value?; 11]
+    children: [BTreeNode[Key, Value]?; 12]
+}
+
+extend[Key: Ord, Value] BTreeNode[Key, Value] {
+    init(leaf isLeaf: bool) {
+        self.len = 0
+        self.isLeaf = isLeaf
+        self.keys = [.none; 11]
+        self.values = [.none; 11]
+        self.children = [.none; 12]
+    }
+
+    func deepCopy() -> BTreeNode[Key, Value] {
+        copy := BTreeNode[Key, Value](leaf: self.isLeaf)
+        copy.len = self.len
+        var i: usize = 0
+        while i < self.len {
+            copy.keys[i] = self.keys[i]
+            copy.values[i] = self.values[i]
+            i += 1
+        }
+        if !self.isLeaf {
+            var c: usize = 0
+            while c <= self.len {
+                copy.children[c] = .some(self.children[c].unwrap().deepCopy())
+                c += 1
+            }
+        }
+        return copy
+    }
+
+    /// Binary search for `target` within `0..self.len`.
+    /// Returns `(index, true)` on an exact match, or `(childIndex, false)` otherwise.
+    func search(_ target: &Key) -> (usize, bool) {
+        var low: usize = 0
+        var high = self.len
+        while low < high {
+            mid := low + (high - low) / (2 as usize)
+            ord := self.keys[mid].unwrap().cmp(*target)
+            if ord.isLess() {
+                low = mid + (1 as usize)
+            } else if ord.isGreater() {
+                high = mid
+            } else {
+                return (mid, true)
+            }
+        }
+        return (low, false)
+    }
+
+    func insertAt(_ idx: usize, _ key: Key, _ value: Value, _ rightChild: BTreeNode[Key, Value]?) {
+        var i = self.len
+        while i > idx {
+            self.keys[i] = self.keys[i - (1 as usize)]
+            self.values[i] = self.values[i - (1 as usize)]
+            i -= 1
+        }
+        self.keys[idx] = .some(key)
+        self.values[idx] = .some(value)
+        if !self.isLeaf {
+            var c = self.len + (1 as usize)
+            while c > idx + (1 as usize) {
+                self.children[c] = self.children[c - (1 as usize)]
+                c -= 1
+            }
+            self.children[idx + (1 as usize)] = rightChild
+        }
+        self.len += 1
+    }
+
+    /// Splits a full node (`self.len == BTREE_MAX_KEYS`) while inserting `(key, value, rightChild)`
+    /// at `(idx, idx + 1)`. Left (`self`) retains 5 keys, index 5 is promoted, and the new
+    /// right sibling receives 6 keys. All vacated tail slots on `self` are cleared to `.none`.
+    func insertAndSplit(
+        _ idx: usize,
+        _ key: Key,
+        _ value: Value,
+        _ rightChild: BTreeNode[Key, Value]?,
+    ) -> (Key, Value, BTreeNode[Key, Value]) {
+        var allKeys: [Key?; 12] = [.none; 12]
+        var allVals: [Value?; 12] = [.none; 12]
+        var i: usize = 0
+        while i < idx {
+            allKeys[i] = self.keys[i]
+            allVals[i] = self.values[i]
+            i += 1
+        }
+        allKeys[idx] = .some(key)
+        allVals[idx] = .some(value)
+        i = idx
+        while i < BTREE_MAX_KEYS {
+            allKeys[i + (1 as usize)] = self.keys[i]
+            allVals[i + (1 as usize)] = self.values[i]
+            i += 1
+        }
+
+        var allChildren: [BTreeNode[Key, Value]?; 13] = [.none; 13]
+        if !self.isLeaf {
+            var c: usize = 0
+            while c <= idx {
+                allChildren[c] = self.children[c]
+                c += 1
+            }
+            allChildren[idx + (1 as usize)] = rightChild
+            c = idx + (1 as usize)
+            while c < BTREE_MAX_CHILDREN {
+                allChildren[c + (1 as usize)] = self.children[c]
+                c += 1
+            }
+        }
+
+        medianKey := allKeys[BTREE_MIN_KEYS].unwrap()
+        medianVal := allVals[BTREE_MIN_KEYS].unwrap()
+
+        // Populate left (`self`) with 0..5 and clear 5..11.
+        i = 0
+        while i < BTREE_MIN_KEYS {
+            self.keys[i] = allKeys[i]
+            self.values[i] = allVals[i]
+            i += 1
+        }
+        while i < BTREE_MAX_KEYS {
+            self.keys[i] = .none
+            self.values[i] = .none
+            i += 1
+        }
+        if !self.isLeaf {
+            var c: usize = 0
+            while c <= BTREE_MIN_KEYS {
+                self.children[c] = allChildren[c]
+                c += 1
+            }
+            while c < BTREE_MAX_CHILDREN {
+                self.children[c] = .none
+                c += 1
+            }
+        }
+        self.len = BTREE_MIN_KEYS
+
+        // Populate right sibling with 6..12 (6 keys, 7 children when internal).
+        right := BTreeNode[Key, Value](leaf: self.isLeaf)
+        rightLen := (12 as usize) - (BTREE_MIN_KEYS + (1 as usize))
+        i = 0
+        while i < rightLen {
+            right.keys[i] = allKeys[BTREE_MIN_KEYS + (1 as usize) + i]
+            right.values[i] = allVals[BTREE_MIN_KEYS + (1 as usize) + i]
+            i += 1
+        }
+        if !self.isLeaf {
+            var c: usize = 0
+            while c <= rightLen {
+                right.children[c] = allChildren[BTREE_MIN_KEYS + (1 as usize) + c]
+                c += 1
+            }
+        }
+        right.len = rightLen
+        return (medianKey, medianVal, right)
+    }
+
+    func removeLeafAt(_ idx: usize) -> (Key, Value) {
+        removedKey := self.keys[idx].unwrap()
+        removedVal := self.values[idx].unwrap()
+        last := self.len - (1 as usize)
+        var i = idx
+        while i < last {
+            self.keys[i] = self.keys[i + (1 as usize)]
+            self.values[i] = self.values[i + (1 as usize)]
+            i += 1
+        }
+        self.keys[last] = .none
+        self.values[last] = .none
+        self.len = last
+        return (removedKey, removedVal)
+    }
+
+    func fixUnderflow(_ childIdx: usize) {
+        child := self.children[childIdx].unwrap()
+        // 1. Try borrowing from left sibling.
+        if childIdx > 0 {
+            left := self.children[childIdx - (1 as usize)].unwrap()
+            if left.len > BTREE_MIN_KEYS {
+                // Shift child entries right by 1.
+                var i = child.len
+                while i > 0 {
+                    child.keys[i] = child.keys[i - (1 as usize)]
+                    child.values[i] = child.values[i - (1 as usize)]
+                    i -= 1
+                }
+                if !child.isLeaf {
+                    var c = child.len + (1 as usize)
+                    while c > 0 {
+                        child.children[c] = child.children[c - (1 as usize)]
+                        c -= 1
+                    }
+                    child.children[0 as usize] = left.children[left.len]
+                    left.children[left.len] = .none
+                }
+                sepIdx := childIdx - (1 as usize)
+                child.keys[0 as usize] = self.keys[sepIdx]
+                child.values[0 as usize] = self.values[sepIdx]
+                leftLast := left.len - (1 as usize)
+                self.keys[sepIdx] = left.keys[leftLast]
+                self.values[sepIdx] = left.values[leftLast]
+                left.keys[leftLast] = .none
+                left.values[leftLast] = .none
+                left.len = leftLast
+                child.len += 1
+                return
+            }
+        }
+        // 2. Try borrowing from right sibling.
+        if childIdx < self.len {
+            right := self.children[childIdx + (1 as usize)].unwrap()
+            if right.len > BTREE_MIN_KEYS {
+                child.keys[child.len] = self.keys[childIdx]
+                child.values[child.len] = self.values[childIdx]
+                if !child.isLeaf {
+                    child.children[child.len + (1 as usize)] = right.children[0 as usize]
+                    var c: usize = 0
+                    while c < right.len {
+                        right.children[c] = right.children[c + (1 as usize)]
+                        c += 1
+                    }
+                    right.children[right.len] = .none
+                }
+                self.keys[childIdx] = right.keys[0 as usize]
+                self.values[childIdx] = right.values[0 as usize]
+                rightLast := right.len - (1 as usize)
+                var i: usize = 0
+                while i < rightLast {
+                    right.keys[i] = right.keys[i + (1 as usize)]
+                    right.values[i] = right.values[i + (1 as usize)]
+                    i += 1
+                }
+                right.keys[rightLast] = .none
+                right.values[rightLast] = .none
+                right.len = rightLast
+                child.len += 1
+                return
+            }
+        }
+        // 3. Merge two adjacent siblings with their separating parent key.
+        mergeIdx := if childIdx > 0 { childIdx - (1 as usize) } else { childIdx }
+        left := self.children[mergeIdx].unwrap()
+        right := self.children[mergeIdx + (1 as usize)].unwrap()
+        base := left.len
+        left.keys[base] = self.keys[mergeIdx]
+        left.values[base] = self.values[mergeIdx]
+        var i: usize = 0
+        while i < right.len {
+            left.keys[base + (1 as usize) + i] = right.keys[i]
+            left.values[base + (1 as usize) + i] = right.values[i]
+            right.keys[i] = .none
+            right.values[i] = .none
+            i += 1
+        }
+        if !left.isLeaf {
+            var c: usize = 0
+            while c <= right.len {
+                left.children[base + (1 as usize) + c] = right.children[c]
+                right.children[c] = .none
+                c += 1
+            }
+        }
+        left.len = base + (1 as usize) + right.len
+        right.len = 0
+
+        // Remove separator `mergeIdx` and child `mergeIdx + 1` from `self`.
+        parentLast := self.len - (1 as usize)
+        i = mergeIdx
+        while i < parentLast {
+            self.keys[i] = self.keys[i + (1 as usize)]
+            self.values[i] = self.values[i + (1 as usize)]
+            i += 1
+        }
+        self.keys[parentLast] = .none
+        self.values[parentLast] = .none
+        var c = mergeIdx + (1 as usize)
+        while c < self.len {
+            self.children[c] = self.children[c + (1 as usize)]
+            c += 1
+        }
+        self.children[self.len] = .none
+        self.len = parentLast
+    }
+}
+
+enum BTreeInsertOutcome[Key: Ord, Value] {
+    case inserted
+    case replaced(Value)
+    case split(Key, Value, BTreeNode[Key, Value])
+}
+
+func btreeInsertRec[Key: Ord, Value](
+    _ node: BTreeNode[Key, Value],
+    _ key: Key,
+    _ value: Value,
+) -> BTreeInsertOutcome[Key, Value] {
+    var (idx, found) = node.search(&key)
+    if found {
+        previous := node.values[idx].unwrap()
+        node.values[idx] = .some(value)
+        return .replaced(previous)
+    }
+    if node.isLeaf {
+        if node.len < BTREE_MAX_KEYS {
+            node.insertAt(idx, key, value, .none)
+            return .inserted
+        }
+        var (medKey, medVal, right) = node.insertAndSplit(idx, key, value, .none)
+        return .split(medKey, medVal, right)
+    }
+    child := node.children[idx].unwrap()
+    match btreeInsertRec(child, key, value) {
+        case .inserted => return .inserted
+        case .replaced(old) => return .replaced(old)
+        case .split(upKey, upVal, rightChild) => {
+            if node.len < BTREE_MAX_KEYS {
+                node.insertAt(idx, upKey, upVal, .some(rightChild))
+                return .inserted
+            }
+            var (medKey, medVal, right) = node.insertAndSplit(idx, upKey, upVal, .some(rightChild))
+            return .split(medKey, medVal, right)
+        }
+    }
+}
+
+func btreePopMinRec[Key: Ord, Value](_ node: BTreeNode[Key, Value]) -> (Key, Value) {
+    if node.isLeaf {
+        return node.removeLeafAt(0 as usize)
+    }
+    pair := btreePopMinRec(node.children[0 as usize].unwrap())
+    if node.children[0 as usize].unwrap().len < BTREE_MIN_KEYS {
+        node.fixUnderflow(0 as usize)
+    }
+    return pair
+}
+
+func btreePopMaxRec[Key: Ord, Value](_ node: BTreeNode[Key, Value]) -> (Key, Value) {
+    if node.isLeaf {
+        return node.removeLeafAt(node.len - (1 as usize))
+    }
+    lastChildIdx := node.len
+    pair := btreePopMaxRec(node.children[lastChildIdx].unwrap())
+    if node.children[lastChildIdx].unwrap().len < BTREE_MIN_KEYS {
+        node.fixUnderflow(lastChildIdx)
+    }
+    return pair
+}
+
+func btreeRemoveRec[Key: Ord, Value](_ node: BTreeNode[Key, Value], _ key: &Key) -> Value? {
+    var (idx, found) = node.search(key)
+    if found {
+        if node.isLeaf {
+            var (_, old) = node.removeLeafAt(idx)
+            return .some(old)
+        }
+        old := node.values[idx].unwrap()
+        rightIdx := idx + (1 as usize)
+        var (succKey, succVal) = btreePopMinRec(node.children[rightIdx].unwrap())
+        node.keys[idx] = .some(succKey)
+        node.values[idx] = .some(succVal)
+        if node.children[rightIdx].unwrap().len < BTREE_MIN_KEYS {
+            node.fixUnderflow(rightIdx)
+        }
+        return .some(old)
+    }
+    if node.isLeaf {
+        return .none
+    }
+    removed := btreeRemoveRec(node.children[idx].unwrap(), key)
+    if removed.isSome() && node.children[idx].unwrap().len < BTREE_MIN_KEYS {
+        node.fixUnderflow(idx)
+    }
+    return removed
+}
+
+final class BTreeMapStorage[Key: Ord, Value] {
+    root: BTreeNode[Key, Value]?
+    len: usize
+    version: usize
+    busy: bool
+}
+
+extend[Key: Ord, Value] BTreeMapStorage[Key, Value] {
+    init() {
+        self.root = .none
+        self.len = 0
+        self.version = 0
+        self.busy = false
+    }
+
+    init(copying source: BTreeMapStorage[Key, Value]) {
+        self.root = match source.root {
+            case .some(r) => .some(r.deepCopy())
+            case .none => .none
+        }
+        self.len = source.len
+        self.version = 0
+        self.busy = false
+    }
+}
+
+/// A shared handle to an ordered map backed by a B-tree (B = 6).
+/// Lookup, insertion, removal, and ordered bound queries run in O(log n).
+/// Assignment shares the map; `copy()` creates an independent shallow copy.
+public struct BTreeMap[Key: Ord, Value] {
+    internal storage: BTreeMapStorage[Key, Value]
+}
+
+extend[Key: Ord, Value] BTreeMap[Key, Value] {
+    /// Reads require an existing key; assignment inserts or replaces a value.
+    public subscript(key: Key) -> Value {
+        get {
+            match self.get(&key) {
+                case .some(v) => v
+                case .none => panic("btree map key not found")
+            }
+        }
+        set(value) { self.set(key: key, value: value) }
+    }
+
+    public static func new() -> Self {
+        BTreeMap[Key, Value] { storage: BTreeMapStorage[Key, Value]() }
+    }
+
+    /// Returns an independent shallow copy of the tree structure and entries.
+    public func copy() -> Self {
+        BTreeMap[Key, Value] { storage: BTreeMapStorage[Key, Value](copying: self.storage) }
+    }
+
+    @inline
+    public func len() -> usize {
+        self.storage.len
+    }
+
+    @inline
+    public func isEmpty() -> bool {
+        self.storage.len == 0
+    }
+
+    func beginOperation() {
+        if self.storage.busy {
+            panic("btree map mutated during comparison")
+        }
+        self.storage.busy = true
+    }
+
+    func collapseEmptyRoot() {
+        match self.storage.root {
+            case .some(r) => {
+                if r.len == 0 {
+                    if r.isLeaf {
+                        self.storage.root = .none
+                    } else {
+                        nextRoot := r.children[0 as usize]
+                        r.children[0 as usize] = .none
+                        self.storage.root = nextRoot
+                    }
+                }
+            }
+            case .none => {}
+        }
+    }
+
+    public func clear() {
+        self.beginOperation()
+        defer { self.storage.busy = false }
+        self.storage.root = .none
+        self.storage.len = 0
+        self.storage.version += 1
+    }
+
+    public func get(_ key: &Key) -> Value? {
+        self.beginOperation()
+        defer { self.storage.busy = false }
+        var current = self.storage.root
+        loop {
+            node := match current {
+                case .some(n) => n
+                case .none => return .none
+            }
+            var (idx, found) = node.search(key)
+            if found {
+                return node.values[idx]
+            }
+            if node.isLeaf {
+                return .none
+            }
+            current = node.children[idx]
+        }
+    }
+
+    public func contains(_ key: &Key) -> bool {
+        self.get(key).isSome()
+    }
+
+    public func getOr(_ key: &Key, default defaultValue: Value) -> Value {
+        match self.get(key) {
+            case .some(v) => v
+            case .none => defaultValue
+        }
+    }
+
+    /// Inserts `(key, value)`, returning the previous value if `key` was already present.
+    public func insert(key: Key, value: Value) -> Value? {
+        self.beginOperation()
+        defer { self.storage.busy = false }
+        root := match self.storage.root {
+            case .some(r) => r
+            case .none => {
+                leaf := BTreeNode[Key, Value](leaf: true)
+                leaf.insertAt(0 as usize, key, value, .none)
+                self.storage.root = .some(leaf)
+                self.storage.len = 1
+                self.storage.version += 1
+                return .none
+            }
+        }
+        match btreeInsertRec(root, key, value) {
+            case .replaced(old) => return .some(old)
+            case .inserted => {
+                self.storage.len += 1
+                self.storage.version += 1
+                return .none
+            }
+            case .split(medKey, medVal, right) => {
+                newRoot := BTreeNode[Key, Value](leaf: false)
+                newRoot.keys[0 as usize] = .some(medKey)
+                newRoot.values[0 as usize] = .some(medVal)
+                newRoot.children[0 as usize] = .some(root)
+                newRoot.children[1 as usize] = .some(right)
+                newRoot.len = 1
+                self.storage.root = .some(newRoot)
+                self.storage.len += 1
+                self.storage.version += 1
+                return .none
+            }
+        }
+    }
+
+    public func set(key: Key, value: Value) {
+        var _ = self.insert(key: key, value: value)
+    }
+
+    /// Returns the existing value for `key`, or inserts and returns `defaultValue` if absent.
+    public func getOrInsert(_ key: Key, default defaultValue: Value) -> Value {
+        match self.get(&key) {
+            case .some(v) => return v
+            case .none => {}
+        }
+        var _ = self.insert(key: key, value: defaultValue)
+        return defaultValue
+    }
+
+    /// Returns the existing value for `key`, or lazily computes, inserts, and returns
+    /// `makeDefault()` if absent. Re-entrant mutations inside `makeDefault` stay safe.
+    public func getOrInsertWith[F: Fn() -> Value](_ key: Key, _ makeDefault: F) -> Value {
+        match self.get(&key) {
+            case .some(v) => return v
+            case .none => {}
+        }
+        computed := makeDefault()
+        match self.get(&key) {
+            case .some(existing) => return existing
+            case .none => {}
+        }
+        var _ = self.insert(key: key, value: computed)
+        return computed
+    }
+
+    /// Removes `key` and returns its associated value, or `.none` if absent.
+    public func remove(_ key: &Key) -> Value? {
+        self.beginOperation()
+        defer { self.storage.busy = false }
+        root := match self.storage.root {
+            case .some(r) => r
+            case .none => return .none
+        }
+        removed := btreeRemoveRec(root, key)
+        if removed.isSome() {
+            self.collapseEmptyRoot()
+            self.storage.len -= 1
+            self.storage.version += 1
+        }
+        return removed
+    }
+
+    /// Returns the smallest `(key, value)` entry in O(log n), or `.none` if empty.
+    public func first() -> (Key, Value)? {
+        var current = self.storage.root
+        loop {
+            node := match current {
+                case .some(n) => n
+                case .none => return .none
+            }
+            if node.isLeaf {
+                return .some((node.keys[0 as usize].unwrap(), node.values[0 as usize].unwrap()))
+            }
+            current = node.children[0 as usize]
+        }
+    }
+
+    /// Returns the largest `(key, value)` entry in O(log n), or `.none` if empty.
+    public func last() -> (Key, Value)? {
+        var current = self.storage.root
+        loop {
+            node := match current {
+                case .some(n) => n
+                case .none => return .none
+            }
+            if node.isLeaf {
+                idx := node.len - (1 as usize)
+                return .some((node.keys[idx].unwrap(), node.values[idx].unwrap()))
+            }
+            current = node.children[node.len]
+        }
+    }
+
+    /// Returns the smallest key in O(log n), or `.none` if empty.
+    public func firstKey() -> Key? {
+        match self.first() {
+            case .some((k, _)) => .some(k)
+            case .none => .none
+        }
+    }
+
+    /// Returns the largest key in O(log n), or `.none` if empty.
+    public func lastKey() -> Key? {
+        match self.last() {
+            case .some((k, _)) => .some(k)
+            case .none => .none
+        }
+    }
+
+    /// Removes and returns the smallest `(key, value)` entry in O(log n).
+    public func popFirst() -> (Key, Value)? {
+        self.beginOperation()
+        defer { self.storage.busy = false }
+        root := match self.storage.root {
+            case .some(r) => r
+            case .none => return .none
+        }
+        pair := btreePopMinRec(root)
+        self.collapseEmptyRoot()
+        self.storage.len -= 1
+        self.storage.version += 1
+        return .some(pair)
+    }
+
+    /// Removes and returns the largest `(key, value)` entry in O(log n).
+    public func popLast() -> (Key, Value)? {
+        self.beginOperation()
+        defer { self.storage.busy = false }
+        root := match self.storage.root {
+            case .some(r) => r
+            case .none => return .none
+        }
+        pair := btreePopMaxRec(root)
+        self.collapseEmptyRoot()
+        self.storage.len -= 1
+        self.storage.version += 1
+        return .some(pair)
+    }
+
+    /// Returns the first entry with `k >= *key` in O(log n), or `.none` if none exists.
+    public func lowerBound(_ key: &Key) -> (Key, Value)? {
+        self.beginOperation()
+        defer { self.storage.busy = false }
+        var best: (Key, Value)? = .none
+        var current = self.storage.root
+        loop {
+            node := match current {
+                case .some(n) => n
+                case .none => break
+            }
+            var (idx, found) = node.search(key)
+            if found {
+                return .some((node.keys[idx].unwrap(), node.values[idx].unwrap()))
+            }
+            if idx < node.len {
+                best = .some((node.keys[idx].unwrap(), node.values[idx].unwrap()))
+            }
+            if node.isLeaf {
+                break
+            }
+            current = node.children[idx]
+        }
+        return best
+    }
+
+    /// Returns the first entry with `k > *key` in O(log n), or `.none` if none exists.
+    public func upperBound(_ key: &Key) -> (Key, Value)? {
+        self.beginOperation()
+        defer { self.storage.busy = false }
+        var best: (Key, Value)? = .none
+        var current = self.storage.root
+        loop {
+            node := match current {
+                case .some(n) => n
+                case .none => break
+            }
+            var (idx, found) = node.search(key)
+            if found {
+                nextIdx := idx + (1 as usize)
+                if nextIdx < node.len {
+                    best = .some((node.keys[nextIdx].unwrap(), node.values[nextIdx].unwrap()))
+                }
+                if node.isLeaf {
+                    break
+                }
+                current = node.children[nextIdx]
+            } else {
+                if idx < node.len {
+                    best = .some((node.keys[idx].unwrap(), node.values[idx].unwrap()))
+                }
+                if node.isLeaf {
+                    break
+                }
+                current = node.children[idx]
+            }
+        }
+        return best
+    }
+
+    /// Returns the greatest entry with `k < *key` in O(log n), or `.none` if none exists.
+    public func lastBefore(_ key: &Key) -> (Key, Value)? {
+        self.beginOperation()
+        defer { self.storage.busy = false }
+        var best: (Key, Value)? = .none
+        var current = self.storage.root
+        loop {
+            node := match current {
+                case .some(n) => n
+                case .none => break
+            }
+            var (idx, _) = node.search(key)
+            if idx > 0 {
+                prev := idx - (1 as usize)
+                best = .some((node.keys[prev].unwrap(), node.values[prev].unwrap()))
+            }
+            if node.isLeaf {
+                break
+            }
+            current = node.children[idx]
+        }
+        return best
+    }
+
+    /// Returns the greatest entry with `k <= *key` in O(log n), or `.none` if none exists.
+    public func lastAtOrBefore(_ key: &Key) -> (Key, Value)? {
+        self.beginOperation()
+        defer { self.storage.busy = false }
+        var best: (Key, Value)? = .none
+        var current = self.storage.root
+        loop {
+            node := match current {
+                case .some(n) => n
+                case .none => break
+            }
+            var (idx, found) = node.search(key)
+            if found {
+                return .some((node.keys[idx].unwrap(), node.values[idx].unwrap()))
+            }
+            if idx > 0 {
+                prev := idx - (1 as usize)
+                best = .some((node.keys[prev].unwrap(), node.values[prev].unwrap()))
+            }
+            if node.isLeaf {
+                break
+            }
+            current = node.children[idx]
+        }
+        return best
+    }
+
+    /// Ascending iterator over all `(key, value)` entries.
+    public func entries() -> BTreeMapEntriesIterator[Key, Value] {
+        BTreeMapEntriesIterator[Key, Value] {
+            cursor: BTreeCursor[Key, Value](self.storage, .none, .none, false),
+        }
+    }
+
+    /// Ascending iterator over all keys.
+    public func keys() -> BTreeMapKeysIterator[Key, Value] {
+        BTreeMapKeysIterator[Key, Value] {
+            cursor: BTreeCursor[Key, Value](self.storage, .none, .none, false),
+        }
+    }
+
+    /// Ascending iterator over all values in key order.
+    public func values() -> BTreeMapValuesIterator[Key, Value] {
+        BTreeMapValuesIterator[Key, Value] {
+            cursor: BTreeCursor[Key, Value](self.storage, .none, .none, false),
+        }
+    }
+
+    /// Ascending iterator over entries with `*low <= key < *high` in O(log n + k).
+    public func range(_ low: &Key, _ high: &Key) -> BTreeMapEntriesIterator[Key, Value] {
+        BTreeMapEntriesIterator[Key, Value] {
+            cursor: BTreeCursor[Key, Value](self.storage, .some(*low), .some(*high), false),
+        }
+    }
+
+    /// Ascending iterator over entries with `bounds.start <= key < bounds.end` in O(log n + k).
+    public func range(_ bounds: Range[Key]) -> BTreeMapEntriesIterator[Key, Value] {
+        BTreeMapEntriesIterator[Key, Value] {
+            cursor: BTreeCursor[Key, Value](self.storage, .some(bounds.start), .some(bounds.end), false),
+        }
+    }
+
+    /// Ascending iterator over entries with `bounds.start <= key <= bounds.end` in O(log n + k).
+    public func range(_ bounds: ClosedRange[Key]) -> BTreeMapEntriesIterator[Key, Value] {
+        BTreeMapEntriesIterator[Key, Value] {
+            cursor: BTreeCursor[Key, Value](self.storage, .some(bounds.start), .some(bounds.end), true),
+        }
+    }
+
+    internal func verifyInvariants() {
+        match self.storage.root {
+            case .none => {
+                if self.storage.len != 0 {
+                    panic("btree invariant violated: empty root with non-zero len")
+                }
+            }
+            case .some(r) => {
+                var (count, _) = verifyBTreeNode(r, true, .none, .none)
+                if count != self.storage.len {
+                    panic("btree invariant violated: node key count differs from map len")
+                }
+            }
+        }
+    }
+}
+
+func verifyBTreeNode[Key: Ord, Value](
+    _ node: BTreeNode[Key, Value],
+    _ isRoot: bool,
+    _ minBound: Key?,
+    _ maxBound: Key?,
+) -> (usize, usize) {
+    if isRoot {
+        if node.len == 0 || node.len > BTREE_MAX_KEYS {
+            panic("btree invariant violated: root key count out of bounds")
+        }
+    } else {
+        if node.len < BTREE_MIN_KEYS || node.len > BTREE_MAX_KEYS {
+            panic("btree invariant violated: non-root key count out of bounds")
+        }
+    }
+
+    var i: usize = 0
+    while i < node.len {
+        k := match node.keys[i] {
+            case .some(key) => key
+            case .none => panic("btree invariant violated: missing key in active slot")
+        }
+        if node.values[i].isNone() {
+            panic("btree invariant violated: missing value in active slot")
+        }
+        if i == 0 {
+            match minBound {
+                case .some(lo) => {
+                    if !lo.cmp(k).isLess() {
+                        panic("btree invariant violated: key not greater than parent lower bound")
+                    }
+                }
+                case .none => {}
+            }
+        } else {
+            prev := node.keys[i - (1 as usize)].unwrap()
+            if !prev.cmp(k).isLess() {
+                panic("btree invariant violated: keys not strictly ascending within node")
+            }
+        }
+        if i + (1 as usize) == node.len {
+            match maxBound {
+                case .some(hi) => {
+                    if !k.cmp(hi).isLess() {
+                        panic("btree invariant violated: key not less than parent upper bound")
+                    }
+                }
+                case .none => {}
+            }
+        }
+        i += 1
+    }
+    while i < BTREE_MAX_KEYS {
+        if node.keys[i].isSome() || node.values[i].isSome() {
+            panic("btree invariant violated: dead key/value slot not cleared to .none")
+        }
+        i += 1
+    }
+
+    if node.isLeaf {
+        var c: usize = 0
+        while c < BTREE_MAX_CHILDREN {
+            if node.children[c].isSome() {
+                panic("btree invariant violated: leaf holds non-none child slot")
+            }
+            c += 1
+        }
+        return (node.len, 1 as usize)
+    }
+
+    var total = node.len
+    var expectedDepth: usize = 0
+    var c: usize = 0
+    while c <= node.len {
+        child := match node.children[c] {
+            case .some(ch) => ch
+            case .none => panic("btree invariant violated: missing child in internal node")
+        }
+        childMin := if c == 0 { minBound } else { node.keys[c - (1 as usize)] }
+        childMax := if c == node.len { maxBound } else { node.keys[c] }
+        var (subCount, subDepth) = verifyBTreeNode(child, false, childMin, childMax)
+        if c == 0 {
+            expectedDepth = subDepth
+        } else if subDepth != expectedDepth {
+            panic("btree invariant violated: uneven leaf depth")
+        }
+        total += subCount
+        c += 1
+    }
+    while c < BTREE_MAX_CHILDREN {
+        if node.children[c].isSome() {
+            panic("btree invariant violated: dead child slot not cleared to .none")
+        }
+        c += 1
+    }
+    return (total, expectedDepth + (1 as usize))
+}
+
+func btreePushLeftmost[Key: Ord, Value](
+    _ stack: List[(BTreeNode[Key, Value], usize)],
+    _ start: BTreeNode[Key, Value],
+) {
+    var current = start
+    loop {
+        stack.append((current, 0 as usize))
+        if current.isLeaf {
+            break
+        }
+        current = current.children[0 as usize].unwrap()
+    }
+}
+
+func btreeSeekFrom[Key: Ord, Value](
+    _ stack: List[(BTreeNode[Key, Value], usize)],
+    _ root: BTreeNode[Key, Value]?,
+    _ lo: &Key,
+) {
+    var current = root
+    loop {
+        node := match current {
+            case .some(n) => n
+            case .none => break
+        }
+        var (idx, found) = node.search(lo)
+        if found {
+            stack.append((node, idx))
+            break
+        }
+        if idx < node.len {
+            stack.append((node, idx))
+        }
+        if node.isLeaf {
+            break
+        }
+        current = node.children[idx]
+    }
+}
+
+final class BTreeCursor[Key: Ord, Value] {
+    storage: BTreeMapStorage[Key, Value]
+    stack: List[(BTreeNode[Key, Value], usize)]
+    version: usize
+    upperBound: Key?
+    upperInclusive: bool
+    exhausted: bool
+}
+
+extend[Key: Ord, Value] BTreeCursor[Key, Value] {
+    init(
+        _ storage: BTreeMapStorage[Key, Value],
+        _ lowerBound: Key?,
+        _ upperBound: Key?,
+        _ upperInclusive: bool,
+    ) {
+        self.storage = storage
+        self.stack = List[(BTreeNode[Key, Value], usize)]::new()
+        self.version = storage.version
+        self.upperBound = upperBound
+        self.upperInclusive = upperInclusive
+        self.exhausted = false
+
+        if storage.busy {
+            panic("btree map mutated during comparison")
+        }
+        match lowerBound {
+            case .none => {
+                match storage.root {
+                    case .some(r) => btreePushLeftmost(self.stack, r)
+                    case .none => self.exhausted = true
+                }
+            }
+            case .some(lo) => {
+                storage.busy = true
+                defer { storage.busy = false }
+                // Early exit for empty range where lower > upper (or lower == upper when half-open).
+                match upperBound {
+                    case .some(hi) => {
+                        ord := lo.cmp(hi)
+                        if ord.isGreater() || (!upperInclusive && ord.isEqual()) {
+                            self.exhausted = true
+                            return
+                        }
+                    }
+                    case .none => {}
+                }
+                btreeSeekFrom(self.stack, storage.root, &lo)
+                if self.stack.isEmpty() {
+                    self.exhausted = true
+                }
+            }
+        }
+    }
+
+    func advance() -> (Key, Value)? {
+        if self.exhausted {
+            return .none
+        }
+        if self.storage.busy {
+            panic("btree map mutated during comparison")
+        }
+        if self.storage.version != self.version {
+            panic("btree map changed structurally during iteration")
+        }
+        top := match self.stack.pop() {
+            case .some(frame) => frame
+            case .none => {
+                self.exhausted = true
+                return .none
+            }
+        }
+        var (node, idx) = top
+        k := node.keys[idx].unwrap()
+        v := node.values[idx].unwrap()
+        match self.upperBound {
+            case .some(hi) => {
+                self.storage.busy = true
+                defer { self.storage.busy = false }
+                ord := k.cmp(hi)
+                if ord.isGreater() || (!self.upperInclusive && ord.isEqual()) {
+                    self.stack.clear()
+                    self.exhausted = true
+                    return .none
+                }
+            }
+            case .none => {}
+        }
+        nextIdx := idx + (1 as usize)
+        if nextIdx < node.len {
+            self.stack.append((node, nextIdx))
+        }
+        if !node.isLeaf {
+            btreePushLeftmost(self.stack, node.children[nextIdx].unwrap())
+        }
+        return .some((k, v))
+    }
+}
+
+public struct BTreeMapEntriesIterator[Key: Ord, Value] {
+    internal cursor: BTreeCursor[Key, Value]
+}
+
+conform[Key: Ord, Value] BTreeMapEntriesIterator[Key, Value] to Iterator {
+    type Element = (Key, Value)
+
+    public func next() -> (Key, Value)? {
+        self.cursor.advance()
+    }
+}
+
+conform[Key: Ord, Value] BTreeMapEntriesIterator[Key, Value] to Iterable {
+    type Element = (Key, Value)
+    type Iterator = BTreeMapEntriesIterator[Key, Value]
+
+    public func iter() -> Self::Iterator { self }
+}
+
+public struct BTreeMapKeysIterator[Key: Ord, Value] {
+    internal cursor: BTreeCursor[Key, Value]
+}
+
+conform[Key: Ord, Value] BTreeMapKeysIterator[Key, Value] to Iterator {
+    type Element = Key
+
+    public func next() -> Key? {
+        match self.cursor.advance() {
+            case .some((k, _)) => .some(k)
+            case .none => .none
+        }
+    }
+}
+
+conform[Key: Ord, Value] BTreeMapKeysIterator[Key, Value] to Iterable {
+    type Element = Key
+    type Iterator = BTreeMapKeysIterator[Key, Value]
+
+    public func iter() -> Self::Iterator { self }
+}
+
+public struct BTreeMapValuesIterator[Key: Ord, Value] {
+    internal cursor: BTreeCursor[Key, Value]
+}
+
+conform[Key: Ord, Value] BTreeMapValuesIterator[Key, Value] to Iterator {
+    type Element = Value
+
+    public func next() -> Value? {
+        match self.cursor.advance() {
+            case .some((_, v)) => .some(v)
+            case .none => .none
+        }
+    }
+}
+
+conform[Key: Ord, Value] BTreeMapValuesIterator[Key, Value] to Iterable {
+    type Element = Value
+    type Iterator = BTreeMapValuesIterator[Key, Value]
+
+    public func iter() -> Self::Iterator { self }
+}
+
+conform[Key: Ord, Value] BTreeMap[Key, Value] to Iterable {
+    type Element = (Key, Value)
+    type Iterator = BTreeMapEntriesIterator[Key, Value]
+
+    public func iter() -> Self::Iterator {
+        self.entries()
+    }
+}
+
+conform[Key: Ord, Value] BTreeMap[Key, Value] to Contains[Key] {
+    public func contains(_ key: &Key) -> bool {
+        self.contains(key)
+    }
+}
+
+conform[Key: Ord, Value] BTreeMap[Key, Value] to Default {
+    public static func default() -> Self { Self::new() }
+}
+
+conform[Key: Ord, Value] BTreeMap[Key, Value] to Clone where Key: Clone, Value: Clone {
+    public func clone() -> Self {
+        var cloned = BTreeMap[Key, Value]::new()
+        for (k, v) in self {
+            var _ = cloned.insert(key: k.clone(), value: v.clone())
+        }
+        return cloned
+    }
+}
+
+conform[Key: Ord, Value: PartialEq] BTreeMap[Key, Value] to PartialEq {
+    public func eq(_ other: Self) -> bool {
+        if self.len() != other.len() {
+            return false
+        }
+        var lhs = self.entries()
+        var rhs = other.entries()
+        loop {
+            match (lhs.next(), rhs.next()) {
+                case (.none, .none) => return true
+                case (.some((lk, lv)), .some((rk, rv))) => {
+                    if !lk.cmp(rk).isEqual() || lv != rv {
+                        return false
+                    }
+                }
+                case _ => return false
+            }
+        }
+    }
+}
+
+conform[Key: Ord, Value: PartialOrd] BTreeMap[Key, Value] to PartialOrd {
+    public func partialCmp(_ other: Self) -> Ordering? {
+        var lhs = self.entries()
+        var rhs = other.entries()
+        loop {
+            match (lhs.next(), rhs.next()) {
+                case (.none, .none) => return .some(.equal)
+                case (.none, .some(_)) => return .some(.less)
+                case (.some(_), .none) => return .some(.greater)
+                case (.some((lk, lv)), .some((rk, rv))) => {
+                    kord := lk.cmp(rk)
+                    if !kord.isEqual() {
+                        return .some(kord)
+                    }
+                    match lv.partialCmp(rv) {
+                        case .some(.equal) => {}
+                        case otherOrder => return otherOrder
+                    }
+                }
+            }
+        }
+    }
+}
+
+conform[Key: Ord, Value: Ord] BTreeMap[Key, Value] to Ord {
+    public func cmp(_ other: Self) -> Ordering {
+        if self.storage === other.storage {
+            return .equal
+        }
+        var lhs = self.entries()
+        var rhs = other.entries()
+        loop {
+            match (lhs.next(), rhs.next()) {
+                case (.none, .none) => return .equal
+                case (.none, .some(_)) => return .less
+                case (.some(_), .none) => return .greater
+                case (.some((lk, lv)), .some((rk, rv))) => {
+                    kord := lk.cmp(rk)
+                    if !kord.isEqual() {
+                        return kord
+                    }
+                    vord := lv.cmp(rv)
+                    if !vord.isEqual() {
+                        return vord
+                    }
+                }
+            }
+        }
+    }
+}
+
+conform[Key: Ord, Value] BTreeMap[Key, Value] to FromIterator {
+    type Element = (Key, Value)
+
+    public static func fromIter[I: Iterator[Element = (Key, Value)]](_ iter: &I) -> Self {
+        map := Self::new()
+        loop {
+            match iter.next() {
+                case .some((k, v)) => { var _ = map.insert(key: k, value: v) }
+                case .none => break
+            }
+        }
+        return map
+    }
+}

@@ -1,0 +1,43 @@
+// `Boxed[T]: Wrap` requires `T: Small`. Its `Wrapped = Cell[T]` is
+// published for `Boxed { value: 0 }` with the conformance still to prove;
+// the literal defaults to int32, which is not `Small`, so the conformance is
+// reported, as for the typed spelling `Boxed[int32] { value: 0 }.wrap()`.
+struct Boxed[T] {
+    value: T
+}
+
+struct Cell[T] {
+    value: T
+}
+
+interface Wrap {
+    type Wrapped
+    func wrap() -> Self::Wrapped
+}
+
+interface Counted {
+    func count() -> usize
+}
+
+conform[T] Cell[T] to Counted {
+    func count() -> usize {
+        1
+    }
+}
+
+interface Small {}
+
+conform int8 to Small {}
+
+conform[T: Small] Boxed[T] to Wrap {
+    type Wrapped = Cell[T]
+
+    func wrap() -> Cell[T] {
+        Cell { value: self.value }
+    }
+}
+
+func main() {
+    count := Boxed { value: 0 }.wrap().count() + 1
+    println("${count}")
+}

@@ -1,0 +1,2 @@
+struct Count(int64)
+func main() { Count(raw: 1) }

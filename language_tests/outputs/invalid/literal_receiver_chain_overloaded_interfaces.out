@@ -1,0 +1,12 @@
+error: ambiguous overload; unable to pick a best candidate
+ -> language_tests/source_files/invalid/literal_receiver_chain_overloaded_interfaces.tr:23:38
+	    chained := (0..10).iter().count().pick(3)
+	                                      ^^^^
+error: ambiguous overload; unable to pick a best candidate
+ -> language_tests/source_files/invalid/literal_receiver_chain_overloaded_interfaces.tr:25:39
+	    typedRange := range.iter().count().pick(3)
+	                                       ^^^^
+error: ambiguous overload; unable to pick a best candidate
+ -> language_tests/source_files/invalid/literal_receiver_chain_overloaded_interfaces.tr:27:15
+	    typed := n.pick(3)
+	               ^^^^

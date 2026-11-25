@@ -1,0 +1,4 @@
+error: lexer error: multiline string opening delimiter must be followed by a newline
+ -> language_tests/source_files/invalid/string_syntax_multiline_opening.tr:1:22
+	func main() { var _ = """inline""" }
+	                      ^^^

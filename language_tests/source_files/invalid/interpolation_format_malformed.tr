@@ -1,0 +1,4 @@
+func main() {
+    var mask: int32 = 255
+    println("${mask:z}")
+}

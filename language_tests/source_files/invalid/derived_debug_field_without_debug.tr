@@ -1,0 +1,13 @@
+// Every stored field of a derived Debug must have Debug itself.
+struct Point { x: int32 }
+struct Labelled: Debug {
+    name: string
+    position: Point
+}
+enum Slot: Debug {
+    case empty
+    case filled(int32, Point)
+    case labelled(at: Point)
+    case record { origin: Point }
+}
+func main() {}

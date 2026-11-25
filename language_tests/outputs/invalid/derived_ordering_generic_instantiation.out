@@ -1,0 +1,8 @@
+error: type 'Pair[Plain]' does not conform to interface 'Ord'
+ -> language_tests/source_files/invalid/derived_ordering_generic_instantiation.tr:8:4
+	    needsOrd(Pair[Plain] { first: Plain { value: 1 }, second: Plain { value: 2 } })
+	    ^^^^^^^^
+error: type 'Holder[Plain]' does not conform to interface 'Default'
+ -> language_tests/source_files/invalid/derived_ordering_generic_instantiation.tr:10:14
+	    broken := Holder[Plain]::default()
+	              ^^^^^^^^^^^^^^^^^^^^^^

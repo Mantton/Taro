@@ -1,0 +1,19 @@
+// End-to-end check of rune and uint8 ASCII/character helpers across debug and release builds.
+
+func main() {
+    assert('7'.isAsciiDigit() && '7'.toDigit(10) == .some(7_u32), "rune digit")
+    assert('Q'.toAsciiLowercase() == 'q', "rune lowercase")
+    assert('q'.eqIgnoreAsciiCase('Q'), "rune eqIgnoreAsciiCase")
+    assert(rune::fromDigit(15, 16) == .some('f'), "rune fromDigit")
+    assert('　'.isWhitespace() && !'　'.isAsciiWhitespace(), "unicode whitespace")
+
+    b := 'K' as uint8
+    assert(b.isAsciiAlphanumeric() && b.isAsciiUppercase(), "uint8 alpha")
+    assert(b.toAsciiLowercase() == ('k' as uint8), "uint8 lowercase")
+    assert(b.eqIgnoreAsciiCase('k' as uint8), "uint8 eqIgnoreAsciiCase")
+
+    var buf: [uint8; 4] = [0_u8; 4]
+    n := '🚀'.encodeUtf8(buf.asSpan())
+    assert(n == 4 && '🚀'.lenUtf8() == 4, "utf8 encode")
+    assert(buf[0] == 0xF0_u8 && buf[3] == 0x80_u8, "utf8 bytes")
+}

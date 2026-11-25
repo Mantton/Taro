@@ -1,0 +1,4 @@
+error: nested types require an unspecialized owner
+ -> language_tests/source_files/invalid/nested_type_specialized_extension.tr:2:7
+	extend Queue[int32] {
+	       ^^^^^^^^^^^^

@@ -1,0 +1,4 @@
+error: ambiguous overload; unable to pick a best candidate
+ -> language_tests/source_files/invalid/overload_existential_boxing_tie.tr:19:12
+	    println(both(a, b))
+	            ^^^^

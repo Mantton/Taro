@@ -1,0 +1,217 @@
+// OVERFLOW_CHECKS
+// Reversed ranges must yield the forward elements in the opposite order and
+// never step past either bound. std compiles its integer `Step` bodies with
+// overflow checks off, so a wrong step on a std integer shows up as an extra
+// or wrong element (every sequence is gathered through `take` so a runaway
+// iterator cannot loop forever). `Checked8` and `Signed8` step with this
+// package's checked arithmetic, so a wrong step on them traps.
+import std::cmp::{Ordering, Ord, PartialOrd}
+import std::ops::PartialEq
+import std::range::Step
+
+const USIZE_MAX: usize = ~(0 as usize)
+const GATHER_LIMIT: usize = 300
+
+struct Checked8 { value: uint8 }
+conform Checked8 to PartialEq {
+    func eq(_ other: Self) -> bool { self.value == other.value }
+}
+conform Checked8 to PartialOrd {
+    func partialCmp(_ other: Self) -> Ordering? { .some(self.cmp(other)) }
+}
+conform Checked8 to Ord {
+    func cmp(_ other: Self) -> Ordering { self.value.cmp(other.value) }
+}
+conform Checked8 to Step {
+    func stepForward() -> Self { Checked8 { value: self.value + 1 } }
+    func stepBackward() -> Self { Checked8 { value: self.value - 1 } }
+}
+
+struct Signed8 { value: int8 }
+conform Signed8 to PartialEq {
+    func eq(_ other: Self) -> bool { self.value == other.value }
+}
+conform Signed8 to PartialOrd {
+    func partialCmp(_ other: Self) -> Ordering? { .some(self.cmp(other)) }
+}
+conform Signed8 to Ord {
+    func cmp(_ other: Self) -> Ordering { self.value.cmp(other.value) }
+}
+conform Signed8 to Step {
+    func stepForward() -> Self { Signed8 { value: self.value + 1 } }
+    func stepBackward() -> Self { Signed8 { value: self.value - 1 } }
+}
+
+func gather[T, I: Iterator[Element = T]](_ source: I) -> List[T] {
+    var result = List[T]::new()
+    for value in source.take(GATHER_LIMIT) {
+        result.append(value)
+    }
+    return result
+}
+
+func check[T: PartialEq](_ actual: List[T], _ expected: List[T], _ label: string) {
+    if actual != expected {
+        panic(label)
+    }
+}
+
+func checkEnds[T: PartialEq](_ actual: List[T], _ count: usize, _ first: T, _ last: T, _ label: string) {
+    if actual.len() != count || *actual.at(0) != first || *actual.at(count - 1) != last {
+        panic(label)
+    }
+}
+
+func boundaries() {
+    // usize: `(0..n).reversed()` must never compute 0 - 1.
+    var none: [usize] = []
+    for n in [0 as usize, 1, 3] {
+        var expected: [usize] = []
+        var index = n
+        while index > 0 {
+            index -= 1
+            expected.append(index)
+        }
+        check(gather((0 as usize..n).reversed()), expected, "usize 0..n")
+    }
+    check(gather((0 as usize..=0).reversed()), [0 as usize], "usize 0..=0")
+    check(gather((0 as usize..=2).reversed()), [2 as usize, 1, 0], "usize 0..=2")
+    check(gather((USIZE_MAX - 2..=USIZE_MAX).reversed()), [USIZE_MAX, USIZE_MAX - 1, USIZE_MAX - 2], "usize ..=MAX")
+    check(gather((USIZE_MAX - 2..USIZE_MAX).reversed()), [USIZE_MAX - 1, USIZE_MAX - 2], "usize ..MAX")
+    check(gather((USIZE_MAX..=USIZE_MAX).reversed()), [USIZE_MAX], "usize MAX..=MAX")
+    check(gather((USIZE_MAX..USIZE_MAX).reversed()), none, "usize MAX..MAX")
+
+    // uint8: the full closed range starts at the minimum and ends at the maximum.
+    full8 := gather((0 as uint8..=255).reversed())
+    checkEnds(full8, 256, 255 as uint8, 0 as uint8, "uint8 full range")
+    check(gather((0 as uint8..3).reversed()), [2 as uint8, 1, 0], "uint8 0..3")
+    check(gather((253 as uint8..=255).reversed()), [255 as uint8, 254, 253], "uint8 ..=255")
+    check(gather((0 as uint8..=0).reversed()), [0 as uint8], "uint8 0..=0")
+
+    // int8: same, across zero.
+    fullSigned := gather((-128 as int8..=127).reversed())
+    checkEnds(fullSigned, 256, 127 as int8, -128 as int8, "int8 full range")
+    check(gather((-128 as int8..-125).reversed()), [-126 as int8, -127, -128], "int8 -128..-125")
+    check(gather((-128 as int8..=-128).reversed()), [-128 as int8], "int8 -128..=-128")
+    check(gather((125 as int8..=127).reversed()), [127 as int8, 126, 125], "int8 ..=127")
+    check(gather((-1 as int8..2).reversed()), [1 as int8, 0, -1], "int8 across zero")
+
+    // User conformers step with checked arithmetic: one step too far traps.
+    checked := gather(ClosedRange::new(Checked8 { value: 0 }, Checked8 { value: 255 }).reversed())
+    checkEnds(checked.map(c => c.value), 256, 255 as uint8, 0 as uint8, "Checked8 full range")
+    check(gather(Range::new(Checked8 { value: 0 }, Checked8 { value: 2 }).reversed()).map(c => c.value), [1 as uint8, 0], "Checked8 0..2")
+    var noBytes: [uint8] = []
+    check(gather(Range::new(Checked8 { value: 0 }, Checked8 { value: 0 }).reversed()).map(c => c.value), noBytes, "Checked8 0..0")
+    signed := gather(ClosedRange::new(Signed8 { value: -128 }, Signed8 { value: 127 }).reversed())
+    checkEnds(signed.map(s => s.value), 256, 127 as int8, -128 as int8, "Signed8 full range")
+    check(gather(Range::new(Signed8 { value: -128 }, Signed8 { value: -126 }).reversed()).map(s => s.value), [-127 as int8, -128], "Signed8 -128..-126")
+
+    // A reversed iterator stays exhausted.
+    var tail = (0 as uint8..=0).reversed()
+    if tail.next().unwrap() != 0 || tail.next().isSome() || tail.next().isSome() {
+        panic("closed reversed exhaustion")
+    }
+    var empty = (0 as usize..0).reversed()
+    if empty.next().isSome() || empty.next().isSome() {
+        panic("half-open reversed exhaustion")
+    }
+    print("boundaries ok\n")
+}
+
+func emptyRanges() {
+    var none: [int32] = []
+    check(gather((5..5).reversed()), none, "5..5")
+    check(gather((5..3).reversed()), none, "5..3")
+    check(gather((5..=4).reversed()), none, "5..=4")
+    check(gather((5..=3).reversed()), none, "5..=3")
+    var count = 0
+    for _ in (5..5).reversed() { count += 1 }
+    for _ in (5..=4).reversed() { count += 1 }
+    if count != 0 { panic("empty ranges in for loops") }
+    print("empty ok\n")
+}
+
+func adapters() {
+    var forward: [int32] = []
+    for i in 0..4 { forward.append(i) }
+    var backward: [int32] = []
+    for i in (0..4).reversed() { backward.append(i) }
+    check(backward, forward.reversed(), "reversed matches forward order reversed")
+
+    var closed: [int32] = []
+    for i in (1..=3).reversed() { closed.append(i) }
+    check(closed, [3, 2, 1], "closed for loop")
+
+    squares := (0..4).reversed().map(i => i * i)
+    check(squares, [9, 4, 1, 0], "map")
+    odds := (0..=9).reversed().filter(i => i % 2 == 1)
+    check(odds, [9, 7, 5, 3, 1], "filter")
+
+    var indexed: [int32] = []
+    for (index, value) in (10..13).reversed().enumerate() {
+        indexed.append((index as int32) * 100 + value)
+    }
+    check(indexed, [12, 111, 210], "enumerate")
+
+    var pairs: [int32] = []
+    for (down, up) in (0..3).reversed().zip((0..=10).iter()) {
+        pairs.append(down * 10 + up)
+    }
+    check(pairs, [20, 11, 2], "zip")
+
+    check(gather((0..100).reversed().take(3)), [99, 98, 97], "take")
+    check(gather((0..=5).reversed().skip(4)), [1, 0], "skip")
+    check(gather((0..10).reversed().stepBy(4)), [9, 5, 1], "stepBy")
+
+    var filtered: [int32] = []
+    for i in (0..6).reversed() where i % 3 == 0 { filtered.append(i) }
+    check(filtered, [3, 0], "for where")
+    std::printf("%v %v %v\n", squares, odds, indexed)
+}
+
+func lists() {
+    var items: [int32] = [1, 2, 3]
+    alias := items
+    slot := items.at(0)
+    items.reverse()
+    check(items, [3, 2, 1], "reverse in place")
+    check(alias, [3, 2, 1], "a second handle sees reverse")
+    if *slot != 3 { panic("element references address the buffer") }
+
+    copy := items.reversed()
+    check(copy, [1, 2, 3], "reversed copy")
+    check(items, [3, 2, 1], "reversed leaves the receiver unchanged")
+    copy[0] = 100
+    copy.append(4)
+    check(items, [3, 2, 1], "copy changes stay in the copy")
+    check(alias, [3, 2, 1], "copy changes are not shared")
+    items[1] = 20
+    check(copy, [100, 2, 3, 4], "receiver changes are not seen by the copy")
+
+    var even: [int32] = [1, 2, 3, 4]
+    even.reverse()
+    check(even, [4, 3, 2, 1], "even length")
+    var empty: [int32] = []
+    empty.reverse()
+    var none: [int32] = []
+    check(empty, none, "empty reverse")
+    check(empty.reversed(), none, "empty reversed")
+    var single: [int32] = [7]
+    cursor := single.iter()
+    single.reverse()
+    if cursor.next().unwrap() != 7 { panic("single-element reverse keeps cursors") }
+    check(single.reversed(), [7], "single reversed")
+
+    var nested: [[int32]] = [[1], [2]]
+    shallow := nested.reversed()
+    shallow[0][0] = 9
+    if nested[1][0] != 9 { panic("reversed is a shallow copy") }
+    std::printf("%v %v %v\n", items, alias, copy)
+}
+
+func main() {
+    boundaries()
+    emptyRanges()
+    adapters()
+    lists()
+}

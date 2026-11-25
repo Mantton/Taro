@@ -141,12 +141,12 @@ func pipeWriterBody() async -> int32 {
     writeRes := await writer.write(stringBytes(&"ping"))
     written := match writeRes {
         case .ok(count) => count
-        case .err(err) => std::panic::panic("pipe writer should succeed")
+        case .err(_) => std::panic::panic("pipe writer should succeed")
     }
     closeRes := writer.close()
     match closeRes {
         case .ok(_) => {}
-        case .err(err) => std::panic::panic("pipe writer close should succeed")
+        case .err(_) => std::panic::panic("pipe writer close should succeed")
     }
     return written as int32
 }
@@ -709,7 +709,7 @@ func taskContinuesAfterHandleScopeEnds() async {
     var (release, wait) = std::sync::bounded[int32](1).unwrap()
     var (complete, done) = std::sync::bounded[int32](1).unwrap()
     {
-        task := std::task::spawn(() async => {
+        _task := std::task::spawn(() async => {
             value := (await wait.recv()).unwrap()
             (await complete.send(value)).unwrap()
             value
@@ -1205,7 +1205,7 @@ func asyncStreamPipeRoundTrip() async {
     pipeRes := std::io::task::pipe()
     pipePair := match pipeRes {
         case .ok(value) => value
-        case .err(err) => std::panic::panic("pipe() should succeed on unix")
+        case .err(_) => std::panic::panic("pipe() should succeed on unix")
     }
     readEnd := pipePair.0
     writeEnd := pipePair.1
@@ -1222,7 +1222,7 @@ func asyncStreamPipeRoundTrip() async {
     readRes := await reader.read(unsafe { std::mem::Span[uint8]::from(storagePtr, 4) })
     readCount := match readRes {
         case .ok(count) => count
-        case .err(err) => std::panic::panic("pipe reader should succeed")
+        case .err(_) => std::panic::panic("pipe reader should succeed")
     }
 
     std::testing::assertEqual(readCount, 4, "pipe reader should receive the full payload")
@@ -1237,14 +1237,14 @@ func asyncStreamPipeRoundTrip() async {
     eofRes := await reader.read(unsafe { std::mem::Span[uint8]::from(storagePtr, 4) })
     eofCount := match eofRes {
         case .ok(count) => count
-        case .err(err) => std::panic::panic("pipe reader should observe EOF after writer close")
+        case .err(_) => std::panic::panic("pipe reader should observe EOF after writer close")
     }
     std::testing::assertEqual(eofCount, 0, "closing the pipe writer should produce EOF on the reader")
 
     closeRes := reader.close()
     match closeRes {
         case .ok(_) => {}
-        case .err(err) => std::panic::panic("pipe reader close should succeed")
+        case .err(_) => std::panic::panic("pipe reader close should succeed")
     }
 }
 

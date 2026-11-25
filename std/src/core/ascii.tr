@@ -1,0 +1,251 @@
+import std::intrinsic::__intrinsic_rune_from_u32_unchecked
+import std::mem::Span
+import std::panic::panic
+
+// Fast O(1) ASCII classification and case-mapping helpers on `uint8` and `rune`,
+// plus digit conversion, UTF-8 encoding, and Unicode whitespace detection on `rune`.
+
+extend uint8 {
+    /// Returns `true` if `self` is in the 7-bit ASCII range (`0x00..=0x7F`).
+    @inline public func isAscii() -> bool {
+        self <= 0x7F_u8
+    }
+
+    /// Returns `true` if `self` is an ASCII letter (`'A'..='Z'` or `'a'..='z'`).
+    @inline public func isAsciiAlphabetic() -> bool {
+        self.isAsciiUppercase() || self.isAsciiLowercase()
+    }
+
+    /// Returns `true` if `self` is an ASCII uppercase letter (`'A'..='Z'`).
+    @inline public func isAsciiUppercase() -> bool {
+        self >= 0x41_u8 && self <= 0x5A_u8
+    }
+
+    /// Returns `true` if `self` is an ASCII lowercase letter (`'a'..='z'`).
+    @inline public func isAsciiLowercase() -> bool {
+        self >= 0x61_u8 && self <= 0x7A_u8
+    }
+
+    /// Returns `true` if `self` is an ASCII decimal digit (`'0'..='9'`).
+    @inline public func isAsciiDigit() -> bool {
+        self >= 0x30_u8 && self <= 0x39_u8
+    }
+
+    /// Returns `true` if `self` is an ASCII hexadecimal digit (`'0'..='9'`, `'a'..='f'`, `'A'..='F'`).
+    @inline public func isAsciiHexDigit() -> bool {
+        self.isAsciiDigit()
+            || (self >= 0x41_u8 && self <= 0x46_u8)
+            || (self >= 0x61_u8 && self <= 0x66_u8)
+    }
+
+    /// Returns `true` if `self` is an ASCII letter or decimal digit.
+    @inline public func isAsciiAlphanumeric() -> bool {
+        self.isAsciiAlphabetic() || self.isAsciiDigit()
+    }
+
+    /// Returns `true` if `self` is ASCII whitespace (`' '`, `'\t'`, `'\n'`, `'\x0C'`, `'\r'`).
+    @inline public func isAsciiWhitespace() -> bool {
+        self == 0x20_u8
+            || self == 0x09_u8
+            || self == 0x0A_u8
+            || self == 0x0C_u8
+            || self == 0x0D_u8
+    }
+
+    /// Returns `true` if `self` is an ASCII punctuation byte (`0x21..=0x2F`, `0x3A..=0x40`,
+    /// `0x5B..=0x60`, or `0x7B..=0x7E`).
+    @inline public func isAsciiPunctuation() -> bool {
+        (self >= 0x21_u8 && self <= 0x2F_u8)
+            || (self >= 0x3A_u8 && self <= 0x40_u8)
+            || (self >= 0x5B_u8 && self <= 0x60_u8)
+            || (self >= 0x7B_u8 && self <= 0x7E_u8)
+    }
+
+    /// Returns `true` if `self` is a visible ASCII graphic byte (`'!'..='~'`, `0x21..=0x7E`).
+    @inline public func isAsciiGraphic() -> bool {
+        self >= 0x21_u8 && self <= 0x7E_u8
+    }
+
+    /// Returns `true` if `self` is an ASCII control byte (`0x00..=0x1F` or `0x7F`).
+    @inline public func isAsciiControl() -> bool {
+        self <= 0x1F_u8 || self == 0x7F_u8
+    }
+
+    /// Converts an ASCII uppercase byte to lowercase; leaves all other bytes unchanged.
+    @inline public func toAsciiLowercase() -> uint8 {
+        if self.isAsciiUppercase() { self | 0x20_u8 } else { self }
+    }
+
+    /// Converts an ASCII lowercase byte to uppercase; leaves all other bytes unchanged.
+    @inline public func toAsciiUppercase() -> uint8 {
+        if self.isAsciiLowercase() { self & (0xDF_u8) } else { self }
+    }
+
+    /// Returns `true` if `self` and `other` are equal ignoring ASCII case.
+    @inline public func eqIgnoreAsciiCase(_ other: uint8) -> bool {
+        self.toAsciiLowercase() == other.toAsciiLowercase()
+    }
+}
+
+extend rune {
+    /// Returns `true` if `self` is in the 7-bit ASCII range (`U+0000..=U+007F`).
+    @inline public func isAscii() -> bool {
+        (self as uint32) <= 0x7F_u32
+    }
+
+    /// Returns `true` if `self` is an ASCII letter (`'A'..='Z'` or `'a'..='z'`).
+    @inline public func isAsciiAlphabetic() -> bool {
+        self.isAsciiUppercase() || self.isAsciiLowercase()
+    }
+
+    /// Returns `true` if `self` is an ASCII uppercase letter (`'A'..='Z'`).
+    @inline public func isAsciiUppercase() -> bool {
+        v := self as uint32
+        v >= 0x41_u32 && v <= 0x5A_u32
+    }
+
+    /// Returns `true` if `self` is an ASCII lowercase letter (`'a'..='z'`).
+    @inline public func isAsciiLowercase() -> bool {
+        v := self as uint32
+        v >= 0x61_u32 && v <= 0x7A_u32
+    }
+
+    /// Returns `true` if `self` is an ASCII decimal digit (`'0'..='9'`).
+    @inline public func isAsciiDigit() -> bool {
+        v := self as uint32
+        v >= 0x30_u32 && v <= 0x39_u32
+    }
+
+    /// Returns `true` if `self` is an ASCII hexadecimal digit (`'0'..='9'`, `'a'..='f'`, `'A'..='F'`).
+    @inline public func isAsciiHexDigit() -> bool {
+        v := self as uint32
+        (v >= 0x30_u32 && v <= 0x39_u32)
+            || (v >= 0x41_u32 && v <= 0x46_u32)
+            || (v >= 0x61_u32 && v <= 0x66_u32)
+    }
+
+    /// Returns `true` if `self` is an ASCII letter or decimal digit.
+    @inline public func isAsciiAlphanumeric() -> bool {
+        self.isAsciiAlphabetic() || self.isAsciiDigit()
+    }
+
+    /// Returns `true` if `self` is ASCII whitespace (`' '`, `'\t'`, `'\n'`, `'\x0C'`, `'\r'`).
+    @inline public func isAsciiWhitespace() -> bool {
+        v := self as uint32
+        v == 0x20_u32
+            || v == 0x09_u32
+            || v == 0x0A_u32
+            || v == 0x0C_u32
+            || v == 0x0D_u32
+    }
+
+    /// Returns `true` if `self` is an ASCII punctuation character.
+    @inline public func isAsciiPunctuation() -> bool {
+        v := self as uint32
+        (v >= 0x21_u32 && v <= 0x2F_u32)
+            || (v >= 0x3A_u32 && v <= 0x40_u32)
+            || (v >= 0x5B_u32 && v <= 0x60_u32)
+            || (v >= 0x7B_u32 && v <= 0x7E_u32)
+    }
+
+    /// Returns `true` if `self` is a visible ASCII graphic character (`'!'..='~'`).
+    @inline public func isAsciiGraphic() -> bool {
+        v := self as uint32
+        v >= 0x21_u32 && v <= 0x7E_u32
+    }
+
+    /// Returns `true` if `self` is an ASCII control character (`U+0000..=U+001F` or `U+007F`).
+    @inline public func isAsciiControl() -> bool {
+        v := self as uint32
+        v <= 0x1F_u32 || v == 0x7F_u32
+    }
+
+    /// Converts an ASCII uppercase character to lowercase; leaves all other scalars unchanged.
+    @inline public func toAsciiLowercase() -> rune {
+        v := self as uint32
+        if v >= 0x41_u32 && v <= 0x5A_u32 {
+            return __intrinsic_rune_from_u32_unchecked(v | 0x20_u32)
+        }
+        self
+    }
+
+    /// Converts an ASCII lowercase character to uppercase; leaves all other scalars unchanged.
+    @inline public func toAsciiUppercase() -> rune {
+        v := self as uint32
+        if v >= 0x61_u32 && v <= 0x7A_u32 {
+            return __intrinsic_rune_from_u32_unchecked(v & 0xDF_u32)
+        }
+        self
+    }
+
+    /// Returns `true` if `self` and `other` are equal ignoring ASCII case.
+    @inline public func eqIgnoreAsciiCase(_ other: rune) -> bool {
+        self.toAsciiLowercase() == other.toAsciiLowercase()
+    }
+
+    /// Converts an ASCII digit or letter to its numeric value in the given `radix` (`2..=36`).
+    /// Panics if `radix < 2 || radix > 36`.
+    public func toDigit(_ radix: uint32) -> uint32? {
+        if !validIntegerRadix(radix) {
+            panic("toDigit: radix must be between 2 and 36")
+        }
+        v := self as uint32
+        var digit: uint32 = 0xFFFF_FFFF_u32
+        if v >= 0x30_u32 && v <= 0x39_u32 {
+            digit = v - 0x30_u32
+        } else if v >= 0x61_u32 && v <= 0x7A_u32 {
+            digit = (v - 0x61_u32) + 10_u32
+        } else if v >= 0x41_u32 && v <= 0x5A_u32 {
+            digit = (v - 0x41_u32) + 10_u32
+        }
+        if digit < radix {
+            return .some(digit)
+        }
+        return .none
+    }
+
+    /// Converts a numeric digit `num` in the given `radix` (`2..=36`) to a lowercase ASCII `rune`.
+    /// Returns `.none` if `num >= radix`. Panics if `radix < 2 || radix > 36`.
+    public static func fromDigit(_ num: uint32, _ radix: uint32) -> rune? {
+        if !validIntegerRadix(radix) {
+            panic("fromDigit: radix must be between 2 and 36")
+        }
+        if num >= radix {
+            return .none
+        }
+        if num < 10_u32 {
+            return .some(__intrinsic_rune_from_u32_unchecked(0x30_u32 + num))
+        }
+        return .some(__intrinsic_rune_from_u32_unchecked(0x61_u32 + (num - 10_u32)))
+    }
+
+    /// Returns the number of bytes (`1..=4`) required to encode `self` in UTF-8.
+    @inline public func lenUtf8() -> usize {
+        std::rune::runeLenUtf8(self)
+    }
+
+    /// Encodes `self` as UTF-8 into `dst`, returning the number of bytes written (`1..=4`).
+    /// Panics if `dst.len() < self.lenUtf8()`.
+    @inline public func encodeUtf8(_ dst: Span[uint8]) -> usize {
+        var buf = dst
+        std::rune::runeEncode(self, &buf)
+    }
+
+    /// Returns `true` if `self` has the Unicode `White_Space` property
+    /// (ASCII whitespace plus standard Unicode whitespace codepoints).
+    public func isWhitespace() -> bool {
+        v := self as uint32
+        if v <= 0x7F_u32 {
+            return v == 0x20_u32 || (v >= 0x09_u32 && v <= 0x0D_u32)
+        }
+        v == 0x0085_u32
+            || v == 0x00A0_u32
+            || v == 0x1680_u32
+            || (v >= 0x2000_u32 && v <= 0x200A_u32)
+            || v == 0x2028_u32
+            || v == 0x2029_u32
+            || v == 0x202F_u32
+            || v == 0x205F_u32
+            || v == 0x3000_u32
+    }
+}

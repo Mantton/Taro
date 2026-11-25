@@ -1,0 +1,33 @@
+enum Event { case idle; case amount(int32); }
+struct Box[T] { value: T }
+extend[T] Box[T] {
+    public func accepts[F: Fn[T, bool]](_ predicate: F) -> bool { predicate(self.value) }
+}
+interface Source {
+    type Item
+    func read() -> Self::Item
+    func accepts[F: Fn[Self::Item, bool]](_ predicate: F) -> bool { predicate(self.read()) }
+}
+struct Reader {}
+conform Reader to Source {
+    type Item = Event
+    public func read() -> Event { .amount(7) }
+}
+func apply(_ value: Event, _ predicate: (Event) -> bool) -> bool { predicate(value) }
+func generic[T, F: Fn[T, bool]](_ value: T, _ predicate: F) -> bool { predicate(value) }
+func main() {
+    var event: Event = .amount(7)
+    container := Box { value: event }
+    reader := Reader {}
+    assert(apply(event, item => (match item { case .amount(n) => n == 7; case _ => false; })), "known function")
+    assert(container.accepts(item => (match item { case .amount(n) => n == 7; case _ => false; })), "inherent method")
+    assert(generic(event, item => (match item { case .amount(n) => n == 7; case _ => false; })), "generic function")
+    assert(reader.accepts(item => (match item { case .amount(n) => n == 7; case _ => false; })), "interface default")
+    var events: List[Event] = [.idle, event]
+    selected := events.filter(item => {
+        if case .amount(n) = item { return n == 7 }
+        return false
+    })
+    assert(selected.len() == 1, "inferred case in filter")
+    println("contextual patterns")
+}

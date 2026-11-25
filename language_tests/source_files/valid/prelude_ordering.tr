@@ -1,0 +1,41 @@
+// Comparison operators, `cmp` and the ordering interfaces come from the
+// prelude: nothing here imports std::cmp.
+struct Version { major: int32; minor: int32 }
+
+conform Version to PartialEq {
+    func eq(_ other: Version) -> bool { self.major == other.major && self.minor == other.minor }
+}
+
+conform Version to PartialOrd {
+    func partialCmp(_ other: Version) -> Optional[Ordering] { .some(self.cmp(other)) }
+}
+
+conform Version to Ord {
+    func cmp(_ other: Version) -> Ordering {
+        if self.major != other.major { return self.major.cmp(other.major) }
+        return self.minor.cmp(other.minor)
+    }
+}
+
+func earliest[T: Ord](_ a: T, _ b: T) -> T {
+    if a.cmp(b).isLess() { return a }
+    return b
+}
+
+func main() {
+    assert("apple" < "pear" && "pear" >= "fig" && !("b" <= "a"), "string operators")
+    assert("a".cmp("b").isLess(), "string cmp")
+
+    older := Version { major: 1, minor: 9 }
+    newer := Version { major: 2, minor: 0 }
+    assert(older < newer && newer > older && older <= older, "user type operators")
+    assert(earliest(newer, older) == older, "generic Ord bound")
+
+    var names: [string] = ["pear", "apple", "fig"]
+    names.sort(by: (a, b) => a > b)
+    assert(names[0] == "pear" && names[2] == "apple", "descending strings")
+
+    var versions: [Version] = [newer, older]
+    versions.sort()
+    assert(versions[0] == older, "sort by Ord")
+}

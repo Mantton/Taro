@@ -1,11 +1,9 @@
 import monkey::ast::{Expression, Statement, Program, HashEntry, PrefixOperator, InfixOperator}
 import monkey::object::{
     Object,
-    ObjectKind,
     HashKey,
     Function,
     Environment,
-    Builtin,
     builtinNamed,
     callBuiltin,
 

@@ -1,0 +1,4 @@
+error: ambiguous overload; unable to pick a best candidate
+ -> language_tests/source_files/invalid/literal_receiver_class_ancestor_open_owner_int64.tr:46:13
+	    return d.read()
+	             ^^^^

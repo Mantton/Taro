@@ -1,3 +1,4 @@
+import std::default::Default
 import std::hash::{Hashable, Hasher}
 import std::ops::PartialEq
 import std::cmp::{Ordering, PartialOrd, Ord}
@@ -68,4 +69,9 @@ extend rune {
     public static func parse(_ input: string) -> Result[rune, ParseError] {
         parseRune(input)
     }
+}
+
+// Default: U+0000.
+conform rune to Default {
+    public static func default() -> rune { '\0' }
 }

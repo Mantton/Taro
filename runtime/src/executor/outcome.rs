@@ -333,6 +333,14 @@ pub extern "C-unwind" fn __rt__task_cancel(object: *mut u8) {
     unsafe { shared_of(object) }.cancel();
 }
 
+/// Bind a spawned task handle to the currently running task so that early
+/// termination (cancellation or panic) of the parent cancels the child and
+/// defers publishing the parent's outcome until the child finishes.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn __rt__task_scope_to_current(object: *mut u8) {
+    unsafe { shared_of(object) }.scope_to_current_task();
+}
+
 /// Terminal status of an observed task: 1 completed, 2 cancelled, 3 panicked.
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn __rt__task_status(object: *mut u8) -> u8 {
@@ -501,6 +509,116 @@ pub extern "C-unwind" fn __rt__async_select_tasks(first: *mut u8, second: *mut u
             waiter: None,
         },
         selection_poll as *const u8,
+        TaskMobility::Movable as u8,
+    )
+}
+
+struct MultiSelectionFrame {
+    tasks: Vec<Arc<TaskShared>>,
+    held: Vec<bool>,
+    waiter: Option<OutcomeWaiter>,
+}
+
+impl MultiSelectionFrame {
+    fn release_unpolled_held(&mut self, cancel_first: bool) {
+        for (task, held) in self.tasks.iter().zip(self.held.iter_mut()) {
+            if std::mem::replace(held, false) {
+                if cancel_first {
+                    task.cancel();
+                }
+                if let Some(scheduler) = task.home.upgrade() {
+                    scheduler.release_held_spawn(task.task);
+                }
+            }
+        }
+    }
+
+    fn finish(&mut self, out: *mut u8, winner: usize) -> u8 {
+        self.release_unpolled_held(true);
+        if let Some(waiter) = self.waiter.take() {
+            for task in &self.tasks {
+                task.unregister(&waiter);
+            }
+        }
+        if !out.is_null() {
+            unsafe { out.cast::<usize>().write(winner) };
+        }
+        1
+    }
+}
+
+impl Drop for MultiSelectionFrame {
+    fn drop(&mut self) {
+        self.finish(std::ptr::null_mut(), 0);
+    }
+}
+
+/// Neither outcome is consumed. Held arms are polled inline in source order on
+/// the first observation so already-ready arms deterministically win in source
+/// order without racing across workers.
+unsafe extern "C-unwind" fn multi_selection_poll(frame: *mut u8, _: *mut u8, out: *mut u8) -> u8 {
+    let frame = unsafe { &mut *frame.cast::<MultiSelectionFrame>() };
+    if frame.held.iter().any(|&h| h) {
+        let scheduler = current_worker_scheduler().expect("select polled by an executor");
+        for idx in 0..frame.tasks.len() {
+            if !std::mem::replace(&mut frame.held[idx], false) {
+                continue;
+            }
+            let task = &frame.tasks[idx];
+            let local = std::ptr::eq(task.home.as_ptr(), Arc::as_ptr(&scheduler));
+            if local && scheduler.poll_spawned_inline(task.task) {
+                if task.status() != 0 {
+                    return frame.finish(out, idx);
+                }
+            } else if let Some(home) = task.home.upgrade() {
+                home.release_held_spawn(task.task);
+            }
+        }
+    }
+    let waiter = OutcomeWaiter::current();
+    frame.waiter = Some(waiter.clone());
+    for (idx, task) in frame.tasks.iter().enumerate() {
+        if task.observe(&waiter) != 0 {
+            for (earlier_idx, earlier) in frame.tasks[..idx].iter().enumerate() {
+                if earlier.status() != 0 {
+                    return frame.finish(out, earlier_idx);
+                }
+            }
+            return frame.finish(out, idx);
+        }
+    }
+    let reason = match (
+        frame.tasks.first().and_then(|t| t.local_token(&waiter)),
+        frame.tasks.get(1).and_then(|t| t.local_token(&waiter)),
+    ) {
+        (Some(first), Some(second)) => WaitReason::Tasks([first, second]),
+        (Some(first), None) => WaitReason::Task(first),
+        _ => WaitReason::ForeignTask,
+    };
+    set_current_wait_reason(reason);
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn __rt__async_select_many(tasks_ptr: *const u8, count: usize) -> *mut u8 {
+    assert!(count > 0, "select requires at least one arm");
+    let slice = unsafe { std::slice::from_raw_parts(tasks_ptr.cast::<*mut u8>(), count) };
+    let mut tasks = Vec::with_capacity(count);
+    let mut held = Vec::with_capacity(count);
+    for &handle in slice {
+        let shared = unsafe { shared_of(handle) };
+        shared.scope_to_current_task();
+        let is_held = crate::task::claim_held_spawn(shared.task);
+        tasks.push(shared);
+        held.push(is_held);
+    }
+    crate::task::create_inline_wait(
+        MultiSelectionFrame {
+            tasks,
+            held,
+            waiter: None,
+        },
+        multi_selection_poll as *const u8,
         TaskMobility::Movable as u8,
     )
 }

@@ -1,0 +1,323 @@
+import std::io::Closeable
+import std::runtime::collect
+import std::testing::assertEqual
+
+// Handwritten iterator oracle for element-by-element comparison.
+final class SteppedOracle {
+    current: int32
+    step: int32
+    remaining: int32
+}
+
+extend SteppedOracle {
+    init(current: int32, step: int32, remaining: int32) {
+        self.current = current
+        self.step = step
+        self.remaining = remaining
+    }
+}
+
+conform SteppedOracle to Iterator {
+    type Element = int32
+
+    public func next() -> Optional[int32] {
+        if self.remaining <= 0 {
+            return .none
+        }
+        value := self.current
+        self.current += self.step
+        self.remaining -= 1
+        return .some(value)
+    }
+}
+
+func steppedGen(_ start: int32, _ step: int32, _ count: int32) -> some Iterator[Element = int32] {
+    var current: int32 = start
+    var remaining: int32 = count
+    while remaining > 0 {
+        yield current
+        current += step
+        remaining -= 1
+    }
+}
+
+func twoStepMutating(_ initial: int32) -> some Iterator[Element = int32] {
+    var acc: int32 = initial
+    yield acc
+    acc = acc * 3 + 1
+    yield acc
+}
+
+func one() -> some Iterator[Element = int32] {
+    yield 1
+}
+
+func loggedGen(_ events: &List[string]) -> some Iterator[Element = int32] {
+    events.append("start")
+    var x: int32 = 10
+    yield x
+    events.append("after-first")
+    x += 5
+    yield x
+    events.append("done")
+}
+
+func cleanupGen(_ events: &List[string]) -> some Iterator[Element = int32] & Closeable {
+    events.append("open")
+    defer {
+        events.append("defer-outer")
+    }
+    yield 100
+    events.append("between")
+    defer {
+        events.append("defer-inner")
+    }
+    yield 200
+    events.append("finished")
+}
+
+func earlyReturnGen(_ events: &List[string], _ stopEarly: bool) -> some Iterator[Element = int32] {
+    defer {
+        events.append("early-defer")
+    }
+    yield 1
+    if stopEarly {
+        return
+    }
+    yield 2
+}
+
+func pair[T](_ first: T, _ second: T) -> some Iterator[Element = T] {
+    yield first
+    yield second
+}
+
+func rangeIterable(_ limit: int32) -> some Iterable[Element = int32] {
+    var i: int32 = 0
+    while i < limit {
+        yield i
+        i += 1
+    }
+}
+
+func trackedIterable(_ events: &List[string]) -> some Iterable[Element = int32] {
+    events.append("open")
+    defer {
+        events.append("defer-close")
+    }
+    yield 1
+    yield 2
+    yield 3
+}
+
+func trackedIterator(_ events: &List[string]) -> some Iterator[Element = int32] {
+    events.append("iter-open")
+    defer {
+        events.append("iter-defer-close")
+    }
+    yield 10
+    yield 20
+    yield 30
+}
+
+func earlyReturnFromFor(_ events: &List[string]) -> int32 {
+    for x in trackedIterable(events) {
+        if x == 2 {
+            return x
+        }
+    }
+    return 0
+}
+
+// Contextual `yield` must remain valid as an identifier and function name.
+func yield(_ x: int32) -> int32 {
+    return x * 2
+}
+
+func testContextualYield() {
+    var yield: int32 = 7
+    assertEqual(yield, 7, "variable named yield")
+    assertEqual(yield - 2, 5, "binary subtraction on yield variable")
+    assertEqual(yield + 3, 10, "binary addition on yield variable")
+    yield = 9
+    assertEqual(yield, 9, "reassigned yield variable")
+}
+
+func testContextualYieldCall() {
+    assertEqual(yield(6), 12, "function named yield")
+}
+
+func yieldedOperands(_ ptr: &int32) -> some Iterable[Element = int32] {
+    yield *ptr
+    yield -1
+    yield (2 + 3)
+}
+
+func main() {
+    var base: int32 = 8
+    var produced = List[int32]::new()
+    for value in yieldedOperands(&base) {
+        produced.append(value)
+    }
+    assertEqual(produced.len(), 3 as usize, "prefix yields")
+    assertEqual(produced[0], base, "yield dereference")
+    assertEqual(produced[1], -1, "yield negation")
+    assertEqual(produced[2], 5, "yield grouped expression")
+
+    // 1. Minimal single-yield generator
+    var single = one()
+    assertEqual(single.next().unwrap(), 1, "one() first element")
+    assert(single.next().isNone(), "one() exhausted")
+    assert(single.next().isNone(), "one() repeated next stays none")
+
+    // 2. Compare generator output against handwritten Iterator oracle
+    var oracle = SteppedOracle(current: 5, step: 4, remaining: 5)
+    var gen = steppedGen(5, 4, 5)
+    var index: int32 = 0
+    while true {
+        expected := oracle.next()
+        actual := gen.next()
+        if expected.isNone() {
+            assert(actual.isNone(), "generator exhausted in lockstep with oracle")
+            break
+        }
+        assert(actual.isSome(), "generator has element matching oracle")
+        assertEqual(actual.unwrap(), expected.unwrap(), "generator matches oracle element")
+        index += 1
+    }
+    assertEqual(index, 5, "oracle and generator produced 5 elements")
+    assert(gen.next().isNone(), "repeated next after exhaustion returns none")
+
+    // 3. Two yields with local mutation between yields
+    var twoStep = twoStepMutating(4)
+    assertEqual(twoStep.next().unwrap(), 4, "first yield before mutation")
+    assertEqual(twoStep.next().unwrap(), 13, "second yield after mutation")
+    assert(twoStep.next().isNone(), "twoStepMutating exhausted")
+    assert(twoStep.next().isNone(), "twoStepMutating stays exhausted")
+
+    // 4. Construction vs first-resume side effects
+    var events = List[string]::new()
+    var lazy = loggedGen(&events)
+    assertEqual(events.len(), 0 as usize, "construction executes no body side effects")
+    assertEqual(lazy.next().unwrap(), 10, "first next yields 10")
+    assertEqual(events.len(), 1 as usize, "only pre-first-yield side effects ran")
+    assertEqual(events[0], "start", "start logged on first resume")
+    assertEqual(lazy.next().unwrap(), 15, "second next yields 15")
+    assertEqual(events.len(), 2 as usize, "post-first-yield side effects ran")
+    assertEqual(events[1], "after-first", "after-first logged on second resume")
+    assert(lazy.next().isNone(), "third next exhausts")
+    assertEqual(events.len(), 3 as usize, "tail side effect ran on exhaustion")
+    assertEqual(events[2], "done", "done logged on exhaustion")
+    assert(lazy.next().isNone(), "fourth next still none")
+    assertEqual(events.len(), 3 as usize, "repeated next runs no side effects")
+
+    // 5. Explicit close via `using` after first yield runs active defers once
+    var cleanup1 = List[string]::new()
+    {
+        using g = cleanupGen(&cleanup1)
+        assertEqual(cleanup1.len(), 0 as usize, "no side effects before first next")
+        assertEqual(g.next().unwrap(), 100, "yields first value")
+        assertEqual(cleanup1.len(), 1 as usize, "opened before first yield")
+    }
+    assertEqual(cleanup1.len(), 2 as usize, "outer defer ran on scope close")
+    assertEqual(cleanup1[0], "open", "cleanup1[0]")
+    assertEqual(cleanup1[1], "defer-outer", "cleanup1[1]")
+
+    // 6. Explicit close after second yield runs inner then outer defer once; idempotent close
+    var cleanup2 = List[string]::new()
+    var g2 = cleanupGen(&cleanup2)
+    assertEqual(g2.next().unwrap(), 100, "g2 first")
+    assertEqual(g2.next().unwrap(), 200, "g2 second")
+    g2.close()
+    g2.close()
+    assert(g2.next().isNone(), "next after close returns none")
+    assertEqual(cleanup2.len(), 4 as usize, "inner and outer defers ran once")
+    assertEqual(cleanup2[0], "open", "cleanup2[0]")
+    assertEqual(cleanup2[1], "between", "cleanup2[1]")
+    assertEqual(cleanup2[2], "defer-inner", "cleanup2[2]")
+    assertEqual(cleanup2[3], "defer-outer", "cleanup2[3]")
+
+    // 7. Early abandonment without calling close does not run later yields and survives GC
+    var abandonedLog = List[string]::new()
+    {
+        var abandoned = loggedGen(&abandonedLog)
+        assertEqual(abandoned.next().unwrap(), 10, "abandoned first yield")
+    }
+    collect()
+    assertEqual(abandonedLog.len(), 1 as usize, "abandoned generator did not execute past first yield")
+
+    // 8. Bare early `return` inside generator runs defer and exhausts cleanly
+    var earlyLog = List[string]::new()
+    var early = earlyReturnGen(&earlyLog, true)
+    assertEqual(early.next().unwrap(), 1, "early return first yield")
+    assert(early.next().isNone(), "early return exhausts")
+    assertEqual(earlyLog.len(), 1 as usize, "early return ran defer once")
+    assertEqual(earlyLog[0], "early-defer", "early-defer logged")
+
+    // 9. Generic generator with GC-traced strings surviving collection across yield
+    var words = pair("hello-" + "gen", "world-" + "taro")
+    collect()
+    assertEqual(words.next().unwrap(), "hello-gen", "first string survives GC before first next")
+    collect()
+    assertEqual(words.next().unwrap(), "world-taro", "second string survives GC across yield")
+    assert(words.next().isNone(), "generic string generator exhausted")
+
+    // 10. Iterable generator in `for` loop
+    var sum: int32 = 0
+    for n in rangeIterable(5) {
+        sum += n
+    }
+    assertEqual(sum, 10, "for loop over Iterable generator")
+
+    // 10b. Early break from `for` loop runs generator defer exactly once
+    var breakLog = List[string]::new()
+    var lastSeen: int32 = 0
+    for x in trackedIterable(&breakLog) {
+        lastSeen = x
+        if x == 1 {
+            break
+        }
+    }
+    assertEqual(lastSeen, 1, "early break stopped after first element")
+    assertEqual(breakLog.len(), 2 as usize, "early break ran generator defer once")
+    assertEqual(breakLog[0], "open", "breakLog[0]")
+    assertEqual(breakLog[1], "defer-close", "breakLog[1]")
+
+    // 10c. Early return from function inside `for` loop runs generator defer once
+    var returnLog = List[string]::new()
+    returned := earlyReturnFromFor(&returnLog)
+    assertEqual(returned, 2, "early return yielded second element")
+    assertEqual(returnLog.len(), 2 as usize, "early return ran generator defer once")
+    assertEqual(returnLog[1], "defer-close", "returnLog[1]")
+
+    // 10d. Direct `for` loop over `some Iterator[Element = T]` + early break cleanup
+    var directIterLog = List[string]::new()
+    var directSeen: int32 = 0
+    for x in trackedIterator(&directIterLog) {
+        directSeen = x
+        if x == 10 {
+            break
+        }
+    }
+    assertEqual(directSeen, 10, "some Iterator directly usable in for loop")
+    assertEqual(directIterLog.len(), 2 as usize, "some Iterator for loop ran defer once on break")
+    assertEqual(directIterLog[0], "iter-open", "directIterLog[0]")
+    assertEqual(directIterLog[1], "iter-defer-close", "directIterLog[1]")
+
+    // 10e. Iterator adapters forward closeIterator() on early break
+    var adapterLog = List[string]::new()
+    var adapterCount: usize = 0
+    for (idx, x) in trackedIterator(&adapterLog).enumerate() {
+        adapterCount = idx + (1 as usize)
+        if x == 10 {
+            break
+        }
+    }
+    assertEqual(adapterCount, 1 as usize, "enumerate adapter stopped after first element")
+    assertEqual(adapterLog.len(), 2 as usize, "enumerate adapter forwarded closeIterator() on break")
+    assertEqual(adapterLog[1], "iter-defer-close", "adapterLog[1]")
+
+    // 11. Contextual yield identifiers and calls
+    testContextualYield()
+    testContextualYieldCall()
+}

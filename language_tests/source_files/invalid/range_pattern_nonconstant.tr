@@ -1,0 +1,2 @@
+func testBound(_ value: int32, _ bound: int32) -> bool { value is 0..bound }
+func main() {}

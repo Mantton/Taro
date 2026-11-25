@@ -54,6 +54,7 @@ mod atomics;
 mod c_extensions;
 mod c_strings;
 mod classes;
+mod coverage;
 mod debug;
 mod erased_openings;
 mod existentials;
@@ -69,6 +70,8 @@ mod intrinsics;
 
 mod strings;
 
+#[cfg(test)]
+mod integer_arith_tests;
 #[cfg(test)]
 mod repeat_tests;
 #[cfg(test)]
@@ -320,6 +323,7 @@ pub(crate) enum PackageEntry {
     Main,
     Tests(Vec<crate::compile::test_collector::TestCase>),
     Benchmarks(Vec<crate::compile::bench_collector::BenchmarkCase>),
+    Fuzz(crate::compile::fuzz_collector::FuzzTarget),
 }
 
 /// Lower MIR and its selected entry point into one LLVM module.
@@ -342,6 +346,7 @@ pub(crate) fn emit_package_with_timings<'gcx>(
     timings.module_setup = phase_started_at.elapsed();
 
     let mut emitter = Emitter::new(&context, module, builder, gcx)?;
+    let errors_at_start = gcx.dcx().error_count();
     let phase_started_at = Instant::now();
     emitter.declare_instances();
     timings.declare_instances = phase_started_at.elapsed();
@@ -357,10 +362,17 @@ pub(crate) fn emit_package_with_timings<'gcx>(
         PackageEntry::Main => emitter.emit_start_shim(package),
         PackageEntry::Tests(tests) => emitter.emit_test_harness(&tests),
         PackageEntry::Benchmarks(benchmarks) => emitter.emit_bench_harness(&benchmarks),
+        PackageEntry::Fuzz(target) => emitter.emit_fuzz_harness(&target),
     }
     timings.emit_entry_or_harness = phase_started_at.elapsed();
+    // Some lowering helpers report internal errors without unwinding, such
+    // as witness tables built on demand. Never emit an object after them.
+    if gcx.dcx().error_count() > errors_at_start {
+        return Err(crate::error::ReportedError);
+    }
 
     emitter.finalize_debug_info();
+    emitter.finalize_coverage()?;
     c_extensions::finalize(&emitter)?;
 
     let phase_started_at = Instant::now();
@@ -423,6 +435,7 @@ struct Emitter<'llvm, 'gcx> {
     module: Module<'llvm>,
     builder: Builder<'llvm>,
     debug: Option<debug::DebugContext<'llvm>>,
+    coverage: Option<coverage::CoverageContext>,
     gcx: GlobalContext<'gcx>,
     functions: FxHashMap<Instance<'gcx>, (FunctionValue<'llvm>, abi::FnAbi<'gcx>)>,
     globals: FxHashMap<hir::DefinitionID, PointerValue<'llvm>>,
@@ -541,11 +554,17 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .unwrap_or(0);
         let debug = matches!(gcx.config.debug.debug_info, DebugInfo::LineTables)
             .then(|| debug::DebugContext::new(context, &module, gcx));
+        let coverage = gcx
+            .config
+            .codegen
+            .coverage
+            .then(coverage::CoverageContext::new);
         Ok(Emitter {
             context,
             module,
             builder,
             debug,
+            coverage,
             gcx,
             functions: FxHashMap::default(),
             globals: FxHashMap::default(),
@@ -903,6 +922,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .const_int(v as u64, false)
                     .as_basic_value_enum(),
             ),
+            ConstValue::Bytes(value) => Some(
+                value
+                    .with_bytes(|b| self.context.const_string(b, false))
+                    .as_basic_value_enum(),
+            ),
             ConstValue::String(sym) => {
                 let ptr = self.lower_string(sym);
                 let len = self
@@ -922,6 +946,55 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 .map(|float_ty| float_ty.const_float(v).as_basic_value_enum()),
             ConstValue::Unit => None,
             ConstValue::EnumUnitVariant(ctor_id) => self.lower_enum_unit_variant_const(ty, ctor_id),
+            ConstValue::Array(arr) => self.lower_const_array_with_ty(ty, arr),
+        }
+    }
+
+    fn lower_const_array_with_ty(
+        &mut self,
+        ty: Ty<'gcx>,
+        arr: crate::sema::models::InternedConstArray,
+    ) -> Option<BasicValueEnum<'llvm>> {
+        let TyKind::Array { element, .. } =
+            crate::sema::tycheck::utils::normalize_aliases(self.gcx, ty).kind()
+        else {
+            return None;
+        };
+        let elem_llvm_ty = self.lower_ty(element)?;
+        let elements = arr.to_vec();
+        let mut lowered = Vec::with_capacity(elements.len());
+        for elem in elements {
+            lowered.push(self.lower_const_value_with_ty(element, elem)?);
+        }
+        match elem_llvm_ty {
+            BasicTypeEnum::IntType(t) => {
+                let vals: Vec<_> = lowered.into_iter().map(|v| v.into_int_value()).collect();
+                Some(t.const_array(&vals).as_basic_value_enum())
+            }
+            BasicTypeEnum::FloatType(t) => {
+                let vals: Vec<_> = lowered.into_iter().map(|v| v.into_float_value()).collect();
+                Some(t.const_array(&vals).as_basic_value_enum())
+            }
+            BasicTypeEnum::PointerType(t) => {
+                let vals: Vec<_> = lowered
+                    .into_iter()
+                    .map(|v| v.into_pointer_value())
+                    .collect();
+                Some(t.const_array(&vals).as_basic_value_enum())
+            }
+            BasicTypeEnum::StructType(t) => {
+                let vals: Vec<_> = lowered.into_iter().map(|v| v.into_struct_value()).collect();
+                Some(t.const_array(&vals).as_basic_value_enum())
+            }
+            BasicTypeEnum::ArrayType(t) => {
+                let vals: Vec<_> = lowered.into_iter().map(|v| v.into_array_value()).collect();
+                Some(t.const_array(&vals).as_basic_value_enum())
+            }
+            BasicTypeEnum::VectorType(t) => {
+                let vals: Vec<_> = lowered.into_iter().map(|v| v.into_vector_value()).collect();
+                Some(t.const_array(&vals).as_basic_value_enum())
+            }
+            BasicTypeEnum::ScalableVectorType(_) => None,
         }
     }
 
@@ -1281,20 +1354,22 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
     /// Assert that an entry/test function can be called with an empty argument
     /// list, as the shims below do. Sema restricts these functions to
-    /// `() -> void`, so their computed ABI must not expect any parameters — in
-    /// particular no hidden sret pointer, which the callee would otherwise
-    /// write its return through while reading garbage as the destination.
+    /// `() -> void`; a `Result`-returning `main` is reached through a
+    /// generated `() -> int32` wrapper. Their computed ABI must not expect any
+    /// parameters — in particular no hidden sret pointer, which the callee
+    /// would otherwise write its return through while reading garbage as the
+    /// destination.
     fn assert_entry_abi_takes_no_args(&self, fn_abi: &abi::FnAbi<'gcx>, what: &str) {
         assert!(
             !matches!(fn_abi.ret.mode, abi::PassMode::Indirect { .. }),
-            "{what} must not return indirectly (sret); sema restricts it to `() -> void`"
+            "{what} must not return indirectly (sret); it returns `void` or an `int32` status"
         );
         assert!(
             fn_abi
                 .args
                 .iter()
                 .all(|arg| matches!(arg.mode, abi::PassMode::Ignore)),
-            "{what} must not take ABI arguments; sema restricts it to `() -> void`"
+            "{what} must not take ABI arguments; sema restricts it to no parameters"
         );
     }
 
@@ -1307,6 +1382,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     ///
     /// A thin `main` wrapper is also emitted so the linker finds a conventional
     /// entry point; it simply tail-calls `taro_start` and forwards its return value.
+    ///
+    /// For `func main() -> Result[(), E]` the package entry is the generated
+    /// `main$result_entry` wrapper (see `thir::main_result`), which reports an
+    /// error itself and returns the `int32` exit status forwarded here.
     fn emit_start_shim(&mut self, package: &mir::MirPackage<'gcx>) {
         let Some(entry) = package.entry else {
             return;
@@ -1476,6 +1555,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let test_call_fn = self.declare_test_call_fn();
         let test_panic_status_fn = self.declare_test_panic_status_fn();
         let test_panic_finish_fn = self.declare_test_panic_finish_fn();
+        let test_prepare_result_fn = self.declare_test_prepare_result_fn();
         let async_run_root_fn = self.declare_async_run_root_fn();
         let finish_rootless_fn = self.declare_executor_finish_rootless_fn();
         let abort_rootless_fn = self.declare_executor_abort_rootless_fn();
@@ -1573,6 +1653,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             "FAILED (panic message mismatch)\n",
             "test_fail_panic_message_msg",
         );
+        let fail_subtest_msg =
+            self.build_global_cstring("FAILED (subtest failed)\n", "test_fail_subtest_msg");
         let string_fmt = self.build_global_cstring("%s", "test_string_fmt");
 
         if test_count > 0 {
@@ -1830,6 +1912,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     "test_panic_message_mismatch",
                 )
                 .unwrap();
+            let subtest_failed = builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    panic_status,
+                    i8_ty.const_int(4, false),
+                    "test_subtest_failed",
+                )
+                .unwrap();
             let base_fail_msg = builder
                 .build_select(
                     missing_panic,
@@ -1839,17 +1929,33 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 )
                 .unwrap()
                 .into_pointer_value();
-            let fail_msg = builder
+            let fail_msg_with_mismatch = builder
                 .build_select(
                     panic_message_mismatch,
                     fail_panic_message_msg,
                     base_fail_msg,
+                    "test_fail_msg_with_mismatch",
+                )
+                .unwrap()
+                .into_pointer_value();
+            let fail_msg = builder
+                .build_select(
+                    subtest_failed,
+                    fail_subtest_msg,
+                    fail_msg_with_mismatch,
                     "test_fail_msg",
                 )
                 .unwrap()
                 .into_pointer_value();
             let result_msg = builder
                 .build_select(passed_case, ok_msg, fail_msg, "test_result_msg")
+                .unwrap();
+            builder
+                .build_call(
+                    test_prepare_result_fn,
+                    &[prefix_ptr.into()],
+                    "test_prepare_result",
+                )
                 .unwrap();
             builder
                 .build_call(
@@ -1989,21 +2095,27 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         mb.build_return(Some(&ret)).unwrap();
     }
 
-    /// Emit the small static side of the benchmark harness.
-    ///
-    /// Timing and sampling intentionally stay in the runtime. Codegen's only
-    /// responsibilities are preserving canonical case metadata, adapting the
-    /// typed `&mut Benchmark` function to a `void()` callback, and forwarding
-    /// every case to the runtime driver. This keeps backend details out of the
-    /// statistical contract exposed by `taro bench`.
+    /// Adapt benchmark functions to the runtime's measurement callback, then
+    /// invoke the standard-library reporter after the callback has returned.
     fn emit_bench_harness(
         &mut self,
         benchmarks: &[crate::compile::bench_collector::BenchmarkCase],
     ) {
         let i32_ty = self.context.i32_type();
-        let i8_ty = self.context.i8_type();
         let ptr_ty = self.context.ptr_type(AddressSpace::default());
-        let run_case_fn = self.declare_bench_run_case_fn();
+        let measure_case_fn = self.declare_bench_measure_case_fn();
+        let report_id = self
+            .gcx
+            .std_item_def(hir::StdItem::BenchmarkReport)
+            .expect("benchmark report language item");
+        let (report_fn, report_abi) =
+            self.instance_function_with_abi(Instance::item(report_id, GenericArguments::empty()));
+        let TyKind::Pointer(measurement_ty, _) = report_abi.args[1].ty.kind() else {
+            panic!("benchmark report must accept a pointer to its measurement");
+        };
+        let measurement_ty = self
+            .lower_ty(measurement_ty)
+            .expect("benchmark measurement must have a runtime representation");
         let finish_rootless_fn = self.declare_executor_finish_rootless_fn();
         let abort_rootless_fn = self.declare_executor_abort_rootless_fn();
 
@@ -2018,6 +2130,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .build_call(install_stack_guard_fn, &[], "install_stack_guard")
             .unwrap();
 
+        let measurement = builder
+            .build_alloca(measurement_ty, "bench_measurement")
+            .unwrap();
         let failures = builder.build_alloca(i32_ty, "bench_failures").unwrap();
         builder.build_store(failures, i32_ty.const_zero()).unwrap();
 
@@ -2036,23 +2151,46 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             let reason_text = benchmark.skip_reason.as_deref().unwrap_or("");
             let reason = self.build_global_cstring(reason_text, &format!("bench_reason_{index}"));
 
-            let failed = builder
+            let name_len = self
+                .usize_ty
+                .const_int(benchmark.display_name.len() as u64, false);
+            let skipped = self
+                .context
+                .bool_type()
+                .const_int(u64::from(benchmark.skipped), false);
+            let outcome = builder
                 .build_call(
-                    run_case_fn,
+                    measure_case_fn,
                     &[
                         wrapper.into(),
                         name.into(),
-                        self.usize_ty
-                            .const_int(benchmark.display_name.len() as u64, false)
-                            .into(),
+                        name_len.into(),
+                        skipped.into(),
+                        measurement.into(),
+                    ],
+                    "bench_measurement_status",
+                )
+                .unwrap()
+                .try_as_basic_value()
+                .basic()
+                .expect("benchmark measurement returns a status")
+                .into_int_value();
+            builder
+                .build_call(abort_rootless_fn, &[], "bench_executor_abort")
+                .unwrap();
+            let failed = builder
+                .build_call(
+                    report_fn,
+                    &[
+                        outcome.into(),
+                        measurement.into(),
+                        name.into(),
+                        name_len.into(),
                         tags.into(),
                         self.usize_ty
                             .const_int(encoded_tags.len() as u64, false)
                             .into(),
-                        self.context
-                            .bool_type()
-                            .const_int(u64::from(benchmark.skipped), false)
-                            .into(),
+                        skipped.into(),
                         reason.into(),
                         self.usize_ty
                             .const_int(reason_text.len() as u64, false)
@@ -2063,11 +2201,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 .unwrap()
                 .try_as_basic_value()
                 .basic()
-                .expect("benchmark runtime returns a status")
+                .expect("benchmark reporter returns a status")
                 .into_int_value();
-            builder
-                .build_call(abort_rootless_fn, &[], "bench_executor_abort")
-                .unwrap();
             let current = builder
                 .build_load(i32_ty, failures, "bench_failure_count")
                 .unwrap()
@@ -2130,32 +2265,25 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .expect("benchmark start returns a status")
             .into_int_value();
         main_builder.build_return(Some(&status)).unwrap();
-
-        // Keep this assertion close to the declaration: the runtime status is
-        // deliberately byte-sized so it has a stable C ABI on every target.
-        debug_assert_eq!(run_case_fn.get_type().get_return_type(), Some(i8_ty.into()));
     }
 
-    fn declare_bench_run_case_fn(&self) -> FunctionValue<'llvm> {
+    fn declare_bench_measure_case_fn(&self) -> FunctionValue<'llvm> {
         let ptr_ty = self.context.ptr_type(AddressSpace::default());
         let function_type = self.context.i8_type().fn_type(
             &[
                 ptr_ty.into(),
                 ptr_ty.into(),
                 self.usize_ty.into(),
-                ptr_ty.into(),
-                self.usize_ty.into(),
                 self.context.bool_type().into(),
                 ptr_ty.into(),
-                self.usize_ty.into(),
             ],
             false,
         );
         self.module
-            .get_function("__rt__bench_run_case")
+            .get_function("__rt__bench_measure_case")
             .unwrap_or_else(|| {
                 self.module.add_function(
-                    "__rt__bench_run_case",
+                    "__rt__bench_measure_case",
                     function_type,
                     Some(Linkage::External),
                 )
@@ -2345,6 +2473,158 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 self.module
                     .add_function("__rt__test_call_fn", fn_ty, Some(Linkage::External))
             })
+    }
+
+    fn declare_test_prepare_result_fn(&self) -> FunctionValue<'llvm> {
+        let ptr = self.context.ptr_type(AddressSpace::default());
+        let fn_ty = self.context.void_type().fn_type(&[ptr.into()], false);
+        self.module
+            .get_function("__rt__test_prepare_result")
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    "__rt__test_prepare_result",
+                    fn_ty,
+                    Some(Linkage::External),
+                )
+            })
+    }
+
+    fn declare_fuzz_run_fn(&self) -> FunctionValue<'llvm> {
+        let ptr = self.context.ptr_type(AddressSpace::default());
+        let i32_ty = self.context.i32_type();
+        let fn_ty = i32_ty.fn_type(&[ptr.into(), self.usize_ty.into(), ptr.into()], false);
+        self.module
+            .get_function("__rt__fuzz_run")
+            .unwrap_or_else(|| {
+                self.module
+                    .add_function("__rt__fuzz_run", fn_ty, Some(Linkage::External))
+            })
+    }
+
+    fn emit_fuzz_harness(&mut self, target: &crate::compile::fuzz_collector::FuzzTarget) {
+        let i32_ty = self.context.i32_type();
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+
+        let target_instance = Instance::item(target.id, GenericArguments::empty());
+        let Some((target_fn, target_fn_abi)) = self.functions.get(&target_instance).cloned() else {
+            self.gcx.dcx().emit_error(
+                format!(
+                    "internal error: fuzz target `{}` was not lowered",
+                    target.display_name
+                ),
+                None,
+            );
+            return;
+        };
+
+        let finish_rootless_fn = self.declare_executor_finish_rootless_fn();
+        let wrapper_ty = self
+            .context
+            .void_type()
+            .fn_type(&[ptr_ty.into(), self.usize_ty.into()], false);
+        let wrapper = self
+            .module
+            .add_function("__taro_fuzz_wrapper", wrapper_ty, Some(Linkage::Private));
+        let wrapper_builder = self.context.create_builder();
+        let wrapper_bb = self.context.append_basic_block(wrapper, "entry");
+        wrapper_builder.position_at_end(wrapper_bb);
+
+        let data_ptr = wrapper.get_nth_param(0).unwrap().into_pointer_value();
+        let data_len = wrapper.get_nth_param(1).unwrap().into_int_value();
+        let span_ty = self
+            .context
+            .struct_type(&[ptr_ty.into(), self.usize_ty.into()], false);
+        let mut span_val = span_ty.get_undef();
+        span_val = wrapper_builder
+            .build_insert_value(span_val, data_ptr, 0, "fuzz_span_ptr")
+            .unwrap()
+            .into_struct_value();
+        span_val = wrapper_builder
+            .build_insert_value(span_val, data_len, 1, "fuzz_span_len")
+            .unwrap()
+            .into_struct_value();
+
+        let param_mode = target_fn_abi
+            .args
+            .first()
+            .map(|arg| arg.mode)
+            .unwrap_or(abi::PassMode::Direct);
+        let call_arg: BasicMetadataValueEnum<'llvm> = match param_mode {
+            abi::PassMode::Indirect { .. } => {
+                let slot = wrapper_builder
+                    .build_alloca(span_ty, "fuzz_span_slot")
+                    .unwrap();
+                wrapper_builder.build_store(slot, span_val).unwrap();
+                slot.into()
+            }
+            abi::PassMode::Direct | abi::PassMode::Ignore => span_val.into(),
+        };
+
+        wrapper_builder
+            .build_call(target_fn, &[call_arg], "fuzz_target_call")
+            .unwrap();
+        wrapper_builder
+            .build_call(finish_rootless_fn, &[], "fuzz_finish_rootless")
+            .unwrap();
+        wrapper_builder.build_return(None).unwrap();
+
+        let start_ty = i32_ty.fn_type(&[], false);
+        let start_fn = self.module.add_function("taro_start", start_ty, None);
+        let builder = self.context.create_builder();
+        let entry_bb = self.context.append_basic_block(start_fn, "entry");
+        builder.position_at_end(entry_bb);
+
+        let install_stack_guard_fn = self.declare_install_stack_guard_fn();
+        builder
+            .build_call(install_stack_guard_fn, &[], "install_stack_guard")
+            .unwrap();
+
+        let name_ptr = self.build_global_cstring(&target.display_name, "fuzz_target_name");
+        let name_len = self
+            .usize_ty
+            .const_int(target.display_name.len() as u64, false);
+        let fuzz_run_fn = self.declare_fuzz_run_fn();
+        let exit_code = builder
+            .build_call(
+                fuzz_run_fn,
+                &[
+                    name_ptr.into(),
+                    name_len.into(),
+                    wrapper.as_global_value().as_pointer_value().into(),
+                ],
+                "fuzz_exit_code",
+            )
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_int_value();
+        builder.build_return(Some(&exit_code)).unwrap();
+
+        let main_ty = i32_ty.fn_type(&[i32_ty.into(), ptr_ty.into()], false);
+        let main_fn = self.module.add_function("main", main_ty, None);
+        let main_bb = self.context.append_basic_block(main_fn, "entry");
+        let mb = self.context.create_builder();
+        mb.position_at_end(main_bb);
+        let argc = main_fn
+            .get_nth_param(0)
+            .expect("main argc parameter missing")
+            .into_int_value();
+        let argv = main_fn
+            .get_nth_param(1)
+            .expect("main argv parameter missing")
+            .into_pointer_value();
+        self.get_or_create_env_argc_global();
+        self.get_or_create_env_argv_global();
+        self.store_process_args_from_main(&mb, argc, argv);
+        let ret = mb
+            .build_call(start_fn, &[], "ret")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .map(|v| v.into_int_value())
+            .unwrap_or_else(|| i32_ty.const_int(0, false));
+        mb.build_return(Some(&ret)).unwrap();
     }
 
     fn declare_async_run_root_fn(&self) -> FunctionValue<'llvm> {
@@ -2875,10 +3155,25 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .build_unconditional_branch(mir_entry_block)
             .unwrap();
 
+        let fn_coverage = self.coverage.as_mut().and_then(|cov| {
+            cov.prepare_function(
+                instance,
+                function,
+                body,
+                self.context,
+                &self.module,
+                self.gcx,
+            )
+        });
+
         for (bb_id, bb) in body.basic_blocks.iter_enumerated() {
             let llvm_bb = llvm_blocks[bb_id.index()];
             self.builder.position_at_end(llvm_bb);
             self.current_source_scope = mir::SourceScopeId::from_raw(0);
+            if let Some(cov) = &fn_coverage {
+                self.unset_debug_location();
+                cov.emit_block_counter(bb_id, self.context, &self.module, &self.builder);
+            }
 
             for (statement_index, stmt) in bb.statements.iter().enumerate() {
                 self.current_mir_location = Some(mir::analysis::liveness::MirLocation::Statement {
@@ -2938,6 +3233,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         if let Some(debug) = &self.debug {
             debug.finalize();
         }
+    }
+
+    fn finalize_coverage(&self) -> CompileResult<()> {
+        if let Some(coverage) = &self.coverage {
+            coverage.finalize(self.context, &self.module, &self.target_machine, self.gcx)?;
+        }
+        Ok(())
     }
 
     fn body_has_unwind(&self, body: &mir::Body<'gcx>) -> bool {
@@ -3675,6 +3977,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 let from_ty = self.operand_ty(body, operand);
                 let val = match self.eval_operand(body, locals, operand)? {
                     Some(val) => val,
+                    // `()` has no LLVM value, but its existential box still
+                    // needs a payload and witness tables; boxing ignores the
+                    // placeholder for a type without storage.
+                    None if matches!(ty.kind(), TyKind::BoxedExistential { .. })
+                        && self.mono_ty_if_resolved(from_ty) == self.gcx.types.void =>
+                    {
+                        self.context.const_struct(&[], false).into()
+                    }
                     None => return Ok(None),
                 };
                 match kind {
@@ -4515,6 +4825,277 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         self.builder.build_and(rhs, mask, "shift_mask").unwrap()
     }
 
+    /// Lower `__intrinsic_wrapping_{add,sub,mul}` to plain two's-complement
+    /// LLVM arithmetic and `__intrinsic_overflows_{add,sub,mul}` to the flag of
+    /// the matching `llvm.*.with.overflow` intrinsic. Neither traps, and the
+    /// lowering ignores the overflow policy: std bodies that use them keep
+    /// their meaning when inlined or specialized into a checked package.
+    fn lower_intrinsic_integer_arith(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+        name: &str,
+    ) -> CompileResult<bool> {
+        let (overflow_flag, op) = match name {
+            "__intrinsic_wrapping_add" => (false, "add"),
+            "__intrinsic_wrapping_sub" => (false, "sub"),
+            "__intrinsic_wrapping_mul" => (false, "mul"),
+            "__intrinsic_overflows_add" => (true, "add"),
+            "__intrinsic_overflows_sub" => (true, "sub"),
+            "__intrinsic_overflows_mul" => (true, "mul"),
+            _ => return Ok(false),
+        };
+        let operand_ty = args.first().map(|arg| self.operand_ty(body, arg));
+        let Some(operand_ty) = operand_ty
+            .filter(|ty| args.len() == 2 && matches!(ty.kind(), TyKind::Int(_) | TyKind::UInt(_)))
+        else {
+            self.gcx.dcx().emit_error(
+                format!("{name} requires two operands of one integer type"),
+                None,
+            );
+            return Err(crate::error::ReportedError);
+        };
+        let lhs = self
+            .eval_operand(body, locals, &args[0])?
+            .expect("integer arithmetic operand must have a value")
+            .into_int_value();
+        let rhs = self
+            .eval_operand(body, locals, &args[1])?
+            .expect("integer arithmetic operand must have a value")
+            .into_int_value();
+        let result = if overflow_flag {
+            let signed = is_signed(operand_ty);
+            let intrinsic_name =
+                format!("llvm.{}{op}.with.overflow", if signed { "s" } else { "u" });
+            let intrinsic = Intrinsic::find(&intrinsic_name)
+                .unwrap_or_else(|| panic!("ICE: missing LLVM intrinsic {intrinsic_name}"));
+            let decl = intrinsic
+                .get_declaration(&self.module, &[lhs.get_type().as_basic_type_enum()])
+                .unwrap_or_else(|| panic!("ICE: cannot declare LLVM intrinsic {intrinsic_name}"));
+            let call = self
+                .builder
+                .build_call(decl, &[lhs.into(), rhs.into()], op)
+                .unwrap();
+            let pair = call
+                .try_as_basic_value()
+                .basic()
+                .expect("overflow intrinsic returns {value, flag}")
+                .into_struct_value();
+            self.builder
+                .build_extract_value(pair, 1, "arith_ovf")
+                .unwrap()
+        } else {
+            match op {
+                "add" => self.builder.build_int_add(lhs, rhs, "wrapping_add"),
+                "sub" => self.builder.build_int_sub(lhs, rhs, "wrapping_sub"),
+                _ => self.builder.build_int_mul(lhs, rhs, "wrapping_mul"),
+            }
+            .unwrap()
+            .as_basic_value_enum()
+        };
+        self.store_place(destination, body, locals, result)?;
+        Ok(true)
+    }
+
+    /// Lower `__intrinsic_{ctpop,ctlz,cttz,bswap,bitreverse,fshl,fshr}` to
+    /// their LLVM scalar intrinsics. `ctlz` and `cttz` always pass
+    /// `is_zero_poison = false`, `bswap` on `i8` lowers to identity (LLVM
+    /// rejects `llvm.bswap.i8`), and `fshl`/`fshr` narrow or zero-extend the
+    /// `uint32` shift count to the operand bit width so LLVM applies modulo
+    /// bit-width rotation safely for every shift count.
+    fn lower_intrinsic_integer_bit(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+        name: &str,
+    ) -> CompileResult<bool> {
+        let is_bit_intrinsic = matches!(
+            name,
+            "__intrinsic_ctpop"
+                | "__intrinsic_ctlz"
+                | "__intrinsic_cttz"
+                | "__intrinsic_bswap"
+                | "__intrinsic_bitreverse"
+                | "__intrinsic_fshl"
+                | "__intrinsic_fshr"
+        );
+        if !is_bit_intrinsic {
+            return Ok(false);
+        }
+
+        let result = match name {
+            "__intrinsic_ctpop" | "__intrinsic_ctlz" | "__intrinsic_cttz" => {
+                let operand_ty = args.first().map(|arg| self.operand_ty(body, arg));
+                if args.len() != 1
+                    || !operand_ty
+                        .is_some_and(|ty| matches!(ty.kind(), TyKind::Int(_) | TyKind::UInt(_)))
+                {
+                    self.gcx.dcx().emit_error(
+                        format!("{name} requires one integer operand"),
+                        None,
+                    );
+                    return Err(crate::error::ReportedError);
+                }
+                let val = self
+                    .eval_operand(body, locals, &args[0])?
+                    .expect("integer bit operand must have a value")
+                    .into_int_value();
+                let int_ty = val.get_type();
+                let llvm_name = match name {
+                    "__intrinsic_ctpop" => "llvm.ctpop",
+                    "__intrinsic_ctlz" => "llvm.ctlz",
+                    _ => "llvm.cttz",
+                };
+                let intrinsic = Intrinsic::find(llvm_name)
+                    .unwrap_or_else(|| panic!("ICE: missing LLVM intrinsic {llvm_name}"));
+                let decl = intrinsic
+                    .get_declaration(&self.module, &[int_ty.as_basic_type_enum()])
+                    .unwrap_or_else(|| panic!("ICE: cannot declare LLVM intrinsic {llvm_name}"));
+                let call = if name == "__intrinsic_ctpop" {
+                    self.builder
+                        .build_call(decl, &[val.into()], "ctpop")
+                        .unwrap()
+                } else {
+                    let zero_is_poison = self.context.bool_type().const_int(0, false);
+                    self.builder
+                        .build_call(decl, &[val.into(), zero_is_poison.into()], "ctz")
+                        .unwrap()
+                };
+                let raw = call
+                    .try_as_basic_value()
+                    .basic()
+                    .expect("bit-count intrinsic returns integer")
+                    .into_int_value();
+                let u32_ty = self.context.i32_type();
+                let bits = int_ty.get_bit_width();
+                let u32_val = if bits < 32 {
+                    self.builder
+                        .build_int_z_extend(raw, u32_ty, "bitcount_zext")
+                        .unwrap()
+                } else if bits > 32 {
+                    self.builder
+                        .build_int_truncate(raw, u32_ty, "bitcount_trunc")
+                        .unwrap()
+                } else {
+                    raw
+                };
+                u32_val.as_basic_value_enum()
+            }
+            "__intrinsic_bswap" | "__intrinsic_bitreverse" => {
+                let operand_ty = args.first().map(|arg| self.operand_ty(body, arg));
+                if args.len() != 1
+                    || !operand_ty
+                        .is_some_and(|ty| matches!(ty.kind(), TyKind::Int(_) | TyKind::UInt(_)))
+                {
+                    self.gcx.dcx().emit_error(
+                        format!("{name} requires one integer operand"),
+                        None,
+                    );
+                    return Err(crate::error::ReportedError);
+                }
+                let val = self
+                    .eval_operand(body, locals, &args[0])?
+                    .expect("integer bit operand must have a value")
+                    .into_int_value();
+                let int_ty = val.get_type();
+                if name == "__intrinsic_bswap" && int_ty.get_bit_width() <= 8 {
+                    val.as_basic_value_enum()
+                } else {
+                    let llvm_name = if name == "__intrinsic_bswap" {
+                        "llvm.bswap"
+                    } else {
+                        "llvm.bitreverse"
+                    };
+                    let intrinsic = Intrinsic::find(llvm_name)
+                        .unwrap_or_else(|| panic!("ICE: missing LLVM intrinsic {llvm_name}"));
+                    let decl = intrinsic
+                        .get_declaration(&self.module, &[int_ty.as_basic_type_enum()])
+                        .unwrap_or_else(|| {
+                            panic!("ICE: cannot declare LLVM intrinsic {llvm_name}")
+                        });
+                    self.builder
+                        .build_call(decl, &[val.into()], "bitop")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .basic()
+                        .expect("bit intrinsic returns integer")
+                }
+            }
+            "__intrinsic_fshl" | "__intrinsic_fshr" => {
+                let valid = args.len() == 3
+                    && matches!(
+                        self.operand_ty(body, &args[0]).kind(),
+                        TyKind::Int(_) | TyKind::UInt(_)
+                    )
+                    && matches!(
+                        self.operand_ty(body, &args[1]).kind(),
+                        TyKind::Int(_) | TyKind::UInt(_)
+                    )
+                    && matches!(
+                        self.operand_ty(body, &args[2]).kind(),
+                        TyKind::Int(_) | TyKind::UInt(_)
+                    );
+                if !valid {
+                    self.gcx.dcx().emit_error(
+                        format!("{name} requires two integer operands and an integer shift count"),
+                        None,
+                    );
+                    return Err(crate::error::ReportedError);
+                }
+                let hi = self
+                    .eval_operand(body, locals, &args[0])?
+                    .expect("funnel-shift hi operand must have a value")
+                    .into_int_value();
+                let lo = self
+                    .eval_operand(body, locals, &args[1])?
+                    .expect("funnel-shift lo operand must have a value")
+                    .into_int_value();
+                let shift = self
+                    .eval_operand(body, locals, &args[2])?
+                    .expect("funnel-shift shift operand must have a value")
+                    .into_int_value();
+                let int_ty = hi.get_type();
+                let target_bits = int_ty.get_bit_width();
+                let shift_bits = shift.get_type().get_bit_width();
+                let shift_cast = if shift_bits < target_bits {
+                    self.builder
+                        .build_int_z_extend(shift, int_ty, "fsh_shift_zext")
+                        .unwrap()
+                } else if shift_bits > target_bits {
+                    self.builder
+                        .build_int_truncate(shift, int_ty, "fsh_shift_trunc")
+                        .unwrap()
+                } else {
+                    shift
+                };
+                let llvm_name = if name == "__intrinsic_fshl" {
+                    "llvm.fshl"
+                } else {
+                    "llvm.fshr"
+                };
+                let intrinsic = Intrinsic::find(llvm_name)
+                    .unwrap_or_else(|| panic!("ICE: missing LLVM intrinsic {llvm_name}"));
+                let decl = intrinsic
+                    .get_declaration(&self.module, &[int_ty.as_basic_type_enum()])
+                    .unwrap_or_else(|| panic!("ICE: cannot declare LLVM intrinsic {llvm_name}"));
+                self.builder
+                    .build_call(decl, &[hi.into(), lo.into(), shift_cast.into()], "fsh")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .basic()
+                    .expect("funnel-shift intrinsic returns integer")
+            }
+            _ => unreachable!(),
+        };
+
+        self.store_place(destination, body, locals, result)?;
+        Ok(true)
+    }
+
     /// Lower `__intrinsic_checked_{add,sub,mul,div,rem,shl,shr,neg}` calls
     /// emitted by the MIR builder when overflow checks are enabled. The
     /// panic branches go through the call's unwind edge, so defers and the
@@ -5299,7 +5880,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
                 let _ = self.builder.build_unconditional_branch(normal_bb).unwrap();
             }
-            mir::TerminatorKind::Yield { .. } => {
+            mir::TerminatorKind::Yield { .. } | mir::TerminatorKind::GeneratorYield { .. } => {
                 unreachable!(
                     "Yield terminators must be lowered by the state machine transform before codegen"
                 );
@@ -5502,6 +6083,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         if self.try_lower_typed_math_intrinsic(name, body, locals, args, destination)? {
             return Ok(true);
         }
+        if self.lower_intrinsic_integer_arith(body, locals, args, destination, name)? {
+            return Ok(true);
+        }
+        if self.lower_intrinsic_integer_bit(body, locals, args, destination, name)? {
+            return Ok(true);
+        }
         match name {
             "__intrinsic_black_box" => {
                 self.lower_intrinsic_black_box(body, locals, args, destination)?;
@@ -5529,6 +6116,16 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             }
             "$gcAsyncFrameAllocate" => {
                 self.lower_intrinsic_gc_frame_allocate(body, locals, call_args, args, destination)?;
+                Ok(true)
+            }
+            "$gcSyncGeneratorFrameAllocate" => {
+                self.lower_intrinsic_gc_sync_generator_frame_allocate(
+                    body,
+                    locals,
+                    call_args,
+                    args,
+                    destination,
+                )?;
                 Ok(true)
             }
             "__intrinsic_gc_value_descriptor" => {
@@ -7498,6 +8095,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .const_int(*r as u64, false)
                     .as_basic_value_enum(),
             ),
+            mir::ConstantKind::Bytes(value) => Some(
+                value
+                    .with_bytes(|b| self.context.const_string(b, false))
+                    .as_basic_value_enum(),
+            ),
+            mir::ConstantKind::ConstArray(arr) => {
+                self.lower_const_array_with_ty(constant.ty, *arr)
+            }
             mir::ConstantKind::String(sym) => {
                 let ptr = self.lower_string(*sym);
                 let len = self
@@ -7523,6 +8128,31 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .as_basic_value_enum(),
             ),
             mir::ConstantKind::Unit => None,
+            mir::ConstantKind::InterfaceConstant(id, args) => {
+                let interface = InterfaceReference {
+                    id: self
+                        .gcx
+                        .definition_parent(*id)
+                        .expect("interface constant owner"),
+                    arguments: self.resolve_generic_args(*args),
+                    bindings: &[],
+                };
+                let value = self
+                    .conformance_witness(interface)
+                    .and_then(|witness| witness.constant_witnesses.get(id).copied())
+                    .and_then(|implementation| self.gcx.try_get_const(implementation));
+                let Some(ConstKind::Value(value)) = value.map(|constant| constant.kind) else {
+                    self.gcx.dcx().emit_error(
+                        format!(
+                            "cannot resolve interface constant '{}'",
+                            self.gcx.definition_ident(*id).symbol
+                        ),
+                        None,
+                    );
+                    return None;
+                };
+                self.lower_const_value_with_ty(self.mono_ty(constant.ty), value)
+            }
             mir::ConstantKind::ConstParam(param) => {
                 let konst = crate::sema::models::Const {
                     ty: constant.ty,

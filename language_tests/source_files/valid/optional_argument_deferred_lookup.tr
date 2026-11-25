@@ -1,0 +1,158 @@
+// A method call, subscript or property on a receiver whose type still waits
+// for its own literal default (`(0..10).iter()`, `Box { v: 0 }`) is resolved
+// only after that default. Where an Optional is expected, its result must be
+// wrapped once known, rather than having its type fixed to the Optional
+// first. The last section pins inference that this must not change.
+struct Box[T] {
+    v: T
+}
+
+interface Takes {
+    func takeIt(_ n: usize) -> usize {
+        n
+    }
+
+    func maybeTake(_ n: usize) -> usize? {
+        .some(n)
+    }
+
+    subscript(_ index: usize) -> usize {
+        get {
+            index * 2
+        }
+    }
+}
+
+interface Sized {
+    var size: usize { get }
+}
+
+interface Get[T] {
+    func get() -> T;
+}
+
+interface Show {}
+
+conform usize to Show {}
+
+conform[T] Box[T] to Takes {}
+conform[T] Box[T] to Sized {
+    var size: usize {
+        get {
+            9
+        }
+    }
+}
+conform[T] Box[T] to Get[T] {
+    func get() -> T {
+        self.v
+    }
+}
+
+func pick(_ x: usize?, _ y: int32) -> usize {
+    x ?? 0
+}
+
+func pickDouble(_ x: double?, _ y: int32) -> double {
+    x ?? 0.5
+}
+
+func opt32(_ x: int32?) -> int32 {
+    x ?? 1
+}
+
+func make[U](_ u: U?) -> U? {
+    u
+}
+
+func size[V](_ v: V) -> usize {
+    std::mem::sizeOf[V]()
+}
+
+func countAll() -> usize? {
+    return (0..10).iter().count()
+}
+
+func run(_ produce: () -> usize?) -> usize {
+    produce() ?? 0
+}
+
+// usize? or `any Show`: each needs one conversion, and the Optional
+// candidate keeps the result's concrete type, so it is selected.
+func choose(_ x: usize?, _ y: int32) -> string {
+    "optional"
+}
+
+func choose(_ x: any Show, _ y: int32) -> string {
+    "any"
+}
+
+// usize? or usize: the exact usize candidate is still selected.
+func exact(_ x: usize?, _ y: int32) -> string {
+    "optional"
+}
+
+func exact(_ x: usize, _ y: int32) -> string {
+    "usize"
+}
+
+// usize? or int64: only the Optional candidate accepts a usize.
+func widen(_ x: usize?, _ y: int32) -> string {
+    "optional"
+}
+
+func widen(_ x: int64, _ y: int32) -> string {
+    "int64"
+}
+
+func echo(_ x: int32) -> int32 {
+    32
+}
+
+func echo(_ x: int64) -> int32 {
+    64
+}
+
+func main() {
+    // A parameter, an annotated local, a return and the Box form.
+    printf("%d\n", pick((0..10).iter().count(), 1))
+    var annotated: usize? = (0..10).iter().count()
+    printf("%d\n", annotated ?? 0)
+    printf("%d\n", countAll() ?? 0)
+    printf("%d\n", pick(Box { v: 0 }.takeIt(3), 1))
+    printf("%d\n", pick(Box { v: 1.5 }.takeIt(4), 2))
+
+    // A subscript, a property, a collection element and a closure result.
+    printf("%d %d\n", pick(Box { v: 0 }[5], 1), pick(Box { v: 0 }.size, 2))
+    var values: [usize?] = [(0..4).iter().count(), nil]
+    printf("%d %d\n", values[0] ?? 7, values[1] ?? 7)
+    printf("%d\n", run(() => Box { v: 0 }.takeIt(6)))
+
+    // A doubly optional target and a result that is already optional.
+    var nested: usize?? = (0..2).iter().count()
+    printf("%d\n", (nested ?? nil) ?? 0)
+    printf("%d\n", pick(Box { v: 0 }.maybeTake(8), 1))
+
+    // A generic Optional parameter takes the payload type.
+    var made = make((0..3).iter().count())
+    printf("%d %d\n", made ?? 0, size(made))
+
+    // A result that is the receiver's own literal keeps its default.
+    printf("%d\n", opt32(Box { v: 3 }.get()))
+    var literal: int32? = Box { v: 4 }.get()
+    printf("%d\n", literal ?? 0)
+    printf("%v\n", pickDouble(Box { v: 2.5 }.get(), 1))
+
+    // Overload sets that include an Optional candidate.
+    println(choose((0..10).iter().count(), 1))
+    println(exact((0..10).iter().count(), 1))
+    println(widen((0..10).iter().count(), 1))
+    println(widen(Box { v: 0 }.takeIt(2), 1))
+
+    // Pinned: inference that the wait must not change.
+    printf("%d %d\n", Box { v: 5 }.get() as int64, size(Box { v: 5 }.get() as int64))
+    printf("%d\n", echo(Box { v: 0 }.get()))
+    printf("%d\n", size(Box { v: 0 }.get()))
+    printf("%d %d\n", (0..10).iter().map(x => x * 2).count(), size((0..4).iter().map(x => x)[0]))
+    printf("%d\n", size(Box { v: 1.5 }.get()))
+}

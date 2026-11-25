@@ -1,4 +1,3 @@
-import std::collections::List
 import std::marker::AnyObject
 import std::mem::MaybeUninit
 import std::ops::{AsyncFn, Fn}
@@ -50,6 +49,28 @@ extern "taro_intrinsic" {
     func __intrinsic_checked_shl[T](_ lhs: T, _ rhs: T) -> T
     func __intrinsic_checked_shr[T](_ lhs: T, _ rhs: T) -> T
     func __intrinsic_checked_neg[T](_ value: T) -> T
+
+    // Integer arithmetic that never traps, whatever overflow policy the
+    // package containing the call (after inlining or specialization) uses.
+    // wrapping_* returns the two's-complement result modulo 2^N;
+    // overflows_* reports whether the exact result does not fit T.
+    func __intrinsic_wrapping_add[T](_ lhs: T, _ rhs: T) -> T
+    func __intrinsic_wrapping_sub[T](_ lhs: T, _ rhs: T) -> T
+    func __intrinsic_wrapping_mul[T](_ lhs: T, _ rhs: T) -> T
+    func __intrinsic_overflows_add[T](_ lhs: T, _ rhs: T) -> bool
+    func __intrinsic_overflows_sub[T](_ lhs: T, _ rhs: T) -> bool
+    func __intrinsic_overflows_mul[T](_ lhs: T, _ rhs: T) -> bool
+
+    // Bit-manipulation intrinsics on native integers.
+    // ctlz/cttz use is_zero_poison = false (returning the bit width on 0).
+    // fshl/fshr apply the shift count modulo the bit width and never trap.
+    func __intrinsic_ctpop[T](_ value: T) -> uint32
+    func __intrinsic_ctlz[T](_ value: T) -> uint32
+    func __intrinsic_cttz[T](_ value: T) -> uint32
+    func __intrinsic_bswap[T](_ value: T) -> T
+    func __intrinsic_bitreverse[T](_ value: T) -> T
+    func __intrinsic_fshl[T](_ hi: T, _ lo: T, _ shift: uint32) -> T
+    func __intrinsic_fshr[T](_ hi: T, _ lo: T, _ shift: uint32) -> T
 
     // Floating-point math intrinsics (typed ABI symbols).
     // f32 unary
@@ -171,4 +192,8 @@ extern "taro_intrinsic" {
     func __intrinsic_rwlock_read(_ handle: *mut uint8) async -> int32
     func __intrinsic_rwlock_write(_ handle: *mut uint8) async -> int32
     func __intrinsic_sleep(_ duration: std::time::Duration) async -> ()
+    func __intrinsic_async_generator_next[Element](
+        _ frame: *mut uint8,
+        _ poll: (*mut uint8, *mut uint8, *mut uint8) -> uint8,
+    ) async -> std::optional::Optional[Element]
 }

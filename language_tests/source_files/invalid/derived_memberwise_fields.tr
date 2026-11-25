@@ -1,0 +1,16 @@
+// A derived PartialEq, Hashable or Clone names each field that lacks it.
+import std::hash::Hashable
+struct Plain { value: int32 }
+struct Keyed: PartialEq, Hashable {
+    id: int32
+    plain: Plain
+}
+enum Slot: PartialEq, Clone {
+    case empty
+    case filled(int32, Plain)
+    case labelled(at: Plain)
+}
+final class Account: PartialEq, Hashable, Clone {
+    owner: Plain
+}
+func main() {}

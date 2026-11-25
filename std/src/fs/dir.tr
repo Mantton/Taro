@@ -203,3 +203,13 @@ public func createTempDir(
         case .err(err) => return .err(err)
     }
 }
+
+conform ReadDir to std::io::Closeable {
+    type CloseResult = Result[(), Error]
+    public func close() -> Result[(), Error] { self.close() }
+}
+
+conform TempDir to std::io::Closeable {
+    type CloseResult = Result[(), Error]
+    public func close() -> Result[(), Error] { self.close() }
+}

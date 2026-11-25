@@ -1,0 +1,12 @@
+error: integer literal '256' is out of range for type 'uint8'
+ -> language_tests/source_files/invalid/match_and_coalescing_literal_overflows.tr:6:22
+	        case false => 256
+	                      ^^^
+error: integer literal '257' is out of range for type 'uint8'
+ -> language_tests/source_files/invalid/match_and_coalescing_literal_overflows.tr:9:21
+	        case true => 257
+	                     ^^^
+error: integer literal '258' is out of range for type 'uint8'
+ -> language_tests/source_files/invalid/match_and_coalescing_literal_overflows.tr:12:28
+	    fallback := optional ?? 258
+	                            ^^^

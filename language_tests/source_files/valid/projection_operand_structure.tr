@@ -1,0 +1,57 @@
+struct Box[T] { value: T }
+interface Reader {
+    type Output
+    func get() -> Self::Output
+}
+conform Box[int32] to Reader {
+    type Output = usize?
+    func get() -> usize? { .some(4) }
+}
+conform Box[int64] to Reader {
+    type Output = bool
+    func get() -> bool { false }
+}
+func read[T: Reader](_ box: T) -> T::Output { box.get() }
+
+struct RefBox[T] { value: T }
+conform RefBox[int32] to Reader {
+    type Output = &(usize?)
+    func get() -> &(usize?) {
+        var n: usize? = 7
+        return &n
+    }
+}
+conform RefBox[int64] to Reader {
+    type Output = bool
+    func get() -> bool { false }
+}
+
+func propagated() -> usize? {
+    n := 1 + read(Box { value: 0 })!
+    return .some(n)
+}
+
+func main() {
+    a := 1 + (read(Box { value: 0 }) ?? 9)
+    var b: int64 = match (read(Box { value: 0 }), 5000000000) {
+        case (.some(_), value) => value
+        case _ => 0
+    }
+    c := if var n = read(Box { value: 0 }) { n } else { 0 }
+    d := match read(RefBox { value: 0 }) {
+        case .some(n) => n
+        case .none => 0
+    }
+
+    // A match arm can return the projection without inspecting its shape.
+    later := (flag: bool) => {
+        box := Box { value: 0 }
+        result := match flag {
+            case true => read(box)
+            case _ => false
+        }
+        var typed: Box[int64] = box
+        result || read(typed)
+    }
+    println("${a} ${b} ${c} ${d} ${propagated() ?? 0} ${later(true)} ${later(false)}")
+}

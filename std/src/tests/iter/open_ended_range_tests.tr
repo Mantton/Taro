@@ -1,0 +1,125 @@
+import std::collections::{List, Set}
+import std::fmt::debugString
+import std::range::{Range, ClosedRange, RangeFrom, RangeTo, RangeToInclusive, RangeFull}
+
+@test
+func testOpenEndedRangeContainsAndConformances() {
+    std::testing::assertTrue(10 in 10.., "RangeFrom includes start")
+    std::testing::assertFalse(9 in 10.., "RangeFrom excludes below start")
+    std::testing::assertTrue(9 in ..10, "RangeTo includes below end")
+    std::testing::assertFalse(10 in ..10, "RangeTo excludes end")
+    std::testing::assertTrue(10 in ..=10, "RangeToInclusive includes end")
+    std::testing::assertFalse(11 in ..=10, "RangeToInclusive excludes above end")
+    std::testing::assertTrue("any" in .., "RangeFull contains all values")
+
+    std::testing::assertEqual(1_i32..5_i32, Range[int32]::new(1, 5), "Range PartialEq")
+    std::testing::assertEqual(1_i32..=5_i32, ClosedRange[int32]::new(1, 5), "ClosedRange PartialEq")
+    std::testing::assertEqual(3_i32.., RangeFrom[int32]::new(3), "RangeFrom PartialEq")
+    std::testing::assertEqual(..4_i32, RangeTo[int32]::new(4), "RangeTo PartialEq")
+    std::testing::assertEqual(..=4_i32, RangeToInclusive[int32]::new(4), "RangeToInclusive PartialEq")
+    std::testing::assertEqual(.., RangeFull::new(), "RangeFull PartialEq")
+
+    var fromSet = Set[RangeFrom[int32]]::new()
+    fromSet.insert(1..)
+    fromSet.insert(2..)
+    fromSet.insert(1..)
+    std::testing::assertEqual(fromSet.len(), 2 as usize, "RangeFrom Hashable in Set")
+
+    std::testing::assertEqual(debugString(1_i32..5_i32), "1..5", "Range Debug")
+    std::testing::assertEqual(debugString(1_i32..=5_i32), "1..=5", "ClosedRange Debug")
+    std::testing::assertEqual(debugString(1_i32..), "1..", "RangeFrom Debug")
+    std::testing::assertEqual(debugString(..5_i32), "..5", "RangeTo Debug")
+    std::testing::assertEqual(debugString(..=5_i32), "..=5", "RangeToInclusive Debug")
+    std::testing::assertEqual(debugString(..), "..", "RangeFull Debug")
+}
+
+@test
+func testRangeFromUpperLimitLazyStep() {
+    var u8Values = List[uint8]::new()
+    for v in (254_u8..).iter().take(2 as usize) {
+        u8Values.append(v)
+    }
+    std::testing::assertEqual(u8Values, [254_u8, 255_u8], "uint8 RangeFrom yields MAX lazily")
+
+    var i8Values = List[int8]::new()
+    for v in (126_i8..).iter().take(2 as usize) {
+        i8Values.append(v)
+    }
+    std::testing::assertEqual(i8Values, [126_i8, 127_i8], "int8 RangeFrom yields MAX lazily")
+}
+
+@test
+func testCollectionAndStringOpenEndedSlices() {
+    var list: [int32] = [10, 20, 30, 40]
+    std::testing::assertEqual(list[1..], [20, 30, 40], "List RangeFrom")
+    std::testing::assertEqual(list[..2], [10, 20], "List RangeTo")
+    std::testing::assertEqual(list[..=2], [10, 20, 30], "List RangeToInclusive")
+    std::testing::assertEqual(list[..], [10, 20, 30, 40], "List RangeFull")
+    std::testing::assertEqual(list[4..].len(), 0 as usize, "List empty tail")
+    std::testing::assertEqual(list[..0].len(), 0 as usize, "List empty head")
+
+    var arr: [int32; 4] = [10, 20, 30, 40]
+    std::testing::assertEqual(arr[1..], [20, 30, 40], "Array RangeFrom")
+    std::testing::assertEqual(arr[..2], [10, 20], "Array RangeTo")
+    std::testing::assertEqual(arr[..=2], [10, 20, 30], "Array RangeToInclusive")
+    std::testing::assertEqual(arr[..], [10, 20, 30, 40], "Array RangeFull")
+
+    span := arr.asSpan()
+    std::testing::assertEqual(span[1..].len(), 3 as usize, "Span RangeFrom len")
+    std::testing::assertEqual(span[..2].len(), 2 as usize, "Span RangeTo len")
+    std::testing::assertEqual(span[..=2].len(), 3 as usize, "Span RangeToInclusive len")
+    std::testing::assertEqual(span[..].len(), 4 as usize, "Span RangeFull len")
+
+    s := "hello world"
+    std::testing::assertEqual(s[0..5], "hello", "string Range")
+    std::testing::assertEqual(s[0..=4], "hello", "string ClosedRange")
+    std::testing::assertEqual(s[6..], "world", "string RangeFrom")
+    std::testing::assertEqual(s[..5], "hello", "string RangeTo")
+    std::testing::assertEqual(s[..=4], "hello", "string RangeToInclusive")
+    std::testing::assertEqual(s[..], "hello world", "string RangeFull")
+    std::testing::assertEqual(s[11..], "", "string empty tail")
+    std::testing::assertEqual(s[..0], "", "string empty head")
+}
+
+@test
+@expectPanic("list range out of range")
+func testListRangeFromOutOfBoundsPanics() {
+    var list: [int32] = [1, 2, 3]
+    _ = list[4..]
+}
+
+@test
+@expectPanic("list range out of range")
+func testListRangeToInclusiveEmptyPanics() {
+    var list: [int32] = []
+    _ = list[..=0]
+}
+
+@test
+@expectPanic("array range out of range")
+func testArrayRangeToOutOfBoundsPanics() {
+    var arr: [int32; 2] = [1, 2]
+    _ = arr[..3]
+}
+
+@test
+@expectPanic("span range out of range")
+func testSpanRangeToInclusiveOutOfBoundsPanics() {
+    var arr: [int32; 2] = [1, 2]
+    span := arr.asSpan()
+    _ = span[..=2]
+}
+
+@test
+@expectPanic("string range out of range")
+func testStringRangeOutOfBoundsPanics() {
+    s := "abc"
+    _ = s[..4]
+}
+
+@test
+@expectPanic("string range out of range")
+func testStringRangeToInclusiveEmptyPanics() {
+    s := ""
+    _ = s[..=0]
+}

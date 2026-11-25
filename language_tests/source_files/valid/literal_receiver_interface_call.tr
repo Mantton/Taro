@@ -1,0 +1,75 @@
+// An interface method called on a receiver whose type still holds an untyped
+// literal (`Boxed { value: 0 }`) gives its result type at once when only one
+// requirement can supply it. The conformance itself is proved after the
+// literal has its type: int32 by default, int64 when something in the same
+// expression fixes it, and the matching implementation runs.
+struct Boxed[T] {
+    value: T
+}
+
+interface Size {
+    func size() -> usize
+}
+
+conform Boxed[int32] to Size {
+    func size() -> usize {
+        4
+    }
+}
+
+conform Boxed[int64] to Size {
+    func size() -> usize {
+        8
+    }
+}
+
+func takeSize(_ size: usize) -> usize {
+    size
+}
+
+func takeOptional(_ size: usize?) -> usize {
+    size ?? 0
+}
+
+func show(_ value: any std::fmt::Display) -> string {
+    "<${value}>"
+}
+
+func run(_ produce: () -> usize) -> usize {
+    produce()
+}
+
+func main() {
+    // The result type takes part in the surrounding expression.
+    n := Boxed { value: 0 }.size() + 1
+    same := Boxed { value: 0 }.size() == 4
+    printf("%d %v\n", n, same)
+
+    // A later use in the same expression gives the literal int64.
+    wide := if true {
+        var boxed = Boxed { value: 0 }
+        total := boxed.size() + 1
+        var _: Boxed[int64] = boxed
+        total
+    } else {
+        0
+    }
+    printf("%d\n", wide)
+
+    // Arguments of usize, usize? and any Display.
+    printf(
+        "%d %d %s\n",
+        takeSize(Boxed { value: 0 }.size() + 1),
+        takeOptional(Boxed { value: 0 }.size() + 2),
+        show(Boxed { value: 0 }.size() * 3),
+    )
+
+    // Inside closures.
+    printf("%d\n", run(() => Boxed { value: 0 }.size() + 1))
+    printf("%d\n", run(() => {
+        var boxed = Boxed { value: 0 }
+        total := boxed.size() + 1
+        var _: Boxed[int64] = boxed
+        return total
+    }))
+}

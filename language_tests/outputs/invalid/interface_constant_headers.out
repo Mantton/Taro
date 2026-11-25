@@ -1,0 +1,8 @@
+error: associated constant 'WIDTH' is ambiguous on type 'Both'
+ -> language_tests/source_files/invalid/interface_constant_headers.tr:8:25
+	type Ambiguous = [uint8; Both::WIDTH]
+	                         ^^^^^^^^^^^
+error: associated constant 'HIDDEN' is not visible on type 'Both'
+ -> language_tests/source_files/invalid/interface_constant_headers.tr:9:25
+	type Invisible = [uint8; Both::HIDDEN]
+	                         ^^^^^^^^^^^^

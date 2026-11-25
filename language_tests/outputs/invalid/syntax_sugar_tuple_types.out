@@ -1,0 +1,4 @@
+error: expected int32, found bool
+ -> language_tests/source_files/invalid/syntax_sugar_tuple_types.tr:2:33
+	func main() { var a = 1; (a,) = (false,); }
+	                                 ^^^^^

@@ -1,7 +1,9 @@
+import std::default::Default
 import std::collections::{Dictionary, DictEntriesIterator}
 import std::hash::Hashable
 import std::iter::{Iterator, Iterable}
 import std::optional::Optional
+import std::ops::Contains
 
 /// A shared handle to per-key counts (G15); copying a Counter shares it.
 public struct Counter[Key: Hashable] {
@@ -96,4 +98,13 @@ conform[Key: Hashable] CounterIterator[Key] to Iterable {
     type Element = (Key, int32)
     type Iterator = CounterIterator[Key]
     public func iter() -> Self::Iterator { self }
+}
+
+/// Whether the key has a nonzero count.
+conform[Key: Hashable] Counter[Key] to Contains[Key] {
+    public func contains(_ key: &Key) -> bool { self.contains(key) }
+}
+
+conform[Key: Hashable] Counter[Key] to Default {
+    public static func default() -> Self { Self::new() }
 }

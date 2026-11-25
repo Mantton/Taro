@@ -28,7 +28,7 @@ extend FStringCounter {
         while self.hasNext {
             v := self.step()
             guard var v else { break }
-            rendered := f"iter {v}"
+            rendered := "iter ${v}"
             lengths = lengths + std::string::stringLen(rendered)
         }
         return lengths

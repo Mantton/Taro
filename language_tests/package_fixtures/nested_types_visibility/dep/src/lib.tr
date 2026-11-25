@@ -1,0 +1,10 @@
+public struct PublicOwner[T] { value: T }
+internal struct LocalOwner[T] { value: T }
+extend PublicOwner {
+    private enum Hidden { case ready }
+    internal enum Local { case ready }
+    public enum Visible { case ready }
+}
+extend LocalOwner {
+    public enum Child { case ready }
+}

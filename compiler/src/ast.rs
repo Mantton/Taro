@@ -57,6 +57,10 @@ impl Mutability {
 
 pub use crate::span::Identifier;
 
+/// Source labels on tuple positions, in declaration order. Unlabeled positions
+/// take no space here and are always addressable by their numeric index.
+pub type TupleLabels = Vec<(usize, Identifier)>;
+
 #[derive(Debug, Clone, Copy)]
 pub struct Label {
     pub identifier: Identifier,
@@ -236,6 +240,7 @@ pub struct Interface {
 
 #[derive(Debug, Clone)]
 pub struct Struct {
+    pub positional: bool,
     pub generics: Generics,
     pub fields: Vec<FieldDefinition>,
     pub conformances: Option<Conformances>,
@@ -264,6 +269,7 @@ pub struct Function {
     pub signature: FunctionSignature,
     pub block: Option<Block>,
     pub is_unsafe: bool,
+    pub is_const: bool,
     pub is_async: bool,
     pub is_final: bool,
     pub is_override: bool,
@@ -335,8 +341,12 @@ pub struct Impl {
     pub generics: Generics,
     /// Some for `conform T to I`, absent for `extend T`.
     pub interface: Option<Box<Type>>,
+    /// The stored field named in a conformance’s optional `by self.field` clause.
+    pub delegate: Option<Identifier>,
     /// The type implementing the interface (the target type)
     pub target: Box<Type>,
+    /// Nominal declarations in the target type’s namespace. Their generics are independent.
+    pub nested_types: Vec<Declaration>,
     pub declarations: Vec<AssociatedDeclaration>,
 }
 
@@ -381,11 +391,19 @@ pub struct Statement {
     pub span: Span,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeferKind {
+    Always,
+    OnFailure,
+}
+
 #[derive(Debug, Clone)]
 pub enum StatementKind {
     Declaration(FunctionDeclaration),
     Expression(Box<Expression>),
     Variable(Local),
+    Using(Local),
+    AsyncVariable(Local),
     Loop {
         label: Option<Label>,
         block: Block,
@@ -396,10 +414,22 @@ pub enum StatementKind {
         block: Block,
     },
     For(ForStatement),
-    Defer(Block),
+    Defer(DeferKind, Block),
     Guard {
         condition: Box<Expression>,
         else_block: Block,
+    },
+    /// `#for field in #fields(T) { ... }`
+    ComptimeFor {
+        pattern: Pattern,
+        target_type: Box<Type>,
+        body: Block,
+    },
+    /// `#if cond { ... } [else { ... }]`
+    ComptimeIf {
+        condition: Box<Expression>,
+        then_block: Block,
+        else_block: Option<Block>,
     },
 }
 
@@ -451,7 +481,9 @@ pub enum ExpressionKind {
         qualified: bool,
     },
     /// `.bar`
-    InferredMember { name: Identifier },
+    InferredMember {
+        name: Identifier,
+    },
     /// A[T]
     Specialize {
         target: Box<Expression>,
@@ -470,13 +502,15 @@ pub enum ExpressionKind {
 
     /// `[a, b, c]`
     Array(Vec<Box<Expression>>),
+    /// One collection contribution in a call or array literal, written `source...`.
+    Spread(Box<Expression>),
     /// `[expr; len]`
     Repeat {
         value: Box<Expression>,
         count: AnonConst,
     },
     /// `(a, b, c)`
-    Tuple(Vec<Box<Expression>>),
+    Tuple(Vec<Box<Expression>>, TupleLabels),
     /// `["a" : 100]`
     DictionaryLiteral(Vec<MapPair>),
     /// `if foo { } else { }`
@@ -485,12 +519,32 @@ pub enum ExpressionKind {
     ///     case <pattern> => ...
     /// }`
     Match(MatchExpression),
+    /// `select {
+    ///     case <pattern> = await <expr> => ...
+    /// }`
+    Select(SelectExpression),
+    /// `loop { ... }` or `label: loop { ... }`
+    Loop {
+        label: Option<Label>,
+        block: Block,
+    },
     /// `return` | `return expr`
-    Return { value: Option<Box<Expression>> },
-    /// `break` | `break label`
-    Break { label: Option<Identifier> },
+    Return {
+        value: Option<Box<Expression>>,
+    },
+    /// `break` | `break label` | `break expr`
+    ///
+    /// When `label` and `value` are both `Some`, the source was a bare
+    /// `break name`; name resolution decides whether `name` is a visible loop
+    /// label (which wins) or a value expression.
+    Break {
+        label: Option<Identifier>,
+        value: Option<Box<Expression>>,
+    },
     /// `continue` | `continue label`
-    Continue { label: Option<Identifier> },
+    Continue {
+        label: Option<Identifier>,
+    },
     /// `main()`
     Call(Box<Expression>, Vec<ExpressionArgument>),
     /// &a
@@ -507,6 +561,8 @@ pub enum ExpressionKind {
     AssignOp(BinaryOperator, Box<Expression>, Box<Expression>),
     ///` a = b`
     Assign(Box<Expression>, Box<Expression>),
+    /// `a ??= b`: assigns `b` only when the optional `a` is nil.
+    AssignOptional(Box<Expression>, Box<Expression>),
     /// `(a)`
     Parenthesis(Box<Expression>),
     /// `a as int`
@@ -528,6 +584,8 @@ pub enum ExpressionKind {
     ///
     /// `while case .some(value) = foo {}`
     PatternBinding(PatternBindingCondition),
+    /// Boolean test that cannot introduce a binding.
+    PatternIs(PatternBindingCondition),
     /// A Shorthand binding condition for optionals
     ///
     /// `if let foo = foo {}`
@@ -539,7 +597,7 @@ pub enum ExpressionKind {
     /// `a ?? b`
     OptionalDefault(Box<Expression>, Box<Expression>),
     /// lhs..rhs | lhs..=rhs, bool indicates inclusiveness
-    Range(Box<Expression>, Box<Expression>, bool),
+    Range(Option<Box<Expression>>, Option<Box<Expression>>, bool),
     /// `_`
     Wildcard,
     /// |a, b| a + b
@@ -556,8 +614,37 @@ pub enum ExpressionKind {
     OptionalEvaluation(Box<Expression>),
     /// `#cfg(os("macos"))` - compile-time config check
     CfgCheck(CfgExpr),
+    /// `#typeName(T)` - compile-time nominal type name string literal
+    TypeName(Box<Type>),
+    SourceLocation(SourceLocation),
+    Embed {
+        path: String,
+        bytes: bool,
+    },
     /// `await expr` — suspend until the future completes
     Await(Box<Expression>),
+    /// `yield expr` — suspend a generator and yield a value
+    Yield(Box<Expression>),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum SourceLocation {
+    File,
+    Line,
+    Function,
+}
+
+impl SourceLocation {
+    pub const ALL: [Self; 3] = [Self::File, Self::Line, Self::Function];
+
+    /// Reserved names carry the provider ABI through package metadata.
+    pub fn parameter_name(self) -> &'static str {
+        match self {
+            Self::File => "$caller_file",
+            Self::Line => "$caller_line",
+            Self::Function => "$caller_function",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -566,6 +653,7 @@ pub enum Literal {
     Rune {
         value: String,
     },
+    /// Decoded text; raw literals bypass backslash decoding during lexing.
     String {
         value: String,
     },
@@ -594,6 +682,20 @@ pub struct MatchExpression {
 }
 
 #[derive(Debug, Clone)]
+pub struct SelectExpression {
+    pub arms: Vec<SelectArm>,
+    pub kw_span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct SelectArm {
+    pub pattern: Pattern,
+    pub operation: Box<Expression>,
+    pub body: Box<Expression>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
 pub struct MatchArm {
     pub pattern: Pattern,
     pub body: Box<Expression>,
@@ -606,6 +708,12 @@ pub struct ExpressionArgument {
     pub label: Option<Label>,
     pub expression: Box<Expression>,
     pub span: Span,
+    /// A `${...}` value of an interpolated string. Its type selects how it
+    /// prints: `Display` when it has one, else `Debug`.
+    pub interpolated: bool,
+    /// Supplied as a trailing closure `{ ... }` after a call; may omit the
+    /// final parameter's label.
+    pub is_trailing_closure: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -626,6 +734,8 @@ pub struct PatternBindingCondition {
 pub struct ClosureExpression {
     pub signature: FunctionSignature,
     pub is_async: bool,
+    /// True when a headerless trailing closure synthesized an implicit `it` parameter.
+    pub has_implicit_it: bool,
     pub body: Box<Expression>,
     pub span: Span,
 }
@@ -692,7 +802,7 @@ pub enum TypeKind {
     /// Tuple Type
     ///
     /// `(T, V)`
-    Tuple(Vec<Box<Type>>),
+    Tuple(Vec<Box<Type>>, TupleLabels),
     /// Optional Type
     ///
     /// `T?`
@@ -723,7 +833,9 @@ pub enum TypeKind {
     InferedClosureParameter,
     /// any T
     BoxedExistential { interfaces: Vec<PathNode> },
-    /// some T — opaque return type that implements one or more interfaces (Swift-style)
+    /// A direct reference to the type parameter introduced for a `some` input.
+    AnonymousParameter(NodeID, Identifier),
+    /// Opaque return type that implements one or more interfaces.
     ImplTrait { interfaces: Vec<PathNode> },
     /// Qualified type access: `(T as I).Member`
     /// Used to disambiguate associated types when a type implements multiple interfaces
@@ -773,6 +885,16 @@ pub enum PatternKind {
         rest: bool,
         field_span: Span,
     },
+    /// Bind the input before the subpattern applies any projections.
+    At { binding: Box<Pattern>, pattern: Box<Pattern> },
+    /// `is T` or `name as T`. The binding belongs to the success arm.
+    TypeTest { target: Box<Type>, binding: Option<Box<Pattern>> },
+    /// Two compile-time scalar bounds, as in `LOW..=HIGH`.
+    Range {
+        start: Box<Expression>,
+        end: Box<Expression>,
+        inclusive: bool,
+    },
     // Foo | Bar
     Or(Vec<Pattern>, Span),
     // Bool, Rune, String, Integer & Float Literals
@@ -796,6 +918,8 @@ pub struct NamedPatternField {
 /// Represents the 'T: Foo' in Option<T: Foo>
 #[derive(Debug, Clone)]
 pub struct TypeParameter {
+    /// Introduced by a parameter-position `some` and inferred at each call.
+    pub is_anonymous: bool,
     pub id: NodeID,
     pub span: Span,
     pub identifier: Identifier,
@@ -914,6 +1038,7 @@ pub enum VariantKind {
 #[derive(Debug, Clone)]
 pub struct FieldDefinition {
     pub id: NodeID,
+    pub attributes: AttributeList,
     pub default_value: Option<Box<Expression>>,
     pub visibility: Visibility,
     pub mutability: Mutability,
@@ -940,6 +1065,7 @@ pub struct FunctionParameter {
     pub name: Identifier,
     pub annotated_type: Box<Type>,
     pub default_value: Option<Box<Expression>>,
+    pub is_lazy: bool,
     pub is_variadic: bool,
     pub span: Span,
 }
@@ -1002,6 +1128,40 @@ pub enum BinaryOperator {
     Geq,
     /// `!=`
     Neq,
+    /// `in`, membership through `std::ops::Contains`; the container is the RHS.
+    In,
+    /// `!in`, negated membership.
+    NotIn,
+}
+
+impl BinaryOperator {
+    /// The operator as written in source.
+    pub fn symbol(self) -> &'static str {
+        match self {
+            BinaryOperator::Add => "+",
+            BinaryOperator::Sub => "-",
+            BinaryOperator::Mul => "*",
+            BinaryOperator::Div => "/",
+            BinaryOperator::Rem => "%",
+            BinaryOperator::BoolAnd => "&&",
+            BinaryOperator::BoolOr => "||",
+            BinaryOperator::BitAnd => "&",
+            BinaryOperator::BitOr => "|",
+            BinaryOperator::BitXor => "^",
+            BinaryOperator::BitShl => "<<",
+            BinaryOperator::BitShr => ">>",
+            BinaryOperator::IdentityEql => "===",
+            BinaryOperator::IdentityNeq => "!==",
+            BinaryOperator::Eql => "==",
+            BinaryOperator::Lt => "<",
+            BinaryOperator::Gt => ">",
+            BinaryOperator::Leq => "<=",
+            BinaryOperator::Geq => ">=",
+            BinaryOperator::Neq => "!=",
+            BinaryOperator::In => "in",
+            BinaryOperator::NotIn => "!in",
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -1053,6 +1213,8 @@ pub enum OperatorKind {
     Geq,
     Eq,
     Neq,
+
+    Contains,
 }
 
 impl TryFrom<DeclarationKind> for AssociatedDeclarationKind {
@@ -1230,6 +1392,11 @@ pub trait AstVisitor: Sized {
         walk_file(self, node)
     }
 
+    fn visit_nested_types(&mut self, types: &[Declaration]) -> Self::Result {
+        walk_list!(self, visit_declaration, types);
+        Self::Result::output()
+    }
+
     fn visit_declaration(&mut self, node: &Declaration) -> Self::Result {
         walk_declaration(self, node)
     }
@@ -1405,6 +1572,10 @@ pub trait AstVisitor: Sized {
         walk_match_arm(self, node)
     }
 
+    fn visit_select_arm(&mut self, node: &SelectArm) -> Self::Result {
+        walk_select_arm(self, node)
+    }
+
     fn visit_conformance(&mut self, node: &Conformances) -> Self::Result {
         walk_conformance(self, node)
     }
@@ -1484,6 +1655,7 @@ pub fn walk_declaration<V: AstVisitor>(visitor: &mut V, declaration: &Declaratio
             try_visit!(visitor.visit_use_tree(node, UseTreeContext::Export(declaration.id)))
         }
         DeclarationKind::Impl(node) => {
+            try_visit!(visitor.visit_nested_types(&node.nested_types));
             try_visit!(visitor.visit_generics(&node.generics));
             visit_optional!(visitor, visit_type, &node.interface);
             try_visit!(visitor.visit_type(&node.target));
@@ -1654,14 +1826,16 @@ pub fn walk_statement<V: AstVisitor>(visitor: &mut V, s: &Statement) -> V::Resul
         StatementKind::Expression(expr) => {
             try_visit!(visitor.visit_expression(expr))
         }
-        StatementKind::Variable(local) => {
+        StatementKind::Variable(local)
+        | StatementKind::Using(local)
+        | StatementKind::AsyncVariable(local) => {
             try_visit!(visitor.visit_local(local))
         }
         StatementKind::Loop { label, block } => {
             visit_optional!(visitor, visit_label, label);
             try_visit!(visitor.visit_block(block));
         }
-        StatementKind::Defer(block) => {
+        StatementKind::Defer(_, block) => {
             try_visit!(visitor.visit_block(block));
         }
         StatementKind::While {
@@ -1686,6 +1860,24 @@ pub fn walk_statement<V: AstVisitor>(visitor: &mut V, s: &Statement) -> V::Resul
         } => {
             try_visit!(visitor.visit_expression(condition));
             try_visit!(visitor.visit_block(else_block));
+        }
+        StatementKind::ComptimeFor {
+            pattern,
+            target_type,
+            body,
+        } => {
+            try_visit!(visitor.visit_type(target_type));
+            try_visit!(visitor.visit_pattern(pattern));
+            try_visit!(visitor.visit_block(body));
+        }
+        StatementKind::ComptimeIf {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            try_visit!(visitor.visit_expression(condition));
+            try_visit!(visitor.visit_block(then_block));
+            visit_optional!(visitor, visit_block, else_block);
         }
     }
     V::Result::output()
@@ -1726,7 +1918,7 @@ pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::
             try_visit!(visitor.visit_expression(value));
             try_visit!(visitor.visit_anon_constant(count));
         }
-        ExpressionKind::Tuple(expressions) => {
+        ExpressionKind::Tuple(expressions, _) => {
             walk_list!(visitor, visit_expression, expressions)
         }
         ExpressionKind::DictionaryLiteral(pairs) => {
@@ -1741,17 +1933,28 @@ pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::
             try_visit!(visitor.visit_expression(&node.value));
             walk_list!(visitor, visit_match_arm, &node.arms);
         }
+        ExpressionKind::Select(node) => {
+            walk_list!(visitor, visit_select_arm, &node.arms);
+        }
+        ExpressionKind::Loop { label, block } => {
+            visit_optional!(visitor, visit_label, label);
+            try_visit!(visitor.visit_block(block));
+        }
         ExpressionKind::Return { value } => {
             visit_optional!(visitor, visit_expression, value);
         }
-        ExpressionKind::Break { label } | ExpressionKind::Continue { label } => {
+        ExpressionKind::Break { label, value } => {
+            visit_optional!(visitor, visit_identifier, label);
+            visit_optional!(visitor, visit_expression, value);
+        }
+        ExpressionKind::Continue { label } => {
             visit_optional!(visitor, visit_identifier, label);
         }
         ExpressionKind::Call(expression, arguments) => {
             try_visit!(visitor.visit_expression(expression));
             walk_list!(visitor, visit_expression_argument, arguments);
         }
-        ExpressionKind::Reference(expression) => {
+        ExpressionKind::Reference(expression) | ExpressionKind::Spread(expression) => {
             try_visit!(visitor.visit_expression(expression));
         }
         ExpressionKind::Dereference(expression) => {
@@ -1771,7 +1974,7 @@ pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::
             try_visit!(visitor.visit_expression(lhs));
             try_visit!(visitor.visit_expression(rhs));
         }
-        ExpressionKind::Assign(lhs, rhs) => {
+        ExpressionKind::Assign(lhs, rhs) | ExpressionKind::AssignOptional(lhs, rhs) => {
             try_visit!(visitor.visit_expression(lhs));
             try_visit!(visitor.visit_expression(rhs));
         }
@@ -1799,7 +2002,7 @@ pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::
             try_visit!(visitor.visit_expression(lhs));
             try_visit!(visitor.visit_expression(rhs));
         }
-        ExpressionKind::PatternBinding(condition) => {
+        ExpressionKind::PatternBinding(condition) | ExpressionKind::PatternIs(condition) => {
             try_visit!(visitor.visit_pattern(&condition.pattern));
             try_visit!(visitor.visit_expression(&condition.expression));
         }
@@ -1812,8 +2015,12 @@ pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::
             try_visit!(visitor.visit_expression(rhs));
         }
         ExpressionKind::Range(lhs, rhs, _) => {
-            try_visit!(visitor.visit_expression(lhs));
-            try_visit!(visitor.visit_expression(rhs));
+            if let Some(lhs) = lhs {
+                try_visit!(visitor.visit_expression(lhs));
+            }
+            if let Some(rhs) = rhs {
+                try_visit!(visitor.visit_expression(rhs));
+            }
         }
         ExpressionKind::Closure(expression) => {
             try_visit!(visitor.visit_function_signature(&expression.signature));
@@ -1839,10 +2046,13 @@ pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::
             walk_list!(visitor, visit_expression_field, &node.fields);
             visit_optional!(visitor, visit_expression, &node.base);
         }
-        ExpressionKind::CfgCheck(_) => {
-            // CfgExpr doesn't contain inner expressions to visit
+        ExpressionKind::CfgCheck(_)
+        | ExpressionKind::SourceLocation(_)
+        | ExpressionKind::Embed { .. } => {}
+        ExpressionKind::TypeName(ty) => {
+            try_visit!(visitor.visit_type(ty));
         }
-        ExpressionKind::Await(expression) => {
+        ExpressionKind::Await(expression) | ExpressionKind::Yield(expression) => {
             try_visit!(visitor.visit_expression(expression));
         }
     };
@@ -1865,7 +2075,7 @@ pub fn walk_type<V: AstVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
         TypeKind::Parenthesis(internal) => {
             try_visit!(visitor.visit_type(internal))
         }
-        TypeKind::Tuple(elems) => {
+        TypeKind::Tuple(elems, _) => {
             walk_list!(visitor, visit_type, elems);
         }
         TypeKind::Optional(internal) => {
@@ -1897,7 +2107,7 @@ pub fn walk_type<V: AstVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
             try_visit!(visitor.visit_type(target));
             try_visit!(visitor.visit_type(interface));
         }
-        TypeKind::ImplicitSelf => {}
+        TypeKind::ImplicitSelf | TypeKind::AnonymousParameter(..) => {}
         TypeKind::InferedClosureParameter => {}
         TypeKind::Infer => {}
         TypeKind::Never => {}
@@ -1930,6 +2140,20 @@ pub fn walk_pattern<V: AstVisitor>(visitor: &mut V, pattern: &Pattern) -> V::Res
 
         PatternKind::Or(patterns, _) => {
             walk_list!(visitor, visit_pattern, patterns);
+        }
+        PatternKind::At { binding, pattern } => {
+            try_visit!(visitor.visit_pattern(binding));
+            try_visit!(visitor.visit_pattern(pattern));
+        }
+        PatternKind::TypeTest { target, binding } => {
+            try_visit!(visitor.visit_type(target));
+            if let Some(binding) = binding {
+                try_visit!(visitor.visit_pattern(binding));
+            }
+        }
+        PatternKind::Range { start, end, .. } => {
+            try_visit!(visitor.visit_expression(start));
+            try_visit!(visitor.visit_expression(end));
         }
         PatternKind::Literal(anon_const) => {
             try_visit!(visitor.visit_anon_constant(anon_const))
@@ -2227,6 +2451,14 @@ pub fn walk_match_arm<V: AstVisitor>(visitor: &mut V, node: &MatchArm) -> V::Res
     V::Result::output()
 }
 
+pub fn walk_select_arm<V: AstVisitor>(visitor: &mut V, node: &SelectArm) -> V::Result {
+    try_visit!(visitor.visit_expression(&node.operation));
+    try_visit!(visitor.visit_pattern(&node.pattern));
+    try_visit!(visitor.visit_expression(&node.body));
+
+    V::Result::output()
+}
+
 pub fn walk_conformance<V: AstVisitor>(visitor: &mut V, node: &Conformances) -> V::Result {
     walk_list!(visitor, visit_path_node, &node.bounds);
     V::Result::output()
@@ -2251,9 +2483,19 @@ impl Pattern {
         match &self.kind {
             PatternKind::Wildcard
             | PatternKind::Rest
+            | PatternKind::Range { .. }
             | PatternKind::Literal(..)
             | PatternKind::Identifier(..)
             | PatternKind::Member(..) => {}
+            PatternKind::At { binding, pattern } => {
+                binding.walk(action);
+                pattern.walk(action);
+            }
+            PatternKind::TypeTest { binding, .. } => {
+                if let Some(binding) = binding {
+                    binding.walk(action);
+                }
+            }
             PatternKind::Tuple(sub_pats, ..)
             | PatternKind::PathTuple {
                 fields: sub_pats, ..

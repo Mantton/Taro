@@ -1,0 +1,8 @@
+error: variable not bound in pattern: n
+ -> language_tests/source_files/invalid/nested_pattern_names.tr:5:20
+	        case (.left(n) | .right(_), _) => n
+	                    ^
+warning: pattern does not bind variable 'n'
+ -> language_tests/source_files/invalid/nested_pattern_names.tr:5:25
+	        case (.left(n) | .right(_), _) => n
+	                         ^^^^^^^^^

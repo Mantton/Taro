@@ -1,0 +1,43 @@
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_CONTAINS: error: shutdown requested by worker 7
+// EXPECT_STDERR_COUNT: 1 error:
+// ENV: TARO_WORKERS=2
+// An async Result `main` exits like a unit one: once `main` and its defers
+// return, background tasks are abandoned rather than drained, so neither the
+// sleeper nor the allocating spinner delays the error report or the exit.
+struct Shutdown {
+    reason: string
+}
+
+conform Shutdown to std::fmt::Display {
+    func display(_ into: &std::fmt::Formatter) {
+        into.writeString("shutdown requested by ${self.reason}")
+    }
+}
+
+conform Shutdown to std::error::Error {}
+
+func main() async -> Result[(), any std::error::Error] {
+    var _ = std::task::spawn(() async => {
+        defer { print("sleeper defer ran\n") }
+        await std::task::sleep(std::time::Duration::fromSeconds(30_u64))
+        return 0_i32
+    })
+    var _ = std::task::spawn(() async => {
+        var garbage = List[string]::new()
+        while true {
+            garbage.append("allocation ${garbage.len()}")
+            if garbage.len() > 4096 {
+                garbage = List[string]::new()
+            }
+        }
+        return 1_i32
+    })
+    defer { print("main defer ran\n") }
+    await std::testing::yieldNow()
+    var worker = 0
+    for _ in 0..7 {
+        worker += 1
+    }
+    return .err(Shutdown { reason: "worker ${worker}" })
+}

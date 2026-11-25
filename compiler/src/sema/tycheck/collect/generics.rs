@@ -14,25 +14,31 @@ use crate::{
     sema::tycheck::lower::{DefTyLoweringCtx, TypeLowerer},
 };
 
-pub fn run(package: &hir::Package, context: GlobalContext) -> CompileResult<()> {
+pub fn run(package: &hir::Package, context: GlobalContext) -> CompileResult<Vec<DefinitionID>> {
     Actor::run(package, context)
 }
 
 struct Actor<'ctx> {
     context: GlobalContext<'ctx>,
     header_bounds: HeaderBounds,
+    parameter_owners: Vec<DefinitionID>,
 }
 
 impl<'ctx> Actor<'ctx> {
-    fn run(package: &hir::Package, context: GlobalContext<'ctx>) -> CompileResult<()> {
+    fn run(
+        package: &hir::Package,
+        context: GlobalContext<'ctx>,
+    ) -> CompileResult<Vec<DefinitionID>> {
         let mut header_bounds = HeaderBounds::default();
         hir::walk_package(&mut header_bounds, package);
         let mut actor = Actor {
             context,
             header_bounds,
+            parameter_owners: Vec::new(),
         };
         hir::walk_package(&mut actor, package);
-        context.dcx().ok()
+        context.dcx().ok()?;
+        Ok(actor.parameter_owners)
     }
 }
 
@@ -61,6 +67,14 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
         let id = node.id;
 
         match &node.kind {
+            AssociatedDeclarationKind::Constant(_) => {
+                let parent = self
+                    .context
+                    .definition_parent(id)
+                    .expect("associated constant owner");
+                self.context
+                    .cache_generics(id, self.context.generics_of(parent).clone());
+            }
             AssociatedDeclarationKind::Type(node) => self.collect(id, &node.generics),
             AssociatedDeclarationKind::Function(node)
             | AssociatedDeclarationKind::Initializer(node) => self.collect(id, &node.generics),
@@ -94,12 +108,13 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
     }
 }
 
-impl<'ctx> Actor<'ctx> {
-    fn cache_lowered_generic_metadata(&self, owner: DefinitionID) {
-        let gcx = self.context;
+/// Cache defaults after aliases and all generic headers have been registered.
+/// A default may read a forward constant whose declared integer type is an alias.
+pub fn collect_defaults(owners: Vec<DefinitionID>, gcx: GlobalContext<'_>) -> CompileResult<()> {
+    for owner in owners {
         let params = gcx.generics_of(owner).parameters.clone();
         let lowering_ctx = DefTyLoweringCtx::new(owner, gcx);
-        let lowerer: &dyn TypeLowerer<'ctx> = &lowering_ctx;
+        let lowerer = lowering_ctx.lowerer();
 
         for param in &params {
             match &param.kind {
@@ -134,6 +149,10 @@ impl<'ctx> Actor<'ctx> {
         }
     }
 
+    gcx.dcx().ok()
+}
+
+impl<'ctx> Actor<'ctx> {
     /// Argument-pack bounds must be visible before interface superfaces and
     /// generic defaults are lowered. Store them in the ordinary constraint map;
     /// the full constraint collector will retain and deduplicate these bounds.
@@ -231,6 +250,7 @@ impl<'ctx> Actor<'ctx> {
         // Interfaces have implicit self type parameter
         let interface_self_type = if matches!(gcx.definition_kind(id), DefinitionKind::Interface) {
             let def = GenericParameterDefinition {
+                is_anonymous: false,
                 id,
                 index: 0,
                 name: gcx.intern_symbol("Self"),
@@ -285,6 +305,7 @@ impl<'ctx> Actor<'ctx> {
                 let index = start + index;
                 // Definition
                 let def = GenericParameterDefinition {
+                    is_anonymous: param.is_anonymous,
                     name: name,
                     id,
                     index,
@@ -320,7 +341,9 @@ impl<'ctx> Actor<'ctx> {
         };
         gcx.cache_generics(id, lowered_generics);
         self.seed_tuple_bounds(id, generics);
-        self.cache_lowered_generic_metadata(id);
+        if generics.type_parameters.is_some() {
+            self.parameter_owners.push(id);
+        }
     }
 }
 

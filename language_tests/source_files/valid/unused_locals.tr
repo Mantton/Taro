@@ -1,0 +1,121 @@
+// Each unread local warns once, at its name. Parameters, `self`, names that
+// start with '_', and locals read by a closure, an interpolation, a `defer`
+// or a compound assignment are silent. Assigning with '=' is not a read.
+// EXPECT_STDERR_COUNT: 10 warning: unused variable
+// EXPECT_STDERR_COUNT: 1 unused variable 'scale'; prefix it with '_' if this is intended
+// EXPECT_STDERR_CONTAINS: unused_locals.tr:32:4
+// EXPECT_STDERR_CONTAINS: unused variable 'total'
+// EXPECT_STDERR_CONTAINS: unused_locals.tr:33:8
+// EXPECT_STDERR_CONTAINS: unused variable 'right'
+// EXPECT_STDERR_CONTAINS: unused_locals.tr:35:15
+// EXPECT_STDERR_CONTAINS: unused variable 'found'
+// EXPECT_STDERR_CONTAINS: unused_locals.tr:38:11
+// EXPECT_STDERR_CONTAINS: unused variable 'index'
+// EXPECT_STDERR_CONTAINS: unused_locals.tr:40:8
+// EXPECT_STDERR_CONTAINS: unused variable 'payload'
+// EXPECT_STDERR_CONTAINS: unused_locals.tr:44:19
+// EXPECT_STDERR_COUNT: 1 unused variable 'side'
+// EXPECT_STDERR_CONTAINS: unused_locals.tr:54:19
+// EXPECT_STDERR_CONTAINS: unused variable 'inner'
+// EXPECT_STDERR_CONTAINS: unused_locals.tr:60:8
+// EXPECT_STDERR_CONTAINS: unused variable 'item'
+// EXPECT_STDERR_CONTAINS: unused_locals.tr:67:14
+// EXPECT_STDERR_NOT_CONTAINS: unused variable 'self'
+// EXPECT_STDERR_CONTAINS: unused variable 'pending'
+// EXPECT_STDERR_CONTAINS: unused_locals.tr:112:14
+enum Shape {
+    case rect(int32, int32)
+    case circle(int32)
+}
+
+func warned(_ maybe: Optional[int32], _ shape: Shape) -> int32 {
+    scale := 2
+    var total = 0
+    total = 5
+    var (left, right) = (1, 2)
+    var sum = left
+    sum = sum + 1
+    if var found = maybe {}
+    sum = sum + 1
+    for index in 0..3 {
+        sum = sum + 1
+    }
+    match maybe {
+        case .some(payload) => sum = sum + 1
+        case .none => {}
+    }
+    return sum + either(shape)
+}
+
+func either(_ shape: Shape) -> int32 {
+    // An or-pattern binds one variable from each alternative; it is
+    // reported once.
+    match shape {
+        case .rect(side, _) | .circle(side) => 1
+    }
+}
+
+func nested() -> int32 {
+    callback := (value: int32) => {
+        inner := value
+        value
+    }
+    callback(1)
+}
+
+func guarded(_ maybe: Optional[int32]) {
+    guard var item = maybe else { return }
+}
+
+struct Counter {
+    value: int32
+}
+
+extend Counter {
+    init(start: int32) {
+        self.value = start
+    }
+
+    func bump(by amount: int32, _ unused: int32) -> int32 {
+        _scratch := 4
+        var step = 1
+        step += amount
+        return self.value + step
+    }
+}
+
+func silent(_ input: int32) -> int32 {
+    captured := 3
+    read := (x: int32) => x + captured
+    shown := "seen"
+    println("${shown}")
+    deferred := 7
+    defer { println("${deferred}") }
+    var counter = Counter(start: 1)
+    counter.value = 2
+    for _ in 0..2 {}
+    var _ = input
+    _ = input
+    ignored := (_: int32) => 0
+    return read(input) + counter.bump(by: 1, 0) + ignored(0)
+}
+
+func main() {
+    println("${warned(.some(1), .circle(2)) + nested()}")
+    guarded(.none)
+    println("${silent(1)}")
+    println("${drain(3)}")
+}
+
+func drain(_ start: int32) -> int32 {
+    var count = start
+    while var pending = below(count) {
+        count -= 1
+    }
+    return count
+}
+
+func below(_ n: int32) -> Optional[int32] {
+    if n > 0 { return .some(n) }
+    return .none
+}

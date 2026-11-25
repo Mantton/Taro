@@ -1,0 +1,65 @@
+// `Derived[T]` declares `read` for every `T`, so the inherent method wins
+// at every width, whatever `Base: Reader` and `Derived[int64]: Other` add.
+// The calls on untyped receivers settle on it like the typed ones: with an
+// operator applied to the result, and beside a closure whose result is
+// still open in the same interpolation.
+class Base {
+    stamp: int32
+}
+
+extend Base {
+    public init() {
+        self.stamp = 1
+    }
+}
+
+class Derived[T]: Base {
+    value: T
+}
+
+extend[T] Derived[T] {
+    public init(_ value: T) {
+        super.init()
+        self.value = value
+    }
+}
+extend[T] Derived[T] {
+    func read() -> usize {
+        11
+    }
+}
+
+interface Reader {
+    func read() -> usize
+}
+
+conform Base to Reader {
+    func read() -> usize {
+        7
+    }
+}
+
+interface Other {
+    func read() -> usize
+}
+
+conform Derived[int64] to Other {
+    func read() -> usize {
+        9
+    }
+}
+
+func main() {
+    n := Derived(0).read() + 1
+    typed := Derived[int32](0).read() + 1
+    five := () => {
+        return 5
+    }
+    local := () => {
+        var d = Derived(0)
+        return d.read() + 1
+    }
+    println("${n} ${typed}")
+    println("${five()} ${Derived[int32](0).read() + 1}")
+    println("${local()} ${Derived(0).read() + 1}")
+}

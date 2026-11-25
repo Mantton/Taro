@@ -1,0 +1,116 @@
+import std::ops::{Numeric, SignedNumeric, Add}
+
+func sum[T: Numeric](_ values: [T]) -> T {
+    var total = T::zero()
+    for value in values {
+        total = total + value
+    }
+    return total
+}
+
+func product[T: Numeric](_ values: [T]) -> T {
+    var acc = T::one()
+    for value in values {
+        acc = acc * value
+    }
+    return acc
+}
+
+func affine[T: Numeric](_ a: T, _ x: T, _ b: T, _ d: T) -> T {
+    (a * x + b - T::one()) / d
+}
+
+func remainder[T: Numeric](_ a: T, _ b: T) -> T {
+    a % b
+}
+
+func negateSum[T: SignedNumeric](_ values: [T]) -> T {
+    -sum(values)
+}
+
+struct Meters {
+    raw: int64,
+}
+
+conform Meters to Add[int64] {
+    type Output = Meters
+    public func add(_ rhs: int64) -> Meters {
+        Meters { raw: self.raw + rhs }
+    }
+}
+
+@test
+func testNumericSumAcrossSignedUnsignedAndFloat() {
+    var signedValues: [int64] = [-4_i64, 10_i64, 6_i64]
+    var signedTotal: int64 = sum(signedValues)
+    std::testing::assertEqual(signedTotal, 12_i64, "signed int64 sum")
+
+    var unsignedValues: [uint32] = [3_u32, 7_u32, 15_u32]
+    var unsignedTotal: uint32 = sum(unsignedValues)
+    std::testing::assertEqual(unsignedTotal, 25_u32, "unsigned uint32 sum")
+
+    var floatValues: [double] = [1.5, 2.25, 3.25]
+    var floatTotal: double = sum(floatValues)
+    std::testing::assertEqual(floatTotal, 7.0, "double sum")
+
+    var f32Values: [float] = [0.5, 1.5, 2.0]
+    var f32Total: float = sum(f32Values)
+    std::testing::assertEqual(f32Total, 4.0 as float, "float sum")
+
+    var i8Values: [int8] = [1_i8, 2_i8, 3_i8]
+    std::testing::assertEqual(sum(i8Values), 6_i8, "int8 sum")
+
+    var u8Values: [uint8] = [4_u8, 5_u8, 6_u8]
+    std::testing::assertEqual(sum(u8Values), 15_u8, "uint8 sum")
+
+    var isizeValues: [isize] = [-2 as isize, 9 as isize]
+    std::testing::assertEqual(sum(isizeValues), 7 as isize, "isize sum")
+
+    var usizeValues: [usize] = [10 as usize, 20 as usize]
+    std::testing::assertEqual(sum(usizeValues), 30 as usize, "usize sum")
+}
+
+@test
+func testNumericEmptyIdentityAndClosedOperations() {
+    var emptySigned: [int32] = []
+    var signedZero: int32 = sum(emptySigned)
+    std::testing::assertEqual(signedZero, 0_i32, "empty signed sum returns zero")
+
+    var emptyUnsigned: [uint64] = []
+    var unsignedZero: uint64 = sum(emptyUnsigned)
+    std::testing::assertEqual(unsignedZero, 0_u64, "empty unsigned sum returns zero")
+
+    var emptyFloat: [double] = []
+    var floatZero: double = sum(emptyFloat)
+    std::testing::assertEqual(floatZero, 0.0, "empty double sum returns zero")
+
+    var emptyProduct: [int32] = []
+    std::testing::assertEqual(product(emptyProduct), 1_i32, "empty product returns one")
+
+    var factors: [uint16] = [2_u16, 3_u16, 5_u16]
+    std::testing::assertEqual(product(factors), 30_u16, "uint16 product")
+
+    std::testing::assertEqual(affine(3_i32, 4_i32, 5_i32, 4_i32), 4_i32, "int32 affine")
+    std::testing::assertEqual(affine(2.0, 5.0, 3.0, 4.0), 3.0, "double affine")
+    std::testing::assertEqual(remainder(17_u32, 5_u32), 2_u32, "uint32 remainder")
+
+    var signedItems: [int64] = [3_i64, 4_i64]
+    std::testing::assertEqual(negateSum(signedItems), -7_i64, "signed negateSum")
+    var floatItems: [double] = [1.5, 2.5]
+    std::testing::assertEqual(negateSum(floatItems), -4.0, "double negateSum")
+}
+
+@test
+func testOrdinaryOverloadSelectionStillWorks() {
+    var plainInt = 10 + 20 * 3
+    std::testing::assertEqual(plainInt, 70, "concrete int arithmetic")
+
+    var wideInt: int64 = 100 + 200
+    std::testing::assertEqual(wideInt, 300_i64, "concrete int64 literal inference")
+
+    var joined = "taro" + "-numeric"
+    std::testing::assertEqual(joined, "taro-numeric", "string Add overload")
+
+    var dist = Meters { raw: 5_i64 } + 7_i64
+    std::testing::assertEqual(dist.raw, 12_i64, "custom Add overload")
+}

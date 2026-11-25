@@ -1,0 +1,8 @@
+// A lazy parameter and an eager parameter with the same label and result type
+// are equally applicable and remain ambiguous.
+func dup(_ value: @lazy int32) -> int32 { value() }
+func dup(_ value: int32) -> int32 { value }
+
+func main() {
+    var x: int32 = dup(1_i32)
+}

@@ -12,6 +12,7 @@ pub mod analysis;
 pub mod builder;
 
 pub(crate) mod class_defaults;
+pub mod const_eval;
 pub mod copy_clone;
 pub(crate) mod function_pointer_call;
 
@@ -21,6 +22,7 @@ pub mod optimize;
 pub mod package;
 pub mod pretty;
 pub(crate) mod primitive_operators;
+pub(crate) mod tuple_conformances;
 #[cfg(test)]
 pub(crate) mod test_support;
 #[cfg(test)]
@@ -83,6 +85,9 @@ pub struct Body<'ctx> {
     pub return_local: LocalId,
     pub phase: MirPhase,
     pub is_async: bool,
+    /// Present on pre-transform synchronous generator bodies; cleared once
+    /// `GeneratorTransform` lowers the body into a constructor + step thunk.
+    pub generator_element_ty: Option<Ty<'ctx>>,
 }
 
 impl<'ctx> Body<'ctx> {
@@ -310,7 +315,8 @@ impl<'ctx> TerminatorKind<'ctx> {
             | Self::Return
             | Self::ResumeUnwind
             | Self::Unreachable
-            | Self::Yield { .. } => None,
+            | Self::Yield { .. }
+            | Self::GeneratorYield { .. } => None,
         }
     }
 }
@@ -380,6 +386,18 @@ pub enum TerminatorKind<'ctx> {
         /// that surrounded the source-level `await`.
         unwind: CallUnwindAction,
     },
+
+    /// Suspend point for a generator `yield value`.
+    GeneratorYield {
+        /// The yielded element value
+        value: Operand<'ctx>,
+        /// Block to jump to on the next `next()` resume
+        resume: BasicBlockId,
+        /// Cleanup path run when the generator is closed while suspended here
+        cancel: BasicBlockId,
+        /// Terminal marker reached after `cancel` cleanup finishes
+        cancel_complete: BasicBlockId,
+    },
 }
 
 impl<'a> TerminatorKind<'a> {
@@ -417,6 +435,7 @@ impl<'a> TerminatorKind<'a> {
                 edges.extend(no_result.iter().copied());
                 edges
             }
+            Self::GeneratorYield { resume, cancel, .. } => vec![*resume, *cancel],
             Self::Return | Self::ResumeUnwind | Self::Unreachable | Self::UnresolvedGoto => {
                 Vec::new()
             }
@@ -457,6 +476,16 @@ impl<'a> TerminatorKind<'a> {
                 if let CallUnwindAction::Cleanup(cleanup) = unwind {
                     *cleanup = map(*cleanup);
                 }
+            }
+            Self::GeneratorYield {
+                resume,
+                cancel,
+                cancel_complete,
+                ..
+            } => {
+                *resume = map(*resume);
+                *cancel = map(*cancel);
+                *cancel_complete = map(*cancel_complete);
             }
             Self::Return | Self::ResumeUnwind | Self::Unreachable | Self::UnresolvedGoto => {}
         }
@@ -504,6 +533,11 @@ impl<'a> TerminatorKind<'a> {
                 (2, CallUnwindAction::Terminate) | (3, CallUnwindAction::Cleanup(_)) => {
                     no_result.as_mut()
                 }
+                _ => None,
+            },
+            Self::GeneratorYield { resume, cancel, .. } => match edge {
+                0 => Some(resume),
+                1 => Some(cancel),
                 _ => None,
             },
             _ => None,
@@ -595,6 +629,8 @@ use crate::sema::models::{GenericArguments, GenericParameter};
 
 #[derive(Debug, Clone)]
 pub enum ConstantKind<'ctx> {
+    Bytes(crate::span::InternedBytes),
+    ConstArray(crate::sema::models::InternedConstArray),
     Bool(bool),
     Rune(char),
     String(Symbol),
@@ -604,6 +640,8 @@ pub enum ConstantKind<'ctx> {
     Function(DefinitionID, GenericArguments<'ctx>, Ty<'ctx>),
     GlobalVariableAddress(DefinitionID),
     ConstParam(GenericParameter),
+    /// Select the concrete witness after substituting the caller’s generic arguments.
+    InterfaceConstant(DefinitionID, GenericArguments<'ctx>),
 }
 
 #[derive(Debug, Clone)]
@@ -783,7 +821,8 @@ pub fn for_each_function_constant_in_body<'ctx>(
                         for_each_function_constant_in_operand(argument, &mut visit);
                     }
                 }
-                TerminatorKind::Yield { value, .. } => {
+                TerminatorKind::Yield { value, .. }
+                | TerminatorKind::GeneratorYield { value, .. } => {
                     for_each_function_constant_in_operand(value, &mut visit);
                 }
                 _ => {}
@@ -1104,8 +1143,9 @@ impl Category {
             | thir::ExprKind::If { .. }
             | thir::ExprKind::Match { .. }
             | thir::ExprKind::Return { .. }
-            | thir::ExprKind::Break
-            | thir::ExprKind::Continue
+            | thir::ExprKind::Loop { .. }
+            | thir::ExprKind::Break { .. }
+            | thir::ExprKind::Continue { .. }
             | thir::ExprKind::Call { .. }
             | thir::ExprKind::BoxExistential { .. }
             | thir::ExprKind::ExistentialUpcast { .. }
@@ -1113,7 +1153,10 @@ impl Category {
             | thir::ExprKind::Adt(..)
             | thir::ExprKind::Closure { .. }
             | thir::ExprKind::ListLiteral { .. }
-            | thir::ExprKind::Await { .. } => Category::Rvalue(RvalueFunc::Into),
+            | thir::ExprKind::Await { .. }
+            | thir::ExprKind::Yield { .. }
+            | thir::ExprKind::AwaitAsyncVar { .. }
+            | thir::ExprKind::Select { .. } => Category::Rvalue(RvalueFunc::Into),
 
             thir::ExprKind::Assign { .. }
             | thir::ExprKind::AssignOp { .. }

@@ -2,20 +2,16 @@ use crate::{
     compile::context::{ConstEvaluationState, GlobalContext},
     hir,
     sema::{
-        models::{ConstKind, ConstValue, FloatTy, IntTy, Ty, TyKind, UIntTy},
+        models::{ConstKind, ConstValue, FloatTy, IntTy, InterfaceReference, Ty, TyKind, UIntTy},
         resolve::models::{DefinitionKind, VariantCtorKind},
-        tycheck::results::TypeCheckResults,
+        tycheck::{
+            lower::{DefTyLoweringCtx, TypeLowerer},
+            results::TypeCheckResults,
+            utils::normalize_aliases,
+        },
     },
     span::Span,
 };
-
-pub fn register_const_definition<'ctx>(
-    gcx: GlobalContext<'ctx>,
-    id: hir::DefinitionID,
-    expression: &hir::Expression,
-) {
-    gcx.register_const_value_expression(id, expression);
-}
 
 pub fn eval_const_definition<'ctx>(
     gcx: GlobalContext<'ctx>,
@@ -65,7 +61,10 @@ pub fn eval_const_definition<'ctx>(
         None => {}
     }
 
-    let Some(expression) = gcx.const_value_expression(id) else {
+    let Some((node, expression)) = gcx
+        .const_definition(id)
+        .and_then(|node| Some((node, node.expr.as_deref()?)))
+    else {
         let ident = gcx.definition_ident(id);
         let name = gcx.symbol_text(ident.symbol);
         gcx.dcx().emit_error(
@@ -81,8 +80,14 @@ pub fn eval_const_definition<'ctx>(
 
     gcx.set_const_evaluation_state(id, ConstEvaluationState::Evaluating);
     gcx.push_const_evaluation(id);
-    let expected = gcx.try_get_type(id);
-    let evaluated = eval_const_expression_inner(gcx, expression, expected, None);
+    let lowerer = DefTyLoweringCtx::new(id, gcx);
+    // Even a forward reference used by a type header must compute at the
+    // declared width. Start cycle tracking before lowering its annotation.
+    let expected = gcx
+        .try_get_type(id)
+        .unwrap_or_else(|| lowerer.lowerer().lower_type(&node.ty));
+    let evaluated =
+        eval_const_expression_inner(gcx, expression, Some(expected), Evaluation::Early(&lowerer));
     gcx.pop_const_evaluation(id);
 
     if matches!(
@@ -107,11 +112,16 @@ pub fn eval_const_definition<'ctx>(
 /// Evaluate a constant expression using `expected` as the type of arithmetic
 /// subexpressions when type-check results are not available yet.
 pub fn eval_const_expression_with_expected_type<'ctx>(
-    gcx: GlobalContext<'ctx>,
+    lowerer: &dyn TypeLowerer<'ctx>,
     expression: &hir::Expression,
     expected: Ty<'ctx>,
 ) -> Option<ConstValue> {
-    eval_const_expression_inner(gcx, expression, Some(expected), None)
+    eval_const_expression_inner(
+        lowerer.gcx(),
+        expression,
+        Some(expected),
+        Evaluation::Early(lowerer),
+    )
 }
 
 /// Evaluate a fully type-checked constant expression. Integer operations are
@@ -121,18 +131,31 @@ pub fn eval_const_expression_with_type_results<'ctx>(
     expression: &hir::Expression,
     results: &TypeCheckResults<'ctx>,
 ) -> Option<ConstValue> {
-    eval_const_expression_inner(gcx, expression, None, Some(results))
+    eval_const_expression_inner(gcx, expression, None, Evaluation::Checked(results))
+}
+
+#[derive(Clone, Copy)]
+enum Evaluation<'a, 'ctx> {
+    Early(&'a dyn TypeLowerer<'ctx>),
+    Checked(&'a TypeCheckResults<'ctx>),
+}
+
+impl<'ctx> Evaluation<'_, 'ctx> {
+    fn node_type(self, id: hir::NodeID) -> Option<Ty<'ctx>> {
+        match self {
+            Self::Checked(results) => results.try_node_type(id),
+            Self::Early(_) => None,
+        }
+    }
 }
 
 fn eval_const_expression_inner<'ctx>(
     gcx: GlobalContext<'ctx>,
     expression: &hir::Expression,
     expected: Option<Ty<'ctx>>,
-    results: Option<&TypeCheckResults<'ctx>>,
+    context: Evaluation<'_, 'ctx>,
 ) -> Option<ConstValue> {
-    let expression_ty = results
-        .and_then(|results| results.try_node_type(expression.id))
-        .or(expected);
+    let expression_ty = context.node_type(expression.id).or(expected);
 
     let value = match &expression.kind {
         hir::ExpressionKind::Literal(lit) => eval_const_literal(gcx, lit, expression.span),
@@ -144,7 +167,7 @@ fn eval_const_expression_inner<'ctx>(
                     | hir::UnaryOperator::BitwiseNot
             ) =>
         {
-            let value = eval_const_expression_inner(gcx, expr, expression_ty, results)?;
+            let value = eval_const_expression_inner(gcx, expr, expression_ty, context)?;
             eval_const_unary(gcx, *op, value, expression_ty, expression.span)
         }
         hir::ExpressionKind::Binary(op, lhs, rhs) => {
@@ -152,7 +175,7 @@ fn eval_const_expression_inner<'ctx>(
                 op,
                 hir::BinaryOperator::BoolAnd | hir::BinaryOperator::BoolOr
             ) {
-                let lhs = eval_const_expression_inner(gcx, lhs, Some(gcx.types.bool), results)?;
+                let lhs = eval_const_expression_inner(gcx, lhs, Some(gcx.types.bool), context)?;
                 let ConstValue::Bool(lhs) = lhs else {
                     return emit_const_type_error(gcx, expression.span);
                 };
@@ -162,7 +185,7 @@ fn eval_const_expression_inner<'ctx>(
                 } else if matches!((op, lhs), (hir::BinaryOperator::BoolOr, true)) {
                     Some(ConstValue::Bool(true))
                 } else {
-                    let rhs = eval_const_expression_inner(gcx, rhs, Some(gcx.types.bool), results)?;
+                    let rhs = eval_const_expression_inner(gcx, rhs, Some(gcx.types.bool), context)?;
                     match rhs {
                         ConstValue::Bool(rhs) => Some(ConstValue::Bool(rhs)),
                         _ => return emit_const_type_error(gcx, expression.span),
@@ -174,56 +197,97 @@ fn eval_const_expression_inner<'ctx>(
                 } else {
                     None
                 };
-                let lhs = eval_const_expression_inner(gcx, lhs, operand_expected, results)?;
-                let rhs = eval_const_expression_inner(gcx, rhs, operand_expected, results)?;
+                let lhs = eval_const_expression_inner(gcx, lhs, operand_expected, context)?;
+                let rhs = eval_const_expression_inner(gcx, rhs, operand_expected, context)?;
                 eval_const_binary(gcx, *op, lhs, rhs, expression_ty, expression.span)
             }
         }
         hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => {
-            eval_const_path(gcx, path, expression.span)
+            eval_const_path(gcx, &path.resolution, expression.span)
+        }
+        hir::ExpressionKind::Path(hir::ResolvedPath::Relative(..))
+        | hir::ExpressionKind::InferredMember { .. } => {
+            let resolution = match context {
+                Evaluation::Checked(results) => checked_static_resolution(gcx, expression, results),
+                Evaluation::Early(lowerer) => {
+                    early_static_member(lowerer, expression, expression_ty)
+                }
+            };
+            if matches!(resolution, Some(hir::Resolution::Error)) {
+                return None;
+            }
+            eval_const_path(
+                gcx,
+                &resolution.unwrap_or(hir::Resolution::Error),
+                expression.span,
+            )
         }
         hir::ExpressionKind::CastAs(value, target) => {
-            let source_ty = results
-                .and_then(|results| results.try_node_type(value.id))
+            let source_ty = context
+                .node_type(value.id)
                 .or_else(|| const_expression_type_hint(gcx, value));
-            let target_ty = results
-                .and_then(|results| results.try_node_type(expression.id))
+            let target_ty = context
+                .node_type(expression.id)
                 .or_else(|| const_cast_target_type(gcx, target))
                 .or(expression_ty);
-            let value = eval_const_expression_inner(gcx, value, source_ty, results)?;
+            let value = eval_const_expression_inner(gcx, value, source_ty, context)?;
             eval_const_cast(gcx, value, source_ty, target_ty, expression.span)
         }
         hir::ExpressionKind::If(node) => {
             let condition =
-                eval_const_expression_inner(gcx, &node.condition, Some(gcx.types.bool), results)?;
+                eval_const_expression_inner(gcx, &node.condition, Some(gcx.types.bool), context)?;
             let ConstValue::Bool(condition) = condition else {
                 return emit_const_type_error(gcx, node.condition.span);
             };
 
             if condition {
-                eval_const_expression_inner(gcx, &node.then_block, expression_ty, results)
+                eval_const_expression_inner(gcx, &node.then_block, expression_ty, context)
             } else if let Some(else_block) = &node.else_block {
-                eval_const_expression_inner(gcx, else_block, expression_ty, results)
+                eval_const_expression_inner(gcx, else_block, expression_ty, context)
             } else {
                 Some(ConstValue::Unit)
             }
         }
         hir::ExpressionKind::Block(block) if block.statements.is_empty() => {
             if let Some(tail) = &block.tail {
-                eval_const_expression_inner(gcx, tail, expression_ty, results)
+                eval_const_expression_inner(gcx, tail, expression_ty, context)
             } else {
                 Some(ConstValue::Unit)
             }
         }
         _ => {
-            gcx.dcx().emit_error(
-                "initializer must be a constant expression".into(),
-                Some(expression.span),
-            );
-            None
+            if crate::mir::const_eval::hir_expr_needs_mir_const_eval(expression)
+                && let Evaluation::Early(lowerer) = context
+                && let Some(owner_id) = lowerer.current_definition()
+            {
+                crate::mir::const_eval::eval_const_expr_on_demand(
+                    gcx,
+                    owner_id,
+                    expression,
+                    expression_ty,
+                )
+            } else {
+                gcx.dcx().emit_error(
+                    "initializer must be a constant expression".into(),
+                    Some(expression.span),
+                );
+                None
+            }
         }
     }?;
 
+    if let Evaluation::Checked(results) = context
+        && matches!(value, ConstValue::EnumUnitVariant(_))
+        && results
+            .node_adjustments(expression.id)
+            .is_some_and(|a| !a.is_empty())
+    {
+        gcx.dcx().emit_error(
+            "enum conversion is not a constant expression".into(),
+            Some(expression.span),
+        );
+        return None;
+    }
     validate_value_for_type(gcx, value, expression_ty, expression.span)
 }
 
@@ -238,6 +302,7 @@ fn const_expression_type_hint<'ctx>(
     Some(match literal {
         hir::Literal::Bool(_) => gcx.types.bool,
         hir::Literal::Rune(_) => gcx.types.rune,
+        hir::Literal::Bytes(value) => gcx.byte_array_type(value.len()),
         hir::Literal::String(_) => gcx.types.string,
         hir::Literal::Float(_) => gcx.types.float64,
         hir::Literal::Integer {
@@ -369,6 +434,7 @@ fn eval_const_literal<'ctx>(
     Some(match lit {
         hir::Literal::Bool(b) => ConstValue::Bool(*b),
         hir::Literal::Rune(r) => ConstValue::Rune(*r),
+        hir::Literal::Bytes(v) => ConstValue::Bytes(*v),
         hir::Literal::String(s) => ConstValue::String(*s),
         hir::Literal::Integer { value, .. } => ConstValue::Integer(*value as i128),
         hir::Literal::Float(f) => ConstValue::Float(*f),
@@ -419,12 +485,224 @@ fn eval_const_unary<'ctx>(
     }
 }
 
+/// Resolve a constant's receiver before bodies are checked. The declared
+/// context can supply missing enum arguments; otherwise keep them open while
+/// testing extension targets, just as for an ordinary type-relative read.
+fn early_static_member<'ctx>(
+    lowerer: &dyn TypeLowerer<'ctx>,
+    expression: &hir::Expression,
+    expected: Option<Ty<'ctx>>,
+) -> Option<hir::Resolution> {
+    let gcx = lowerer.gcx();
+    let current = lowerer.current_definition()?;
+    let mut local_inference = None;
+    // Retain context only when lookup uses it to infer the receiver. For
+    // example, an array length permits any nonnegative integer constant.
+    let mut receiver_context = None;
+    let (base_ty, name) = match &expression.kind {
+        hir::ExpressionKind::Path(hir::ResolvedPath::Relative(base, segment)) => {
+            let mut receiver = None;
+            if let hir::TypeKind::Nominal(hir::ResolvedPath::Resolved(path)) = &base.kind {
+                match path.resolution {
+                    hir::Resolution::Definition(_, DefinitionKind::Interface) => return None,
+                    hir::Resolution::Definition(
+                        id,
+                        DefinitionKind::Enum | DefinitionKind::Struct,
+                    ) if path.segments.last()?.arguments.is_none()
+                        && !gcx.generics_of(id).is_empty() =>
+                    {
+                        if let Some(context) = expected.map(|ty| normalize_aliases(gcx, ty))
+                            && matches!(context.kind(), TyKind::Adt(def, _) if def.id == id)
+                        {
+                            receiver = Some(context);
+                            receiver_context = Some(context);
+                        } else {
+                            let icx =
+                                std::rc::Rc::new(crate::sema::tycheck::infer::InferCtx::new(gcx));
+                            let args = icx.fresh_args_for_def(id, base.span);
+                            receiver = Some(super::instantiate::instantiate_ty_with_args(
+                                gcx,
+                                gcx.get_type(id),
+                                args,
+                            ));
+                            local_inference = Some(icx);
+                            receiver_context = expected;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            (
+                receiver.unwrap_or_else(|| lowerer.lower_type(base)),
+                segment.identifier.symbol,
+            )
+        }
+        hir::ExpressionKind::InferredMember { name } => {
+            receiver_context = expected;
+            (expected?, name.symbol)
+        }
+        _ => return None,
+    };
+    let base_ty = normalize_aliases(gcx, base_ty);
+    if let TyKind::Adt(def, _) = base_ty.kind()
+        && let Some(definition) = gcx.try_get_enum_definition(def.id)
+        && let Some(variant) = definition.variants.iter().find(|v| v.name == name)
+    {
+        return Some(hir::Resolution::Definition(
+            variant.ctor_def_id,
+            gcx.definition_kind(variant.ctor_def_id),
+        ));
+    }
+    let inherent = super::members::inherent_constant(
+        gcx,
+        base_ty,
+        name,
+        current,
+        local_inference.as_ref(),
+        expression.span,
+    );
+    let mut header_witness = None;
+    let selected = inherent.and_then(|found| {
+        if let Some(id) = found {
+            return Ok(Some(hir::Resolution::Definition(
+                id,
+                DefinitionKind::AssociatedConstant,
+            )));
+        }
+        let selected = super::members::interface_constant(gcx, base_ty, name, current)?;
+        Ok(selected.map(|(requirement, reference)| {
+            let resolution = constant_witness(gcx, requirement, reference, expression.span);
+            if gcx.store.collecting_constant_headers.get() {
+                header_witness = resolution.definition_id();
+            }
+            resolution
+        }))
+    });
+    match selected {
+        Ok(Some(resolution)) => {
+            gcx.store
+                .constant_member_uses
+                .borrow_mut()
+                .entry(expression.id)
+                .or_insert_with(|| crate::compile::context::ConstantMemberUse {
+                    owner: current,
+                    expression: gcx.store.arenas.global.alloc(expression.clone()),
+                    expected: receiver_context
+                        .map(|ty| normalize_aliases(gcx, ty))
+                        .filter(|ty| !ty.contains_inference()),
+                    header_witness,
+                });
+            Some(resolution)
+        }
+        Ok(None) => None,
+        Err(error) => {
+            gcx.dcx()
+                .emit_error(error.format(gcx), Some(expression.span));
+            Some(hir::Resolution::Error)
+        }
+    }
+}
+
+pub(crate) fn checked_static_resolution<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    expression: &hir::Expression,
+    results: &TypeCheckResults<'ctx>,
+) -> Option<hir::Resolution> {
+    let resolved = results.value_resolution(expression.id);
+    if let Some(hir::Resolution::Definition(id, DefinitionKind::AssociatedConstant)) = resolved
+        && let Some(parent) = gcx.definition_parent(id)
+        && gcx.definition_kind(parent) == DefinitionKind::Interface
+    {
+        let reference = InterfaceReference {
+            id: parent,
+            arguments: results.instantiation(expression.id)?,
+            bindings: &[],
+        };
+        return Some(constant_witness(gcx, id, reference, expression.span));
+    }
+    resolved
+}
+
+/// Method signatures may themselves depend on this length. Select the actual
+/// conformance record first and use its override, inherited override or default.
+/// The checked expression verifies the definition again with the finished witness.
+fn header_constant_witness<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    requirement: hir::DefinitionID,
+    mut goal: crate::sema::models::InterfaceGoal<'ctx>,
+) -> Option<hir::DefinitionID> {
+    use crate::sema::models::{SelectionMode, SelectionResult};
+    let name = gcx.definition_ident(requirement).symbol;
+    let mut visited = rustc_hash::FxHashSet::default();
+    loop {
+        let SelectionResult::Selected(selected) =
+            gcx.select_interface_impl(goal, SelectionMode::Typecheck)
+        else {
+            return None;
+        };
+        let id = selected.record_id?;
+        if !visited.insert(id) {
+            return None;
+        }
+        let record = gcx.conformance_record(id)?;
+        if record.extension.package() != gcx.package_index() {
+            return gcx
+                .build_conformance_witness(goal, SelectionMode::Typecheck)
+                .ok()?
+                .constant_witnesses
+                .get(&requirement)
+                .copied();
+        }
+        if let Some((_, id)) = gcx
+            .named_constant_headers(name)
+            .into_iter()
+            .find(|(owner, _)| *owner == record.extension)
+        {
+            return Some(id);
+        }
+        match crate::sema::impl_engine::witness::inherited_class_goal(gcx, &record, selected.subst)
+        {
+            Some(parent) => goal = parent,
+            None => return Some(requirement),
+        }
+    }
+}
+
+/// A declaration initializer needs a concrete value. Ordinary generic reads
+/// keep the requirement in MIR until the caller's arguments are known.
+fn constant_witness<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    requirement: hir::DefinitionID,
+    interface: InterfaceReference<'ctx>,
+    span: Span,
+) -> hir::Resolution {
+    let witness = if gcx.store.collecting_constant_headers.get() {
+        interface
+            .to_goal(gcx, &[])
+            .and_then(|goal| header_constant_witness(gcx, requirement, goal))
+    } else {
+        crate::sema::tycheck::resolve_conformance_witness(gcx, interface)
+            .and_then(|witness| witness.constant_witnesses.get(&requirement).copied())
+    };
+    if let Some(id) = witness {
+        return hir::Resolution::Definition(id, DefinitionKind::AssociatedConstant);
+    }
+    gcx.dcx().emit_error(
+        format!(
+            "constant evaluation requires a concrete implementation of '{}'",
+            gcx.definition_ident(requirement).symbol
+        ),
+        Some(span),
+    );
+    hir::Resolution::Error
+}
+
 fn eval_const_path<'ctx>(
     gcx: GlobalContext<'ctx>,
-    path: &hir::Path,
+    resolution: &hir::Resolution,
     span: Span,
 ) -> Option<ConstValue> {
-    match path.resolution {
+    match *resolution {
         hir::Resolution::StdItem(hir::StdItem::OptionalNoneCtor)
         | hir::Resolution::StdItem(hir::StdItem::OptionalNoneVariant) => {
             let Some(ctor_id) = gcx.std_item_def(hir::StdItem::OptionalNoneCtor) else {
@@ -494,8 +772,15 @@ fn eval_const_binary<'ctx>(
         None
     };
 
+    // Enum comparisons dispatch through an interface, including hand-written
+    // equality. Comparing constructor IDs here would bypass that implementation.
+    if matches!(lhs, ConstValue::EnumUnitVariant(_))
+        || matches!(rhs, ConstValue::EnumUnitVariant(_))
+    {
+        return type_error();
+    }
     match op {
-        BinOp::IdentityEql | BinOp::IdentityNeq => type_error(),
+        BinOp::IdentityEql | BinOp::IdentityNeq | BinOp::In | BinOp::NotIn => type_error(),
         BinOp::Add => match (lhs, rhs) {
             (ConstValue::Integer(a), ConstValue::Integer(b)) => a
                 .checked_add(b)
@@ -639,12 +924,30 @@ fn emit_const_type_error<T>(gcx: GlobalContext<'_>, span: Span) -> Option<T> {
 }
 
 #[derive(Clone, Copy)]
-struct IntegerLayout {
-    signed: bool,
-    bits: u32,
+pub(crate) struct IntegerLayout {
+    pub(crate) signed: bool,
+    pub(crate) bits: u32,
 }
 
-fn integer_layout<'ctx>(gcx: GlobalContext<'ctx>, ty: Ty<'ctx>) -> Option<IntegerLayout> {
+impl IntegerLayout {
+    pub(crate) fn bounds(self) -> std::ops::RangeInclusive<i128> {
+        if self.signed {
+            let magnitude = 1i128 << (self.bits - 1);
+            -magnitude..=magnitude - 1
+        } else {
+            0..=(1i128 << self.bits) - 1
+        }
+    }
+
+    pub(crate) fn contains(self, value: i128) -> bool {
+        self.bounds().contains(&value)
+    }
+}
+
+pub(crate) fn integer_layout<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    ty: Ty<'ctx>,
+) -> Option<IntegerLayout> {
     match crate::sema::tycheck::utils::normalize_aliases(gcx, ty).kind() {
         TyKind::Int(kind) => Some(IntegerLayout {
             signed: true,
@@ -686,16 +989,7 @@ fn validate_value_for_type<'ctx>(
         return Some(ConstValue::Integer(value));
     };
 
-    let fits = if layout.signed {
-        let min = -(1i128 << (layout.bits - 1));
-        let max = (1i128 << (layout.bits - 1)) - 1;
-        (min..=max).contains(&value)
-    } else {
-        let max = (1u128 << layout.bits) - 1;
-        value >= 0 && (value as u128) <= max
-    };
-
-    if !fits {
+    if !layout.contains(value) {
         gcx.dcx().emit_error(
             format!(
                 "constant value `{value}` is out of range for type `{}`",

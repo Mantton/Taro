@@ -446,8 +446,8 @@ fn inherit_designated<'ctx>(
     let mut signature = instantiate_signature_with_args(gcx, gcx.get_signature(source), base_args);
     let source_result = gcx.constructor_value(signature.output);
     signature.output = gcx.constructor_result(signature.output, class);
-    // Default providers take no values, but their generic environment must be
-    // remapped exactly as the constructor's ordinary arguments are.
+    // Keep the provider's hidden caller location and remap its generic
+    // environment like the constructor's ordinary arguments.
     for parameter in &mut signature.inputs {
         if let Some(provider) = parameter.default_provider {
             let default = gcx.allocate_synthetic_id(def.id.package());
@@ -456,7 +456,7 @@ fn inherit_designated<'ctx>(
                     .arenas
                     .function_signatures
                     .alloc(LabeledFunctionSignature {
-                        inputs: vec![],
+                        inputs: gcx.get_signature(provider).inputs.clone(),
                         output: parameter.ty,
                         is_variadic: false,
                         abi: None,

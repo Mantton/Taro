@@ -2,7 +2,9 @@ use super::ConstraintSolver;
 use crate::{
     sema::{
         error::TypeError,
-        models::{AdtKind, Const, EnumVariantKind, Ty, TyKind},
+        models::{
+            AdtKind, Const, ConstKind, ConstValue, EnumVariantKind, GenericArgument, Ty, TyKind,
+        },
         tycheck::{
             solve::{Goal, LiteralConstructor, Obligation, SolverResult, StructLiteralGoalData},
             utils::named_fields::named_fields,
@@ -31,6 +33,88 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
         let array = Ty::new(TyKind::Array { element, len }, self.gcx());
         self.solve_constraint_equality(span, ty, array)
+    }
+
+    /// Shapes depend on the resolved source types. In particular, a call in
+    /// spread position may only reveal its array length after overload solving.
+    pub(super) fn solve_spread_shape(
+        &mut self,
+        span: Span,
+        result: Ty<'ctx>,
+        element: Ty<'ctx>,
+        scalars: usize,
+        sources: &[Ty<'ctx>],
+        contextual: bool,
+    ) -> SolverResult<'ctx> {
+        let gcx = self.gcx();
+        let result = self.structurally_resolve(result);
+        if contextual && result.is_infer() {
+            return SolverResult::Deferred;
+        }
+        let list = gcx.std_item_def(crate::hir::StdItem::List);
+        if let TyKind::Adt(def, args) = result.kind()
+            && Some(def.id) == list
+            && let Some(expected) = args[0].ty()
+        {
+            return self.solve_constraint_equality(span, expected, element);
+        }
+        let mut total = scalars as u64;
+        let mut length = None;
+        let mut dynamic = false;
+        for source in sources {
+            let source = self.structurally_resolve(*source);
+            if source.is_infer() {
+                return SolverResult::Deferred;
+            }
+            match source.kind() {
+                TyKind::Array {
+                    len:
+                        Const {
+                            kind: ConstKind::Value(ConstValue::Integer(n)),
+                            ..
+                        },
+                    ..
+                } => {
+                    let Some(sum) = u64::try_from(n).ok().and_then(|n| total.checked_add(n)) else {
+                        return SolverResult::Error(vec![Spanned::new(
+                            TypeError::SpreadLengthOverflow,
+                            span,
+                        )]);
+                    };
+                    total = sum;
+                }
+                TyKind::Array { len, .. } if length.is_none() => length = Some(len),
+                _ => dynamic = true,
+            }
+        }
+        // A sole symbolic length is representable, including alongside empty
+        // arrays. The type system has no symbolic addition of const parameters.
+        let ty = if dynamic || (length.is_some() && total != 0) {
+            if matches!(result.kind(), TyKind::Array { .. }) {
+                return SolverResult::Error(vec![Spanned::new(
+                    TypeError::DynamicArraySpread,
+                    span,
+                )]);
+            }
+            let Some(list) = list else {
+                return SolverResult::Error(vec![Spanned::new(TypeError::MissingSpreadList, span)]);
+            };
+            let args = gcx
+                .store
+                .interners
+                .intern_generic_args(vec![GenericArgument::Type(element)]);
+            Ty::new(
+                TyKind::Adt(gcx.get_struct_definition(list).adt_def, args),
+                gcx,
+            )
+        } else {
+            let len = length.unwrap_or(Const {
+                ty: gcx.types.uint,
+                kind: ConstKind::Value(ConstValue::Integer(i128::from(total))),
+            });
+            Ty::new(TyKind::Array { element, len }, gcx)
+        };
+        self.solve_constraint_equality(span, result, ty)
     }
 
     pub fn solve_struct_literal(
@@ -64,18 +148,11 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         data.ty_span,
                     )]);
                 }
-                let Some(head) = self.type_head_from_type(struct_ty) else {
-                    unreachable!()
-                };
-                let resolution = match self.resolve_static_member_resolution(
-                    head,
-                    struct_ty,
-                    name,
-                    data.ty_span,
-                ) {
-                    Ok(resolution) => resolution,
-                    Err(errors) => return SolverResult::Error(errors),
-                };
+                let resolution =
+                    match self.resolve_static_member_resolution(struct_ty, name, data.ty_span) {
+                        Ok(resolution) => resolution,
+                        Err(errors) => return SolverResult::Error(errors),
+                    };
                 let crate::hir::Resolution::Definition(
                     id,
                     crate::sema::resolve::models::DefinitionKind::VariantConstructor(..),

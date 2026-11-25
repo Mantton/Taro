@@ -7,7 +7,7 @@ use crate::{
     utils::intern::Interned,
 };
 use indexmap::IndexSet;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::{Cell, RefCell};
 
 pub use crate::span::PackageIndex;
@@ -278,6 +278,10 @@ pub struct UsageBinding {
 pub struct LexicalScope<'a> {
     pub source: LexicalScopeSource<'a>,
     pub table: FxHashMap<Symbol, Resolution>,
+    /// Distinguishes this scope from every other scope opened while
+    /// resolving the package; set when the scope is pushed. The shadowing
+    /// check uses it to tell whether a scope has ended.
+    pub id: u32,
 }
 
 pub enum LexicalScopeBinding<'arena> {
@@ -290,6 +294,7 @@ impl<'a> LexicalScope<'a> {
         LexicalScope {
             source,
             table: Default::default(),
+            id: 0,
         }
     }
 
@@ -347,6 +352,7 @@ pub enum ResolutionError {
         span: Span,
     },
     SpecializationDisallowed(Option<Resolution>, Span),
+    NestedTypeOnSpecializedOwner(Span),
 }
 
 /// Explains a name the value-semantics pivot removed, instead of reporting
@@ -458,6 +464,10 @@ impl ResolutionError {
                 Some(*span),
             ),
 
+            ResolutionError::NestedTypeOnSpecializedOwner(span) => Diagnostic::error(
+                "qualify a nested type with its unspecialized owner".into(),
+                Some(*span),
+            ),
             ResolutionError::SpecializationDisallowed(resolution, span) => Diagnostic::error(
                 format!(
                     "specialization is disallowed for {}",
@@ -594,8 +604,8 @@ impl ResolutionSource {
                 res,
                 Resolution::Definition(
                     _,
-                    DefinitionKind::VariantConstructor(VariantCtorKind::Function)
-                )
+                    DefinitionKind::Struct | DefinitionKind::TypeAlias | DefinitionKind::VariantConstructor(VariantCtorKind::Function)
+                ) | Resolution::SelfTypeAlias(_)
             ),
             ResolutionSource::Module => matches!(
                 res,
@@ -759,6 +769,7 @@ pub struct ResolutionOutput<'arena> {
     pub expression_resolutions: FxHashMap<NodeID, ExpressionResolutionState>,
     pub(crate) member_bracket_diagnostics:
         FxHashMap<NodeID, crate::diagnostics::BracketDiagnostics>,
+    pub(crate) break_label_resolutions: FxHashMap<NodeID, Identifier>,
     pub root_scope: Scope<'arena>,
 }
 
@@ -783,4 +794,40 @@ impl Visibility {
             _ => false,
         }
     }
+}
+
+/// Facts the resolver gathers for the advisory lints of the package being
+/// compiled (`Config::lint_warnings`).
+#[derive(Debug, Default)]
+pub struct LintFacts {
+    /// Single-name imports in file and block scopes.
+    pub imports: Vec<ImportFact>,
+    /// Import bindings (`UsageBinding::node_id`) some name lookup went through.
+    pub used_imports: FxHashSet<NodeID>,
+    /// Locals introduced by `:=`, `var` or a pattern; never parameters.
+    pub locals: Vec<LocalFact>,
+    /// Locals some expression reads. Plain assignment is not a read.
+    pub read_locals: FxHashSet<NodeID>,
+    /// `taro vet` findings: a `:=` or `var` declaration that shadows a local
+    /// or parameter of the same function which is read after the
+    /// declaration's scope ends.
+    pub shadowed: Vec<(Span, String)>,
+    /// Names spelled in declarations removed by `@cfg`, per file. An import
+    /// they mention may be used on another target, so it never warns.
+    pub cfg_removed_names: FxHashMap<FileID, FxHashSet<Symbol>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportFact {
+    pub binding: NodeID,
+    pub target: Identifier,
+    /// Interfaces the import names. Importing one makes its methods
+    /// callable, so a method call can use it without spelling its name.
+    pub interfaces: Vec<DefinitionID>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LocalFact {
+    pub id: NodeID,
+    pub name: Identifier,
 }

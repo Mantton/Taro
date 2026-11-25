@@ -1,0 +1,10 @@
+func site(file: string = #file, line: int32 = #line, function: string = #function) -> string {
+    "${file}:${line}:${function}"
+}
+func main() {
+    println(#file)
+    here := #line; println("${here}")
+    println(#function)
+    println(site())
+    println(site(line: 71))
+}

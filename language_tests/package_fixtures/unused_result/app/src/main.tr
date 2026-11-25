@@ -1,0 +1,20 @@
+import dep::{Pipe, Sink, Store, calls, log, noisy, save}
+
+func emitAll[S: Sink](_ sink: S) {
+    sink.emit("bound")
+}
+
+func emitAny(_ sink: any Sink) {
+    sink.emit("existential")
+}
+
+func main() {
+    log("started")
+    Store {}.flush()
+    Pipe {}.emit("concrete")
+    emitAll(Pipe {})
+    emitAny(Pipe {})
+    noisy()
+    save()
+    println("calls: ${calls()}")
+}

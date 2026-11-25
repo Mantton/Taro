@@ -1,0 +1,6 @@
+[package]
+name = "github.com/example/lazy-app"
+kind = "executable"
+
+[require]
+"github.com/example/lazy-dep" = { path = "../dep", alias = "dep" }

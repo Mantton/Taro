@@ -1,0 +1,4 @@
+error: unknown associated symbol named 'COUNT' on type 'Box[Missing]'
+ -> language_tests/source_files/invalid/interface_constant_condition.tr:6:41
+	func rejected() -> int32 { Box[Missing]::COUNT }
+	                                         ^^^^^

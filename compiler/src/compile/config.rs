@@ -91,6 +91,8 @@ pub struct CodegenOptions {
     pub optimization: OptimizationMode,
     pub artifact: ModuleArtifactKind,
     pub lto: LtoMode,
+    /// Emit LLVM source-based coverage instrumentation (`--coverage`).
+    pub coverage: bool,
 }
 
 /// Amount of source-level debug metadata emitted into generated objects.
@@ -139,6 +141,7 @@ pub enum HarnessMode {
     None,
     Test,
     Bench,
+    Fuzz,
 }
 
 impl HarnessMode {
@@ -148,6 +151,10 @@ impl HarnessMode {
 
     pub const fn is_bench(self) -> bool {
         matches!(self, Self::Bench)
+    }
+
+    pub const fn is_fuzz(self) -> bool {
+        matches!(self, Self::Fuzz)
     }
 
     pub const fn is_enabled(self) -> bool {
@@ -187,4 +194,8 @@ pub struct Config {
     /// std-owned behavior (e.g., ownership rules for built-in types), while
     /// `std_mode` only describes whether std is expected to be externally available.
     pub is_std_provider: bool,
+    /// Report advisory lint warnings, such as an unused `Result`. Only the
+    /// package the user asked to compile sets this; dependencies and the
+    /// attached std compile silently.
+    pub lint_warnings: bool,
 }

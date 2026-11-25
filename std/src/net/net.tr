@@ -435,3 +435,18 @@ extend UdpSocket {
         closeSocketState(self.state)
     }
 }
+
+conform TcpListener to std::io::Closeable {
+    type CloseResult = Result[(), Error]
+    public func close() -> Result[(), Error] { self.close() }
+}
+
+conform TcpStream to std::io::Closeable {
+    type CloseResult = Result[(), Error]
+    public func close() -> Result[(), Error] { self.close() }
+}
+
+conform UdpSocket to std::io::Closeable {
+    type CloseResult = Result[(), Error]
+    public func close() -> Result[(), Error] { self.close() }
+}

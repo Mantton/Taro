@@ -1,0 +1,1 @@
+func main() { var data = #embed("missing-asset.txt") }

@@ -1,0 +1,2 @@
+// EXPECT_STDERR_NOT_CONTAINS: internal error
+func main() { (missing,) = (1,); }

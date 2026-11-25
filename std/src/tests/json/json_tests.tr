@@ -1,7 +1,7 @@
 import std::io::{Reader, Writer}
 import std::collections::List
 import std::fmt::Display
-import std::encoding::{Codable, Decodable, Decoder, Encodable, Encoder}
+import std::encoding::{Decodable, Decoder, Encodable, Encoder}
 
 func requireValue(_ input: string) -> std::json::Value {
     match std::json::parse(input) {

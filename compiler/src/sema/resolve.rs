@@ -5,6 +5,7 @@ use crate::{ast, error::CompileResult};
 
 mod define;
 mod full;
+mod lint;
 pub mod models;
 mod resolver;
 pub(crate) mod scope_lookup;

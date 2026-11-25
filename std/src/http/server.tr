@@ -1,4 +1,3 @@
-import std::collections::List
 import std::io::AsyncReader
 import std::mem::Span
 import std::net::{SocketAddress, TcpListener, TcpStream}
@@ -738,4 +737,14 @@ func timeoutFailure(_ error: std::task::TimeoutError) -> Error {
         case .timedOut => return failure(.timeout, "HTTP operation timed out")
         case .operation(_) => return failure(.transport, "HTTP operation task failed")
     }
+}
+
+conform Server to std::io::Closeable {
+    type CloseResult = Result[(), Error]
+    public func close() -> Result[(), Error] { self.close() }
+}
+
+conform Connection to std::io::Closeable {
+    type CloseResult = ()
+    public func close() { self.close() }
 }

@@ -4,8 +4,9 @@ This chapter covers all pattern types used in pattern matching, variable binding
 
 ## Where Patterns Are Used
 
-Local `var` bindings accept identifiers, `_`, tuple patterns, and named struct patterns. A local binding must be irrefutable: it must
-match every possible value of its type. Match arms and loop/binding conditions
+Local `var` bindings accept identifiers, `_`, tuple patterns, named struct
+patterns, whole-value bindings and alternatives. A local binding must match
+every possible value of its type. Match arms and loop/binding conditions
 accept additional patterns. Optional-binding conditions (`if var`, `while var`, `guard var`)
 accept a single identifier; use `case` for destructuring in a condition:
 
@@ -28,6 +29,25 @@ guard case pattern = expression else { }
 ```
 
 ---
+
+## Testing a pattern with `is`
+
+Use `value is pattern` wherever a boolean expression is accepted. Taro evaluates
+the value once. A wildcard ignores a payload, and a literal matches its value.
+
+```taro
+literal := token is .number(_) || token is .string(_)
+comments := tokens.filter(token => token is .comment(_))
+assert(response is .ok(_), "request succeeded")
+finished := !(state is .running)
+```
+
+A pattern can inspect nested payloads, tuple elements and named fields.
+Use `if case .number(n) = token` or a `match` arm when the body needs `n`.
+An existing type test such as `boxed is int32` checks the dynamic type. A qualified
+name such as `Status::ready` selects an associated type when one exists.
+Use `.ready` to select the case when both names exist.
+
 
 ## Wildcard Pattern
 
@@ -167,8 +187,8 @@ Classes cannot be destructured with named patterns.
 
 ## Or Pattern
 
-Matches if any alternative matches. Or-patterns are supported at the top
-level of a match arm. Alternatives must bind the same names with compatible
+A `|` separates alternatives in a match arm, a tuple element, a constructor
+payload or a named field. Alternatives must bind the same names with the same
 types.
 
 ```taro
@@ -184,6 +204,35 @@ match result {
 }
 ```
 
+In an irrefutable local declaration, each alternative can supply the same
+name from a different field. For an enum with `.left(int32, string)` and
+`.right(string, int32)`, this declaration initializes `n` from the active
+variant. The local is writable after the declaration.
+
+```taro
+var .left(n, _) | .right(_, n) = choice
+n += 1
+```
+
+### Binding the whole value
+
+`name @ pattern` binds the input when its subpattern matches. Both the whole
+value and the subpattern’s bindings are available in the guard and arm body.
+A whole binding of a reference retains that reference. Structural patterns
+can still copy fields from its referent.
+
+```taro
+match event {
+    case .key(.up | .down, modifiers) => scroll(modifiers)
+    case .digit(value @ (1 | 3 | 5)) => select(value)
+    case .click(point @ Point { x, .. }) if x < 50 => openSidebar(point)
+    case _ => {}
+}
+```
+
+`@` binds more tightly than `|`. Parenthesize alternatives to bind their
+common input, or write a binding on each side.
+
 ---
 
 ## Literal Pattern
@@ -194,7 +243,7 @@ fit their type, including signed minima such as `-128_i8`; negative patterns
 cannot match unsigned integer types. Literal alternatives can use `|`, as in
 `case -1 | 0 | 1`.
 
-General expressions such as `-(1 + 2)` and f-strings with interpolation are
+General expressions such as `-(1 + 2)` and interpolated strings are
 not literal patterns. Use a guard when a comparison requires computation.
 
 ```taro
@@ -324,6 +373,47 @@ match number {
     case _ => "non-zero"  // Covers everything else
 }
 ```
+
+## Dynamic type patterns
+
+`case name as T` uses the same conversion as `as? T` and binds the result for
+the guard and body. `case is T` tests the dynamic type without binding a value.
+These patterns work with class and interface values and inside enum payloads.
+When a type test or guard fails, matching continues with the next arm. A guard
+can replace a borrowed interface value through an alias. Later type tests on the
+matched value still see its original dynamic type, while a plain reference
+binding continues to refer to the caller’s storage.
+
+```taro
+func asText(_ value: any std::fmt::Display) -> string {
+    match value {
+        case text as string => text
+        case is int32 => "integer"
+        case _ => "other"
+    }
+}
+```
+
+Dynamic class and interface matches require a fallback to cover other runtime types.
+
+## Integer and rune ranges
+
+Both ends of a range pattern are literals or named constants of the scrutinee’s type.
+`a..b` excludes `b`, while `a..=b` includes it. Both forms require at least one
+value. A match can cover a whole integer or rune type using adjacent ranges.
+Overlapping arms are tested in source order. If an arm’s guard fails, matching continues.
+
+```taro
+func classify(_ byte: uint8) -> string {
+    match byte {
+        case 0..32 => "control"
+        case 32..=126 => "printable"
+        case 127..=255 => "other"
+    }
+}
+```
+
+A range also works inside a payload pattern or a boolean test such as `ch is 'a'..='z'`.
 
 ## Conditional Value Bindings and Scope
 

@@ -1,0 +1,70 @@
+// Inside string interpolation, a value whose type has Debug but no Display
+// prints its Debug text. Display wins when the type has both; the choice is
+// made when the program is checked.
+import std::fmt::{Display, Formatter}
+
+struct Version: Debug {
+    major: int32
+    minor: int32
+}
+
+enum Event: Debug {
+    case quit
+    case key(rune)
+    case click { x: int32, y: int32 }
+    case resize(width: int32, height: int32)
+}
+
+struct Both: Debug {
+    value: int32
+}
+
+conform Both to Display {
+    func display(_ into: &Formatter) {
+        into.writeString("display wins")
+    }
+}
+
+interface Shape: Debug {}
+
+struct Square: Debug {
+    side: int32
+}
+
+conform Square to Shape {}
+
+func show[T: Debug](_ value: T) -> string {
+    "${value}"
+}
+
+func showBoth[T: Debug & Display](_ value: T) -> string {
+    "${value}"
+}
+
+func latest() -> Version {
+    Version { major: 9, minor: 1 }
+}
+
+func main() {
+    println("${Version { major: 1, minor: 4 }}")
+    println("${Event::quit} ${Event::key('a')}")
+    println("${Event::click { x: 1, y: 2 }} and ${Event::resize(width: 3, height: 4)}")
+    println("${Both { value: 1 }}")
+    println(show(Version { major: 2, minor: 0 }))
+    println(show("quoted by Debug"))
+    println(show(7))
+    println(showBoth(Both { value: 2 }))
+    println("outer ${"inner ${Version { major: 3, minor: 1 }}"} done")
+    var maybe: Version? = .some(Version { major: 1, minor: 0 })
+    println("maybe=${maybe} n=${42} s=${"plain"}")
+    var versions: [Version] = [Version { major: 1, minor: 0 }]
+    println("${versions} first=${versions[0]} latest=${latest()}")
+    var words: [string] = ["a", "b"]
+    println("words=${words}")
+    var erased: any Debug = Version { major: 5, minor: 5 }
+    println("${erased}")
+    var shape: any Shape = Square { side: 2 }
+    println("${shape}")
+    var result: Result[int32, string] = .err("bad")
+    println("${result} ${(1, "two")} ${()} ${'r'}")
+}

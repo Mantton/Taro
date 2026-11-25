@@ -1,3 +1,4 @@
+use super::method::{MethodCandidate, ReceiverResolution};
 use super::{
     Adjustment, ApplyArgument, ApplyGoalData, BindInterfaceMethodGoalData, BindMethodValueGoalData,
     BindOverloadGoalData, ConstraintSolver, DisjunctionBranch, Goal, InferredStaticMemberGoalData,
@@ -7,10 +8,7 @@ use crate::{
     hir::{NodeID, Resolution, StdItem},
     sema::{
         error::TypeError,
-        models::{
-            GenericArguments, InterfacePropertyRequirement, InterfaceReference, StructField, Ty,
-            TyKind,
-        },
+        models::{GenericArguments, InterfacePropertyRequirement, InterfaceReference, Ty, TyKind},
         resolve::models::{DefinitionID, DefinitionKind, PrimaryType, TypeHead, VariantCtorKind},
         tycheck::utils::{autoderef::Autoderef, instantiate::instantiate_ty_with_args},
     },
@@ -44,14 +42,13 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let MemberGoalData {
             classify_only,
             receiver_addressable,
-            explicit_arguments,
             node_id,
             receiver_node,
             receiver,
             name,
             result,
             span,
-            signature_hint,
+            ..
         } = data;
 
         let final_receiver = self.structurally_resolve(receiver);
@@ -75,25 +72,25 @@ impl<'ctx> ConstraintSolver<'ctx> {
             if depth > 0 {
                 field_adjustments.push(Adjustment::Dereference);
             }
-            if let Some((field, index)) = self.lookup_field(ty, name.symbol) {
+            if let Some((index, field_ty, visibility)) = self.lookup_field(ty, name.symbol) {
                 if self
                     .gcx()
-                    .is_visibility_allowed(field.visibility, self.current_def)
+                    .is_visibility_allowed(visibility, self.current_def)
                 {
                     if classify_only {
                         return self.solve_equality(span, result, self.gcx().types.bool);
                     }
                     self.record_adjustments(receiver_node, field_adjustments);
                     self.record_field_index(node_id, index);
-                    return self.solve_equality(span, result, field.ty);
+                    return self.solve_equality(span, result, field_ty);
                 }
-                hidden_field.get_or_insert((field.name, ty));
+                hidden_field.get_or_insert((name.symbol, ty));
             }
         }
         let mut adjustments = prefix.clone();
         let mut prev: Option<Ty<'ctx>> = None;
         let mut referenceable = receiver_addressable;
-        let mut method_branches = Vec::new();
+        let mut methods = Vec::new();
         let mut method_seen = FxHashSet::default();
         for ty in self.autoderef(receiver) {
             let ty = self.structurally_resolve(ty);
@@ -106,24 +103,36 @@ impl<'ctx> ConstraintSolver<'ctx> {
             }
             prev = Some(ty);
 
-            let property = self
-                .lookup_computed_property(ty, name.symbol)
-                .map(|property| (property, ty, adjustments.clone()))
-                .or_else(|| {
-                    if !referenceable {
-                        return None;
+            for autoref in [false, true] {
+                if autoref && !referenceable {
+                    continue;
+                }
+                let receiver_arg_ty = if autoref {
+                    Ty::new(TyKind::Reference(ty), self.gcx())
+                } else {
+                    ty
+                };
+                let Some(property) = self.lookup_computed_property(receiver_arg_ty, name.symbol)
+                else {
+                    continue;
+                };
+                if let Some(owner) = self.gcx().definition_parent(property.property_id)
+                    && self.gcx().definition_kind(owner) == DefinitionKind::Impl
+                {
+                    match self.match_extension_header(owner, receiver_arg_ty, ty, span) {
+                        super::ExtensionHeaderMatch::Mismatch => continue,
+                        super::ExtensionHeaderMatch::NeedsLiteralType => {
+                            return SolverResult::Deferred;
+                        }
+                        super::ExtensionHeaderMatch::Independent => {}
                     }
-                    let storage = Ty::new(TyKind::Reference(ty), self.gcx());
-                    self.lookup_computed_property(storage, name.symbol)
-                        .map(|property| {
-                            let mut adjustments = adjustments.clone();
-                            adjustments.push(Adjustment::Reference);
-                            (property, storage, adjustments)
-                        })
-                });
-            if let Some((property, receiver_arg_ty, property_adjustments)) = property {
+                }
                 if classify_only {
                     return self.solve_equality(span, result, self.gcx().types.bool);
+                }
+                let mut property_adjustments = adjustments.clone();
+                if autoref {
+                    property_adjustments.push(Adjustment::Reference);
                 }
                 self.record_adjustments(receiver_node, property_adjustments);
                 self.record_property_read(
@@ -159,6 +168,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         is_unsafe_context: false,
                         result_ty: result,
                         arguments: vec![ApplyArgument {
+                            is_spread: false,
+                            is_lazy_wrapped: false,
+                            contains_await: false,
+                            deferred_return_scope: None,
                             id: receiver_node,
                             label: None,
                             ty: receiver_arg_ty,
@@ -180,7 +193,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         | crate::sema::models::AliasKind::Opaque,
                     ..
                 } => {
-                    let bounds = self.bounds_for_type_in_scope(ty);
+                    let bounds = self.bounds_for_member_lookup(ty);
                     (!bounds.is_empty()).then(|| {
                         self.gcx().store.arenas.global.alloc_slice_clone(&bounds) as &'ctx [_]
                     })
@@ -212,13 +225,14 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 } else {
                     Ty::new(TyKind::Reference(ty), self.gcx())
                 };
-                let direct = self
-                    .lookup_instance_candidates_method(ty, method_receiver, name.symbol, span)
-                    .unwrap_or_default();
+                let direct =
+                    self.lookup_instance_candidates_method(ty, method_receiver, name.symbol, span);
                 let interfaces = self.method_interfaces(method_receiver, span);
                 let mut candidates: Vec<_> = direct
                     .into_iter()
-                    .map(|source| (source, self.gcx().get_type(source), None, None))
+                    .map(|(source, header)| {
+                        (source, self.gcx().get_type(source), None, None, header)
+                    })
                     .collect();
                 if let Some(interfaces) = interfaces {
                     let (requirements, _) = self.interface_method_candidates(
@@ -234,49 +248,76 @@ impl<'ctx> ConstraintSolver<'ctx> {
                             candidate.candidate_ty,
                             candidate.instantiation_args,
                             Some(candidate.call_info),
+                            super::ExtensionHeaderMatch::Independent,
                         )
                     }));
                 }
-                for (source, candidate_ty, instantiation_args, call_info) in candidates {
+                for (source, signature, arguments, interface, header) in candidates {
+                    let duplicate_builtin_operator = interface.as_ref().is_some_and(|info| {
+                        method_seen.contains(&(source, method_receiver, None))
+                            && arguments.is_some_and(|args| {
+                                crate::mir::primitive_operators::ITEMS.iter().any(|&item| {
+                                    self.gcx().std_item_def(item) == Some(info.method_interface)
+                                        && crate::mir::primitive_operators::interface_for_type(
+                                            self.gcx(),
+                                            method_receiver,
+                                            item,
+                                        )
+                                        .is_some_and(|builtin| builtin.arguments == args)
+                                })
+                            })
+                    });
                     if autoref_cost > 0 && self.gcx().definition_is_clone_method(source)
-                        || !method_seen.insert((source, method_receiver, instantiation_args))
+                        || duplicate_builtin_operator
+                        || !method_seen.insert((source, method_receiver, arguments))
                     {
                         continue;
                     }
                     if classify_only {
                         return self.solve_equality(span, result, self.gcx().types.void);
                     }
-                    method_branches.push(DisjunctionBranch {
-                        goal: Goal::BindMethodOverload(super::BindMethodOverloadGoalData {
-                            binding: Box::new(Goal::BindMethodValue(BindMethodValueGoalData {
-                                explicit_arguments: explicit_arguments.clone(),
-                                node_id,
-                                var_ty: result,
-                                candidate_ty,
-                                source,
-                                instantiation_args,
-                                call_info,
-                                receiver: method_receiver,
-                                signature_hint,
-                            })),
-                            receiver_node_id: receiver_node,
-                            receiver_constraint: None,
-                            // Bound capture construction takes the address only
-                            // after the method's declared target is selected.
-                            adjustments: adjustments.clone(),
-                        }),
-                        source: Some(source),
+                    methods.push(MethodCandidate {
+                        source,
+                        receiver: method_receiver,
+                        signature,
+                        header,
+                        arguments,
+                        interface,
                         autoref_cost,
-                        matches_async_preference: false,
                         deref_steps: adjustments.len(),
                     });
                 }
             }
         }
-        if !method_branches.is_empty() {
+        if !methods.is_empty() && final_receiver.contains_inference() {
+            let resolution = self.resolve_specialized_receivers(
+                final_receiver,
+                &mut methods,
+                |method, literals| {
+                    self.probe_receiver_widths(literals, |fork| {
+                        fork.obligations.push_back(Obligation {
+                            location: span,
+                            goal: Self::bound_method_branch(&original, method, &prefix).goal,
+                        });
+                    })
+                },
+            );
+            match resolution {
+                ReceiverResolution::Ready => {}
+                ReceiverResolution::Deferred => return SolverResult::Deferred,
+                ReceiverResolution::Inferred => {
+                    return self.solve_member_at(original, prefix, visited);
+                }
+            }
+        }
+        if !methods.is_empty() {
+            let branches = methods
+                .iter()
+                .map(|method| Self::bound_method_branch(&original, method, &prefix))
+                .collect();
             return SolverResult::Solved(vec![Obligation {
                 location: span,
-                goal: Goal::Disjunction(method_branches),
+                goal: Goal::Disjunction(branches),
             }]);
         }
 
@@ -347,6 +388,38 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         let error = Spanned::new(error_kind, span);
         SolverResult::Error(vec![error])
+    }
+
+    fn bound_method_branch(
+        data: &MemberGoalData<'ctx>,
+        method: &MethodCandidate<'ctx>,
+        prefix: &[Adjustment<'ctx>],
+    ) -> DisjunctionBranch<'ctx> {
+        // Bound capture construction takes the address only after selection.
+        let mut adjustments = prefix.to_vec();
+        adjustments.resize(method.deref_steps, Adjustment::Dereference);
+        DisjunctionBranch {
+            goal: Goal::BindMethodOverload(super::BindMethodOverloadGoalData {
+                binding: Box::new(Goal::BindMethodValue(BindMethodValueGoalData {
+                    explicit_arguments: data.explicit_arguments.clone(),
+                    node_id: data.node_id,
+                    var_ty: data.result,
+                    candidate_ty: method.signature,
+                    source: method.source,
+                    instantiation_args: method.arguments,
+                    call_info: method.interface,
+                    receiver: method.receiver,
+                    signature_hint: data.signature_hint,
+                })),
+                receiver_node_id: data.receiver_node,
+                receiver_constraint: None,
+                adjustments,
+            }),
+            source: Some(method.source),
+            autoref_cost: method.autoref_cost,
+            matches_async_preference: false,
+            deref_steps: method.deref_steps,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -443,6 +516,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 candidate_ty: candidate.getter_ty,
                 call_info: candidate.call_info,
                 instantiation_args: Some(candidate.interface_args),
+                published_projections: Vec::new(),
             }),
         };
         let apply = Obligation {
@@ -456,6 +530,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 is_unsafe_context: false,
                 result_ty: result,
                 arguments: vec![ApplyArgument {
+                    is_spread: false,
+                    is_lazy_wrapped: false,
+                    contains_await: false,
+                    deferred_return_scope: None,
                     id: receiver_node,
                     label: None,
                     ty: receiver_ty,
@@ -500,18 +578,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return SolverResult::Deferred;
         };
 
-        let Some(head) = self.type_head_from_type(base_ty) else {
-            let error = Spanned::new(
-                TypeError::NoSuchMember {
-                    name: name.symbol,
-                    on: base_ty,
-                },
-                span,
-            );
-            return SolverResult::Error(vec![error]);
-        };
-
-        let resolution = match self.resolve_static_member_resolution(head, base_ty, name, span) {
+        let resolution = match self.resolve_static_member_resolution(base_ty, name, span) {
             Ok(resolution) => resolution,
             Err(errors) => {
                 // Keep the Result's own members authoritative (notably ok/err).
@@ -523,10 +590,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     if success.is_infer() {
                         return SolverResult::Deferred;
                     }
-                    let Some(head) = self.type_head_from_type(success) else {
-                        return SolverResult::Error(errors);
-                    };
-                    match self.resolve_static_member_resolution(head, success, name, span) {
+                    match self.resolve_static_member_resolution(success, name, span) {
                         Ok(resolution) => {
                             base_ty = success;
                             resolution
@@ -571,7 +635,21 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 let ty = self.gcx().get_type(def_id);
                 let generics = self.gcx().generics_of(def_id);
                 let mut obligations = Vec::new();
-                let final_ty = if !generics.is_empty() && ty.needs_instantiation() {
+                let final_ty = if kind == DefinitionKind::AssociatedConstant {
+                    let args = match crate::sema::tycheck::utils::members::constant_arguments(
+                        &self.icx,
+                        def_id,
+                        base_ty,
+                        self.current_def,
+                        span,
+                    ) {
+                        Ok(args) => args,
+                        Err(e) => return SolverResult::Error(vec![Spanned::new(e, span)]),
+                    };
+                    self.record_instantiation(node_id, args);
+                    obligations.extend(self.constraints_for_def(def_id, Some(args), span));
+                    instantiate_ty_with_args(self.gcx(), ty, args)
+                } else if !generics.is_empty() && ty.needs_instantiation() {
                     let args = self.instantiate_generic_args_with_defaults(def_id, base_args, span);
                     let instantiated = instantiate_ty_with_args(self.gcx(), ty, args);
                     self.record_instantiation(node_id, args);
@@ -671,10 +749,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
         if inner_ty.is_infer() || inner_ty.is_error() {
             return None;
         }
-        let inner_head = self.type_head_from_type(inner_ty)?;
 
         let inner_resolution = self
-            .resolve_static_member_resolution(inner_head, inner_ty, name, span)
+            .resolve_static_member_resolution(inner_ty, name, span)
             .ok()?;
 
         // Only accept unit (constant) variant constructors for the wrap fallback.
@@ -752,7 +829,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
         &self,
         ty: Ty<'ctx>,
         name: Symbol,
-    ) -> Option<(StructField<'ctx>, usize)> {
+    ) -> Option<(usize, Ty<'ctx>, crate::sema::resolve::models::Visibility)> {
+        if let Some((index, ty)) = ty.labeled_tuple_field(name) {
+            return Some((index, ty, crate::sema::resolve::models::Visibility::Public));
+        }
         let TyKind::Adt(def, _) = ty.kind() else {
             return None;
         };
@@ -764,7 +844,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let struct_def = self.gcx().source_struct_definition(ty)?;
         for (idx, field) in struct_def.fields.iter().enumerate() {
             if field.name == name {
-                return Some((*field, idx));
+                return Some((idx, field.ty, field.visibility));
             }
         }
         None
@@ -966,6 +1046,13 @@ impl<'ctx> ConstraintSolver<'ctx> {
             let Some(set) = index.trait_methods.get(&key) else {
                 continue;
             };
+            if !set.members.is_empty() {
+                self.gcx()
+                    .store
+                    .trait_visibility_uses
+                    .borrow_mut()
+                    .insert(interface_id);
+            }
 
             let extra = set.members.len();
             members.reserve(extra);
@@ -1045,13 +1132,13 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
     pub(super) fn resolve_static_member_resolution(
         &self,
-        head: TypeHead,
         base_ty: Ty<'ctx>,
         name: crate::span::Identifier,
         span: crate::span::Span,
     ) -> Result<Resolution, Vec<Spanned<TypeError<'ctx>>>> {
         let gcx = self.gcx();
-        if let TypeHead::Nominal(def_id) = head {
+        let head = self.type_head_from_type(base_ty);
+        if let Some(TypeHead::Nominal(def_id)) = head {
             if gcx.definition_kind(def_id) == DefinitionKind::Enum {
                 let enum_def = gcx.get_enum_definition(def_id);
 
@@ -1073,6 +1160,22 @@ impl<'ctx> ConstraintSolver<'ctx> {
             }
         }
 
+        if let Some(id) = crate::sema::tycheck::utils::members::associated_constant(
+            gcx,
+            base_ty,
+            name.symbol,
+            self.current_def,
+            Some(&self.icx),
+            span,
+        )
+        .map_err(|e| vec![Spanned::new(e, span)])?
+        {
+            return Ok(Resolution::Definition(
+                id,
+                DefinitionKind::AssociatedConstant,
+            ));
+        }
+
         let mut candidates = crate::sema::tycheck::utils::members::static_candidates(
             self.gcx(),
             base_ty,
@@ -1082,12 +1185,14 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         // UFCS: If no static members found, look for instance methods.
         // This allows calling `Interface.method(value)` where `method` is an instance method.
-        if candidates.is_empty() {
+        if candidates.is_empty()
+            && let Some(head) = head
+        {
             candidates = self.collect_instance_member_candidates(head, name.symbol);
         }
 
         if candidates.is_empty()
-            && let TypeHead::Nominal(interface_id) = head
+            && let Some(TypeHead::Nominal(interface_id)) = head
             && gcx.definition_kind(interface_id) == DefinitionKind::Interface
             && let Some(requirements) = gcx.get_interface_requirements(interface_id)
             && let Some(property) = requirements

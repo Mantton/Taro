@@ -1,0 +1,121 @@
+import std::collections::{Dictionary, PriorityQueue, Set}
+import std::fmt::debugString
+import std::hash::Hashable
+
+struct DerivedHolder: Comparable, Hashable, Default, Debug {
+    key: (int32, string)
+    meta: (bool,)
+}
+
+type Pair = (int32, string)
+
+func makeDefault[T: Default]() -> T {
+    T::default()
+}
+
+func genericLess[T: Ord](_ a: T, _ b: T) -> bool {
+    a < b
+}
+
+func formatAnyDebug(_ value: any Debug) -> string {
+    "${value}"
+}
+
+func main() {
+    // Unit tuple ()
+    assert(() == ())
+    assert(!(() != ()))
+    assert(!(() < ()))
+    assert(() <= ())
+    assert(() >= ())
+    assert(().cmp(()).isEqual())
+    assert(().partialCmp(()).unwrap().isEqual())
+    var _: () = makeDefault()
+    assert(debugString(()) == "()")
+
+    // Single-element tuple (T,)
+    assert((42,) == (42,))
+    assert((42,) != (99,))
+    assert((1,) < (2,))
+    assert((2,).cmp((1,)).isGreater())
+    var singleDef: (int32,) = makeDefault()
+    assert(singleDef == (0,))
+    assert(debugString((7,)) == "(7,)")
+
+    // Pair & 7-tuple (beyond old 6-tuple manual limit)
+    assert((1, "a") == (1, "a"))
+    assert((1, "a") != (1, "b"))
+    assert((1, "a") < (1, "b"))
+    assert((1, "z") < (2, "a"))
+    assert((2, "a") > (1, "z"))
+    assert((1, 2) == (1_i64, 2_u8))
+    assert(genericLess((1, 2), (1, 3)))
+    assert(!genericLess((2, 0), (1, 9)))
+
+    seven := (1, 2, 3, 4, 5, 6, 7)
+    assert(seven == (1, 2, 3, 4, 5, 6, 7))
+    assert(seven < (1, 2, 3, 4, 5, 6, 8))
+    assert(debugString(seven) == "(1, 2, 3, 4, 5, 6, 7)")
+
+    // Nested tuples and labeled tuples (positional erasure)
+    nestedA := ((1, 2), true)
+    nestedB := ((1, 3), false)
+    assert(nestedA < nestedB)
+    assert(debugString(nestedA) == "((1, 2), true)")
+
+    var labeled: (x: int32, y: string) = (x: 10, y: "ok")
+    var unlabeled: (int32, string) = (10, "ok")
+    assert(labeled == unlabeled)
+    assert(debugString(labeled) == "(10, \"ok\")")
+
+    // PartialOrd with NaN floats
+    nan := 0.0 / 0.0
+    assert((1.0, nan).partialCmp((1.0, 2.0)).isNone())
+    assert(!((1.0, nan) < (1.0, 2.0)))
+    assert(!((1.0, nan) <= (1.0, 2.0)))
+    assert(!((1.0, nan) > (1.0, 2.0)))
+    assert(!((1.0, nan) >= (1.0, 2.0)))
+    // First element decides before inspecting NaN second element (short-circuit)
+    assert((0.0, nan) < (1.0, nan))
+    assert((1.0, 2.0) < (1.0, 3.0))
+
+    // Set, Dictionary, PriorityQueue, List.sort with open literal inference
+    var visited = Set[(usize, usize)]::new()
+    visited.insert((0, 0))
+    visited.insert((1, 2))
+    visited.insert((0, 0))
+    assert(visited.len() == 2)
+    assert((0, 0) in visited && (1, 2) in visited && (2, 1) !in visited)
+
+    var grid = Dictionary[(int32, int32), string]::new()
+    grid[(0, 1)] = "north"
+    grid[(1, 0)] = "east"
+    assert(grid[(0, 1)] == "north")
+    assert(grid[(1, 0)] == "east")
+
+    var pq = PriorityQueue[(int64, usize)]::new()
+    pq.push((10, 1))
+    pq.push((5, 2))
+    pq.push((5, 0))
+    assert(pq.pop().unwrap() == (5, 0))
+    assert(pq.pop().unwrap() == (5, 2))
+    assert(pq.pop().unwrap() == (10, 1))
+    assert(pq.pop().isNone())
+
+    var pairs: [(int32, string)] = [(2, "a"), (1, "c"), (1, "b")]
+    pairs.sort()
+    assert(pairs[0] == (1, "b") && pairs[1] == (1, "c") && pairs[2] == (2, "a"))
+
+    // Default via alias and generic
+    defPair := Pair::default()
+    assert(defPair == (0, ""))
+    var holder = DerivedHolder::default()
+    assert(holder.key == (0, "") && holder.meta == (false,))
+
+    // Boxed existential `any Debug` and string interpolation
+    assert(formatAnyDebug((1, "hi")) == "(1, \"hi\")")
+    assert(formatAnyDebug((9,)) == "(9,)")
+    assert("${(3, 4)}" == "(3, 4)")
+
+    print("tuple structural conformances ok\n")
+}

@@ -1,0 +1,14 @@
+@deprecated(123)
+func badPositional() {}
+
+@deprecated(unknown = "x")
+func badKey() {}
+
+@deprecated(replace = "")
+func emptyReplace() {}
+
+@deprecated("one")
+@deprecated("two")
+func duplicateAttr() {}
+
+func main() {}

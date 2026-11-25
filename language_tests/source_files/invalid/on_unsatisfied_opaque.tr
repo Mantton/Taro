@@ -1,0 +1,4 @@
+@onUnsatisfied("{Self} needs an explicit ranking")
+interface Ranked { func rank() -> int32; }
+func erase[T](_ item: T) -> some Ranked { item }
+func main() {}

@@ -254,6 +254,67 @@ impl<'ctx> CodecBuilder<'ctx> {
         self.propagate(call)
     }
 
+    fn skipped_field_value(
+        &mut self,
+        field: &crate::sema::models::StructField<'ctx>,
+        owner_args: GenericArguments<'ctx>,
+    ) -> ExprId {
+        if let Some(provider) = field.default_provider {
+            let signature = instantiate_signature_with_args(
+                self.gcx,
+                self.gcx.get_signature(provider),
+                owner_args,
+            );
+            let callee = self.body.push_expr(
+                ExprKind::Zst {
+                    id: provider,
+                    generic_args: Some(owner_args),
+                },
+                Ty::from_labeled_signature(self.gcx, &signature),
+            );
+            return self.body.push_expr(
+                ExprKind::Call {
+                    callee,
+                    args: vec![],
+                    is_async: false,
+                    argument_evaluation_order: None,
+                },
+                field.ty,
+            );
+        }
+        let optional = self.gcx.std_item_def(StdItem::Optional).expect("Optional");
+        if matches!(normalize_aliases(self.gcx, field.ty).kind(), TyKind::Adt(def, _) if def.id == optional)
+        {
+            return self.variant(field.ty, StdItem::OptionalNoneVariant, None);
+        }
+        let default_iface = self.gcx.std_item_def(StdItem::Default).expect("Default");
+        let default_method = self
+            .gcx
+            .get_interface_requirements(default_iface)
+            .and_then(|reqs| {
+                reqs.methods
+                    .iter()
+                    .find(|m| self.gcx.symbol_eq(m.name, "default"))
+                    .map(|m| m.id)
+            })
+            .expect("Default::default method");
+        let args = self
+            .gcx
+            .store
+            .interners
+            .intern_generic_args(vec![GenericArgument::Type(field.ty)]);
+        let callee = make_zst_callee(self.gcx, &mut self.body, default_method, args);
+        self.body.push_expr(
+            ExprKind::Call {
+                callee,
+                args: vec![],
+                is_async: false,
+                argument_evaluation_order: None,
+            },
+            field.ty,
+        )
+    }
+
     /// Decode one object payload using the same optional and missing-field rules
     /// for structs and struct-style enum variants.
     fn decode_fields(
@@ -304,9 +365,13 @@ impl<'ctx> CodecBuilder<'ctx> {
             Some(key_pattern),
             selected,
         );
-        let stop = self
-            .body
-            .push_expr(ExprKind::Break, Ty::new(TyKind::Never, self.gcx));
+        let stop = self.body.push_expr(
+            ExprKind::Break {
+                label: None,
+                value: None,
+            },
+            Ty::new(TyKind::Never, self.gcx),
+        );
         let none = self.arm(next_ty, StdItem::OptionalNoneVariant, None, stop);
         let next_key = self.body.push_expr(
             ExprKind::Match {
@@ -332,9 +397,10 @@ impl<'ctx> CodecBuilder<'ctx> {
                 vec![*ty, codec_ty],
                 vec![codec_value, key, expected, reference],
             );
-            let next_iteration = self
-                .body
-                .push_expr(ExprKind::Continue, Ty::new(TyKind::Never, self.gcx));
+            let next_iteration = self.body.push_expr(
+                ExprKind::Continue { label: None },
+                Ty::new(TyKind::Never, self.gcx),
+            );
             let condition = self.body.push_expr(
                 ExprKind::If {
                     cond: handled,
@@ -349,7 +415,7 @@ impl<'ctx> CodecBuilder<'ctx> {
         let skip = self.checked("__derivedDecodeSkip", vec![codec_ty], vec![codec_value]);
         loop_statements.push(self.body.push_stmt_expr(skip));
         let block = self.body.push_block(loop_statements, None);
-        statements.push(self.body.push_stmt(StmtKind::Loop { block }));
+        statements.push(self.body.push_stmt(StmtKind::Loop { label: None, block }));
         let mut values = Vec::new();
         for ((name, ty), (slot, slot_ty)) in fields.iter().zip(&slots) {
             let slot = self.read(*slot, *slot_ty);
@@ -415,10 +481,11 @@ pub(super) fn synthesize<'ctx>(
     let codec_ty = codec.ty;
     let codec_value = builder.read(codec.id, codec_ty);
     let value = if info.kind == SyntheticMethodKind::MemberwiseEncode {
+        let encoded_count = fields.iter().filter(|field| !field.coding_skip).count();
         let count = builder.body.push_expr(
             ExprKind::Literal(Constant {
                 ty: gcx.types.uint,
-                value: ConstantKind::Integer(fields.len() as u64),
+                value: ConstantKind::Integer(encoded_count as u64),
             }),
             gcx.types.uint,
         );
@@ -429,6 +496,9 @@ pub(super) fn synthesize<'ctx>(
         );
         statements.push(builder.body.push_stmt_expr(begin));
         for (index, field) in fields.iter().enumerate() {
+            if field.coding_skip {
+                continue;
+            }
             let receiver = builder.read(params[0].id, info.self_ty);
             let value = builder.body.push_expr(
                 ExprKind::Field {
@@ -437,7 +507,8 @@ pub(super) fn synthesize<'ctx>(
                 },
                 field.ty,
             );
-            let key = builder.string(&gcx.symbol_text(field.name));
+            let key_sym = field.coding_key.unwrap_or(field.name);
+            let key = builder.string(&gcx.symbol_text(key_sym));
             let codec_value = builder.read(codec.id, codec_ty);
             let encoded = builder.checked(
                 "__derivedEncodeField",
@@ -449,20 +520,35 @@ pub(super) fn synthesize<'ctx>(
         let codec_value = builder.read(codec.id, codec_ty);
         builder.call("__derivedEncodeEnd", vec![codec_ty], vec![codec_value])
     } else {
-        let fields = builder.decode_fields(
-            codec,
-            &fields
-                .iter()
-                .map(|field| (field.name, field.ty))
-                .collect::<Vec<_>>(),
-            &mut statements,
-        );
+        let coded_specs: Vec<_> = fields
+            .iter()
+            .filter(|field| !field.coding_skip)
+            .map(|field| (field.coding_key.unwrap_or(field.name), field.ty))
+            .collect();
+        let mut decoded = builder
+            .decode_fields(codec, &coded_specs, &mut statements)
+            .into_iter();
+        let mut all_fields = Vec::with_capacity(fields.len());
+        for (index, field) in fields.iter().enumerate() {
+            let expression = if field.coding_skip {
+                let value = builder.skipped_field_value(field, generic_args);
+                let (statement, id) = builder.bind(value, false);
+                statements.push(statement);
+                builder.read(id, field.ty)
+            } else {
+                decoded.next().expect("decoded field").expression
+            };
+            all_fields.push(FieldExpression {
+                index: FieldIndex::from_usize(index),
+                expression,
+            });
+        }
         let value = builder.body.push_expr(
             ExprKind::Adt(AdtExpression {
                 base: None,
                 definition,
                 generic_args,
-                fields,
+                fields: all_fields,
                 variant_index: None,
             }),
             info.self_ty,

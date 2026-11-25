@@ -1,0 +1,4 @@
+error: expected UserId, found OrderId
+ -> language_tests/source_files/invalid/tuple_struct_nominal.tr:4:23
+	func main() { onlyUser(OrderId(42)) }
+	                       ^^^^^^^^^^^

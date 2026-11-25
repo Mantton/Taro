@@ -1,0 +1,10 @@
+warning: this line continues the expression on the previous line; add a ',' if a new element was meant
+ -> language_tests/source_files/invalid/continued_lines_type_error.tr:6:8
+	        ("second")
+	        ^
+error: cannot call value of type string
+ -> language_tests/source_files/invalid/continued_lines_type_error.tr:5:8
+        "first"
+        ^^^^^^^
+        ("second")
+                  ^

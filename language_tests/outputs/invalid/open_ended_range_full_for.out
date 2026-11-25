@@ -1,0 +1,7 @@
+error: type 'RangeFull' does not conform to interface 'Iterable'
+ -> language_tests/source_files/invalid/open_ended_range_full_for.tr:2:4
+    for x in .. {
+    ^^^^^^^^^^^^^
+        _ = x
+    }
+     ^

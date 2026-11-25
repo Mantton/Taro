@@ -1,0 +1,4 @@
+error: expected `,` or `]`, found `3`
+ -> language_tests/source_files/invalid/asi_missing_comma_in_brackets.tr:5:8
+	        3
+	        ^

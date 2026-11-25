@@ -1,0 +1,4 @@
+error: unknown symbol `missing`
+ -> language_tests/source_files/invalid/syntax_sugar_discard_unknown.tr:2:19
+	func main() { _ := missing; }
+	                   ^^^^^^^

@@ -15,7 +15,7 @@ func main() {
     if accept(Flag { enabled: true }) {} else { panic("call argument") }
     if [Flag { enabled: true }].len() == 1 {} else { panic("collection literal") }
     if { Flag { enabled: true }.enabled } {} else { panic("block expression") }
-    if f"{Flag { enabled: true }.enabled}" == "true" {} else { panic("interpolation") }
+    if "${Flag { enabled: true }.enabled}" == "true" {} else { panic("interpolation") }
     var iterations = 0
     while (Flag { enabled: iterations < 2 }).enabled { iterations += 1 }
     assert(iterations == 2, "while condition")

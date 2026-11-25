@@ -1,0 +1,4 @@
+error: construct a positional struct with parentheses
+ -> language_tests/source_files/invalid/tuple_struct_braces.tr:2:14
+	func main() { Marker {} }
+	              ^^^^^^

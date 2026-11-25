@@ -1,0 +1,8 @@
+@onUnsatisfied("{Self} needs an explicit ranking")
+interface Ranked { func rank() -> int32; }
+struct Item { value: int32 }
+conform Item to Ranked {
+    func rank() -> int32 { self.value }
+}
+func score[T: Ranked](_ item: T) -> int32 { item.rank() }
+func main() { println("${score(Item { value: 7 })}") }

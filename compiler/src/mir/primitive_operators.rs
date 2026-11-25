@@ -222,6 +222,7 @@ pub(crate) fn declaration(gcx: Gcx<'_>, item: StdItem, span: Span) -> Definition
     let ty = Ty::new(TyKind::Parameter(GenericParameter { index: 0, name }), gcx);
     let generics = gcx.store.arenas.generics.alloc(Generics {
         parameters: vec![GenericParameterDefinition {
+            is_anonymous: false,
             name,
             id: parameter_id,
             index: 0,
@@ -234,6 +235,7 @@ pub(crate) fn declaration(gcx: Gcx<'_>, item: StdItem, span: Span) -> Definition
     let input = |name: &str, ty| LabeledFunctionParameter {
         name: gcx.intern_symbol(name),
         label: None,
+        is_lazy: false,
         default_provider: None,
         ty,
     };
@@ -544,6 +546,7 @@ pub(crate) fn build_body<'ctx>(
         return_local,
         phase: MirPhase::CfgClean,
         is_async: false,
+        generator_element_ty: None,
     };
     Ok(body)
 }

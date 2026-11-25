@@ -1,0 +1,7 @@
+interface Sized { const COUNT: int32 = 1; }
+struct Bad {}
+conform Bad to Sized {
+    const COUNT: int32 = 3
+    const COUNT: int32 = 7
+}
+func main() { println("${Bad::COUNT}") }

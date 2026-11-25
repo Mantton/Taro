@@ -1,0 +1,4 @@
+error: cannot derive 'Debug' for class 'Account': only structs and enums can derive it; implement it in a conformance instead
+ -> language_tests/source_files/invalid/derived_debug_class.tr:2:21
+	final class Account: Debug {
+	                     ^^^^^

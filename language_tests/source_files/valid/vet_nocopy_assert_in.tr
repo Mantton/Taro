@@ -1,0 +1,23 @@
+// VET
+@NoCopy
+struct Token {
+    id: int32
+}
+
+struct Bag {
+    target: int32
+}
+
+conform Bag to Contains[Token] {
+    func contains(_ item: &Token) -> bool {
+        item.id == self.target
+    }
+}
+
+func main() {
+    tok := Token { id: 7 }
+    other := Token { id: 9 }
+    bag := Bag { target: 7 }
+    assert(tok in bag, "token must be in bag without copying @NoCopy operand")
+    assert(other !in bag, "missing token must not copy @NoCopy operand")
+}

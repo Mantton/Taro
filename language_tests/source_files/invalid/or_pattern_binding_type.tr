@@ -1,0 +1,7 @@
+enum Pair { case num(int32); case text(string) }
+func read(_ pair: Pair) -> int32 {
+    match pair {
+        case .num(value) | .text(value) => value
+    }
+}
+func main() {}

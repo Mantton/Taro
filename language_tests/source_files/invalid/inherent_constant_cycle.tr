@@ -1,0 +1,6 @@
+struct Sample {}
+extend Sample {
+    const FIRST: int32 = Self::SECOND
+    const SECOND: int32 = Self::FIRST
+}
+func main() {}

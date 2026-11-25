@@ -1,0 +1,5 @@
+struct Queue[T] { value: T }
+extend Queue[int32] {
+    enum State { case ready }
+}
+func main() {}

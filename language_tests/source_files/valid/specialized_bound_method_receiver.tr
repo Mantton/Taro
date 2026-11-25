@@ -1,0 +1,49 @@
+struct Box[T] { value: T }
+extend Box[int64] {
+    func measure() -> usize { 64 }
+    func pick[U](_ value: U) -> int32 { 64 }
+    func echo(_ x: string) -> int64 { 0 }
+}
+extend[T] Box[T] {
+    func echo(_ x: T) -> T { x }
+}
+interface Measure { func measure() -> usize; }
+interface Choose { func pick[U](_ value: U) -> int32; }
+conform Box[int32] to Choose { func pick[U](_ value: U) -> int32 { 32 }; }
+conform Box[int32] to Measure { func measure() -> usize { 32 }; }
+func invoke[F: Fn(int64) -> int64](_ f: F) -> int64 { f(5000000000_i64) }
+struct Decimal[T] { value: T }
+extend Decimal[float] {
+    func measure() -> usize { 1 }
+}
+conform Decimal[double] to Measure { func measure() -> usize { 2 }; }
+
+func narrow() -> int32 { 32 }
+func wide() -> int32 { 64 }
+extend Box[int64] {
+    var getter: () -> int32 { get { wide } }
+}
+interface Getter { var getter: () -> int32 { get }; }
+conform Box[int32] to Getter { var getter: () -> int32 { get { narrow } }; }
+
+func main() {
+    a := Box { value: 0 }.measure
+    b := Box[int32] { value: 0 }.measure
+    later := () => {
+        box := Box { value: 0 }
+        callback := box.measure
+        var _typed: Box[int64] = box
+        callback()
+    }
+    width := invoke(Box { value: 0 }.echo)
+    decimal := Decimal { value: 1.5 }.measure
+    small := Decimal[float] { value: 1.5 }.measure
+    var erased: any Fn() -> usize = Box { value: 0 }.measure
+    var optional: (any Fn() -> usize)? = Box { value: 0 }.measure
+    // A function pointer returned by a property already is a callable value.
+    getter := Box { value: 0 }.getter
+    bound := Box { value: 0 }.pick[bool]
+    direct := Box { value: 0 }.pick[bool](true)
+    println("${a()} ${b()} ${later()} ${width} ${decimal()} ${small()}")
+    println("${erased()} ${optional.unwrap()()} ${bound(true)} ${direct} ${getter()}")
+}

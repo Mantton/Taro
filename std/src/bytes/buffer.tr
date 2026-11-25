@@ -1,6 +1,6 @@
 import std::collections::{List, __list_copy_bytes}
 import std::io::{Error, Reader, Writer}
-import std::mem::{Span, NativeBytes, Span, maxBufferCapacity}
+import std::mem::{Span, NativeBytes, maxBufferCapacity}
 import std::result::Result
 
 const BUFFER_INITIAL_CAPACITY: usize = 64

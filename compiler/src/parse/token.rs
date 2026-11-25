@@ -6,16 +6,22 @@ pub enum Token {
     Identifier {
         value: String,
     },
+    /// Decoded text; raw literals bypass backslash decoding during lexing.
     String {
         value: String,
     },
-    FStringStart,
-    FStringText {
+    InterpolatedStringStart,
+    StringText {
         value: String,
     },
-    FStringExprStart,
-    FStringExprEnd,
-    FStringEnd,
+    StringInterpolationStart,
+    StringInterpolationEnd,
+    /// The raw text after a top-level `:` in `${value:spec}`, up to the
+    /// closing brace. The span starts at the colon.
+    InterpolationFormat {
+        value: String,
+    },
+    InterpolatedStringEnd,
     Rune {
         value: String,
     },
@@ -38,6 +44,7 @@ pub enum Token {
     Modulus,  // %, Arithmetic Remainder
     Amp,      // &, Bitwise And,
     Bang,     // !, Binary Not
+    BangIn,   // !in, negated membership
     Tilde,    // ~, Bitwise Not
 
     LChevron,    // <
@@ -86,6 +93,7 @@ pub enum Token {
     Question,         // ?
     QuestionDot,      // ?.
     QuestionQuestion, // ??
+    QuestionQuestionEq, // ??=
     At,               // @
     Hash,             // #
 
@@ -210,9 +218,9 @@ impl Base {
 impl std::fmt::Display for Token {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Identifier { value }
-            | Self::FStringText { value }
-            | Self::Float { value, .. } => f.write_str(value),
+            Self::Identifier { value } | Self::StringText { value } | Self::Float { value, .. } => {
+                f.write_str(value)
+            }
             Self::String { value } => write!(f, "\"{value}\""),
             Self::Rune { value } => write!(f, "'{value}'"),
             Self::Integer { value, suffix, .. } => {
@@ -236,10 +244,11 @@ impl std::fmt::Display for Token {
             }
             Self::EOF => f.write_str("end of file"),
             Self::Semicolon => f.write_str(";"),
-            Self::FStringStart => f.write_str("f\""),
-            Self::FStringEnd => f.write_str("\""),
-            Self::FStringExprStart => f.write_str("{"),
-            Self::FStringExprEnd => f.write_str("}"),
+            Self::InterpolatedStringStart => f.write_str("\""),
+            Self::InterpolatedStringEnd => f.write_str("\""),
+            Self::StringInterpolationStart => f.write_str("${"),
+            Self::StringInterpolationEnd => f.write_str("}"),
+            Self::InterpolationFormat { value } => write!(f, ":{value}"),
             Self::Assign => f.write_str("="),
             Self::ColonEq => f.write_str(":="),
             Self::Plus => f.write_str("+"),
@@ -249,6 +258,7 @@ impl std::fmt::Display for Token {
             Self::Modulus => f.write_str("%"),
             Self::Amp => f.write_str("&"),
             Self::Bang => f.write_str("!"),
+            Self::BangIn => f.write_str("!in"),
             Self::Tilde => f.write_str("~"),
             Self::LChevron => f.write_str("<"),
             Self::RChevron => f.write_str(">"),
@@ -291,6 +301,7 @@ impl std::fmt::Display for Token {
             Self::Question => f.write_str("?"),
             Self::QuestionDot => f.write_str("?."),
             Self::QuestionQuestion => f.write_str("??"),
+            Self::QuestionQuestionEq => f.write_str("??="),
             Self::At => f.write_str("@"),
             Self::Hash => f.write_str("#"),
             Self::Ellipsis => f.write_str("..."),

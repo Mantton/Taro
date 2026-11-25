@@ -1,4 +1,4 @@
-import std::encoding::{Codable, Decoder, Encodable, Encoder}
+import std::encoding::{Decoder, Encodable, Encoder}
 import std::fmt::Display
 import std::result::Result
 

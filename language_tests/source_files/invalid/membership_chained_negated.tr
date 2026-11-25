@@ -1,0 +1,3 @@
+func main() {
+    _ = 1 in [1] !in [true]
+}

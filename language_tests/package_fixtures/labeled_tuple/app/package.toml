@@ -1,0 +1,6 @@
+[package]
+name = "github.com/example/labeled-tuple-app"
+kind = "executable"
+
+[require]
+"github.com/example/labeled-tuple-dep" = { path = "../dep", alias = "dep" }

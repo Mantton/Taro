@@ -1,0 +1,37 @@
+interface Code {
+    const NAME: string = "default"
+    const NUMBER: int32
+}
+interface ChildCode: Code {}
+interface InternalCode { private const NUMBER: int32 = -1; }
+struct Box[T] { value: T }
+conform Box[uint8] to InternalCode {}
+conform Box[uint8] to Code {
+    const NUMBER: int32 = 8
+}
+conform Box[uint8] to ChildCode {}
+conform Box[int64] to Code {
+    const NAME: string = "wide"
+    const NUMBER: int32 = 64
+}
+
+enum Token[T] { case first, last }
+interface TokenSource { const TOKEN: Token[Self] = .first; }
+conform Box[uint8] to TokenSource {}
+conform[T] Token[T] to TokenSource { const TOKEN: Token[Self] = .last; }
+
+const COMBINED: int32 = Box[uint8]::NUMBER + Box[int64]::NUMBER
+func number[T: Code](_ value: T) -> int32 { T::NUMBER }
+func inherited[T: ChildCode](_ value: T) -> string { T::NAME }
+func tag[T: TokenSource](_ value: T) -> Token[T] { T::TOKEN }
+func last[T](_ token: Token[T]) -> bool {
+    match token { case .first => false; case .last => true; }
+}
+func main() {
+    narrow := Box[uint8] { value: 0 }
+    wide := Box[int64] { value: 0 }
+    assert(COMBINED == 72 && number(narrow) == 8 && number(wide) == 64, "specialized values")
+    assert(inherited(narrow) == "default" && Box[int64]::NAME == "wide", "inherited default and override")
+    assert(!last(tag(narrow)) && last(tag(Token[bool]::first)), "generic enum-valued witness")
+    println("PASS")
+}

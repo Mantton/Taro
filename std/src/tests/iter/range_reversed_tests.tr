@@ -1,0 +1,71 @@
+import std::collections::List
+import std::iter::Iterator
+
+const REVERSED_USIZE_MAX: usize = ~(0 as usize)
+
+func gatherReversed[T, I: Iterator[Element = T]](_ source: I) -> List[T] {
+    var result = List[T]::new()
+    // Bounded, so a wrapped step shows up as a wrong element, not a hang.
+    for value in source.take(300 as usize) {
+        result.append(value)
+    }
+    return result
+}
+
+@test
+func testRangeReversedMatchesForwardInOppositeOrder() {
+    for (start, end) in [(0_i32, 0_i32), (0, 1), (0, 5), (-3, 3), (5, 3), (7, 7)] {
+        forward := gatherReversed((start..end).iter())
+        std::testing::assertEqual(gatherReversed((start..end).reversed()), forward.reversed(), "half-open")
+        closedForward := gatherReversed((start..=end).iter())
+        std::testing::assertEqual(gatherReversed((start..=end).reversed()), closedForward.reversed(), "closed")
+    }
+}
+
+@test
+func testRangeReversedEmptyRanges() {
+    var none: [int32] = []
+    std::testing::assertEqual(gatherReversed((5_i32..5_i32).reversed()), none, "5..5")
+    std::testing::assertEqual(gatherReversed((5_i32..3_i32).reversed()), none, "5..3")
+    std::testing::assertEqual(gatherReversed((5_i32..=4_i32).reversed()), none, "5..=4")
+    var noIndices: [usize] = []
+    std::testing::assertEqual(gatherReversed((0 as usize..0).reversed()), noIndices, "usize 0..0")
+}
+
+@test
+func testRangeReversedTypeBoundaries() {
+    std::testing::assertEqual(gatherReversed((0 as usize..3).reversed()), [2 as usize, 1, 0], "usize from zero")
+    std::testing::assertEqual(gatherReversed((0 as usize..=1).reversed()), [1 as usize, 0], "usize closed from zero")
+    max := REVERSED_USIZE_MAX
+    std::testing::assertEqual(gatherReversed((max - 1..=max).reversed()), [max, max - 1], "usize closed to max")
+    full := gatherReversed((0 as uint8..=255).reversed())
+    std::testing::assertEqual(full.len(), 256 as usize, "uint8 full count")
+    std::testing::assertEqual(full[0], 255 as uint8, "uint8 starts at max")
+    std::testing::assertEqual(full[255], 0 as uint8, "uint8 ends at min")
+    signed := gatherReversed((-128 as int8..=127).reversed())
+    std::testing::assertEqual(signed.len(), 256 as usize, "int8 full count")
+    std::testing::assertEqual(signed[0], 127 as int8, "int8 starts at max")
+    std::testing::assertEqual(signed[255], -128 as int8, "int8 ends at min")
+    std::testing::assertEqual(gatherReversed((-128 as int8..-126).reversed()), [-127 as int8, -128], "int8 half-open from min")
+}
+
+@test
+func testRangeReversedWithAdapters() {
+    std::testing::assertEqual((0_i32..4_i32).reversed().map((i: int32) => i * i), [9, 4, 1, 0], "map")
+    std::testing::assertEqual((1_i32..=6_i32).reversed().filter((i: int32) => i % 2 == 0), [6, 4, 2], "filter")
+    var visited: [int32] = []
+    for (index, value) in (1_i32..=3_i32).reversed().enumerate() {
+        visited.append((index as int32) * 10 + value)
+    }
+    std::testing::assertEqual(visited, [3, 12, 21], "enumerate")
+    var sums: [int32] = []
+    for (a, b) in (0_i32..3_i32).reversed().zip((0_i32..3_i32).iter()) {
+        sums.append(a * 10 + b)
+    }
+    std::testing::assertEqual(sums, [20, 11, 2], "zip")
+    std::testing::assertEqual(gatherReversed((0_i32..1000_i32).reversed().take(2 as usize)), [999, 998], "take")
+    var iterator = (1_i32..=2_i32).reversed()
+    std::testing::assertEqual(iterator.next().unwrap(), 2, "first")
+    std::testing::assertEqual(iterator.next().unwrap(), 1, "second")
+    std::testing::assertTrue(iterator.next().isNone() && iterator.next().isNone(), "stays exhausted")
+}

@@ -1,0 +1,12 @@
+// Only string interpolation falls back to Debug: other `any Display` uses
+// still require Display.
+import std::fmt::Display
+struct Version: Debug { major: int32 }
+func takesDisplay(_ value: any Display) {}
+func main() {
+    version := Version { major: 1 }
+    printf("%v\n", version)
+    var text = sprintf("%v", version)
+    var shown: any Display = version
+    takesDisplay(version)
+}

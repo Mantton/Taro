@@ -1,0 +1,4 @@
+error: unknown symbol `T`
+ -> language_tests/source_files/invalid/nested_type_capture.tr:3:17
+	    struct Entry(T)
+	                 ^

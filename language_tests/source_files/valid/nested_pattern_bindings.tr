@@ -1,0 +1,28 @@
+enum Choice { case left(int32, string); case right(string, int32) }
+struct Box { item: Choice }
+func viaLocal(_ input: Box) -> int32 {
+    var Box { item: .left(n, _) | .right(_, n) } = input
+    n += 1
+    return n
+}
+func viaCondition(_ input: Box) -> int32 {
+    if case Box { item: whole @ (.right(_, n) | .left(n, _)) } = input {
+        if whole is .right(_, _) { return n + 2 }
+        return n
+    }
+    return 0
+}
+func viaArm(_ input: Box) -> int32 {
+    match input {
+        case Box { item: .right(_, n) | .left(n, _) } => n
+    }
+}
+func main() {
+    a := Box { item: .left(8, "first") }
+    b := Box { item: .right("second", 17) }
+    assert(viaLocal(a) == 9 && viaLocal(b) == 18, "bind the field selected by each alternative")
+    assert(viaArm(a) == 8 && viaArm(b) == 17, "declaration and source orders differ")
+    assert(viaCondition(a) == 8 && viaCondition(b) == 19, "conditional names and whole value")
+    assert(b is Box { item: .left(_, _) | .right(_, _) }, "binding-free named field alternatives")
+    println("bindings")
+}

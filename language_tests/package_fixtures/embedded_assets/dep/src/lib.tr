@@ -1,0 +1,9 @@
+public const PAGE: string = #embed("../assets/page.txt")
+public const ICON: [uint8; 4] = #embedBytes("../assets/icon.bin")
+public func empty() -> [uint8; 0] {
+    data := #embedBytes("../assets/empty")
+    data
+}
+
+@cfg(os("unused-asset-test"))
+func unusedTargetAsset() -> string { #embed("absent-on-this-target.txt") }

@@ -10,16 +10,14 @@ use crate::{
     span::{Span, Symbol},
 };
 
-pub fn run(package: &hir::Package, context: Gcx) -> CompileResult<()> {
+pub fn register(package: &hir::Package, context: Gcx) -> CompileResult<Vec<DefinitionID>> {
     let mut actor = Actor::new(context);
 
     // Phase 1: Collect all alias definitions (no lowering yet)
     hir::walk_package(&mut actor, package);
     context.dcx().ok()?;
 
-    // Phase 2: Trigger resolution for all aliases (lowerer handles caching/cycles)
-    actor.resolve_all_aliases();
-    context.dcx().ok()
+    Ok(actor.alias_ids)
 }
 
 struct Actor<'ctx> {
@@ -148,22 +146,20 @@ impl HirVisitor for Actor<'_> {
     }
 }
 
-impl<'ctx> Actor<'ctx> {
-    fn resolve_all_aliases(&self) {
-        let gcx = self.context;
-        for &alias_id in &self.alias_ids {
-            if gcx.try_get_alias_type(alias_id).is_some() {
-                continue;
-            }
-            let ctx = DefTyLoweringCtx::new(alias_id, gcx);
-            let lowerer: &dyn TypeLowerer = &ctx;
-            let Some(def) =
-                gcx.with_session_type_database(|db| db.alias_table.aliases.get(&alias_id).cloned())
-            else {
-                continue;
-            };
-            let ty = lowerer.lower_type(&def.ast_ty);
-            gcx.cache_alias_type(alias_id, ty);
+pub fn resolve(alias_ids: Vec<DefinitionID>, gcx: Gcx) -> CompileResult<()> {
+    for alias_id in alias_ids {
+        if gcx.try_get_alias_type(alias_id).is_some() {
+            continue;
         }
+        let ctx = DefTyLoweringCtx::new(alias_id, gcx);
+        let lowerer: &dyn TypeLowerer = &ctx;
+        let Some(def) =
+            gcx.with_session_type_database(|db| db.alias_table.aliases.get(&alias_id).cloned())
+        else {
+            continue;
+        };
+        let ty = lowerer.lower_type(&def.ast_ty);
+        gcx.cache_alias_type(alias_id, ty);
     }
+    gcx.dcx().ok()
 }

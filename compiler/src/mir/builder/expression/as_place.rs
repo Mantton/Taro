@@ -95,8 +95,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             | ExprKind::If { .. }
             | ExprKind::Match { .. }
             | ExprKind::Return { .. }
-            | ExprKind::Break
-            | ExprKind::Continue
+            | ExprKind::Loop { .. }
+            | ExprKind::Break { .. }
+            | ExprKind::Continue { .. }
             | ExprKind::Assign { .. }
             | ExprKind::AssignOp { .. }
             | ExprKind::Literal(..)
@@ -121,7 +122,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             | ExprKind::Adt { .. }
             | ExprKind::Zst { .. }
             | ExprKind::Closure { .. }
-            | ExprKind::Await { .. } => {
+            | ExprKind::Await { .. }
+            | ExprKind::Yield { .. }
+            | ExprKind::AwaitAsyncVar { .. }
+            | ExprKind::Select { .. } => {
                 let temp = unpack!(block = self.as_addressable_temp(block, expr_id));
                 block.and(Place::from_local(temp))
             }

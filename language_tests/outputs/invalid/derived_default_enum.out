@@ -1,0 +1,8 @@
+error: cannot derive 'Default' for class 'Config': only structs can derive it; implement it in a conformance instead
+ -> language_tests/source_files/invalid/derived_default_enum.tr:6:20
+	final class Config: Default {
+	                    ^^^^^^^
+error: cannot derive 'Default' for enum 'Mode': enums have no synthesized default; implement 'static func default() -> Self' in a conformance instead
+ -> language_tests/source_files/invalid/derived_default_enum.tr:2:11
+	enum Mode: Default {
+	           ^^^^^^^

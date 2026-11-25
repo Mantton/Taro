@@ -1,0 +1,11 @@
+enum Choice { case left(int32); case right(int32) }
+func read(_ input: Choice) -> int32 {
+    match (input, true) {
+        case (.right(n), true) | (.left(n), true) => n
+        case _ => -1
+    }
+}
+func main() {
+    assert(read(.left(5)) == 5 && read(.right(9)) == 9, "selected binding")
+    println("ordered")
+}

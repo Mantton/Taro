@@ -369,7 +369,7 @@ func main() {}
                             gcx, adapter,
                         );
                     let (source, arguments) =
-                        gcx.adopted_default_target(adapter, identity).unwrap();
+                        gcx.adapter_source_arguments(adapter, identity).unwrap();
                     assert_eq!(
                         arguments.len(),
                         gcx.generics_of(source).parent_count

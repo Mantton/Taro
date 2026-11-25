@@ -1,0 +1,27 @@
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_CONTAINS: error: lost connection after 3 attempts
+// EXPECT_STDERR_COUNT: 1 error:
+// An async `main` may return a Result; the error is reported after the root
+// task completes, including when it suspended first.
+struct ConnectionLost {
+    attempts: int32
+}
+
+conform ConnectionLost to std::fmt::Display {
+    func display(_ into: &std::fmt::Formatter) {
+        into.writeString("lost connection after ${self.attempts} attempts")
+    }
+}
+
+conform ConnectionLost to std::error::Error {}
+
+func attempt() async -> int32 {
+    await std::testing::yieldNow()
+    return 3
+}
+
+func main() async -> Result[(), any std::error::Error] {
+    attempts := await attempt()
+    print("attempted ${attempts} times\n")
+    return .err(ConnectionLost { attempts })
+}

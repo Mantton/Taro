@@ -127,7 +127,7 @@ impl<'ctx> FunctionLower<'ctx> {
     pub(super) fn lower_native_index_set(
         &mut self,
         lhs: &hir::Expression,
-        rhs: &hir::Expression,
+        value: ExprId,
         setter: NativeAccessor<'ctx>,
     ) -> ExprKind<'ctx> {
         let hir::ExpressionKind::Index {
@@ -143,9 +143,9 @@ impl<'ctx> FunctionLower<'ctx> {
         args.extend(
             index
                 .iter()
-                .map(|argument| self.lower_expr(&argument.expression)),
+                .map(|argument| self.lower_call_argument(argument)),
         );
-        args.push(self.lower_expr(rhs));
+        args.push(value);
         let last = args.len() - 1;
         let mut call = self.native_index_call(setter, args, lhs.span);
         if matches!(call, ExprKind::Assign { .. }) {
@@ -163,7 +163,7 @@ impl<'ctx> FunctionLower<'ctx> {
         call
     }
 
-    fn capture_native_operand(
+    pub(super) fn capture_native_operand(
         &mut self,
         expression: ExprId,
         name: &str,
@@ -220,7 +220,7 @@ impl<'ctx> FunctionLower<'ctx> {
             self.capture_native_operand(receiver, "__index_receiver", target.span, &mut stmts);
         let mut args = vec![receiver];
         for argument in index {
-            let value = self.lower_expr(&argument.expression);
+            let value = self.lower_call_argument(argument);
             args.push(self.capture_native_operand(
                 value,
                 "__index_argument",

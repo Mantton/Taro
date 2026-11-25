@@ -11,46 +11,77 @@ const BYTE_PERCENT: uint8 = 37
 const BYTE_D: uint8 = 100
 const BYTE_S: uint8 = 115
 const BYTE_V: uint8 = 118
+const BYTE_X: uint8 = 120
+const BYTE_B: uint8 = 98
+const BYTE_E_LOWER: uint8 = 101
+const BYTE_DOT_SPEC: uint8 = 46
+const BYTE_LEFT_BRACE: uint8 = 123
+const BYTE_RIGHT_BRACE: uint8 = 125
+const BYTE_LESS: uint8 = 60
+const BYTE_GREATER: uint8 = 62
+const BYTE_CARET: uint8 = 94
+const BYTE_QUESTION: uint8 = 63
 
-/// The width and flags a conversion was written with.
+/// The width, alignment, precision and flags a conversion was written with.
 ///
 /// Passed to every `Formattable`, so an implementation can honour them itself
-/// when the default field padding is not what the type wants.
+/// when the default field padding is not what the type wants. Classic `%`
+/// directives set only the width and the `-` and `0` flags. An interpolation
+/// specifier such as `${price:*^10.2}` (lowered to `%{*^10.2}`) also sets
+/// `fill`, `center` and the precision.
 public struct FormatState {
     public width: usize
-    public precision: usize
     public hasWidth: bool
-    public hasPrecision: bool
     public alternate: bool
     public zeroPad: bool
     public leftAlign: bool
     public signPlus: bool
     public signSpace: bool
+    /// The rune that pads a field to `width`. A space unless one is named.
+    public fill: rune
+    /// Centers the text, with any odd padding rune on the right.
+    public center: bool
+    /// Digits after the decimal point for floats, or the most runes kept
+    /// from a string. Other built-in types ignore it.
+    public precision: usize
+    public hasPrecision: bool
 }
 
 extend FormatState {
     public static func default() -> Self {
         FormatState {
             width: 0,
-            precision: 0,
             hasWidth: false,
-            hasPrecision: false,
             alternate: false,
             zeroPad: false,
             leftAlign: false,
             signPlus: false,
             signSpace: false,
+            fill: ' ',
+            center: false,
+            precision: 0,
+            hasPrecision: false,
         }
     }
 }
 
+internal enum ZeroPadMode {
+    /// Non-numeric values pad with `'0'` normally without splitting a leading `'-'`.
+    case plain
+    /// Finite numeric values place `'0'` padding after a leading `'-'`.
+    case signedNumeric
+    /// Non-finite floats (`inf`, `-inf`, `nan`) suppress zero-padding and pad with spaces.
+    case suppress
+}
+
 public struct Formatter {
     buffer: Builder
+    internal zeroPadMode: ZeroPadMode
 }
 
 extend Formatter {
     public static func new() -> Self {
-        Formatter { buffer: Builder::new() }
+        Formatter { buffer: Builder::new(), zeroPadMode: .plain }
     }
 
     public func writeByte(_ value: uint8) {
@@ -70,6 +101,7 @@ extend Formatter {
     }
 }
 
+@lang("Display")
 public interface Display {
     func display(_ into: &Formatter)
 }
@@ -161,20 +193,55 @@ func writeUnsignedInteger(_ into: &Formatter, _ value: uint64) {
     appendUnsignedDecimal(&into.buffer, value)
 }
 
-func formatSignedInteger(_ into: &Formatter, _ value: int64, _ spec: rune) {
-    if !(spec == 'd' || spec == 'v') {
+// Hex and binary digits of `value`, most significant first, `bits` per digit.
+func writeRadixDigits(_ into: &Formatter, _ value: uint64, _ bits: uint64) {
+    var digits: [uint8; 64] = [0; 64]
+    var start: usize = 64
+    var n = value
+    mask := (1_u64 << bits) - 1
+    loop {
+        digit := (n & mask) as uint8
+        start -= 1
+        digits[start] = if digit < 10 { BYTE_ZERO + digit } else { digit - 10 + ('a' as uint8) }
+        n >>= bits
+        if n == 0 { break }
+    }
+    while start < 64 {
+        into.writeByte(digits[start])
+        start += 1
+    }
+}
+
+// `pattern` is the value's two's-complement bits at its own width, so `x`
+// of an int8 -1 is `ff` and of an int32 -1 is `ffffffff`.
+func formatSignedInteger(_ into: &Formatter, _ value: int64, _ pattern: uint64, _ spec: rune) {
+    if spec == 'd' || spec == 'v' || spec == '?' {
+        into.zeroPadMode = .signedNumeric
+        writeSignedInteger(into, value)
+    } else if spec == 'x' {
+        into.zeroPadMode = .signedNumeric
+        writeRadixDigits(into, pattern, 4)
+    } else if spec == 'b' {
+        into.zeroPadMode = .signedNumeric
+        writeRadixDigits(into, pattern, 1)
+    } else {
         panic("printf: invalid format specifier for integer argument")
     }
-
-    writeSignedInteger(into, value)
 }
 
 func formatUnsignedInteger(_ into: &Formatter, _ value: uint64, _ spec: rune) {
-    if !(spec == 'd' || spec == 'v') {
+    if spec == 'd' || spec == 'v' || spec == '?' {
+        into.zeroPadMode = .signedNumeric
+        writeUnsignedInteger(into, value)
+    } else if spec == 'x' {
+        into.zeroPadMode = .signedNumeric
+        writeRadixDigits(into, value, 4)
+    } else if spec == 'b' {
+        into.zeroPadMode = .signedNumeric
+        writeRadixDigits(into, value, 1)
+    } else {
         panic("printf: invalid format specifier for integer argument")
     }
-
-    writeUnsignedInteger(into, value)
 }
 
 /// Writes `count` copies of `fill`.
@@ -186,11 +253,25 @@ func writeFill(_ into: &Formatter, _ fill: uint8, _ count: usize) {
     }
 }
 
+/// Writes `count` copies of a fill rune.
+func writeFillRune(_ into: &Formatter, _ fill: rune, _ count: usize) {
+    var written: usize = 0
+    while written < count {
+        into.writeRune(fill)
+        written += 1
+    }
+}
+
 /// Writes `rendered` into a field `state.width` wide.
 ///
 /// Padding is applied here, once, rather than by each `Formattable`, so every
 /// type is padded consistently and a new one gets the behaviour for free.
-func writePadded(_ into: &Formatter, _ rendered: string, _ state: &FormatState) {
+func writePadded(
+    _ into: &Formatter,
+    _ rendered: string,
+    _ state: &FormatState,
+    _ zeroPadMode: ZeroPadMode,
+) {
     if !state.hasWidth {
         into.writeString(rendered)
         return
@@ -207,25 +288,43 @@ func writePadded(_ into: &Formatter, _ rendered: string, _ state: &FormatState) 
     padding := state.width - visible
     if state.leftAlign {
         into.writeString(rendered)
-        writeFill(into, BYTE_SPACE, padding)
+        writeFillRune(into, state.fill, padding)
         return
     }
 
-    if state.zeroPad {
-        // A sign belongs in front of the zeros: `%04d` of -7 is `-007`.
-        if rendered.startsWith("-") {
-            digits := std::string::stringLen(rendered) - 1
-            into.writeByte(BYTE_MINUS)
-            writeFill(into, BYTE_ZERO, padding)
-            into.writeString(rendered.substring(1, digits))
-            return
-        }
-        writeFill(into, BYTE_ZERO, padding)
+    if state.center {
+        before := padding / 2
+        writeFillRune(into, state.fill, before)
         into.writeString(rendered)
+        writeFillRune(into, state.fill, padding - before)
         return
     }
 
-    writeFill(into, BYTE_SPACE, padding)
+    if state.zeroPad && state.fill == ' ' {
+        match zeroPadMode {
+            case .signedNumeric => {
+                // A sign belongs in front of the zeros: `%04d` of -7 is `-007`.
+                if rendered.startsWith("-") {
+                    digits := std::string::stringLen(rendered) - 1
+                    into.writeByte(BYTE_MINUS)
+                    writeFill(into, BYTE_ZERO, padding)
+                    into.writeString(rendered.substring(1, digits))
+                    return
+                }
+                writeFill(into, BYTE_ZERO, padding)
+                into.writeString(rendered)
+                return
+            }
+            case .plain => {
+                writeFill(into, BYTE_ZERO, padding)
+                into.writeString(rendered)
+                return
+            }
+            case .suppress => {}
+        }
+    }
+
+    writeFillRune(into, state.fill, padding)
     into.writeString(rendered)
 }
 
@@ -297,6 +396,26 @@ func formatPrintfWith[Args: PrintfArguments](_ format: string, _ args: Args) -> 
             continue
         }
 
+        // `%{spec}` carries an interpolation specifier, already validated
+        // by the compiler when it came from `${value:spec}`.
+        if unsafe { format_data.add(index).read() } == BYTE_LEFT_BRACE {
+            var state = FormatState::default()
+            var spec: rune = 'v'
+            index = parseBraceSpec(format, index + 1, &state, &spec)
+            if arg_index >= args.len() {
+                panic("printf: missing format argument")
+            }
+            if state.hasWidth {
+                var scratch = Formatter::new()
+                args.render(&scratch, arg_index, spec, &state)
+                writePadded(&writer, scratch.toString(), &state, scratch.zeroPadMode)
+            } else {
+                args.render(&writer, arg_index, spec, &state)
+            }
+            arg_index += 1
+            continue
+        }
+
         // Flags, then width. `%-8s` and `%04d` are what a column of aligned
         // output needs, and are the forms this understands.
         var state = FormatState::default()
@@ -350,7 +469,7 @@ func formatPrintfWith[Args: PrintfArguments](_ format: string, _ args: Args) -> 
         if state.hasWidth {
             var scratch = Formatter::new()
             args.render(&scratch, arg_index, spec, &state)
-            writePadded(&writer, scratch.toString(), &state)
+            writePadded(&writer, scratch.toString(), &state, scratch.zeroPadMode)
         } else {
             args.render(&writer, arg_index, spec, &state)
         }
@@ -365,15 +484,106 @@ func formatPrintfWith[Args: PrintfArguments](_ format: string, _ args: Args) -> 
     writer.buffer.takeString()
 }
 
+func isAlignment(_ byte: uint8) -> bool {
+    byte == BYTE_LESS || byte == BYTE_GREATER || byte == BYTE_CARET
+}
+
+func applyAlignment(_ state: &FormatState, _ byte: uint8) {
+    state.leftAlign = byte == BYTE_LESS
+    state.center = byte == BYTE_CARET
+}
+
+func readSpecNumber(_ format: string, _ start: usize, _ end: usize) -> (usize, usize) {
+    data := std::string::stringData(format)
+    var index = start
+    var value: usize = 0
+    while index < end {
+        digit := unsafe { data.add(index).read() }
+        if digit < BYTE_ZERO || digit > BYTE_NINE { break }
+        value = value * 10 + ((digit - BYTE_ZERO) as usize)
+        index += 1
+    }
+    return (value, index)
+}
+
+/// Parses `[[fill]align][0][width][.precision][x|b|e|?]}` starting at `start`,
+/// just after the `{`, and returns the index after the closing `}`.
+func parseBraceSpec(_ format: string, _ start: usize, _ state: &FormatState, _ spec: &rune) -> usize {
+    format_len := std::string::stringLen(format)
+    data := std::string::stringData(format)
+    var close = start
+    while close < format_len && unsafe { data.add(close).read() } != BYTE_RIGHT_BRACE { close += 1 }
+    if close >= format_len {
+        panic("printf: unterminated '%{' format specifier")
+    }
+
+    var index = start
+    if index < close {
+        var (fill, width) = std::string::decodeRune(format, index)
+        if index + width < close && isAlignment(unsafe { data.add(index + width).read() }) {
+            state.fill = fill
+            applyAlignment(state, unsafe { data.add(index + width).read() })
+            index += width + 1
+        } else if isAlignment(unsafe { data.add(index).read() }) {
+            applyAlignment(state, unsafe { data.add(index).read() })
+            index += 1
+        }
+    }
+    if index < close && unsafe { data.add(index).read() } == BYTE_ZERO {
+        state.zeroPad = true
+        index += 1
+    }
+    var (width, afterWidth) = readSpecNumber(format, index, close)
+    if afterWidth > index {
+        state.width = width
+        state.hasWidth = true
+        index = afterWidth
+    }
+    if index < close && unsafe { data.add(index).read() } == BYTE_DOT_SPEC {
+        var (precision, afterPrecision) = readSpecNumber(format, index + 1, close)
+        if afterPrecision == index + 1 {
+            panic("printf: missing precision after '.' in format specifier")
+        }
+        state.precision = precision
+        state.hasPrecision = true
+        index = afterPrecision
+    }
+    if index < close {
+        presentation := unsafe { data.add(index).read() }
+        if presentation == BYTE_X {
+            *spec = 'x'
+        } else if presentation == BYTE_B {
+            *spec = 'b'
+        } else if presentation == BYTE_E_LOWER {
+            *spec = 'e'
+        } else if presentation == BYTE_QUESTION {
+            *spec = '?'
+        } else {
+            panic("printf: unknown format presentation")
+        }
+        index += 1
+    }
+    if index != close {
+        panic("printf: malformed format specifier")
+    }
+    return close + 1
+}
+
 func formatArgument(_ into: &Formatter, _ value: &any Display, _ spec: rune, _ state: &FormatState) {
     // Cast through the reference: the successful result is still a value
     // snapshot, without first copying a separate Display temporary.
     match value as? any Formattable {
         case .some(formattable) => formattable.format(into, spec, state)
         case .none => {
-            match spec == 'v' {
-                case true => (*value).display(into)
-                case false => panic("printf: argument does not support requested format specifier")
+            if spec == 'v' {
+                (*value).display(into)
+            } else if spec == '?' {
+                match value as? any Debug {
+                    case .some(debugValue) => debugValue.debug(into)
+                    case .none => panic("printf: argument does not support requested format specifier")
+                }
+            } else {
+                panic("printf: argument does not support requested format specifier")
             }
         }
     }
@@ -387,7 +597,24 @@ conform string to Display {
 
 conform string to Formattable {
     public func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
+        if spec == '?' {
+            self.debug(into)
+            return
+        }
         if spec == 's' || spec == 'v' {
+            if state.hasPrecision {
+                // Precision keeps at most that many runes, never splitting one.
+                len := std::string::stringLen(self)
+                var byteIndex: usize = 0
+                var kept: usize = 0
+                while byteIndex < len && kept < state.precision {
+                    var (_, width) = std::string::decodeRune(self, byteIndex)
+                    byteIndex += width
+                    kept += 1
+                }
+                into.writeString(self.substring(0, byteIndex))
+                return
+            }
             into.writeString(self)
             return
         }
@@ -408,7 +635,7 @@ conform bool to Display {
 
 conform bool to Formattable {
     public func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
-        if spec == 'v' {
+        if spec == 'v' || spec == '?' {
             if self {
                 into.writeString("true")
             } else {
@@ -433,6 +660,10 @@ conform rune to Formattable {
             into.writeRune(self)
             return
         }
+        if spec == '?' {
+            self.debug(into)
+            return
+        }
 
         panic("printf: invalid format specifier for rune argument")
     }
@@ -444,7 +675,7 @@ conform int8 to Display {
 
 conform int8 to Formattable {
     public func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
-        formatSignedInteger(into, self as int64, spec)
+        formatSignedInteger(into, self as int64, (self as uint8) as uint64, spec)
     }
 }
 
@@ -454,7 +685,7 @@ conform int16 to Display {
 
 conform int16 to Formattable {
     public func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
-        formatSignedInteger(into, self as int64, spec)
+        formatSignedInteger(into, self as int64, (self as uint16) as uint64, spec)
     }
 }
 
@@ -464,7 +695,7 @@ conform int32 to Display {
 
 conform int32 to Formattable {
     public func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
-        formatSignedInteger(into, self as int64, spec)
+        formatSignedInteger(into, self as int64, (self as uint32) as uint64, spec)
     }
 }
 
@@ -474,7 +705,7 @@ conform int64 to Display {
 
 conform int64 to Formattable {
     public func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
-        formatSignedInteger(into, self, spec)
+        formatSignedInteger(into, self, self as uint64, spec)
     }
 }
 
@@ -484,7 +715,7 @@ conform isize to Display {
 
 conform isize to Formattable {
     public func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
-        formatSignedInteger(into, self as int64, spec)
+        formatSignedInteger(into, self as int64, (self as usize) as uint64, spec)
     }
 }
 
@@ -559,7 +790,7 @@ conform[Element: Display] List[Element] to Display {
 
 conform[Element: Formattable] List[Element] to Formattable {
     public func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
-        if spec != 'v' {
+        if spec != 'v' && spec != '?' {
             panic("printf: invalid format specifier for list argument")
         }
 

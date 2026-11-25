@@ -1,0 +1,26 @@
+interface Named { func id() -> int32; }
+struct Tag { value: int32 }
+struct Other {}
+conform Tag to Named { func id() -> int32 { self.value }; }
+conform Other to Named { func id() -> int32 { -1 }; }
+enum Event { case entry(&any Named); case empty }
+func observe(_ calls: &int32, _ event: Event) -> Event { *calls += 1; return event }
+func replace(_ slot: &any Named) -> bool { *slot = Other {}; return false }
+func read(_ event: Event, _ slot: &any Named, _ calls: &int32) -> int32 {
+    match observe(calls, event) {
+        case _ if replace(slot) => -2
+        case .entry(is Other) | .empty => -1
+        case whole @ .entry(value as Tag) => {
+            if whole is .entry(_) { return value.value }
+            0
+        }
+        case _ => 0
+    }
+}
+func main() {
+    var box: any Named = Tag { value: 7 }
+    var calls = 0
+    assert(read(.entry(&box), &box, &calls) == 7 && box.id() == -1 && calls == 1, "saved payload and single evaluation")
+    assert(read(.empty, &box, &calls) == -1 && calls == 2, "inactive payload")
+    println("guards")
+}

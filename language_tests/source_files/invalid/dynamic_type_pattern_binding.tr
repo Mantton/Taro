@@ -1,0 +1,7 @@
+func read(_ boxed: any std::fmt::Display) -> int32 {
+    match boxed {
+        case value as int32 | value as string => value
+        case _ => 0
+    }
+}
+func main() {}

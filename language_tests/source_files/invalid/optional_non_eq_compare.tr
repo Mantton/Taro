@@ -1,0 +1,7 @@
+struct Opaque { id: int32 }
+
+func main() {
+    var a: Opaque? = .some(Opaque { id: 1 })
+    var b: Opaque? = .some(Opaque { id: 2 })
+    _ = a == b
+}

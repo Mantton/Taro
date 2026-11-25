@@ -310,7 +310,7 @@ pub(super) fn validate_async_self<'ctx>(
                     .def_to_fn_sig
                     .get(&method)
                     .ok_or("async Self default has no method")?;
-                if !signature.inputs.is_empty()
+                if !valid_caller_inputs(gcx, &signature.inputs)
                     || signature.abi.is_some()
                     || !method_signature
                         .inputs
@@ -318,7 +318,8 @@ pub(super) fn validate_async_self<'ctx>(
                         .any(|input| input.default_provider == Some(provider))
                     || definition.signature.output
                         != instantiate_signature_with_args(gcx, signature, arguments).output
-                    || !definition.signature.inputs.is_empty()
+                    || !valid_caller_inputs(gcx, &definition.signature.inputs)
+                    || definition.signature.inputs.len() != signature.inputs.len()
                     || definition.signature.abi.is_some()
                     || definition.signature.is_variadic
                     || definition.generics.parent != owner.generics.parent
@@ -458,7 +459,25 @@ pub(super) fn validate_erased_access<'ctx>(
     Ok(())
 }
 
-/// A default adapter may only rebind a declared zero-argument provider into
+/// Only the compiler's fixed caller-location inputs may cross a default adapter.
+fn valid_caller_inputs<'ctx>(
+    gcx: Gcx<'ctx>,
+    inputs: &[crate::sema::models::LabeledFunctionParameter<'ctx>],
+) -> bool {
+    inputs.is_empty()
+        || (inputs.len() == 3
+            && inputs
+                .iter()
+                .zip(gcx.caller_parameters())
+                .all(|(input, expected)| {
+                    input.ty == expected.ty
+                        && input.name == expected.name
+                        && input.label.is_none()
+                        && input.default_provider.is_none()
+                }))
+}
+
+/// A default adapter may only rebind a declared provider into
 /// its source function's unchanged generic environment. It has no authority
 /// to upgrade a borrow or change the provider's owned result representation.
 pub(super) fn validate_opened_defaults<'ctx>(
@@ -517,14 +536,15 @@ pub(super) fn validate_opened_defaults<'ctx>(
         let actual = declaration.signature;
         let expected = declaration.generics;
         if source_signature.abi.is_some()
-            || !provider_signature.inputs.is_empty()
+            || !valid_caller_inputs(gcx, &provider_signature.inputs)
             || !source_signature
                 .inputs
                 .iter()
                 .any(|input| input.default_provider == Some(provider))
             || actual.abi.is_some()
             || actual.is_variadic
-            || actual.inputs.len() != 1
+            || actual.inputs.len() != 1 + provider_signature.inputs.len()
+            || !valid_caller_inputs(gcx, &actual.inputs[1..])
             || actual.inputs[0].name.as_str() != "source"
             || actual.inputs[0].label.is_some()
             || actual.inputs[0].default_provider.is_some()
@@ -664,6 +684,25 @@ pub(super) fn validate_class_payloads_with_result<'ctx>(
         .next()
         .map_or(gcx.package_index(), |id| id.package());
     let normalize = |ty| staged_alias_type(gcx, database, package, ty);
+    let provider_matches =
+        |provider, signature: &crate::sema::models::LabeledFunctionSignature<'ctx>| {
+            database
+                .def_to_fn_sig
+                .get(&provider)
+                .copied()
+                .or_else(|| {
+                    synthetics
+                        .iter()
+                        .find(|(key, _)| *key == provider)
+                        .map(|(_, def)| def.signature)
+                })
+                .or_else(|| gcx.try_get_signature(provider))
+                .is_some_and(|source| {
+                    valid_caller_inputs(gcx, &source.inputs)
+                        && source.inputs.len() == signature.inputs.len()
+                        && valid_caller_inputs(gcx, &signature.inputs)
+                })
+        };
     let parts = |ty| -> Result<Option<(Ty<'ctx>, Ty<'ctx>)>, String> {
         let ty = normalize(ty)?;
         match ty.kind() {
@@ -1059,8 +1098,13 @@ pub(super) fn validate_class_payloads_with_result<'ctx>(
             SyntheticDefinitionKind::AdoptedClassDefault {
                 conformance,
                 source,
+            }
+            | SyntheticDefinitionKind::DelegatedMethod {
+                conformance,
+                source,
+                ..
             } => {
-                validate_adopted_default(
+                validate_conformance_adapter(
                     gcx,
                     database,
                     synthetics,
@@ -1076,7 +1120,9 @@ pub(super) fn validate_class_payloads_with_result<'ctx>(
                     .find(|(key, _)| *key == method)
                     .map(|(_, value)| value)
                     .ok_or("adopted default argument has no method")?;
-                let SyntheticDefinitionKind::AdoptedClassDefault { source, .. } = owner.kind else {
+                let (SyntheticDefinitionKind::AdoptedClassDefault { source, .. }
+                | SyntheticDefinitionKind::DelegatedMethod { source, .. }) = owner.kind
+                else {
                     return Err("adopted default argument owner is not an adapter".into());
                 };
                 let source_signature = database
@@ -1098,7 +1144,7 @@ pub(super) fn validate_class_payloads_with_result<'ctx>(
                     .ok_or("adopted argument is not a source default")?;
                 if input.default_provider != Some(*id)
                     || synthetic.signature.output != input.ty
-                    || !synthetic.signature.inputs.is_empty()
+                    || !provider_matches(provider, synthetic.signature)
                     || synthetic.signature.abi.is_some()
                     || synthetic.signature.is_variadic
                     || synthetic.generics.parent != owner.generics.parent
@@ -1489,14 +1535,17 @@ pub(super) fn validate_class_payloads_with_result<'ctx>(
                     return Err("initializer environment has invalid generic coordinates".into());
                 }
             }
-            SyntheticDefinitionKind::InheritedInitializerDefault { initializer, .. } => {
+            SyntheticDefinitionKind::InheritedInitializerDefault {
+                initializer,
+                provider,
+            } => {
                 if !synthetics.iter().any(|(key, value)| {
                     *key == initializer
                         && matches!(
                             value.kind,
                             SyntheticDefinitionKind::InheritedClassInitializer { .. }
                         )
-                }) || !synthetic.signature.inputs.is_empty()
+                }) || !provider_matches(provider, synthetic.signature)
                     || synthetic.signature.is_variadic
                     || synthetic.signature.abi.is_some()
                 {
@@ -1511,7 +1560,7 @@ pub(super) fn validate_class_payloads_with_result<'ctx>(
 
 /// Validate against the incoming database, before its IDs/synthetics are live.
 /// Never reconstruct a purported adapter from a previously hydrated signature.
-fn validate_adopted_default<'ctx>(
+fn validate_conformance_adapter<'ctx>(
     gcx: Gcx<'ctx>,
     database: &TypeDatabase<'ctx>,
     synthetics: &[(
@@ -1571,7 +1620,40 @@ fn validate_adopted_default<'ctx>(
         });
     let returns_self = staged_alias_type(gcx, database, id.package(), original.output)?
         == gcx.types.self_type_parameter;
-    if returns_self && !proof.is_some_and(|proof| proof.preserves_dynamic_self == Some(true)) {
+    let delegated = if let SyntheticDefinitionKind::DelegatedMethod { field, .. } = synthetic.kind {
+        let wrapper = record
+            .interface
+            .self_ty()
+            .ok_or("delegated method has no receiver")?;
+        let wrapper = staged_alias_type(gcx, database, id.package(), wrapper)?;
+        let owner = match wrapper.kind() {
+            TyKind::Reference(ty) => ty,
+            _ => wrapper,
+        };
+        let TyKind::Adt(def, _) = owner.kind() else {
+            return Err("delegated method requires a nominal owner".into());
+        };
+        let definition = database
+            .def_to_struct_def
+            .get(&def.id)
+            .copied()
+            .or_else(|| {
+                (def.id.package() != id.package())
+                    .then(|| gcx.try_get_struct_definition(def.id))
+                    .flatten()
+            })
+            .ok_or("delegated method has no stored receiver")?;
+        if definition.fields.get(field as usize).is_none() {
+            return Err("delegated method has an invalid stored field".into());
+        }
+        true
+    } else {
+        false
+    };
+    if !delegated
+        && returns_self
+        && !proof.is_some_and(|proof| proof.preserves_dynamic_self == Some(true))
+    {
         return Err(
             "adopted default lacks its conditional class receiver or dynamic Self proof".into(),
         );
@@ -1589,10 +1671,14 @@ fn validate_adopted_default<'ctx>(
         .ok_or("adopted default has no extension environment")?;
     if conformance.package != id.package()
         || source_generics.parent != Some(record.interface.id)
-        || !requirements
-            .methods
-            .iter()
-            .any(|method| method.id == source && !method.is_required)
+        || !requirements.methods.iter().any(|method| {
+            method.id == source
+                && if delegated {
+                    method.has_self
+                } else {
+                    !method.is_required
+                }
+        })
         || synthetic.generics.parent != Some(record.extension)
         || synthetic.generics.parent_count != parent_count
         || synthetic.generics.has_self
@@ -2869,6 +2955,7 @@ mod erased_access_tests {
             {
                 let id = gcx.allocate_synthetic_id(gcx.package_index());
                 let parameter = GenericParameterDefinition {
+                    is_anonymous: false,
                     id: gcx.allocate_synthetic_id(gcx.package_index()),
                     name: gcx.intern_symbol("T"),
                     index: 0,
@@ -2890,6 +2977,7 @@ mod erased_access_tests {
                                 label: None,
                                 name: gcx.intern_symbol("self"),
                                 ty: Ty::new(TyKind::Reference(erased), gcx),
+                                is_lazy: false,
                                 default_provider: None,
                             }],
                             output: Ty::new(TyKind::Reference(target), gcx),

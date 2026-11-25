@@ -16,6 +16,11 @@ pub fn run<'ctx>(package: &mut ThirPackage<'ctx>, gcx: GlobalContext<'ctx>) -> C
     Ok(())
 }
 
+pub(crate) fn check_function<'ctx>(func: &mut ThirFunction<'ctx>, gcx: GlobalContext<'ctx>) {
+    let mut pass = ExhaustivenessPass::new(gcx);
+    pass.check_function(func);
+}
+
 struct ExhaustivenessPass<'ctx> {
     gcx: GlobalContext<'ctx>,
 }
@@ -46,11 +51,11 @@ impl<'ctx> ExhaustivenessPass<'ctx> {
         for expr_id in expr_ids {
             let expr = &func.exprs[expr_id];
             if let ExprKind::Match {
-                scrutinee, arms, ..
+                scrutinee, arms, binding_condition,
             } = &expr.kind
             {
                 let arms = arms.clone();
-                self.check_match(func, expr_id, *scrutinee, &arms, expr.span);
+                self.check_match(func, expr_id, *scrutinee, &arms, expr.span, *binding_condition);
             }
         }
     }
@@ -62,6 +67,7 @@ impl<'ctx> ExhaustivenessPass<'ctx> {
         scrutinee: ExprId,
         arms: &[thir::ArmId],
         span: thir::Span,
+        binding_condition: bool,
     ) {
         let scrutinee_ty = func.exprs[scrutinee].ty;
         if matches!(scrutinee_ty.kind(), TyKind::Error | TyKind::Infer(_)) {
@@ -87,7 +93,10 @@ impl<'ctx> ExhaustivenessPass<'ctx> {
                 .emit(Diagnostic::new(message, Some(span), DiagnosticLevel::Error));
         }
 
-        for arm_id in arms {
+        // Boolean pattern tests synthesize a wildcard fallback. Only the first
+        // arm came from the source and can have a useful reachability warning.
+        let source_arms = if binding_condition { &arms[..1] } else { arms };
+        for arm_id in source_arms {
             if !diagnostics.reachable.contains(arm_id) {
                 let arm = &func.arms[*arm_id];
                 self.gcx.dcx().emit(Diagnostic::new(

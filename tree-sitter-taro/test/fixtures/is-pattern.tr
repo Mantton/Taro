@@ -1,0 +1,7 @@
+func classify(_ token: Token, _ boxed: any Display) -> bool {
+    if token is .idle { return true }
+    return token is .amount(7) || boxed is int32
+}
+func details(_ token: Token) -> bool {
+    token is .info { tag: 3, .. }
+}

@@ -1,0 +1,5 @@
+func main() {
+    var old: (low: int32, high: int32) = (1, 3)
+    var view: (start: int32, end: int32) = old
+    println(view.high)
+}

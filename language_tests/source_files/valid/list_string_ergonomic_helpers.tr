@@ -1,0 +1,36 @@
+// End-to-end check of List and string algorithmic/ergonomic helpers across debug and release builds.
+
+func main() {
+    words := "  hello   taro\tworld\n".splitWhitespace()
+    assert(words == ["hello", "taro", "world"], "splitWhitespace")
+    joined := words.join("-")
+    assert(joined == "hello-taro-world", "join")
+
+    assert("Hello!".toAsciiLowercase() == "hello!", "toAsciiLowercase")
+    assert("café".toUppercase() == "CAFÉ", "toUppercase")
+    assert("Taro".eqIgnoreAsciiCase("TARO"), "eqIgnoreAsciiCase")
+    assert("prefix_body".stripPrefix("prefix_") == .some("body"), "stripPrefix")
+    assert("body.tr".stripSuffix(".tr") == .some("body"), "stripSuffix")
+    assert("7".padStart(3, with: '0') == "007", "padStart")
+
+    runes := "A🚀B".chars()
+    assert(runes.len() == 3 && runes[1] == '🚀', "chars")
+    assert(string::fromRunes(runes.asSpan()) == "A🚀B", "fromRunes")
+
+    var nums: [int32] = [-3, 1, -2, 2, 1, -3]
+    nums.sortByKey { it.abs() }
+    assert(nums == [1, 1, -2, 2, -3, -3], "sortByKey")
+    nums.dedup()
+    assert(nums == [1, -2, 2, -3], "dedup")
+    nums.retain { *it > 0 }
+    assert(nums == [1, 2], "retain")
+    assert(nums.first() == .some(1) && nums.last() == .some(2), "first/last")
+    nums.swap(0, 1)
+    assert(nums == [2, 1], "swap")
+    assert(nums.swapRemove(0) == 2 && nums == [1], "swapRemove")
+
+    var seq: [int32] = [1, 2, 3, 4, 5]
+    assert(seq.partitionPoint { *it <= 3 } == 3, "partitionPoint")
+    assert(seq.windows(3) == [[1, 2, 3], [2, 3, 4], [3, 4, 5]], "windows")
+    assert(seq.chunks(2) == [[1, 2], [3, 4], [5]], "chunks")
+}

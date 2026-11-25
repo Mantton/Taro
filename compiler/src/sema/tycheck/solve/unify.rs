@@ -102,6 +102,7 @@ mod tests {
                 let solver = ConstraintSolver {
                     icx,
                     coercions: 0,
+                    boxings: 0,
                     obligations: Default::default(),
                     adjustments: Default::default(),
                     interface_calls: Default::default(),
@@ -109,6 +110,9 @@ mod tests {
                     field_indices: Default::default(),
                     property_reads: Default::default(),
                     overload_sources: Default::default(),
+                    lazy_argument_targets: Default::default(),
+                    deferred_return_scopes: Rc::new(Vec::new()),
+                    result_propagation_conversions: Default::default(),
                     value_resolutions: Default::default(),
                     instantiation_args: Default::default(),
                     opening_calls: Default::default(),
@@ -119,6 +123,12 @@ mod tests {
                         gcx.types.int32,
                     )]),
                     visible_traits: Default::default(),
+                    held_literals: Default::default(),
+                    deferred: Default::default(),
+                    pending_member_values: Default::default(),
+                    lookups_have_waiters: false,
+                    receiver_proofs: Default::default(),
+                    default_scope: None,
                 };
                 assert_eq!(
                     solver.structurally_resolve(projection(inferred)),

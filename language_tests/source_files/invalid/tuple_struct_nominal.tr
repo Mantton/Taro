@@ -1,0 +1,4 @@
+struct UserId(int64)
+struct OrderId(int64)
+func onlyUser(_ id: UserId) -> int64 { id.0 }
+func main() { onlyUser(OrderId(42)) }

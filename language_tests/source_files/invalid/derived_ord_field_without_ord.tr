@@ -1,0 +1,16 @@
+// Every stored field of a derived ordering must have that ordering itself.
+struct Point: PartialEq { x: int32 }
+struct Ranked: PartialEq, PartialOrd, Ord {
+    rank: int32
+    position: Point
+}
+enum Slot: PartialEq, PartialOrd, Ord {
+    case empty
+    case filled(int32, Point)
+    case labelled(at: Point)
+}
+// A double has PartialOrd but not Ord.
+struct Sample: PartialEq, PartialOrd, Ord {
+    value: double
+}
+func main() {}

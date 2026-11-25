@@ -1,0 +1,9 @@
+func bad() {
+    var i: int64 = 0
+    while i < 10 {
+        i += 1
+        break 42
+    }
+}
+
+func main() {}

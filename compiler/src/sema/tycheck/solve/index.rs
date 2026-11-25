@@ -18,8 +18,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let access = crate::compile::context::NativeSubscriptAccess::Get;
         let mut result = self.solve_native_subscript_call(
             MethodCallData {
+                interface: None,
                 receiver_addressable: data.receiver_addressable,
                 selected: None,
+                pending_selection: None,
                 node_id: data.nodes.call,
                 receiver,
                 reciever_span: data.span,
@@ -31,7 +33,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 },
                 arguments: data.keys,
                 result: data.output,
-                method_ty: data.method_ty,
+                method_ty: Some(data.method_ty),
                 prefer_async: false,
                 span: data.span,
             },

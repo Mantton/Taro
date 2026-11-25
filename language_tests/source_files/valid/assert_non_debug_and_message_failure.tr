@@ -1,0 +1,28 @@
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: assert_non_debug_and_message_failure.tr:27
+// EXPECT_STDERR_CONTAINS: lhs == rhs: custom failure 1
+// EXPECT_STDERR_CONTAINS: left (lhs): <non-Debug>
+// EXPECT_STDERR_CONTAINS: right (rhs): <non-Debug>
+import std::ops::PartialEq
+
+struct Opaque {
+    id: int32
+}
+
+conform Opaque to PartialEq {
+    func eq(_ other: Opaque) -> bool {
+        self.id == other.id
+    }
+}
+
+static var msgCount: int32 = 0
+func describe() -> string {
+    msgCount += 1
+    "custom failure ${msgCount}"
+}
+
+func main() {
+    lhs := Opaque { id: 1 }
+    rhs := Opaque { id: 2 }
+    assert(lhs == rhs, describe())
+}

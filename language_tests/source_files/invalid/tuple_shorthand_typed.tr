@@ -1,0 +1,4 @@
+func main() {
+    (a: int32, b: int32) := (1, 2)
+    _ = a + b
+}

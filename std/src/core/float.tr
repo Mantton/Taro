@@ -1,7 +1,9 @@
+import std::default::Default
 import std::hash::{Hashable, Hasher}
-import std::ops::PartialEq
+import std::ops::{PartialEq, Numeric, SignedNumeric}
 import std::cmp::{Ordering, PartialOrd}
 import std::optional::Optional
+import std::panic::panic
 import std::convert::{Parse, ParseError}
 import std::result::Result
 import std::intrinsic::{
@@ -196,7 +198,7 @@ func parseDouble(_ input: string) -> Result[double, ParseError] {
     return .err(ParseError::new(.invalidFormat, 0 as usize))
 }
 
-func floatToBits(_ value: float) -> uint32 {
+internal func floatToBits(_ value: float) -> uint32 {
     bitsPtr := unsafe { (&value as *const float) as *const uint32 }
     unsafe { bitsPtr.read() }
 }
@@ -206,7 +208,7 @@ func floatFromBits(_ bits: uint32) -> float {
     unsafe { valuePtr.read() }
 }
 
-func doubleToBits(_ value: double) -> uint64 {
+internal func doubleToBits(_ value: double) -> uint64 {
     bitsPtr := unsafe { (&value as *const double) as *const uint64 }
     unsafe { bitsPtr.read() }
 }
@@ -217,8 +219,45 @@ func doubleFromBits(_ bits: uint64) -> double {
 }
 
 extend float {
+    /// Positive infinity (`+∞`).
+    public const INFINITY: float = (1.0e308 * 10.0) as float
+    /// Negative infinity (`-∞`).
+    public const NEG_INFINITY: float = -(1.0e308 * 10.0) as float
+    /// Quiet Not a Number (`NaN`).
+    public const NAN: float = ((1.0e308 * 10.0) - (1.0e308 * 10.0)) as float
+    /// Smallest finite `float` value (`-3.40282347e+38`).
+    public const MIN: float = -3.4028234663852886e38
+    /// Largest finite `float` value (`3.40282347e+38`).
+    public const MAX: float = 3.4028234663852886e38
+    /// Machine epsilon (`2^-23`): difference between `1.0` and the next representable `float`.
+    public const EPSILON: float = 1.1920928955078125e-7
+
     /// Parse a finite decimal value using locale-independent IEEE-754 rounding.
     public static func parse(_ input: string) -> Result[float, ParseError] { parseFloat(input) }
+
+    /// Returns the raw IEEE-754 bit pattern of `self`.
+    @inline public func toBits() -> uint32 { floatToBits(self) }
+    /// Reinterprets raw IEEE-754 bits as a `float`.
+    @inline public static func fromBits(_ bits: uint32) -> float { floatFromBits(bits) }
+    /// Returns `true` if `self` is `NaN`.
+    @inline public func isNaN() -> bool { self != self }
+    /// Returns `true` if `self` is positive or negative infinity.
+    @inline public func isInfinite() -> bool { self == Self::INFINITY || self == Self::NEG_INFINITY }
+    /// Returns `true` if `self` is neither `NaN` nor infinite.
+    @inline public func isFinite() -> bool { self.abs() < Self::INFINITY }
+    /// Restricts `self` to `[low, high]`. Panics if `low` or `high` is `NaN` or `low > high`.
+    public func clamp(_ low: float, _ high: float) -> float {
+        if low.isNaN() || high.isNaN() || low > high {
+            panic("clamp: low bound must not be NaN or greater than high bound")
+        }
+        if self < low {
+            low
+        } else if self > high {
+            high
+        } else {
+            self
+        }
+    }
 
     public func sqrt() -> float { unsafe { __intrinsic_sqrt_f32(self) } }
     public func sin() -> float { unsafe { __intrinsic_sin_f32(self) } }
@@ -318,8 +357,45 @@ conform double to PartialOrd {
 }
 
 extend double {
+    /// Positive infinity (`+∞`).
+    public const INFINITY: double = 1.0e308 * 10.0
+    /// Negative infinity (`-∞`).
+    public const NEG_INFINITY: double = -(1.0e308 * 10.0)
+    /// Quiet Not a Number (`NaN`).
+    public const NAN: double = (1.0e308 * 10.0) - (1.0e308 * 10.0)
+    /// Smallest finite `double` value (`-1.7976931348623157e+308`).
+    public const MIN: double = -1.7976931348623157e308
+    /// Largest finite `double` value (`1.7976931348623157e+308`).
+    public const MAX: double = 1.7976931348623157e308
+    /// Machine epsilon (`2^-52`): difference between `1.0` and the next representable `double`.
+    public const EPSILON: double = 2.220446049250313e-16
+
     /// Parse a finite decimal value using locale-independent IEEE-754 rounding.
     public static func parse(_ input: string) -> Result[double, ParseError] { parseDouble(input) }
+
+    /// Returns the raw IEEE-754 bit pattern of `self`.
+    @inline public func toBits() -> uint64 { doubleToBits(self) }
+    /// Reinterprets raw IEEE-754 bits as a `double`.
+    @inline public static func fromBits(_ bits: uint64) -> double { doubleFromBits(bits) }
+    /// Returns `true` if `self` is `NaN`.
+    @inline public func isNaN() -> bool { self != self }
+    /// Returns `true` if `self` is positive or negative infinity.
+    @inline public func isInfinite() -> bool { self == Self::INFINITY || self == Self::NEG_INFINITY }
+    /// Returns `true` if `self` is neither `NaN` nor infinite.
+    @inline public func isFinite() -> bool { self.abs() < Self::INFINITY }
+    /// Restricts `self` to `[low, high]`. Panics if `low` or `high` is `NaN` or `low > high`.
+    public func clamp(_ low: double, _ high: double) -> double {
+        if low.isNaN() || high.isNaN() || low > high {
+            panic("clamp: low bound must not be NaN or greater than high bound")
+        }
+        if self < low {
+            low
+        } else if self > high {
+            high
+        } else {
+            self
+        }
+    }
 
     public func sqrt() -> double { unsafe { __intrinsic_sqrt_f64(self) } }
     public func sin() -> double { unsafe { __intrinsic_sin_f64(self) } }
@@ -364,4 +440,31 @@ conform double to Parse {
     public static func parse(_ input: string) -> Result[double, ParseError] {
         parseDouble(input)
     }
+}
+
+// Default: zero.
+conform float to Default {
+    public static func default() -> float { 0.0 }
+}
+
+conform double to Default {
+    public static func default() -> double { 0.0 }
+}
+
+// Numeric conformances for primitive floats (built on builtin operator witnesses).
+
+conform float to Numeric {
+    @inline public static func zero() -> float { 0.0 }
+    @inline public static func one() -> float { 1.0 }
+}
+conform float to SignedNumeric {
+    @inline public func abs() -> float { unsafe { __intrinsic_fabs_f32(self) } }
+}
+
+conform double to Numeric {
+    @inline public static func zero() -> double { 0.0 }
+    @inline public static func one() -> double { 1.0 }
+}
+conform double to SignedNumeric {
+    @inline public func abs() -> double { unsafe { __intrinsic_fabs_f64(self) } }
 }

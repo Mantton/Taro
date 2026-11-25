@@ -73,11 +73,16 @@ enum FormatSpec {
     Decimal,
     String,
     Value,
+    Hex,
+    Binary,
+    Scientific,
+    Debug,
 }
 
 enum FormatParseError {
     DanglingPercent,
     UnknownSpecifier(u8),
+    InvalidBraceSpec,
 }
 
 impl<'ctx> Actor<'ctx, '_> {
@@ -132,6 +137,13 @@ impl<'ctx> Actor<'ctx, '_> {
                     .emit_error(message.into(), Some(format_arg.expression.span));
                 return;
             }
+            Err(FormatParseError::InvalidBraceSpec) => {
+                let message = format!("{format_fn_name} format string contains malformed '%{{...}}' specifier");
+                self.gcx
+                    .dcx()
+                    .emit_error(message.into(), Some(format_arg.expression.span));
+                return;
+            }
         };
 
         let provided = arguments.len().saturating_sub(1);
@@ -171,6 +183,33 @@ impl<'ctx> Actor<'ctx, '_> {
                     let message = format!(
                         "{} specifier '%s' expects a string argument, found '{}'",
                         format_fn_name,
+                        arg_ty.format(self.gcx)
+                    );
+                    self.gcx
+                        .dcx()
+                        .emit_error(message.into(), Some(arg.expression.span));
+                }
+                FormatSpec::Hex if is_non_integer_primitive(arg_ty.kind()) => {
+                    let message = format!(
+                        "format specifier 'x' expects an integer or custom Formattable argument, found '{}'",
+                        arg_ty.format(self.gcx)
+                    );
+                    self.gcx
+                        .dcx()
+                        .emit_error(message.into(), Some(arg.expression.span));
+                }
+                FormatSpec::Binary if is_non_integer_primitive(arg_ty.kind()) => {
+                    let message = format!(
+                        "format specifier 'b' expects an integer or custom Formattable argument, found '{}'",
+                        arg_ty.format(self.gcx)
+                    );
+                    self.gcx
+                        .dcx()
+                        .emit_error(message.into(), Some(arg.expression.span));
+                }
+                FormatSpec::Scientific if is_non_float_primitive(arg_ty.kind()) => {
+                    let message = format!(
+                        "format specifier 'e' expects a floating-point or custom Formattable argument, found '{}'",
                         arg_ty.format(self.gcx)
                     );
                     self.gcx
@@ -234,6 +273,18 @@ fn parse_specs(input: &str) -> Result<Vec<FormatSpec>, FormatParseError> {
             continue;
         }
 
+        // `%{...}` carries a validated interpolation format specifier.
+        if bytes[idx] == b'{' {
+            let start = idx + 1;
+            let Some(rel_end) = input[start..].find('}') else {
+                return Err(FormatParseError::InvalidBraceSpec);
+            };
+            let spec_body = &input[start..start + rel_end];
+            specs.push(parse_brace_spec(spec_body)?);
+            idx = start + rel_end + 1;
+            continue;
+        }
+
         // Flags and field width, matching what `std.fmt` renders.
         while idx < bytes.len() && matches!(bytes[idx], b'-' | b'0') {
             idx += 1;
@@ -257,8 +308,69 @@ fn parse_specs(input: &str) -> Result<Vec<FormatSpec>, FormatParseError> {
     Ok(specs)
 }
 
+fn parse_brace_spec(spec: &str) -> Result<FormatSpec, FormatParseError> {
+    if spec.is_empty() {
+        return Err(FormatParseError::InvalidBraceSpec);
+    }
+    let chars: Vec<char> = spec.chars().collect();
+    let mut idx = 0usize;
+    let is_align = |ch: char| matches!(ch, '<' | '>' | '^');
+    if idx + 1 < chars.len() && is_align(chars[idx + 1]) {
+        idx += 2;
+    } else if idx < chars.len() && is_align(chars[idx]) {
+        idx += 1;
+    }
+    if idx < chars.len() && chars[idx] == '0' {
+        idx += 1;
+    }
+    while idx < chars.len() && chars[idx].is_ascii_digit() {
+        idx += 1;
+    }
+    if idx < chars.len() && chars[idx] == '.' {
+        idx += 1;
+        let start = idx;
+        while idx < chars.len() && chars[idx].is_ascii_digit() {
+            idx += 1;
+        }
+        if idx == start {
+            return Err(FormatParseError::InvalidBraceSpec);
+        }
+    }
+    let presentation = if idx < chars.len() {
+        let p = match chars[idx] {
+            'x' => FormatSpec::Hex,
+            'b' => FormatSpec::Binary,
+            'e' => FormatSpec::Scientific,
+            '?' => FormatSpec::Debug,
+            _ => return Err(FormatParseError::InvalidBraceSpec),
+        };
+        idx += 1;
+        p
+    } else {
+        FormatSpec::Value
+    };
+    if idx != chars.len() {
+        return Err(FormatParseError::InvalidBraceSpec);
+    }
+    Ok(presentation)
+}
+
 fn is_integer(ty: TyKind<'_>) -> bool {
     matches!(ty, TyKind::Int(_) | TyKind::UInt(_))
+}
+
+fn is_non_integer_primitive(ty: TyKind<'_>) -> bool {
+    matches!(
+        ty,
+        TyKind::String | TyKind::Bool | TyKind::Rune | TyKind::Float(_)
+    )
+}
+
+fn is_non_float_primitive(ty: TyKind<'_>) -> bool {
+    matches!(
+        ty,
+        TyKind::String | TyKind::Bool | TyKind::Rune | TyKind::Int(_) | TyKind::UInt(_)
+    )
 }
 
 fn describe_specifier(spec: u8) -> String {

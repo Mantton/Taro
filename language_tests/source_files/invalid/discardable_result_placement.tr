@@ -1,0 +1,16 @@
+// EXPECT_STDERR_NOT_CONTAINS: internal error
+@discardableResult
+struct Record {}
+
+@discardableResult
+static var COUNTER: int32 = 0
+
+@discardableResult("reason")
+func checked() -> Result[int32, string] { .ok(1) }
+
+extend Record {
+    @discardableResult
+    init() {}
+}
+
+func main() {}

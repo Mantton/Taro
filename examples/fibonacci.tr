@@ -10,4 +10,5 @@ func fibonacci(n: int32) -> int32 {
 
 func main() {
     result := fibonacci(n: 10)
+    println("${result}")
 }

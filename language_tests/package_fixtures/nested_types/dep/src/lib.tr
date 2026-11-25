@@ -1,0 +1,5 @@
+public struct Sender[T] { value: T }
+extend Sender {
+    public enum Status { case open, closed }
+}
+public func status() -> Sender::Status { .open }

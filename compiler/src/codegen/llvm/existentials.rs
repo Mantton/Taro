@@ -78,20 +78,33 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         to_ty: Ty<'gcx>,
         value: BasicValueEnum<'llvm>,
     ) -> CompileResult<BasicValueEnum<'llvm>> {
-        let from_ty = self.mono_ty_if_resolved(from_ty);
-        let to_ty = self.mono_ty_if_resolved(to_ty);
+        let Some((from_ty, to_ty)) = self.instantiated_coercion(from_ty, to_ty) else {
+            return Ok(value);
+        };
         let TyKind::BoxedExistential { interfaces } = to_ty.kind() else {
             return Ok(value);
         };
 
-        if from_ty == to_ty {
-            return Ok(value);
-        }
-
         if matches!(from_ty.kind(), TyKind::BoxedExistential { .. }) {
-            return self.lower_existential_upcast(from_ty, to_ty, value);
+            return self.upcast_existential(from_ty, to_ty, value);
         }
 
+        if self.gcx.explains_allocations()
+            && let Some(span) = self.current_span
+        {
+            let size = self
+                .lower_ty(from_ty)
+                .map_or(0, |ty| self.target_data.get_abi_size(&ty));
+            self.gcx.record_allocation(
+                span,
+                format!(
+                    "`{}` boxes `{}` ({} bytes)",
+                    to_ty.format(self.gcx),
+                    from_ty.format(self.gcx),
+                    size
+                ),
+            );
+        }
         let (data_ptr, metadata_ptr) = self.box_value(from_ty, value);
         let mut table_ptrs = Vec::with_capacity(interfaces.len());
         for iface in interfaces.iter().cloned() {
@@ -102,7 +115,35 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         Ok(self.build_existential_value(to_ty, data_ptr, metadata_ptr, &table_ptrs))
     }
 
+    /// Both sides of a coercion in their instantiated forms, or None when
+    /// they are the same type. Generic forwarding can record a coercion
+    /// before parameter inference equates two interface signatures; compared
+    /// unnormalized, an otherwise identical Fn would lose its witness table.
+    fn instantiated_coercion(
+        &self,
+        from_ty: Ty<'gcx>,
+        to_ty: Ty<'gcx>,
+    ) -> Option<(Ty<'gcx>, Ty<'gcx>)> {
+        let from_ty = self.mono_ty_if_resolved(from_ty);
+        let to_ty = self.mono_ty_if_resolved(to_ty);
+        (from_ty != to_ty).then_some((from_ty, to_ty))
+    }
+
     pub(super) fn lower_existential_upcast(
+        &mut self,
+        from_ty: Ty<'gcx>,
+        to_ty: Ty<'gcx>,
+        value: BasicValueEnum<'llvm>,
+    ) -> CompileResult<BasicValueEnum<'llvm>> {
+        match self.instantiated_coercion(from_ty, to_ty) {
+            Some((from_ty, to_ty)) => self.upcast_existential(from_ty, to_ty, value),
+            None => Ok(value),
+        }
+    }
+
+    /// Reuse the payload and select each target table from the source's
+    /// tables. Both types must already be instantiated.
+    fn upcast_existential(
         &mut self,
         from_ty: Ty<'gcx>,
         to_ty: Ty<'gcx>,
@@ -147,7 +188,17 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 continue;
             }
 
-            table_ptrs.push(self.context.ptr_type(AddressSpace::default()).const_null());
+            // A null table would turn this compiler bug into a crash on the
+            // first dynamic call. Sema only admits upcasts it can route.
+            self.gcx.dcx().emit_error(
+                format!(
+                    "internal error: no witness table route from `{}` to `{}`",
+                    from_ty.format(self.gcx),
+                    target.format(self.gcx),
+                ),
+                self.current_span,
+            );
+            return Err(crate::error::ReportedError);
         }
 
         Ok(self.build_existential_value(to_ty, data_ptr, metadata_ptr, &table_ptrs))

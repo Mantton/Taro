@@ -105,7 +105,7 @@ JSON diagnostics. Their JSON Options control collection size and decoding.
 ## Clients and custom transports
 
 ```taro
-import std::http::{Body, Client, Request}
+import std::http::{Client, Request}
 
 func fetch() async {
     client := Client::new().unwrap()

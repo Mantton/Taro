@@ -426,3 +426,8 @@ conform AsyncStream to AsyncWriter {
         return .ok(())
     }
 }
+
+conform AsyncStream to std::io::Closeable {
+    type CloseResult = Result[(), Error]
+    public func close() -> Result[(), Error] { self.close() }
+}

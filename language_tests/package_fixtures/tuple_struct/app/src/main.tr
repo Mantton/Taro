@@ -1,0 +1,9 @@
+func main() {
+    var id: dep::Id[int64] = dep::Id(5000000000)
+    id.0 += 1
+    assert(dep::unwrap(id) == 5000000001, "generic projection in dependency")
+    pair := dep::Pair[int64, string](id.0, "tag")
+    var dep::Pair(n, label) = pair
+    assert(n == 5000000001 && label == "tag", "qualified constructor pattern")
+    println("imported fields")
+}

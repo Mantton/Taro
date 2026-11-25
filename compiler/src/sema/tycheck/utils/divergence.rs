@@ -6,15 +6,22 @@ use crate::{
 };
 
 pub(crate) fn ends_in_unbroken_loop(block: &hir::Block) -> bool {
-    if block.tail.is_some() {
-        return false;
-    }
-    let Some(hir::Statement {
-        kind: hir::StatementKind::Loop { label, block },
-        ..
-    }) = block.statements.last()
-    else {
-        return false;
+    let (label, block) = match (block.tail.as_deref(), block.statements.last()) {
+        (
+            Some(hir::Expression {
+                kind: hir::ExpressionKind::Loop { label, block },
+                ..
+            }),
+            _,
+        ) => (label, block),
+        (
+            None,
+            Some(hir::Statement {
+                kind: hir::StatementKind::Loop { label, block },
+                ..
+            }),
+        ) => (label, block),
+        _ => return false,
     };
     struct Exits {
         labels: Vec<Option<Symbol>>,
@@ -41,7 +48,12 @@ pub(crate) fn ends_in_unbroken_loop(block: &hir::Block) -> bool {
                 return;
             }
             match &expression.kind {
-                hir::ExpressionKind::Break { label } => {
+                hir::ExpressionKind::Loop { label, block } => {
+                    self.labels.push(label.map(|label| label.identifier.symbol));
+                    hir::walk_block(self, block);
+                    self.labels.pop();
+                }
+                hir::ExpressionKind::Break { label, .. } => {
                     self.found = match label {
                         None => self.labels.len() == 1,
                         Some(label) => {

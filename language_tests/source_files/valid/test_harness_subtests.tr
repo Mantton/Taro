@@ -1,0 +1,73 @@
+// TEST
+// EXPECT_EXIT: 101
+// EXPECT_STDOUT_CONTAINS: test siblingPassAndFail ...
+// EXPECT_STDOUT_CONTAINS:   subtest passing child ... ok
+// EXPECT_STDOUT_CONTAINS:   subtest failing child ... FAILED (panicked)
+// EXPECT_STDOUT_CONTAINS:   subtest after failure still runs ... ok
+// EXPECT_STDOUT_CONTAINS: test siblingPassAndFail ... FAILED (subtest failed)
+// EXPECT_STDOUT_CONTAINS: test nestedSubtestFailure ...
+// EXPECT_STDOUT_CONTAINS:     subtest inner fail ... FAILED (panicked)
+// EXPECT_STDOUT_CONTAINS:   subtest outer ... FAILED (1 of 1 subtests failed)
+// EXPECT_STDOUT_CONTAINS: test nestedSubtestFailure ... FAILED (subtest failed)
+// EXPECT_STDOUT_CONTAINS: test allSubtestsPass ... ok
+// EXPECT_STDOUT_CONTAINS: test skippedAlongsideSubtests ... SKIPPED
+// EXPECT_STDOUT_CONTAINS: test expectedPanicAlongsideSubtests ... ok
+// EXPECT_STDOUT_CONTAINS: test allocationsAlongsideSubtests ... ok
+// EXPECT_STDOUT_CONTAINS: test result: FAILED. 3 passed; 2 failed; 1 skipped
+// EXPECT_STDERR_CONTAINS: panic: child boom
+// EXPECT_STDERR_CONTAINS: panic: inner boom
+
+@test
+func siblingPassAndFail() {
+    var ranAfter = false
+    std::testing::subtest("passing child", () => {
+        std::testing::assertEqual(1 + 1, 2, "passing math")
+    })
+    std::testing::subtest("failing child", () => {
+        std::testing::fail("child boom")
+    })
+    std::testing::subtest("after failure still runs", () => {
+        ranAfter = true
+    })
+    std::testing::assertTrue(ranAfter, "later sibling should still execute")
+}
+
+@test
+func nestedSubtestFailure() {
+    std::testing::subtest("outer", () => {
+        std::testing::subtest("inner fail", () => {
+            std::panic::panic("inner boom")
+        })
+    })
+}
+
+@test
+func allSubtestsPass() {
+    for n in [1, 2, 3] {
+        std::testing::subtest("case ${n}", () => {
+            std::testing::assertTrue(n > 0, "positive")
+        })
+    }
+}
+
+@test
+@skip
+func skippedAlongsideSubtests() {
+    std::testing::fail("skipped")
+}
+
+@test
+@expectPanic("expected alongside")
+func expectedPanicAlongsideSubtests() {
+    std::panic::panic("expected alongside")
+}
+
+@test
+func allocationsAlongsideSubtests() {
+    values := std::collections::List[uint8]::new()
+    count := std::testing::allocations(() => {
+        values.reserve(4096)
+        values.append(1)
+    })
+    std::testing::assertTrue(count > 0, "allocations counted")
+}

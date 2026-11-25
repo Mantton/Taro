@@ -1,0 +1,585 @@
+// Copyright 2018 Ulf Adams
+// Ryū conversion adapted from d2s.c, common.h and d2s_intrinsics.h at
+// https://github.com/ulfjack/ryu/tree/4c0618b0e44f7ef027ebae05d2cc7812048f7c8f/ryu
+// Distributed under the Boost Software License, Version 1.0 (LICENSE-RYU).
+
+import std::core::doubleToBits
+import std::core::floatToBits
+import std::optional::Optional
+import std::panic::panic
+
+// The shortest decimal is digits * 10^exponent.
+struct FloatDecimal {
+    digits: uint64
+    exponent: int32
+}
+
+const RYU_POW5_BITS: int32 = 125
+const LOW_WORD_MASK: uint64 = 0xffffffff
+const BYTE_DOT: uint8 = 46
+const BYTE_E: uint8 = 101
+
+// Return the low and high halves of a 64-bit product. Each partial product
+// fits in a uint64, and carries are propagated before combining the halves.
+func wideProduct(_ a: uint64, _ b: uint64) -> (uint64, uint64) {
+    aLow := a & LOW_WORD_MASK
+    aHigh := a >> 32
+    bLow := b & LOW_WORD_MASK
+    bHigh := b >> 32
+    lowProduct := aLow * bLow
+    middle := aHigh * bLow + (lowProduct >> 32)
+    upperMiddle := aLow * bHigh + (middle & LOW_WORD_MASK)
+    low := ((upperMiddle & LOW_WORD_MASK) << 32) | (lowProduct & LOW_WORD_MASK)
+    high := aHigh * bHigh + (middle >> 32) + (upperMiddle >> 32)
+    return (low, high)
+}
+
+// The conversion uses shifts in [118, 125]. Only the top two product words
+// can contribute, with one carry between them.
+func ryuMulShift(_ value: uint64, _ scale: (uint64, uint64), _ shift: int32) -> uint64 {
+    var (_, lowHigh) = wideProduct(value, scale.0)
+    var (highLow, highHigh) = wideProduct(value, scale.1)
+    carry := ((lowHigh & LOW_WORD_MASK) + (highLow & LOW_WORD_MASK)) >> 32
+    middle := (lowHigh >> 32) + (highLow >> 32) + carry
+    upper := highHigh + (middle >> 32)
+    return (upper << ((128 - shift) as uint64)) | ((middle & LOW_WORD_MASK) >> ((shift - 96) as uint64))
+}
+
+// Exact bit length of 5^exponent over the range of the cached powers.
+func pow5Bits(_ exponent: int32) -> int32 {
+    return ((exponent * 1217359) >> 19) + 1
+}
+
+func divisibleByPowerOf5(_ value: uint64, _ power: int32) -> bool {
+    var remaining = value
+    var exponent = power
+    while exponent > 0 {
+        if remaining % 5 != 0 { return false }
+        remaining /= 5
+        exponent -= 1
+    }
+    return true
+}
+
+// Both IEEE formats use Ryū's binary64 scaling and rounding with their own
+// mantissa and exponent. Widening the floating value first would lose the
+// binary32 rounding interval and could produce unnecessary digits.
+func shortestFloatDecimal(
+    _ fraction: uint64, _ ieeeExponent: int32, _ fractionBits: int32, _ bias: int32,
+) -> FloatDecimal {
+    var exponent2 = ieeeExponent - bias - fractionBits - 2
+    var significand = fraction | (1_u64 << (fractionBits as uint64))
+    if ieeeExponent == 0 {
+        exponent2 += 1
+        significand = fraction
+    }
+
+    // Scale by four so both midpoints are integers. A normal power of two
+    // above the subnormal boundary has a closer neighbour on its lower side.
+    acceptBounds := significand % 2 == 0
+    center := 4 * significand
+    var lowerOffset: uint64 = 1
+    if fraction != 0 || ieeeExponent <= 1 { lowerOffset = 2 }
+
+    var lower: uint64 = 0
+    var middle: uint64 = 0
+    var upper: uint64 = 0
+    var exponent10: int32 = 0
+    var lowerExact = false
+    var middleExact = false
+
+    if exponent2 >= 0 {
+        // floor(log10(2^exponent2)), with one extra digit for rounding.
+        var q = (exponent2 * 78913) >> 18
+        if exponent2 > 3 { q -= 1 }
+        exponent10 = q
+        shift := -exponent2 + q + RYU_POW5_BITS + pow5Bits(q) - 1
+        scale := ryuInversePowersOfFive[q as usize]
+        lower = ryuMulShift(center - lowerOffset, scale, shift)
+        middle = ryuMulShift(center, scale, shift)
+        upper = ryuMulShift(center + 2, scale, shift)
+
+        // At most one of these three integers is divisible by five.
+        if q <= 21 {
+            if center % 5 == 0 {
+                middleExact = divisibleByPowerOf5(center, q)
+            } else if acceptBounds {
+                lowerExact = divisibleByPowerOf5(center - lowerOffset, q)
+            } else if divisibleByPowerOf5(center + 2, q) {
+                upper -= 1
+            }
+        }
+    } else {
+        // floor(log10(5^-exponent2)), with one extra digit for rounding.
+        var q = (-exponent2 * 732923) >> 20
+        if exponent2 < -1 { q -= 1 }
+        exponent10 = q + exponent2
+        index := -exponent2 - q
+        shift := q - pow5Bits(index) + RYU_POW5_BITS
+        scale := ryuPowersOfFive[index as usize]
+        lower = ryuMulShift(center - lowerOffset, scale, shift)
+        middle = ryuMulShift(center, scale, shift)
+        upper = ryuMulShift(center + 2, scale, shift)
+
+        if q <= 1 {
+            middleExact = true
+            if acceptBounds {
+                lowerExact = lowerOffset == 2
+            } else {
+                upper -= 1
+            }
+        } else if q < 63 {
+            middleExact = (center & ((1_u64 << (q as uint64)) - 1)) == 0
+        }
+    }
+
+    // Remove as many digits as the rounding interval allows. Track exact
+    // endpoints so a midpoint is used only when it rounds to this value.
+    var lastDigit: uint64 = 0
+    if !lowerExact && !middleExact && upper / 100 > lower / 100 {
+        lastDigit = (middle % 100) / 10
+        lower /= 100
+        middle /= 100
+        upper /= 100
+        exponent10 += 2
+    }
+    while upper / 10 > lower / 10 {
+        if lower % 10 != 0 { lowerExact = false }
+        if lastDigit != 0 { middleExact = false }
+        lastDigit = middle % 10
+        lower /= 10
+        middle /= 10
+        upper /= 10
+        exponent10 += 1
+    }
+    while lowerExact && lower % 10 == 0 {
+        if lastDigit != 0 { middleExact = false }
+        lastDigit = middle % 10
+        lower /= 10
+        middle /= 10
+        exponent10 += 1
+    }
+    if middleExact && lastDigit == 5 && middle % 2 == 0 {
+        lastDigit = 4
+    }
+    if (middle == lower && (!acceptBounds || !lowerExact)) || lastDigit >= 5 {
+        middle += 1
+    }
+    return FloatDecimal { digits: middle, exponent: exponent10 }
+}
+
+func writeFloatDecimal(_ into: &Formatter, _ value: FloatDecimal) {
+    var digits: [uint8; 17] = [0; 17]
+    var start: usize = 17
+    var remaining = value.digits
+    loop {
+        start -= 1
+        digits[start] = BYTE_ZERO + ((remaining % 10) as uint8)
+        remaining /= 10
+        if remaining == 0 { break }
+    }
+
+    count := (17 - start) as int32
+    exponent := value.exponent + count - 1
+    if exponent < -4 || exponent >= 16 {
+        into.writeByte(digits[start])
+        start += 1
+        if start < 17 { into.writeByte(BYTE_DOT) }
+        while start < 17 {
+            into.writeByte(digits[start])
+            start += 1
+        }
+        into.writeByte(BYTE_E)
+        appendSignedDecimal(&into.buffer, exponent as int64)
+        return
+    }
+
+    // In fixed notation the point can fall before, within or after the digits.
+    point := exponent + 1
+    if point <= 0 {
+        into.writeByte(BYTE_ZERO)
+        into.writeByte(BYTE_DOT)
+        writeFill(into, BYTE_ZERO, (-point) as usize)
+    }
+    var position: int32 = 0
+    while start < 17 {
+        if position > 0 && position == point { into.writeByte(BYTE_DOT) }
+        into.writeByte(digits[start])
+        start += 1
+        position += 1
+    }
+    if point > count { writeFill(into, BYTE_ZERO, (point - count) as usize) }
+}
+
+enum FloatKind {
+    case finite
+    case nan
+    case positiveInfinity
+    case negativeInfinity
+}
+
+// Finite values share the same rendering across display and JSON. A
+// non-finite value leaves the formatter untouched.
+func writeFiniteFloatBits(
+    _ into: &Formatter, _ bits: uint64, _ fractionBits: int32, _ maxExponent: int32,
+) -> FloatKind {
+    fraction := bits & ((1_u64 << (fractionBits as uint64)) - 1)
+    upper := bits >> (fractionBits as uint64)
+    ieeeExponent := (upper & (maxExponent as uint64)) as int32
+    negative := upper > (maxExponent as uint64)
+    if ieeeExponent == maxExponent {
+        if fraction != 0 { return .nan }
+        if negative { return .negativeInfinity }
+        return .positiveInfinity
+    }
+    if negative { into.writeByte(BYTE_MINUS) }
+    if ieeeExponent == 0 && fraction == 0 {
+        into.writeByte(BYTE_ZERO)
+    } else {
+        writeFloatDecimal(into, shortestFloatDecimal(fraction, ieeeExponent, fractionBits, maxExponent / 2))
+    }
+    return .finite
+}
+
+func displayFloatBits(
+    _ into: &Formatter, _ bits: uint64, _ fractionBits: int32, _ maxExponent: int32,
+) {
+    match writeFiniteFloatBits(into, bits, fractionBits, maxExponent) {
+        case .finite => into.zeroPadMode = .signedNumeric
+        case .nan => {
+            into.zeroPadMode = .suppress
+            into.writeString("nan")
+        }
+        case .positiveInfinity => {
+            into.zeroPadMode = .suppress
+            into.writeString("inf")
+        }
+        case .negativeInfinity => {
+            into.zeroPadMode = .suppress
+            into.writeString("-inf")
+        }
+    }
+}
+
+func finiteFloatBitsString(_ bits: uint64, _ fractionBits: int32, _ maxExponent: int32) -> Optional[string] {
+    var formatter = Formatter::new()
+    match writeFiniteFloatBits(&formatter, bits, fractionBits, maxExponent) {
+        case .finite => return .some(formatter.buffer.takeString())
+        case _ => return .none
+    }
+}
+
+internal func finiteFloatString(_ value: float) -> Optional[string] {
+    finiteFloatBitsString(floatToBits(value) as uint64, 23, 255)
+}
+
+internal func finiteFloatString(_ value: double) -> Optional[string] {
+    finiteFloatBitsString(doubleToBits(value), 52, 2047)
+}
+
+// Rounds `digits[start..18]` to `keep` leading digits using round-half-to-even.
+// Returns `(newStart, carried)` where `carried` is true if rounding rolled
+// all kept digits over 9 (incrementing the decimal exponent by 1).
+// Precondition: `start >= 1` (slot 0 is reserved for carry) and `keep < 18 - start`.
+func roundDecimalDigits(_ digits: &[uint8; 18], _ start: usize, _ keep: usize) -> (usize, bool) {
+    next := (*digits)[start + keep]
+    var roundUp = false
+    if next > ('5' as uint8) {
+        roundUp = true
+    } else if next == ('5' as uint8) {
+        var idx = start + keep + 1
+        var hasTrailing = false
+        while idx < 18 {
+            if (*digits)[idx] != BYTE_ZERO {
+                hasTrailing = true
+                break
+            }
+            idx += 1
+        }
+        if hasTrailing {
+            roundUp = true
+        } else if keep > 0 {
+            prevDigit := (*digits)[start + keep - 1] - BYTE_ZERO
+            roundUp = (prevDigit % 2) == 1
+        }
+    }
+
+    if !roundUp {
+        return (start, false)
+    }
+
+    var cursor = start + keep
+    while cursor > start {
+        cursor -= 1
+        if (*digits)[cursor] < BYTE_NINE {
+            (*digits)[cursor] += 1
+            return (start, false)
+        }
+        (*digits)[cursor] = BYTE_ZERO
+    }
+
+    newStart := start - 1
+    (*digits)[newStart] = ('1' as uint8)
+    return (newStart, true)
+}
+
+func extractFloatDigits(_ digits: &[uint8; 18], _ value: FloatDecimal) -> (usize, int32) {
+    var start: usize = 18
+    var remaining = value.digits
+    loop {
+        start -= 1
+        (*digits)[start] = BYTE_ZERO + ((remaining % 10) as uint8)
+        remaining /= 10
+        if remaining == 0 { break }
+    }
+    count := (18 - start) as int32
+    return (start, value.exponent + count - 1)
+}
+
+func writeZeroFixed(_ into: &Formatter, _ precision: usize) {
+    into.writeByte(BYTE_ZERO)
+    if precision > 0 {
+        into.writeByte(BYTE_DOT)
+        writeFill(into, BYTE_ZERO, precision)
+    }
+}
+
+func writeZeroScientific(_ into: &Formatter, _ hasPrecision: bool, _ precision: usize) {
+    into.writeByte(BYTE_ZERO)
+    if hasPrecision && precision > 0 {
+        into.writeByte(BYTE_DOT)
+        writeFill(into, BYTE_ZERO, precision)
+    }
+    into.writeByte(BYTE_E)
+    into.writeByte(BYTE_ZERO)
+}
+
+// Fixed-point decimal with `precision` digits after the decimal point.
+// Rounds the shortest Ryū decimal representation using round-half-to-even.
+func writeFloatFixed(_ into: &Formatter, _ value: FloatDecimal, _ precision: usize) {
+    var digits: [uint8; 18] = [0; 18]
+    var (start, exponent) = extractFloatDigits(&digits, value)
+    var count = 18 - start
+    var point: int32 = exponent + 1
+
+    var available = count
+    if point < 0 {
+        leadingZeros := (-point) as usize
+        if precision < leadingZeros {
+            writeZeroFixed(into, precision)
+            return
+        }
+        keep := precision - leadingZeros
+        if keep < count {
+            var (newStart, carried) = roundDecimalDigits(&digits, start, keep)
+            start = newStart
+            if carried {
+                point += 1
+                available = keep + 1
+            } else {
+                if keep == 0 {
+                    writeZeroFixed(into, precision)
+                    return
+                }
+                available = keep
+            }
+        }
+    } else {
+        intDigits := point as usize
+        if intDigits < count && precision < count - intDigits {
+            keep := intDigits + precision
+            var (newStart, carried) = roundDecimalDigits(&digits, start, keep)
+            start = newStart
+            if carried {
+                point += 1
+                available = keep + 1
+            } else {
+                available = keep
+            }
+        }
+    }
+
+    if point <= 0 {
+        into.writeByte(BYTE_ZERO)
+        if precision > 0 {
+            into.writeByte(BYTE_DOT)
+            leadingZeros := (-point) as usize
+            writeFill(into, BYTE_ZERO, leadingZeros)
+            var fracWritten = leadingZeros
+            var i: usize = 0
+            while i < available && fracWritten < precision {
+                into.writeByte(digits[start + i])
+                i += 1
+                fracWritten += 1
+            }
+            if fracWritten < precision {
+                writeFill(into, BYTE_ZERO, precision - fracWritten)
+            }
+        }
+        return
+    }
+
+    intDigits := point as usize
+    var i: usize = 0
+    while i < intDigits {
+        if i < available {
+            into.writeByte(digits[start + i])
+        } else {
+            into.writeByte(BYTE_ZERO)
+        }
+        i += 1
+    }
+    if precision > 0 {
+        into.writeByte(BYTE_DOT)
+        var frac: usize = 0
+        while frac < precision {
+            if i < available {
+                into.writeByte(digits[start + i])
+            } else {
+                into.writeByte(BYTE_ZERO)
+            }
+            i += 1
+            frac += 1
+        }
+    }
+}
+
+// Scientific notation (`d.dddde±exp`). When `hasPrecision` is false, prints
+// Ryū's shortest significant digits; when true, rounds to `1 + precision`
+// significant digits using round-half-to-even.
+func writeFloatScientific(_ into: &Formatter, _ value: FloatDecimal, _ hasPrecision: bool, _ precision: usize) {
+    var digits: [uint8; 18] = [0; 18]
+    var (start, exponent) = extractFloatDigits(&digits, value)
+    var count = 18 - start
+
+    if !hasPrecision {
+        into.writeByte(digits[start])
+        if count > 1 {
+            into.writeByte(BYTE_DOT)
+            var idx = start + 1
+            while idx < 18 {
+                into.writeByte(digits[idx])
+                idx += 1
+            }
+        }
+        into.writeByte(BYTE_E)
+        appendSignedDecimal(&into.buffer, exponent as int64)
+        return
+    }
+
+    var available = count
+    if precision < count - 1 {
+        keep := precision + 1
+        var (newStart, carried) = roundDecimalDigits(&digits, start, keep)
+        start = newStart
+        if carried {
+            exponent += 1
+        }
+        available = keep
+    }
+
+    into.writeByte(digits[start])
+    if precision > 0 {
+        into.writeByte(BYTE_DOT)
+        var frac: usize = 0
+        while frac < precision {
+            if frac + 1 < available {
+                into.writeByte(digits[start + 1 + frac])
+            } else {
+                into.writeByte(BYTE_ZERO)
+            }
+            frac += 1
+        }
+    }
+    into.writeByte(BYTE_E)
+    appendSignedDecimal(&into.buffer, exponent as int64)
+}
+
+func formatFloatBits(
+    _ into: &Formatter,
+    _ bits: uint64,
+    _ fractionBits: int32,
+    _ maxExponent: int32,
+    _ spec: rune,
+    _ state: &FormatState,
+) {
+    fraction := bits & ((1_u64 << (fractionBits as uint64)) - 1)
+    upper := bits >> (fractionBits as uint64)
+    ieeeExponent := (upper & (maxExponent as uint64)) as int32
+    negative := upper > (maxExponent as uint64)
+    if ieeeExponent == maxExponent {
+        into.zeroPadMode = .suppress
+        if fraction != 0 {
+            into.writeString("nan")
+        } else if negative {
+            into.writeString("-inf")
+        } else {
+            into.writeString("inf")
+        }
+        return
+    }
+    into.zeroPadMode = .signedNumeric
+    if negative { into.writeByte(BYTE_MINUS) }
+    isZero := ieeeExponent == 0 && fraction == 0
+    if spec == 'e' {
+        if isZero {
+            writeZeroScientific(into, state.hasPrecision, state.precision)
+        } else {
+            dec := shortestFloatDecimal(fraction, ieeeExponent, fractionBits, maxExponent / 2)
+            writeFloatScientific(into, dec, state.hasPrecision, state.precision)
+        }
+        return
+    }
+    if state.hasPrecision {
+        if isZero {
+            writeZeroFixed(into, state.precision)
+        } else {
+            dec := shortestFloatDecimal(fraction, ieeeExponent, fractionBits, maxExponent / 2)
+            writeFloatFixed(into, dec, state.precision)
+        }
+        return
+    }
+    if isZero {
+        into.writeByte(BYTE_ZERO)
+    } else {
+        writeFloatDecimal(into, shortestFloatDecimal(fraction, ieeeExponent, fractionBits, maxExponent / 2))
+    }
+}
+
+conform float to Display {
+    public func display(_ into: &Formatter) {
+        displayFloatBits(into, floatToBits(self) as uint64, 23, 255)
+    }
+}
+
+conform float to Formattable {
+    public func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
+        if spec == '?' {
+            self.display(into)
+            return
+        }
+        if spec != 'v' && spec != 'e' {
+            panic("printf: invalid format specifier for float argument")
+        }
+        formatFloatBits(into, floatToBits(self) as uint64, 23, 255, spec, state)
+    }
+}
+
+conform double to Display {
+    public func display(_ into: &Formatter) {
+        displayFloatBits(into, doubleToBits(self), 52, 2047)
+    }
+}
+
+conform double to Formattable {
+    public func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
+        if spec == '?' {
+            self.display(into)
+            return
+        }
+        if spec != 'v' && spec != 'e' {
+            panic("printf: invalid format specifier for double argument")
+        }
+        formatFloatBits(into, doubleToBits(self), 52, 2047, spec, state)
+    }
+}

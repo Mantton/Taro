@@ -1,0 +1,4 @@
+error: unknown symbol `missing`
+ -> language_tests/source_files/invalid/syntax_sugar_tuple_unknown_destination.tr:2:15
+	func main() { (missing,) = (1,); }
+	               ^^^^^^^

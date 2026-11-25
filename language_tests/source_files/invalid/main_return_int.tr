@@ -1,0 +1,4 @@
+// An entry point may return only `()` or `Result[(), E]`.
+func main() -> int32 {
+    return 0
+}

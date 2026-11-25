@@ -1,0 +1,6 @@
+enum Overflow: RawValue[uint8] { case edge = 255, past }
+enum SignedOverflow: RawValue[int8] { case past = 128 }
+enum Payload: RawValue[uint8] { case number(int32) }
+enum WrongType: RawValue[bool] { case off, on }
+struct Record: RawValue[uint8] {}
+func main() {}

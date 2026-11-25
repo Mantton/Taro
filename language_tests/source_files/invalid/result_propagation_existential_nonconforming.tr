@@ -1,0 +1,18 @@
+// Propagating into an existential error type boxes the error, so the error
+// must conform to the existential's interfaces.
+struct Plain {
+    code: int32
+}
+
+func fail() -> Result[int32, Plain] {
+    return .err(Plain { code: 1 })
+}
+
+func load() -> Result[int32, any std::error::Error] {
+    value := fail()!
+    return .ok(value)
+}
+
+func main() {
+    var _ = load()
+}

@@ -1,0 +1,13 @@
+Checking – vet_shadow_reported
+warning: vet: 'config' shadows the variable declared on line 6, which is read after this scope ends
+ -> language_tests/source_files/invalid/vet_shadow_reported.tr:8:8
+	        config := 2
+	        ^^^^^^
+warning: vet: 'retries' shadows the parameter declared on line 5, which is read after this scope ends
+ -> language_tests/source_files/invalid/vet_shadow_reported.tr:12:12
+	        var retries = attempt
+	            ^^^^^^^
+warning: vet: 'config' shadows the variable declared on line 6, which is read after this scope ends
+ -> language_tests/source_files/invalid/vet_shadow_reported.tr:17:14
+	        { var config = 3; println("${config}") }
+	              ^^^^^^

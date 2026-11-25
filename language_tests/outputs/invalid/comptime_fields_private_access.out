@@ -1,0 +1,4 @@
+error: field 'code' of Vault is not visible here
+ -> language_tests/source_files/invalid/comptime_fields_private_access.tr:17:24
+	        _ = debugString(field.get(v))
+	                        ^^^^^^^^^^^^

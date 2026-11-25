@@ -80,6 +80,11 @@ extend File {
     }
 }
 
+conform File to std::io::Closeable {
+    type CloseResult = Result[(), Error]
+    public func close() -> Result[(), Error] { self.close() }
+}
+
 conform File to Reader {
     public func read(_ buf: Span[uint8]) -> Result[usize, Error] {
         if !std::sys::fs::isValid(&self.state.get().inner) {

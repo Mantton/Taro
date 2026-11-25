@@ -112,6 +112,7 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
         "expect_stderr_not_contains": [],
         "expect_stderr_counts": [],
         "package_fixture": None,
+        "run_twice": False,
     }
     commands = {"VET": "vet", "CHECK_ONLY": "check", "TEST": "test", "BENCH": "bench", "BENCH_RELEASE": "bench"}
     fragments = {"EXPECT_STDOUT_CONTAINS", "EXPECT_STDERR_CONTAINS", "EXPECT_STDERR_NOT_CONTAINS"}
@@ -130,7 +131,7 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
             try:
                 if name in values and not separator:
                     raise ValueError(f"{name} requires ':' before its value")
-                if separator and name in {*commands, "OVERFLOW_CHECKS"}:
+                if separator and name in {*commands, "OVERFLOW_CHECKS", "RUN_TWICE"}:
                     raise ValueError(f"{name} does not take a value")
                 if directive in commands:
                     command = commands[directive]
@@ -140,6 +141,8 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
                     result["bench_release"] |= directive == "BENCH_RELEASE"
                 elif directive == "OVERFLOW_CHECKS":
                     result["overflow_checks"] = True
+                elif directive == "RUN_TWICE":
+                    result["run_twice"] = True
                 elif name in fragments:
                     if not separator or not value:
                         raise ValueError("expected a nonempty output fragment")
@@ -290,29 +293,38 @@ def run_test(
         # Run process. A hung test (for example a runtime deadlock) must fail
         # instead of stalling the suite; its own process group lets the
         # timeout reach the compiled program as well as the `taro` driver.
-        process = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=PROJECT_ROOT,
-            env=process_env,
-            start_new_session=True,
-        )
-        try:
-            stdout, stderr = process.communicate(
-                input=directives["stdin"], timeout=TEST_TIMEOUT_SECONDS
+        # RUN_TWICE repeats the command with the same cache directory and
+        # checks only the second run, which must reuse the first's metadata.
+        for _ in range(2 if directives["run_twice"] else 1):
+            process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=PROJECT_ROOT,
+                env=process_env,
+                start_new_session=True,
             )
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            stdout, stderr = process.communicate()
+            try:
+                stdout, stderr = process.communicate(
+                    input=directives["stdin"], timeout=TEST_TIMEOUT_SECONDS
+                )
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                stdout, stderr = process.communicate()
+                return (
+                    False,
+                    f"Timed out after {TEST_TIMEOUT_SECONDS}s",
+                    {"stderr": stderr, "stdout": stdout},
+                )
+        result = subprocess.CompletedProcess(cmd, process.returncode, stdout, stderr)
+        if directives["run_twice"] and "Reusing" not in result.stderr:
             return (
                 False,
-                f"Timed out after {TEST_TIMEOUT_SECONDS}s",
-                {"stderr": stderr, "stdout": stdout},
+                "RUN_TWICE: the second run did not reuse the cache",
+                {"stderr": result.stderr},
             )
-        result = subprocess.CompletedProcess(cmd, process.returncode, stdout, stderr)
 
         expected_code = directives["expect_exit"]
         if expected_code is None and not is_invalid_test:

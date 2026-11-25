@@ -1,0 +1,2 @@
+func view(_ pointer: *const [int32; 2]) -> [int32; ..] { unsafe { &*pointer } }
+func main() {}

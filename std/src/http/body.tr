@@ -294,3 +294,8 @@ conform Body to AsyncReader {
         return result
     }
 }
+
+conform Body to std::io::Closeable {
+    type CloseResult = Result[(), std::io::Error]
+    public func close() -> Result[(), std::io::Error] { self.close() }
+}

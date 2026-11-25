@@ -1,0 +1,4 @@
+interface Sized { const COUNT: int32 = 1; }
+struct Bad {}
+conform Bad to Sized { const COUNT: bool = true; }
+func main() {}

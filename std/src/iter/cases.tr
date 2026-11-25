@@ -1,0 +1,34 @@
+/// Lists the cases of a payload-free enum in declaration order.
+@lang("CaseIterable")
+public interface CaseIterable {
+    /// Iterating this value creates a fresh cursor over the cases.
+    const ALL_CASES: EnumCases[Self] = .all
+    /// The case identifier as it appears in the enum declaration.
+    var name: string { get }
+    /// Returns the case at a zero-based declaration index, or none past the end.
+    static func caseAt(_ index: usize) -> Self?
+}
+
+/// A collection of enum cases. The marker stores no elements.
+public enum EnumCases[T] { case all }
+
+public final class EnumCaseIterator[T: CaseIterable] { private index: usize }
+
+extend[T: CaseIterable] EnumCaseIterator[T] {
+    init() { self.index = 0 }
+}
+
+conform[T: CaseIterable] EnumCaseIterator[T] to Iterator {
+    type Element = T
+    public func next() -> T? {
+        value := T::caseAt(self.index)
+        if value.isSome() { self.index += 1 }
+        value
+    }
+}
+
+conform[T: CaseIterable] EnumCases[T] to Iterable {
+    type Element = T
+    type Iterator = EnumCaseIterator[T]
+    public func iter() -> EnumCaseIterator[T] { EnumCaseIterator[T]() }
+}

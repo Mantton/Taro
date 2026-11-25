@@ -25,7 +25,8 @@ Taro is a statically-typed systems programming language with:
 - Ordinary value copies, shared collection/class handles, writable GC references, and unsafe raw pointers
 - Automatic semicolon insertion (ASI)
 - `printf`/`sprintf`-style formatted output (`%d`, `%s`, `%v`, `%%`) with compile-time checks for literal format strings
-- Python-style f-strings: `f"Hello, {name}"` (desugared to `std::sprintf`)
+- Raw and multiline string literals with matching-hash interpolation
+- String interpolation: `"Hello, ${name}"` (desugared to `std::sprintf`)
 
 ### Hello World
 

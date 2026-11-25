@@ -1,0 +1,8 @@
+error: '??=' needs an optional target, found 'int32'
+ -> language_tests/source_files/invalid/optional_default_assignment_non_optional.tr:5:4
+	    count ??= 1
+	    ^^^^^^^^^^^
+error: '??=' needs an optional target, found 'int32'
+ -> language_tests/source_files/invalid/optional_default_assignment_non_optional.tr:7:4
+	    point.x ??= 2
+	    ^^^^^^^^^^^^^

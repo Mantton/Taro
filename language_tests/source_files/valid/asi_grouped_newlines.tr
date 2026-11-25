@@ -1,0 +1,202 @@
+// Newlines directly inside `( )` and `[ ]` never insert semicolons, so
+// multi-line lists need no comma before the closing delimiter. Braces nested
+// inside them keep ending statements at newlines.
+
+@repr(
+    "C"
+)
+struct Pair[
+    A,
+    B
+] {
+    first: A
+    second: B
+}
+
+enum Shape {
+    case rect(
+        int32,
+        int32
+    )
+    case dot
+}
+
+@cfg(
+    debug || !debug
+)
+func sum(
+    _ first: int32,
+    _ second: int32
+) -> int32 {
+    first + second
+}
+
+func swap[
+    A,
+    B
+](
+    _ pair: (
+        A,
+        B
+    )
+) -> (
+    B,
+    A
+) {
+    (pair.1, pair.0)
+}
+
+func apply(
+    _ operation: (
+        int32,
+        int32
+    ) -> int32,
+    _ value: int32
+) -> int32 {
+    operation(
+        value,
+        value
+    )
+}
+
+func describe(
+    _ label: string,
+    _ value: string
+) -> string {
+    "${label}=${value}"
+}
+
+func main() {
+    total := sum(
+        1,
+        2
+    )
+    assert(total == 3, "call arguments without a trailing comma")
+
+    matrix := [
+        [1, 2, 3],
+        [4, 5, 6]
+    ]
+    assert(matrix[1][2] == 6, "nested array literal")
+
+    var row: usize = 1
+    value := matrix[
+        row
+    ][
+        0
+    ]
+    assert(value == 4, "multi-line subscripts")
+
+    point := (
+        10,
+        20
+    )
+    assert(point.0 + point.1 == 30, "multi-line tuple")
+
+    var names: [string: int32] = [
+        "a": 1,
+        "b": 2
+    ]
+    assert(names["b"] == 2, "multi-line dictionary literal")
+
+    var zeros: [int32; 4] = [
+        0; 4
+    ]
+    assert(zeros.len() == 4, "explicit repeat separator inside brackets")
+    var bytes: [
+        uint8; 3
+    ] = [7; 3]
+    assert(bytes[2] == 7, "explicit array type separator inside brackets")
+
+    base := 5_i32
+    offset := 2_i32
+    var items: List[int32] = [1, 2, 3]
+    var log: List[int32] = []
+    doubled := items.iter().map((
+        item: int32
+    ) => {
+        log.append(item)
+        item * 2
+    }).collect[List[int32]]()
+    result := sum(
+        base
+            + offset,
+        doubled[
+            2
+        ]
+    )
+    assert(result == 13, "operator continuations and closure blocks inside a call")
+    assert(log.len() == 3, "statements inside braces still end at newlines")
+
+    pair := Pair[
+        int32,
+        string
+    ] {
+        first: 1,
+        second: "one",
+    }
+    flipped := swap(
+        (
+            pair.first,
+            pair.second
+        )
+    )
+    assert(flipped.0 == "one" && flipped.1 == 1, "generic arguments and tuple types")
+
+    assert(apply(
+        (a, b) => a * b,
+        6
+    ) == 36, "function types and parameter lists")
+
+    shape := Shape::rect(
+        3,
+        4
+    )
+    area := match shape {
+        case .rect(
+            width,
+            height
+        ) => width * height
+        case .dot => 0
+    }
+    assert(area == 12, "multi-line enum payload pattern")
+
+    var (
+        left,
+        right
+    ) = (
+        1,
+        2
+    )
+    assert(left + right == 3, "multi-line tuple pattern")
+
+    chosen := (
+        match shape {
+            case .rect(_, _) => "rect"
+            case .dot => "dot"
+        }
+    )
+    assert(chosen == "rect", "match body inside parentheses")
+
+    checked := #cfg(
+        test || !test
+    )
+    assert(checked, "cfg check expression")
+
+    name := "Ada"
+    message := describe(
+        "${name}",
+        "${sum(1, 2)}"
+    )
+    assert(message == "Ada=3", "interpolations inside call arguments")
+
+    report := """
+        total=${sum(
+            total,
+            base
+        )}
+        """
+    assert(report == "total=8", "calls inside multi-line interpolations")
+
+    print("grouped newlines: ${total} ${matrix[0][0]} ${value} ${result} ${area} ${report}\n")
+}

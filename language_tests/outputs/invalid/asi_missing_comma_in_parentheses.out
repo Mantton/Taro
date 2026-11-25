@@ -1,0 +1,4 @@
+error: expected `,` or `)`, found `2`
+ -> language_tests/source_files/invalid/asi_missing_comma_in_parentheses.tr:8:8
+	        2
+	        ^

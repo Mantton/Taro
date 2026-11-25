@@ -1,0 +1,8 @@
+@onUnsatisfied("{Self} has no total order")
+interface Ranked { func rank() -> int32; }
+func pick[T: Ranked](_ item: T) -> int32 { item.rank() }
+func pick(_ item: string, extra: int32) -> int32 { extra }
+func main() {
+    var one = pick(1.25)
+    var two = pick(true, false, 0)
+}

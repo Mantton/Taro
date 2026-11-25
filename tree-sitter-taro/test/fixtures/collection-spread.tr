@@ -1,0 +1,12 @@
+func forward(_ values: int32...) -> int32 {
+    sum(1, values..., 4)
+}
+
+func main() {
+    numbers := [2, 3]
+    combined := [1, numbers..., 4]
+    forward(combined...)
+}
+
+func optionalValues(_ values: int32?...) {}
+func optionalGeneric(_ values: Optional[int32]...) {}

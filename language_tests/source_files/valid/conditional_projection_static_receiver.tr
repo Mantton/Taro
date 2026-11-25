@@ -1,0 +1,42 @@
+import std::collections::ArrayIterator
+
+interface Named {
+    var name: string { get }
+    static func wrap(_ value: Self) -> Box[Self] { Box { value: value } }
+}
+
+struct Box[T] { value: T }
+
+interface Source {
+    type Item
+    func getItem() -> Self::Item
+}
+
+conform[T: Named] Box[T] to Source {
+    type Item = T
+    func getItem() -> T { self.value }
+}
+
+conform[T: Named] Box[T] to Iterable {
+    type Element = T
+    type Iterator = ArrayIterator[T, 1]
+    func iter() -> Self::Iterator {
+        var items: [T; 1] = [self.value]
+        items.iter()
+    }
+}
+
+struct Entry {}
+conform Entry to Named { var name: string { get { "entry" } } }
+
+func first[S: Source](_ source: S) -> S::Item { source.getItem() }
+func generic[T: Named](_ value: T) -> string { first(T::wrap(value)).name }
+
+func main() {
+    value := Entry {}
+    boxed := Entry::wrap(value)
+    assert(first(boxed).name == "entry", "local receiver")
+    assert(generic(value) == "entry", "generic receiver")
+    println(first(Entry::wrap(value)).name)
+    for item in Entry::wrap(value) { println(item.name) }
+}

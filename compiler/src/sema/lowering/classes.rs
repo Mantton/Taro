@@ -69,9 +69,12 @@ impl<'ctx> GlobalContext<'ctx> {
     }
 
     pub fn class_base(self, ty: Ty<'ctx>) -> Option<Ty<'ctx>> {
-        let TyKind::Adt(_, args) = normalize_aliases(self, ty).kind() else {
+        let TyKind::Adt(adt, args) = normalize_aliases(self, ty).kind() else {
             return None;
         };
+        if self.store.collecting_constant_headers.get() {
+            crate::sema::tycheck::ensure_class_base(self, adt.id);
+        }
         self.class_info(ty)?.base.map(|base| {
             crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args(self, base, args)
         })
@@ -99,9 +102,13 @@ impl<'ctx> GlobalContext<'ctx> {
 
     pub fn class_ancestry(self, ty: Ty<'ctx>) -> Vec<Ty<'ctx>> {
         let mut result = vec![];
+        let mut visited = rustc_hash::FxHashSet::default();
         let mut current = Some(normalize_aliases(self, ty));
         while let Some(ty) = current {
-            if !self.is_class_type(ty) || result.contains(&ty) {
+            let TyKind::Adt(adt, _) = ty.kind() else {
+                break;
+            };
+            if !self.is_class_type(ty) || !visited.insert(adt.id) {
                 break;
             }
             result.push(ty);
@@ -216,6 +223,8 @@ impl<'ctx> GlobalContext<'ctx> {
                         mutability: crate::hir::Mutability::Mutable,
                         def_id: base_def.id,
                         visibility: self.definition_visibility(definition.id),
+                        coding_key: None,
+                        coding_skip: false,
                     },
                 );
                 repr = StructRepr::C;
@@ -225,6 +234,7 @@ impl<'ctx> GlobalContext<'ctx> {
                 StructDefinition {
                     adt_def: payload_def,
                     class_info: None,
+                    positional: false,
                     has_initializer: false,
                     repr,
                     fields: self.store.arenas.global.alloc_slice_copy(&fields),
@@ -332,6 +342,7 @@ impl<'ctx> GlobalContext<'ctx> {
                     TyKind::Pointer(self.types.uint8, crate::hir::Mutability::Immutable),
                     self,
                 ),
+                is_lazy: false,
                 default_provider: None,
             },
         );
@@ -380,6 +391,7 @@ impl<'ctx> GlobalContext<'ctx> {
                     TyKind::Pointer(self.types.uint8, crate::hir::Mutability::Immutable),
                     self,
                 ),
+                is_lazy: false,
                 default_provider: None,
             },
         );
@@ -471,6 +483,7 @@ impl<'ctx> GlobalContext<'ctx> {
                     label: None,
                     name: self.intern_symbol("value"),
                     ty: self.get_type(class.id),
+                    is_lazy: false,
                     default_provider: None,
                 }],
                 output: Ty::new(
@@ -532,6 +545,7 @@ mod tests {
                 gcx.cache_struct_definition(id, definition);
                 let payload = gcx.ensure_class_payload(class_ty).unwrap();
                 assert_ne!(class_ty, payload);
+                assert_eq!(payload.format(gcx), "Object$payload[T]");
                 assert!(!gcx.is_class_type(payload));
                 let TyKind::Adt(payload_def, arguments) = payload.kind() else {
                     panic!("payload ADT");

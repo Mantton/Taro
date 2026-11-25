@@ -1,0 +1,121 @@
+// An operator whose operand is still an unknown type, such as the result of
+// a lookup that waits for a literal receiver's default, gives its other
+// operand's literal that result's type, as `xs.count() + 1` does. Defaulting
+// the receiver's literal must not fix the operand's literal in the same step.
+import std::ops::Add
+
+struct Box[T] {
+    v: T
+}
+
+struct Meters {
+    value: int64
+}
+
+struct Feet {
+    value: int64
+}
+
+interface Width[U] {
+    func width() -> usize {
+        4
+    }
+
+    func height() -> float {
+        1.5
+    }
+
+    func sizes() -> [usize; 2] {
+        [4, 5]
+    }
+
+    func meters() -> Meters {
+        Meters { value: 3 }
+    }
+
+    func feet() -> Feet {
+        Feet { value: 2 }
+    }
+}
+
+interface Get[T] {
+    func get() -> T;
+}
+
+conform Box[int32] to Width[bool] {}
+
+conform[T] Box[T] to Get[T] {
+    func get() -> T {
+        self.v
+    }
+}
+
+// One conformance: the operand takes its parameter's type.
+conform Meters to Add[int64] {
+    type Output = int64
+    func add(_ rhs: int64) -> int64 {
+        self.value + rhs
+    }
+}
+
+// Two conformances: the operand takes its default before the overloads are
+// compared, as it did before it waited.
+conform Feet to Add[int32] {
+    type Output = string
+    func add(_ rhs: int32) -> string {
+        "int32"
+    }
+}
+
+conform Feet to Add[int64] {
+    type Output = string
+    func add(_ rhs: int64) -> string {
+        "int64"
+    }
+}
+
+interface Kind {
+    func kind() -> string
+}
+
+conform int32 to Kind {
+    func kind() -> string { "int32" }
+}
+
+conform usize to Kind {
+    func kind() -> string { "usize" }
+}
+
+func main() {
+    // The receiver's literal defaults first, then the operand takes the
+    // lookup's result type.
+    a := 1 + [1, 2].map((x) => x * 2).count()
+    b := [1, 2].map((x) => x * 2).count() + 1
+    c := Box { v: 0 }.width() + 1
+    d := 1 + Box { v: 0 }.width()
+    e := Box { v: 0 }.width() * 2 + 1
+    println("${a.kind()} ${a} ${b.kind()} ${b} ${c.kind()} ${c} ${d.kind()} ${d} ${e}")
+    println("a ${1 + [1, 2].map((x) => x * 2).count()} ${Box { v: 0 }.width() - 1}")
+
+    // Comparisons and `in`, with the literal on either side.
+    ok := Box { v: 0 }.width() == 4 && 4 >= Box { v: 0 }.width()
+    println("${ok} ${Box { v: 0 }.width() in [3, 4]} ${5 in Box { v: 0 }.sizes()}")
+
+    // A floating literal can likewise wait for a single-precision result.
+    height := 0.5 + Box { v: 0 }.height()
+    var narrow: float = height
+    println("${narrow == 2.0}")
+
+    // The scalar subscript takes usize. The range overloads do not make
+    // int32 a viable type for this held index.
+    item := (0..4).iter().map(x => x)[1]
+    println("${item}")
+
+    // Operator methods on the lookup's result.
+    println("${Box { v: 0 }.meters() + 4} ${Box { v: 0 }.feet() + 1}")
+
+    // Unchanged: a result that is the receiver's own literal keeps its
+    // default, and so does the operand.
+    f := Box { v: 0 }.get() + 1
+    println("${f.kind()} ${f}")
+}

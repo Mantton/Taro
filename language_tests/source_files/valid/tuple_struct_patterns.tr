@@ -1,0 +1,34 @@
+struct Count(int64)
+extend Count { init(raw: int64) { self.0 = raw } }
+struct Marker()
+struct Pair[T](T, T)
+type Wide = Pair[int64]
+enum Wrapper[T] { case item(Pair[T]); case empty }
+func first[T](_ pair: Pair[T]) -> T {
+    var Pair(head, ..) = pair
+    return head
+}
+func tail(_ entry: Wrapper[int64]) -> int64 {
+    match entry {
+        case .item(Wide(.., n)) if n > 0 => n
+        case _ => -1
+    }
+}
+func bump(_ pair: &Wide) {
+    pair.1 += 3
+}
+func main() {
+    assert(Count(raw: 12).0 == 12, "explicit initializer")
+    var mark = Marker()
+    assert(mark is Marker(), "empty positional pattern")
+    var a = Pair[int64](4, 5000000000)
+    bump(&a)
+    assert(first(a) == 4 && tail(.item(a)) == 5000000003, "local, alias and nested patterns")
+    if case Pair(_, last) = &a { assert(last == a.1, "read the borrowed fields") }
+    b := Wide(a.1, a.0)
+    assert(b.0 == 5000000003 && b.1 == 4, "construct through the alias")
+    var nested = Pair((1, 2), (3, 4))
+    nested.1.0 += 10
+    assert(nested.1.0 == 13 && nested.0.1 == 2, "struct then tuple projections")
+    println("positional patterns")
+}

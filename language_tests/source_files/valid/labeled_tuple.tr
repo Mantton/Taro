@@ -1,0 +1,18 @@
+func bounds(_ a: int32, _ b: int32) -> (low: int32, high: int32) {
+    if a < b { return (low: a, high: b) }
+    (b, a)
+}
+func raw(_ value: (int32, int32)) -> int32 { value.1 - value.0 }
+func renamed(_ value: (start: int32, end: int32)) -> int32 { value.end - value.start }
+func main() {
+    range := bounds(3, -2)
+    assert(range.low == -2 && range.high == 3 && range.0 == range.low, "return labels")
+    var (first, last) = range
+    assert(first == -2 && last == 3, "positional destructuring")
+    var view: (start: int32, end: int32) = range
+    view.end = 8
+    assert(raw(view) == 10 && renamed(range) == 5 && range.high == 3, "same tuple identity and value semantics")
+    labeled := (low: 4, high: 9)
+    assert(labeled.high == 9 && raw(labeled) == 5, "literal labels")
+    println("tuple labels")
+}

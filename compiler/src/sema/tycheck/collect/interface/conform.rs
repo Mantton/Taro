@@ -54,8 +54,11 @@ impl<'ctx> Actor<'ctx> {
                 self.context.dcx().emit_error("AnyObject is a compiler-provided class-only capability; value types cannot declare this conformance".into(), Some(record.location));
                 continue;
             }
+            let derived_comparison = [hir::StdItem::PartialEq, hir::StdItem::PartialOrd]
+                .into_iter()
+                .find(|item| self.context.std_item_def(*item) == Some(record.interface.id));
             if record.is_inline
-                && self.context.std_item_def(hir::StdItem::PartialEq) == Some(record.interface.id)
+                && let Some(comparison) = derived_comparison
                 && let Some(self_ty) = record.interface.self_ty()
                 && crate::sema::tycheck::derive::equality_rhs(
                     self.context,
@@ -66,10 +69,18 @@ impl<'ctx> Actor<'ctx> {
                     self_ty,
                 ))
             {
+                let kind = if comparison == hir::StdItem::PartialEq {
+                    "equality"
+                } else {
+                    "ordering"
+                };
                 self.context.dcx().emit_error(
-                    "automatic equality requires Rhs = Self; provide an explicit cross-type conformance".into(),
+                    format!("automatic {kind} requires Rhs = Self; provide an explicit cross-type conformance"),
                     Some(record.location),
                 );
+                continue;
+            }
+            if self.report_derive_obstacles(*record) {
                 continue;
             }
             self.validate_direct(
@@ -83,6 +94,7 @@ impl<'ctx> Actor<'ctx> {
         let mut seen = FxHashSet::default();
         for record in records {
             if record.is_conditional {
+                self.validate_derived_conditional_supers(record);
                 continue;
             }
 
@@ -97,6 +109,12 @@ impl<'ctx> Actor<'ctx> {
                         .self_ty()
                         .is_some_and(|ty| self.context.uses_native_class_handle(ty))
                 {
+                    continue;
+                }
+
+                if iface.to_goal(self.context, &[]).is_some_and(|goal| {
+                    crate::mir::primitive_operators::item_for_goal(self.context, goal).is_some()
+                }) {
                     continue;
                 }
 
@@ -119,6 +137,16 @@ impl<'ctx> Actor<'ctx> {
                     .find(|rec| rec.interface == iface);
 
                 if let Some(explicit_record) = explicit_record {
+                    // The first pass reported or excused this record's
+                    // derivation obstacles; do not repeat them generically.
+                    if !crate::sema::tycheck::derive::derive_obstacles(
+                        self.context,
+                        explicit_record,
+                    )
+                    .is_empty()
+                    {
+                        continue;
+                    }
                     self.validate_direct(
                         iface,
                         explicit_record.location,
@@ -147,9 +175,149 @@ impl<'ctx> Actor<'ctx> {
                         ),
                         Some(record.location),
                     );
+                    self.suggest_listing_super(record, iface);
                 }
             }
         }
+    }
+
+    /// A derivable interface listed inline never derives its super-interfaces:
+    /// point at the conformance list that should name them.
+    fn suggest_listing_super(
+        &self,
+        record: ConformanceRecord<'ctx>,
+        iface: InterfaceReference<'ctx>,
+    ) {
+        if !record.is_inline {
+            return;
+        }
+        let name = self
+            .context
+            .symbol_text(self.context.definition_ident(iface.id).symbol);
+        self.context.dcx().emit_info(
+            format!(
+                "add '{}' to the conformance list of '{}', or implement it in a conformance",
+                name,
+                record.target.format(self.context)
+            ),
+            Some(record.location),
+        );
+    }
+
+    /// Generic derived conformances are checked at each instantiation, but a
+    /// super-interface the type never declares can fail every instantiation.
+    /// Report that at the declaration, as for a non-generic type.
+    fn validate_derived_conditional_supers(&self, record: ConformanceRecord<'ctx>) {
+        let derived = hir::StdItem::ALL_INTERFACES.iter().any(|item| {
+            item.is_derivable() && self.context.std_item_def(*item) == Some(record.interface.id)
+        });
+        if !record.is_inline || !derived {
+            return;
+        }
+        for iface in self
+            .collect_interface_with_supers(record.interface)
+            .into_iter()
+            .skip(1)
+        {
+            let declared = self.context.collect_from_databases(|db| {
+                db.conformance_by_interface
+                    .get(&iface.id)
+                    .into_iter()
+                    .flat_map(|ids| ids.iter())
+                    .filter_map(|id| db.conformance_records.get(id))
+                    .filter(|candidate| {
+                        candidate.target == record.target || candidate.target.is_blanket()
+                    })
+                    .map(|candidate| candidate.target)
+                    .collect::<Vec<_>>()
+            });
+            if !declared.is_empty() {
+                continue;
+            }
+            let type_name = record.interface.self_ty().map_or_else(
+                || record.target.format(self.context),
+                |ty| ty.format(self.context),
+            );
+            self.context.dcx().emit_error(
+                format!(
+                    "interface '{}' requires type '{}' to conform to '{}'",
+                    record.interface.format(self.context),
+                    type_name,
+                    iface.format(self.context)
+                ),
+                Some(record.location),
+            );
+            self.suggest_listing_super(record, iface);
+        }
+    }
+
+    /// Name each component that keeps an inline derivable interface from
+    /// being derived, unless the type implements the requirement itself.
+    /// Returns whether anything was reported.
+    fn report_derive_obstacles(&self, record: ConformanceRecord<'ctx>) -> bool {
+        let (obstacles, span) = if record.is_inline
+            && let Some(interface) = [hir::StdItem::RawValue, hir::StdItem::CaseIterable]
+                .into_iter()
+                .find(|item| self.context.std_item_def(*item) == Some(record.interface.id))
+        {
+            let Some((reason, span)) = crate::sema::tycheck::derive::enum_derivation_obstacle(
+                self.context,
+                record.extension,
+                interface,
+                record.interface.arguments,
+            ) else {
+                return false;
+            };
+            (vec![reason], span)
+        } else {
+            (
+                crate::sema::tycheck::derive::derive_obstacles(self.context, record),
+                record.location,
+            )
+        };
+        if obstacles.is_empty() {
+            return false;
+        }
+        let Some(requirements) = self.context.get_interface_requirements(record.interface.id)
+        else {
+            return false;
+        };
+        // Synthesis fails whenever an obstacle exists, so any witness found
+        // here is the type's own implementation.
+        let implemented = requirements
+            .methods
+            .iter()
+            .filter(|requirement| requirement.is_required)
+            .all(|requirement| {
+                if let Some(property) = requirements
+                    .properties
+                    .iter()
+                    .find(|p| p.getter_id == requirement.id)
+                {
+                    return crate::sema::impl_engine::property_requirement_satisfied(
+                        self.context,
+                        record.target,
+                        property,
+                        &record,
+                    );
+                }
+                crate::sema::impl_engine::find_method_witness(
+                    self.context,
+                    record.target,
+                    requirement,
+                    &record,
+                    GenericArguments::empty(),
+                    &FxHashMap::default(),
+                )
+                .is_some()
+            });
+        if implemented {
+            return false;
+        }
+        for obstacle in obstacles {
+            self.context.dcx().emit_error(obstacle, Some(span));
+        }
+        true
     }
 
     fn validate_direct(

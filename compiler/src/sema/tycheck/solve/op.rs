@@ -7,7 +7,7 @@ use crate::{
     hir::{BinaryOperator, NodeID, OperatorKind, UnaryOperator},
     sema::{
         error::TypeError,
-        models::{InferTy, Ty, TyKind},
+        models::{AliasKind, InferTy, Ty, TyKind},
         tycheck::solve::{
             ApplyArgument, AssignOpGoalData, BinOpGoalData, ConstraintSolver, Goal, MethodCallData,
             Obligation, SolverResult, UnOpGoalData,
@@ -35,11 +35,23 @@ fn binary_op_to_operator_kind(op: BinaryOperator) -> Option<OperatorKind> {
         BinaryOperator::Gt => Some(OperatorKind::Gt),
         BinaryOperator::Leq => Some(OperatorKind::Leq),
         BinaryOperator::Geq => Some(OperatorKind::Geq),
+        // Membership resolves through `Contains` with swapped operands.
+        BinaryOperator::In | BinaryOperator::NotIn => None,
         // Not overloadable
         BinaryOperator::BoolAnd
         | BinaryOperator::BoolOr
         | BinaryOperator::IdentityEql
         | BinaryOperator::IdentityNeq => None,
+    }
+}
+
+/// Whether a numeric literal variable can take the concrete type `ty`.
+/// Two literals already default to the same type.
+fn literal_accepts(var: Ty<'_>, ty: Ty<'_>) -> bool {
+    match var.kind() {
+        TyKind::Infer(InferTy::IntVar(_)) => matches!(ty.kind(), TyKind::Int(_) | TyKind::UInt(_)),
+        TyKind::Infer(InferTy::FloatVar(_)) => matches!(ty.kind(), TyKind::Float(_)),
+        _ => false,
     }
 }
 
@@ -75,7 +87,9 @@ fn binary_op_to_assign_operator_kind(op: BinaryOperator) -> Option<OperatorKind>
         | BinaryOperator::Leq
         | BinaryOperator::Geq
         | BinaryOperator::BoolAnd
-        | BinaryOperator::BoolOr => None,
+        | BinaryOperator::BoolOr
+        | BinaryOperator::In
+        | BinaryOperator::NotIn => None,
     }
 }
 
@@ -111,6 +125,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             OperatorKind::Gt => Some("gt"),
             OperatorKind::Leq => Some("le"),
             OperatorKind::Geq => Some("ge"),
+            OperatorKind::Contains => Some("contains"),
             OperatorKind::BoolAnd | OperatorKind::BoolOr => None,
         }
     }
@@ -190,6 +205,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
             unary_op_to_operator_kind(data.operator)?,
             data.node_id,
             ApplyArgument {
+                is_spread: false,
+                is_lazy_wrapped: false,
+                contains_await: false,
+                deferred_return_scope: None,
                 id: data.rhs_id,
                 label: None,
                 ty: operand_ty,
@@ -216,28 +235,26 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let item = crate::hir::StdItem::from_operator_kind(kind)?;
         self.gcx().std_item_def(item)?;
         let name = Self::operator_method_name_for_kind(kind)?;
-        let method_ty = self.icx.next_ty_var(receiver.span);
-        Some(self.solve_method_call_with_interface(
-            MethodCallData {
-                receiver_addressable,
-                selected: None,
-                node_id,
-                receiver: receiver.ty,
-                reciever_span: receiver.span,
-                reciever_node: receiver.id,
-                is_unsafe_context: false,
-                name: crate::span::Identifier {
-                    symbol: self.gcx().intern_symbol(name),
-                    span: receiver.span,
-                },
-                arguments,
-                result,
-                method_ty,
-                prefer_async: false,
+        Some(self.solve_method_call(MethodCallData {
+            interface: Some(item),
+            receiver_addressable,
+            selected: None,
+            pending_selection: None,
+            node_id,
+            receiver: receiver.ty,
+            reciever_span: receiver.span,
+            reciever_node: receiver.id,
+            is_unsafe_context: false,
+            name: crate::span::Identifier {
+                symbol: self.gcx().intern_symbol(name),
                 span: receiver.span,
             },
-            Some(item),
-        ))
+            arguments,
+            result,
+            method_ty: None,
+            prefer_async: false,
+            span: receiver.span,
+        }))
     }
 
     fn solve_unary_intrinsic(
@@ -291,7 +308,19 @@ impl<'ctx> ConstraintSolver<'ctx> {
 }
 
 impl<'ctx> ConstraintSolver<'ctx> {
+    /// An unresolved associated type can still determine the other operand's
+    /// numeric width once its receiver is known. A nominal operand with open
+    /// arguments can already participate in ordinary operator lookup.
+    pub(super) fn operand_awaits_type(&self, ty: Ty<'ctx>) -> bool {
+        ty.is_ty_var()
+            || matches!(ty.kind(), TyKind::Alias { kind: AliasKind::Projection, .. }
+                if super::has_unresolvable_projection(&self.icx, ty))
+    }
+
     pub fn solve_binary(&mut self, data: BinOpGoalData<'ctx>) -> SolverResult<'ctx> {
+        if matches!(data.operator, BinaryOperator::In | BinaryOperator::NotIn) {
+            return self.solve_membership(data);
+        }
         let lhs = self.structurally_resolve(data.lhs);
         let rhs = self.structurally_resolve(data.rhs);
 
@@ -301,6 +330,29 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 goal: Goal::Equal(data.rho, Ty::error(self.gcx())),
             };
             return SolverResult::Solved(vec![obligation]);
+        }
+
+        if self.operand_awaits_type(lhs) || self.operand_awaits_type(rhs) {
+            return SolverResult::Deferred;
+        }
+
+        // Preserve `opt == nil`, `nil == opt`, `opt != nil`, `nil != opt` even
+        // when the wrapped payload does not conform to `PartialEq`.
+        if data.has_nil_operand
+            && matches!(data.operator, BinaryOperator::Eql | BinaryOperator::Neq)
+            && self.unwrap_optional_type(lhs).is_some()
+            && self.unwrap_optional_type(rhs).is_some()
+        {
+            return SolverResult::Solved(vec![
+                Obligation {
+                    location: data.span,
+                    goal: Goal::Equal(lhs, rhs),
+                },
+                Obligation {
+                    location: data.span,
+                    goal: Goal::Equal(data.rho, self.gcx().types.bool),
+                },
+            ]);
         }
 
         // If LHS is unresolved, defer — unless it is a numeric literal var,
@@ -315,15 +367,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
             {
                 return SolverResult::Solved(obligations);
             }
-            return SolverResult::Deferred;
-        }
-
-        // If RHS is a plain type variable (e.g. the not-yet-solved result of a
-        // nested operator expression like `x == 0 - 1`), defer instead of
-        // rejecting: it may still resolve to a type the intrinsics accept.
-        // Literal vars (IntVar/FloatVar) fall through so the intrinsic arms
-        // can bind them eagerly.
-        if rhs.is_ty_var() {
             return SolverResult::Deferred;
         }
 
@@ -359,6 +402,144 @@ impl<'ctx> ConstraintSolver<'ctx> {
         )])
     }
 
+    /// `element in container` calls `container.contains(&element)` through
+    /// `std::ops::Contains[Element]`. The container is the receiver, so it
+    /// selects the conformance; the element is passed by reference, so the
+    /// test neither copies it nor asks the caller to write `&`. `!in` negates
+    /// the same call. Both yield `bool`.
+    fn solve_membership(&mut self, data: BinOpGoalData<'ctx>) -> SolverResult<'ctx> {
+        let element = self.structurally_resolve(data.lhs);
+        let container = self.structurally_resolve(data.rhs);
+        let gcx = self.gcx();
+
+        if element.is_error() || container.is_error() {
+            return SolverResult::Solved(vec![Obligation {
+                location: data.span,
+                goal: Goal::Equal(data.rho, Ty::error(gcx)),
+            }]);
+        }
+
+        // A literal container (`x in 0..n`, `code in [200, 204]`) takes its
+        // numeric element type from the tested value, as `x == 0` does, rather
+        // than from the literal's own default.
+        if let Some(container_element) = self.literal_container_element(container)
+            && literal_accepts(container_element, element)
+        {
+            return SolverResult::Solved(vec![
+                Obligation {
+                    location: data.span,
+                    goal: Goal::Equal(container_element, element),
+                },
+                Obligation {
+                    location: data.span,
+                    goal: Goal::BinaryOp(data),
+                },
+            ]);
+        }
+
+        // Wait for the container's own type, including literal defaults,
+        // before looking up its conformance.
+        if container.contains_inference() {
+            return SolverResult::Deferred;
+        }
+
+        let invalid = || {
+            // Name a bare literal by the type it would default to.
+            let element = match element.kind() {
+                TyKind::Infer(InferTy::IntVar(_)) => gcx.types.int32,
+                TyKind::Infer(InferTy::FloatVar(_)) => gcx.types.float64,
+                _ => element,
+            };
+            SolverResult::Error(vec![Spanned::new(
+                TypeError::InvalidMembership {
+                    op: data.operator,
+                    element,
+                    container,
+                },
+                data.span,
+            )])
+        };
+        let Some(contains) = gcx.std_item_def(crate::hir::StdItem::Contains) else {
+            return invalid();
+        };
+        if !element.contains_inference() {
+            let interface = crate::sema::models::InterfaceReference {
+                id: contains,
+                arguments: gcx.store.interners.intern_generic_args(vec![
+                    crate::sema::models::GenericArgument::Type(container),
+                    crate::sema::models::GenericArgument::Type(element),
+                ]),
+                bindings: &[],
+            };
+            match self.solve_conforms(data.span, container, interface) {
+                SolverResult::Error(_) => return invalid(),
+                SolverResult::Deferred => return SolverResult::Deferred,
+                SolverResult::Solved(_) => {}
+            }
+        }
+
+        let result = self.solve_operator_method(
+            OperatorKind::Contains,
+            data.node_id,
+            ApplyArgument {
+                is_spread: false,
+                is_lazy_wrapped: false,
+                contains_await: false,
+                deferred_return_scope: None,
+                id: data.rhs_id,
+                label: None,
+                ty: container,
+                span: data.span,
+            },
+            data.receiver_addressable,
+            vec![ApplyArgument {
+                is_spread: false,
+                is_lazy_wrapped: false,
+                contains_await: false,
+                deferred_return_scope: None,
+                id: data.lhs_id,
+                label: None,
+                ty: Ty::new(TyKind::Reference(element), gcx),
+                span: data.span,
+            }],
+            data.rho,
+        );
+        match result {
+            None | Some(SolverResult::Error(_)) => invalid(),
+            Some(result) => result,
+        }
+    }
+
+    /// The element type of a container that literal syntax can produce:
+    /// ranges, List, array, Span and Dictionary keys.
+    fn literal_container_element(&self, container: Ty<'ctx>) -> Option<Ty<'ctx>> {
+        use crate::hir::StdItem;
+        let gcx = self.gcx();
+        let element = match container.kind() {
+            TyKind::Array { element, .. } => element,
+            TyKind::Adt(def, args) => {
+                let literal = [
+                    StdItem::Range,
+                    StdItem::ClosedRange,
+                    StdItem::RangeFrom,
+                    StdItem::RangeTo,
+                    StdItem::RangeToInclusive,
+                    StdItem::List,
+                    StdItem::Span,
+                    StdItem::Dictionary,
+                ]
+                .into_iter()
+                .any(|item| gcx.std_item_def(item) == Some(def.id));
+                if !literal {
+                    return None;
+                }
+                args.first()?.ty()?
+            }
+            _ => return None,
+        };
+        Some(self.structurally_resolve(element))
+    }
+
     fn solve_binary_method(
         &mut self,
         data: &BinOpGoalData<'ctx>,
@@ -369,6 +550,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
             binary_op_to_operator_kind(data.operator)?,
             data.node_id,
             ApplyArgument {
+                is_spread: false,
+                is_lazy_wrapped: false,
+                contains_await: false,
+                deferred_return_scope: None,
                 id: data.lhs_id,
                 label: None,
                 ty: lhs,
@@ -376,6 +561,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
             },
             data.receiver_addressable,
             vec![ApplyArgument {
+                is_spread: false,
+                is_lazy_wrapped: false,
+                contains_await: false,
+                deferred_return_scope: None,
                 id: data.rhs_id,
                 label: None,
                 ty: rhs,
@@ -534,7 +723,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let mut obligations = vec![];
 
         match data.operator {
-            IdentityEql | IdentityNeq => return None,
+            IdentityEql | IdentityNeq | In | NotIn => return None,
             Add | Sub | Mul | Div | Rem => {
                 // Fast path: both sides already same concrete numeric type
                 if is_same_int(lhs, rhs) || is_same_float(lhs, rhs) {
@@ -677,20 +866,17 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return SolverResult::Solved(vec![]);
         }
 
-        // If LHS type is not yet resolved, defer
-        if lhs.is_infer() {
+        // A pending RHS can still supply the numeric type of a literal LHS.
+        // `var total = 0; total += wide` binds total through the intrinsic.
+        if self.operand_awaits_type(lhs) || self.operand_awaits_type(rhs) {
             return SolverResult::Deferred;
         }
-
-        // As with binary operators, wait for unresolved RHS expressions while
-        // allowing numeric literal variables to be constrained by intrinsics.
-        if rhs.is_ty_var() {
-            return SolverResult::Deferred;
-        }
-
-        // Try intrinsic resolution first (primitives: a += b becomes a = a + b)
         if let Some(obligations) = self.solve_assign_op_intrinsic(&data, lhs, rhs) {
             return SolverResult::Solved(obligations);
+        }
+        if lhs.is_infer() {
+            // Custom operators require the receiver's eventual type.
+            return SolverResult::Deferred;
         }
 
         // Try operator method resolution (e.g., AddAssign)
@@ -719,6 +905,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
             binary_op_to_assign_operator_kind(data.operator)?,
             data.node_id,
             ApplyArgument {
+                is_spread: false,
+                is_lazy_wrapped: false,
+                contains_await: false,
+                deferred_return_scope: None,
                 id: data.lhs_id,
                 label: None,
                 ty: lhs,
@@ -726,6 +916,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
             },
             data.receiver_addressable,
             vec![ApplyArgument {
+                is_spread: false,
+                is_lazy_wrapped: false,
+                contains_await: false,
+                deferred_return_scope: None,
                 id: data.rhs_id,
                 label: None,
                 ty: rhs,
@@ -761,7 +955,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let mut obligations = vec![];
 
         match data.operator {
-            IdentityEql | IdentityNeq => return None,
+            IdentityEql | IdentityNeq | In | NotIn => return None,
             // Arithmetic compound assignment: +=, -=, *=, /=, %=
             Add | Sub | Mul | Div | Rem => {
                 // Same concrete numeric types

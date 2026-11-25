@@ -17,6 +17,25 @@ impl<'ctx> Checker<'ctx> {
         )
     }
 
+    /// A method value carries its receiver. Construct that environment after
+    /// the enclosing expression supplies the receiver's type, and before the
+    /// final solve commits uses of the callable.
+    pub(super) fn finish_member_values(&self, cs: &mut Cs<'ctx>) {
+        while let Some(pending) = cs.pending_member_values.front().cloned() {
+            let member = pending.member;
+            let signature = cs.solve_producers(pending.selection);
+            let actual = if let hir::ExpressionKind::Member { target, name } = &member.kind
+                && let Some(source) = cs.bound_method_source(member.id)
+                && matches!(signature.kind(), TyKind::FnPointer { .. })
+            {
+                self.synth_bound_method(&member, target, *name, source, signature, cs)
+            } else {
+                signature
+            };
+            cs.finish_member_value(actual);
+        }
+    }
+
     pub(super) fn synth_bound_method(
         &self,
         expression: &hir::Expression,
@@ -182,6 +201,7 @@ impl<'ctx> Checker<'ctx> {
             }
         } else {
             hir::ExpressionKind::MethodCall {
+                interface: None,
                 receiver: Box::new(local(root, gcx.intern_symbol("$receiver"))),
                 name,
                 arguments,
@@ -205,6 +225,7 @@ impl<'ctx> Checker<'ctx> {
             params,
             return_ty: None,
             is_async,
+            implicit_await: false,
             body: Box::new(body),
             snapshot_captures: snapshot,
             span,

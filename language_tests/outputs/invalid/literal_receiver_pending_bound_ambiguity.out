@@ -1,0 +1,8 @@
+error: ambiguous overload; unable to pick a best candidate
+ -> language_tests/source_files/invalid/literal_receiver_pending_bound_ambiguity.tr:37:21
+	        return p + b.pick()
+	                     ^^^^
+error: ambiguous overload; unable to pick a best candidate
+ -> language_tests/source_files/invalid/literal_receiver_pending_bound_ambiguity.tr:46:21
+	        return p + b.pick()
+	                     ^^^^

@@ -11,6 +11,7 @@ pub mod executor;
 mod fd_lease;
 #[cfg(unix)]
 mod fs;
+mod fuzz;
 mod garbage_collector;
 mod gc_classes;
 mod gc_dictionary;

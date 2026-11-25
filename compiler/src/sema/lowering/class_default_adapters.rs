@@ -23,18 +23,24 @@ use crate::{
 impl<'ctx> Gcx<'ctx> {
     /// Source arguments expressed in this adapter's coordinates. This mapping
     /// is also used for argument-default providers, constraints and async output.
-    pub(crate) fn adopted_default_target(
+    pub(crate) fn adapter_source_arguments(
         self,
         method: DefinitionID,
         arguments: GenericArguments<'ctx>,
     ) -> Option<(DefinitionID, GenericArguments<'ctx>)> {
-        let SyntheticDefinitionKind::AdoptedClassDefault {
-            conformance,
-            source,
-        } = self.store.synthetic_definitions.borrow().get(&method)?.kind
-        else {
-            return None;
-        };
+        let (conformance, source) =
+            match self.store.synthetic_definitions.borrow().get(&method)?.kind {
+                SyntheticDefinitionKind::AdoptedClassDefault {
+                    conformance,
+                    source,
+                }
+                | SyntheticDefinitionKind::DelegatedMethod {
+                    conformance,
+                    source,
+                    ..
+                } => (conformance, source),
+                _ => return None,
+            };
         let record = self.conformance_record(conformance)?;
         let mut source_arguments = record
             .interface
@@ -61,9 +67,26 @@ impl<'ctx> Gcx<'ctx> {
         conformance: ConformanceRecordId,
         source: DefinitionID,
     ) -> Option<DefinitionID> {
-        let kind = SyntheticDefinitionKind::AdoptedClassDefault {
-            conformance,
-            source,
+        self.conformance_adapter(conformance, source, None)
+    }
+
+    pub(crate) fn conformance_adapter(
+        self,
+        conformance: ConformanceRecordId,
+        source: DefinitionID,
+        delegate: Option<(u32, bool)>,
+    ) -> Option<DefinitionID> {
+        let kind = match delegate {
+            Some((field, borrow_field)) => SyntheticDefinitionKind::DelegatedMethod {
+                conformance,
+                source,
+                field,
+                borrow_field,
+            },
+            None => SyntheticDefinitionKind::AdoptedClassDefault {
+                conformance,
+                source,
+            },
         };
         if let Some(id) = self
             .store
@@ -75,7 +98,9 @@ impl<'ctx> Gcx<'ctx> {
             return Some(id);
         }
         let record = self.conformance_record(conformance)?;
-        self.class_default_body(source)?;
+        if delegate.is_none() {
+            self.class_default_body(source)?;
+        }
         let id = self.allocate_synthetic_id(self.package_index());
         let old = self.generics_of(source);
         let parent_identity = GenericsBuilder::identity_for_item(self, record.extension);
@@ -143,7 +168,7 @@ impl<'ctx> Gcx<'ctx> {
                         .arenas
                         .function_signatures
                         .alloc(LabeledFunctionSignature {
-                            inputs: vec![],
+                            inputs: self.get_signature(provider).inputs.clone(),
                             output: input.ty,
                             is_variadic: false,
                             abi: None,

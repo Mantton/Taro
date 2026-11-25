@@ -34,9 +34,28 @@ struct CleanupNode {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub(super) struct ScopedTaskCleanup<'ctx> {
+    pub(super) token_local: LocalId,
+    pub(super) awaited_local: LocalId,
+    pub(super) value_ty: Ty<'ctx>,
+}
+
+#[derive(Clone, Copy, Debug)]
 enum CleanupAction {
-    DeferBlock(thir::BlockId),
+    DeferBlock(hir::DeferKind, thir::BlockId),
+    ScopedTask(u32),
     EndStorage(LocalId),
+}
+
+/// Why a lexical cleanup chain is being traversed. Only Return may inspect
+/// the initialized return slot; AsyncCancel runs synchronously on parent
+/// cancellation while suspended.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CleanupExit {
+    Scope,
+    Return,
+    Unwind,
+    AsyncCancel,
 }
 
 #[derive(Debug)]
@@ -63,9 +82,11 @@ pub enum BreakExit {
 }
 
 #[derive(Debug)]
-pub struct BreakableScope {
+pub struct BreakableScope<'ctx> {
+    label: Option<Symbol>,
     cleanup_at_entry: Option<CleanupId>,
     break_exit: BreakExit,
+    break_dest: Option<Place<'ctx>>,
     continue_target: Option<BasicBlockId>,
     break_edges: Vec<PendingEdge>,
     continue_edges: Vec<PendingEdge>,
@@ -82,6 +103,8 @@ pub struct MirBuilder<'ctx, 'thir> {
     thir: &'thir thir::ThirFunction<'ctx>,
     body: Body<'ctx>,
     locals: FxHashMap<hir::NodeID, LocalId>,
+    async_var_locals: FxHashMap<hir::NodeID, ScopedTaskCleanup<'ctx>>,
+    scoped_task_cleanups: Vec<ScopedTaskCleanup<'ctx>>,
     /// Tracks MIR locals by (arm_id, binding_name) for or-patterns.
     /// Ensures all alternatives in an or-pattern share the same local.
     arm_binding_locals: FxHashMap<(thir::ArmId, Symbol), LocalId>,
@@ -102,7 +125,7 @@ pub struct MirBuilder<'ctx, 'thir> {
     /// suffixes across calls and owned drops rather than rebuilding a tree.
     unwind_cleanup_paths: FxHashMap<Option<CleanupId>, BasicBlockId>,
     if_then_scope: Option<IfThenScope>,
-    breakable_scopes: Vec<BreakableScope>,
+    breakable_scopes: Vec<BreakableScope<'ctx>>,
 }
 
 impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
@@ -115,7 +138,12 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
     pub fn build_function(gcx: Gcx<'ctx>, function: &'thir thir::ThirFunction<'ctx>) -> Body<'ctx> {
         let signature = gcx.get_signature(function.id);
-        let output_ty = gcx.function_body_output(function.id);
+        let generator_element_ty = gcx.generator_element_ty(function.id);
+        let output_ty = if generator_element_ty.is_some() {
+            gcx.types.void
+        } else {
+            gcx.function_body_output(function.id)
+        };
         let entry_span = function.span;
 
         let mut body = Body {
@@ -129,6 +157,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             return_local: LocalId::from_raw(0),
             phase: mir::MirPhase::Built,
             is_async: function.is_async,
+            generator_element_ty,
         };
 
         // A fallible constructor keeps partial self separate from its Result.
@@ -153,6 +182,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             thir: function,
             body,
             locals: FxHashMap::default(),
+            async_var_locals: FxHashMap::default(),
+            scoped_task_cleanups: Vec::new(),
             arm_binding_locals: FxHashMap::default(),
             prepared_call_arguments: FxHashMap::default(),
             parameter_locals: Vec::new(),
@@ -167,6 +198,56 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         };
 
         builder.declare_parameters(signature);
+        builder.lower_body();
+        builder.finish()
+    }
+
+    pub fn build_const_initializer(
+        gcx: Gcx<'ctx>,
+        function: &'thir thir::ThirFunction<'ctx>,
+        output_ty: Ty<'ctx>,
+    ) -> Body<'ctx> {
+        let entry_span = function.span;
+        let mut body = Body {
+            escape_locals: Vec::new(),
+            owner: function.id,
+            source_scopes: Body::initial_source_scopes(function.id),
+            locals: Default::default(),
+            basic_blocks: Default::default(),
+            start_block: BasicBlockId::from_raw(0),
+            return_local: LocalId::from_raw(0),
+            phase: mir::MirPhase::Built,
+            is_async: false,
+            generator_element_ty: None,
+        };
+        let ret_local = body.locals.push(LocalDecl {
+            ty: output_ty,
+            kind: LocalKind::Return,
+            mutable: true,
+            name: Some(gcx.intern_symbol("$const_ret")),
+            span: entry_span,
+        });
+        body.return_local = ret_local;
+
+        let mut builder = MirBuilder {
+            gcx,
+            thir: function,
+            body,
+            locals: FxHashMap::default(),
+            async_var_locals: FxHashMap::default(),
+            scoped_task_cleanups: Vec::new(),
+            arm_binding_locals: FxHashMap::default(),
+            prepared_call_arguments: FxHashMap::default(),
+            parameter_locals: Vec::new(),
+            cleanup_nodes: IndexVec::new(),
+            current_cleanup: None,
+            current_cleanup_scope: CleanupScopeId::from_raw(0),
+            cleanup_scope_depths: IndexVec::from(vec![0]),
+            resume_unwind_block: None,
+            unwind_cleanup_paths: FxHashMap::default(),
+            if_then_scope: None,
+            breakable_scopes: vec![],
+        };
         builder.lower_body();
         builder.finish()
     }
@@ -426,21 +507,47 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             .map(|method| method.id)
     }
 
-    fn record_break_edge(&mut self, block: BasicBlockId, span: Span) -> mir::BlockAnd<()> {
+    fn find_loop_scope_index(&self, label: Option<Symbol>) -> Option<usize> {
+        if let Some(label) = label {
+            self.breakable_scopes
+                .iter()
+                .rposition(|scope| scope.continue_target.is_some() && scope.label == Some(label))
+        } else {
+            self.breakable_scopes
+                .iter()
+                .rposition(|scope| scope.continue_target.is_some())
+        }
+    }
+
+    fn record_break_edge(
+        &mut self,
+        label: Option<Symbol>,
+        value: Option<thir::ExprId>,
+        mut block: BasicBlockId,
+        span: Span,
+    ) -> mir::BlockAnd<()> {
         let scope_index = self
-            .breakable_scopes
-            .iter()
-            .rposition(|scope| scope.continue_target.is_some())
-            .expect("break outside loop");
+            .find_loop_scope_index(label)
+            .expect("break outside matching loop");
+        let break_dest = self.breakable_scopes[scope_index].break_dest.clone();
+        if let Some(value) = value {
+            let dest = break_dest.unwrap_or_else(|| self.unit_temp_place(span));
+            block = self.expr_into_dest(dest, block, value).into_block();
+        } else if let Some(dest) = break_dest {
+            self.push_assign_unit(block, span, dest, self.gcx);
+        }
         self.record_edge_for_scope(scope_index, EdgeKind::Break, block, span)
     }
 
-    fn record_continue_edge(&mut self, block: BasicBlockId, span: Span) -> mir::BlockAnd<()> {
+    fn record_continue_edge(
+        &mut self,
+        label: Option<Symbol>,
+        block: BasicBlockId,
+        span: Span,
+    ) -> mir::BlockAnd<()> {
         let scope_index = self
-            .breakable_scopes
-            .iter()
-            .rposition(|scope| scope.continue_target.is_some())
-            .expect("continue outside loop");
+            .find_loop_scope_index(label)
+            .expect("continue outside matching loop");
         self.record_edge_for_scope(scope_index, EdgeKind::Continue, block, span)
     }
 
@@ -474,10 +581,19 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         mir::BlockAnd(next, ())
     }
 
-    fn apply_breakable_scope(&mut self, scope: BreakableScope, break_target: Option<BasicBlockId>) {
+    fn apply_breakable_scope(
+        &mut self,
+        scope: BreakableScope<'ctx>,
+        break_target: Option<BasicBlockId>,
+    ) {
         let cleanup_at_entry = scope.cleanup_at_entry;
         if let Some(break_target) = break_target {
-            self.apply_cleanup_edges(scope.break_edges, cleanup_at_entry, break_target);
+            let exit = if matches!(scope.break_exit, BreakExit::Return) {
+                CleanupExit::Return
+            } else {
+                CleanupExit::Scope
+            };
+            self.apply_cleanup_edges(scope.break_edges, cleanup_at_entry, break_target, exit);
         } else {
             debug_assert!(
                 scope.break_edges.is_empty(),
@@ -485,7 +601,12 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             );
         }
         if let Some(continue_target) = scope.continue_target {
-            self.apply_cleanup_edges(scope.continue_edges, cleanup_at_entry, continue_target);
+            self.apply_cleanup_edges(
+                scope.continue_edges,
+                cleanup_at_entry,
+                continue_target,
+                CleanupExit::Scope,
+            );
         }
         self.current_cleanup = cleanup_at_entry;
     }
@@ -503,6 +624,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         edges: Vec<PendingEdge>,
         target_cleanup: Option<CleanupId>,
         target_block: BasicBlockId,
+        exit: CleanupExit,
     ) {
         if edges.is_empty() {
             return;
@@ -512,8 +634,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         cache.insert(target_cleanup, target_block);
 
         for edge in edges {
-            let entry_block =
-                self.ensure_cleanup_path(edge.cleanup, target_cleanup, target_block, &mut cache);
+            let entry_block = self.cleanup_path_for_exit(
+                edge.cleanup,
+                target_cleanup,
+                target_block,
+                &mut cache,
+                exit,
+            );
             self.patch_unresolved(edge.block, entry_block);
         }
     }
@@ -525,7 +652,24 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         target_block: BasicBlockId,
         cache: &mut FxHashMap<Option<CleanupId>, BasicBlockId>,
     ) -> BasicBlockId {
-        let unwinding = target_cleanup.is_none() && self.resume_unwind_block == Some(target_block);
+        self.cleanup_path_for_exit(
+            from_cleanup,
+            target_cleanup,
+            target_block,
+            cache,
+            CleanupExit::Scope,
+        )
+    }
+
+    fn cleanup_path_for_exit(
+        &mut self,
+        from_cleanup: Option<CleanupId>,
+        target_cleanup: Option<CleanupId>,
+        target_block: BasicBlockId,
+        cache: &mut FxHashMap<Option<CleanupId>, BasicBlockId>,
+        exit: CleanupExit,
+    ) -> BasicBlockId {
+        let unwinding = exit == CleanupExit::Unwind;
         if unwinding && let Some(&block) = self.unwind_cleanup_paths.get(&from_cleanup) {
             return block;
         }
@@ -550,7 +694,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             from_cleanup,
             target_cleanup,
         );
-        let block = self.emit_cleanup_path(ordered, target_cleanup, target_block, cache);
+        let block = self.emit_cleanup_path(ordered, target_cleanup, target_block, cache, exit);
         cache.insert(from_cleanup, block);
         if unwinding {
             self.unwind_cleanup_paths.insert(from_cleanup, block);
@@ -566,8 +710,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         target_cleanup: Option<CleanupId>,
         target_block: BasicBlockId,
         cache: &mut FxHashMap<Option<CleanupId>, BasicBlockId>,
+        exit: CleanupExit,
     ) -> BasicBlockId {
-        let unwinding = target_cleanup.is_none() && self.resume_unwind_block == Some(target_block);
+        let unwinding = exit == CleanupExit::Unwind;
         if unwinding && let Some(&block) = self.unwind_cleanup_paths.get(&from_cleanup) {
             return block;
         }
@@ -579,9 +724,26 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         }
         let idx = from_cleanup.expect("ordered cleanup must reach its target");
         let node = self.cleanup_nodes[idx];
-        let next_block = self.emit_cleanup_path(node.parent, target_cleanup, target_block, cache);
-        let block = self.new_block_with_note("cleanup".into());
-        self.lower_cleanup_action(block, &node, next_block);
+        let next_block =
+            self.emit_cleanup_path(node.parent, target_cleanup, target_block, cache, exit);
+        let block = if matches!(
+            node.action,
+            CleanupAction::DeferBlock(hir::DeferKind::OnFailure, _)
+        ) && !unwinding
+        {
+            if exit == CleanupExit::Return
+                && self
+                    .gcx
+                    .result_parts(self.body.locals[self.body.return_local].ty)
+                    .is_some()
+            {
+                self.error_return_cleanup(&node, next_block)
+            } else {
+                next_block
+            }
+        } else {
+            self.cleanup_action_block(&node, next_block, exit)
+        };
         cache.insert(from_cleanup, block);
         if unwinding {
             self.unwind_cleanup_paths.insert(from_cleanup, block);
@@ -602,12 +764,43 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         ancestor.is_none()
     }
 
-    fn lower_cleanup_action(
+    /// Inspect only the tag. Ownership of either payload stays in the return slot.
+    fn error_return_cleanup(&mut self, node: &CleanupNode, next: BasicBlockId) -> BasicBlockId {
+        let result = self.gcx.std_item_def(hir::StdItem::Result).expect("Result");
+        let err = self
+            .gcx
+            .std_item_def(hir::StdItem::ResultErrVariant)
+            .expect("Result.err");
+        let index = self
+            .gcx
+            .get_enum_definition(result)
+            .variants
+            .iter()
+            .position(|variant| variant.def_id == err)
+            .expect("Result.err index");
+        let entry = self.new_block_with_note("check error return".into());
+        let BlockAnd(block, discr) =
+            self.enum_discriminant_operand(entry, &Place::return_place(), node.span);
+        let action = self.cleanup_action_block(node, next, CleanupExit::Return);
+        self.terminate(
+            block,
+            node.span,
+            TerminatorKind::SwitchInt {
+                discr,
+                targets: vec![(index as u128, action)],
+                otherwise: next,
+            },
+        );
+        entry
+    }
+
+    fn cleanup_action_block(
         &mut self,
-        start: BasicBlockId,
         node: &CleanupNode,
         next_block: BasicBlockId,
-    ) {
+        exit: CleanupExit,
+    ) -> BasicBlockId {
+        let start = self.new_block_with_note("cleanup".into());
         let saved_cleanup = self.current_cleanup;
         let saved_scope = self.current_cleanup_scope;
         self.current_cleanup = node.parent;
@@ -620,14 +813,33 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 });
                 self.goto(start, next_block, node.span);
             }
-            CleanupAction::DeferBlock(block_id) => {
+            CleanupAction::DeferBlock(_, block_id) => {
                 let unit = self.unit_temp_place(node.span);
                 let end = self.lower_block(unit, start, block_id).into_block();
                 self.goto(end, next_block, node.span);
             }
+            CleanupAction::ScopedTask(idx) => {
+                let info = self.scoped_task_cleanups[idx as usize];
+                let drain = matches!(exit, CleanupExit::Scope | CleanupExit::Return);
+                self.lower_scoped_task_cleanup(start, info, drain, next_block, node.span);
+            }
         }
         self.current_cleanup = saved_cleanup;
         self.current_cleanup_scope = saved_scope;
+        start
+    }
+
+    fn push_scoped_task_action(&mut self, info: ScopedTaskCleanup<'ctx>, span: Span) {
+        let idx = self.scoped_task_cleanups.len() as u32;
+        self.scoped_task_cleanups.push(info);
+        let node = CleanupNode {
+            scope: self.current_cleanup_scope,
+            action: CleanupAction::ScopedTask(idx),
+            parent: self.current_cleanup,
+            span,
+        };
+        let cleanup_id = self.cleanup_nodes.push(node);
+        self.current_cleanup = Some(cleanup_id);
     }
 
     fn patch_unresolved(&mut self, block: BasicBlockId, target: BasicBlockId) {
@@ -642,10 +854,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         terminator.kind = TerminatorKind::Goto { target };
     }
 
-    fn push_defer_action(&mut self, block: thir::BlockId, span: Span) {
+    fn push_defer_action(&mut self, kind: hir::DeferKind, block: thir::BlockId, span: Span) {
         let node = CleanupNode {
             scope: self.current_cleanup_scope,
-            action: CleanupAction::DeferBlock(block),
+            action: CleanupAction::DeferBlock(kind, block),
             parent: self.current_cleanup,
             span,
         };
@@ -657,8 +869,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let resume_unwind = self.ensure_resume_unwind_block(span);
         let mut cache = FxHashMap::default();
         cache.insert(None, resume_unwind);
-        let cleanup_entry =
-            self.ensure_cleanup_path(self.current_cleanup, None, resume_unwind, &mut cache);
+        let cleanup_entry = self.cleanup_path_for_exit(
+            self.current_cleanup,
+            None,
+            resume_unwind,
+            &mut cache,
+            CleanupExit::Unwind,
+        );
         mir::CallUnwindAction::Cleanup(cleanup_entry)
     }
 
@@ -676,7 +893,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
         let mut cache = FxHashMap::default();
         cache.insert(None, cancelled);
-        let entry = self.ensure_cleanup_path(self.current_cleanup, None, cancelled, &mut cache);
+        let entry = self.cleanup_path_for_exit(
+            self.current_cleanup,
+            None,
+            cancelled,
+            &mut cache,
+            CleanupExit::AsyncCancel,
+        );
         (entry, cancelled)
     }
 
@@ -720,7 +943,12 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             .expect("if-then scope should exist");
 
         let else_block = self.new_block_with_note("else block".into());
-        self.apply_cleanup_edges(scope.else_edges, scope.cleanup_at_entry, else_block);
+        self.apply_cleanup_edges(
+            scope.else_edges,
+            scope.cleanup_at_entry,
+            else_block,
+            CleanupExit::Scope,
+        );
         self.current_cleanup = scope.cleanup_at_entry;
         (then_block, else_block)
     }
@@ -744,10 +972,42 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         span: Span,
         build_body: impl FnOnce(&mut Self) -> Option<BlockAnd<()>>,
     ) -> BlockAnd<()> {
+        self.in_breakable_scope_with(None, loop_target, break_exit, None, span, build_body)
+    }
+
+    pub fn in_loop_scope(
+        &mut self,
+        label: Option<Symbol>,
+        loop_target: BasicBlockId,
+        break_dest: Option<Place<'ctx>>,
+        span: Span,
+        build_body: impl FnOnce(&mut Self) -> Option<BlockAnd<()>>,
+    ) -> BlockAnd<()> {
+        self.in_breakable_scope_with(
+            label,
+            Some(loop_target),
+            BreakExit::FreshBlock,
+            break_dest,
+            span,
+            build_body,
+        )
+    }
+
+    fn in_breakable_scope_with(
+        &mut self,
+        label: Option<Symbol>,
+        loop_target: Option<BasicBlockId>,
+        break_exit: BreakExit,
+        break_dest: Option<Place<'ctx>>,
+        span: Span,
+        build_body: impl FnOnce(&mut Self) -> Option<BlockAnd<()>>,
+    ) -> BlockAnd<()> {
         let cleanup_at_entry = self.current_cleanup;
         self.breakable_scopes.push(BreakableScope {
+            label,
             cleanup_at_entry,
             break_exit,
+            break_dest,
             continue_target: loop_target,
             break_edges: vec![],
             continue_edges: vec![],

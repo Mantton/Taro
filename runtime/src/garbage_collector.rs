@@ -10,13 +10,14 @@ use std::sync::{Arc, Condvar, LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::gc_layout::{GcLayoutNode, TraceMode, trace_layout, trace_managed_edges};
-use memmap2::MmapMut;
 
 #[cfg(feature = "alloc-profile")]
 mod alloc_profile;
+mod mapping;
 mod parallel_mark;
 pub(crate) mod root_slots;
 mod size_classes;
+use mapping::Mapping;
 use size_classes::CLASSES;
 
 /// Pointers still to be marked.
@@ -263,6 +264,9 @@ struct MutatorCache {
     unpublished_debt: usize,
     pending_allocations: usize,
     pending_bytes: usize,
+    /// Allocations already included in the global statistics, including
+    /// large objects. Small allocations stay on the existing cache fast path.
+    reported_allocations: u64,
 }
 
 impl MutatorCache {
@@ -287,6 +291,9 @@ impl MutatorCache {
 
     fn take_accounting(&mut self) -> MutatorAccounting {
         publish_allocation_debt(std::mem::take(&mut self.unpublished_debt));
+        self.reported_allocations = self
+            .reported_allocations
+            .saturating_add(self.pending_allocations as u64);
         MutatorAccounting {
             allocations: std::mem::take(&mut self.pending_allocations),
             bytes: std::mem::take(&mut self.pending_bytes),
@@ -1304,7 +1311,13 @@ fn runtime_alloc<const ZEROED: usize>(size: usize, desc: *const GcDesc) -> *mut 
                 }
             });
             match allocation {
-                Some(Some(allocation)) => return allocation,
+                Some(Some(allocation)) => {
+                    CURRENT_THREAD_STATE.with_borrow_mut(|current| {
+                        let cache = &mut current.as_mut().expect("registered mutator").cache;
+                        cache.reported_allocations = cache.reported_allocations.saturating_add(1);
+                    });
+                    return allocation;
+                }
                 Some(None) if attempted_out_of_memory_collection => raise_out_of_memory(),
                 Some(None) => attempted_out_of_memory_collection = true,
                 None => {}
@@ -1415,6 +1428,20 @@ pub unsafe extern "C" fn __rt__gc_stats(out: *mut GcStatsRecord) {
     unsafe { out.write(record) };
 }
 
+/// Count successful managed allocations by the current thread. Reading this
+/// counter takes no GC lock and does not publish another mutator's accounting.
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__testing_allocation_count() -> u64 {
+    CURRENT_THREAD_STATE.with_borrow(|slot| {
+        slot.as_ref().map_or(0, |current| {
+            let cache = &current.cache;
+            cache
+                .reported_allocations
+                .saturating_add(cache.pending_allocations as u64)
+        })
+    })
+}
+
 /// Poll for a pending collection at a compiler-inserted safepoint.
 #[unsafe(no_mangle)]
 pub extern "C" fn __gc__poll() {
@@ -1454,7 +1481,6 @@ const GC_SMALLER_HEAP_RATIO: u32 = 200;
 const GC_MAX_HEAP_SCALE: usize = 16;
 const SPAN_NONE: usize = usize::MAX;
 
-#[cfg(unix)]
 fn os_page_size() -> usize {
     static OS_PAGE_SIZE: OnceLock<usize> = OnceLock::new();
     *OS_PAGE_SIZE.get_or_init(|| {
@@ -1466,11 +1492,6 @@ fn os_page_size() -> usize {
         assert!(size != 0, "OS page size must be non-zero");
         size
     })
-}
-
-#[cfg(not(unix))]
-const fn os_page_size() -> usize {
-    PAGE_SIZE
 }
 
 fn fully_free_os_page_range(
@@ -1499,7 +1520,7 @@ struct PageRun {
 struct Segment {
     // Anonymous mapping that owns the segment bytes. Test-only synthetic
     // segments have no mapping and are never dereferenced.
-    mapping: Option<MmapMut>,
+    mapping: Option<Mapping>,
     // PAGE_SIZE-aligned usable start inside `mapping`.
     data: *mut u8,
     len: usize,
@@ -1525,9 +1546,10 @@ impl Segment {
         // mapping alignment is smaller.
         let bytes = pages.checked_mul(PAGE_SIZE)?;
         let mapping_len = bytes.checked_add(PAGE_SIZE)?;
-        let mut mapping = MmapMut::map_anon(mapping_len).ok()?;
-        let raw = mapping.as_mut_ptr() as usize;
-        let data = align_up(raw, PAGE_SIZE) as *mut u8;
+        let mapping = Mapping::new(mapping_len)?;
+        let data = mapping
+            .as_ptr()
+            .map_addr(|address| align_up(address, PAGE_SIZE));
         let os_page_size = os_page_size();
         let mut page_map = Vec::new();
         page_map.try_reserve_exact(pages).ok()?;
@@ -1639,10 +1661,10 @@ impl Segment {
                 // Reuse updates OS accounting; explicit allocation zeroing
                 // still guarantees initialization even if this advice fails.
                 let _ = unsafe {
-                    mapping.unchecked_advise_range(
-                        memmap2::UncheckedAdvice::FreeReuse,
+                    mapping.advise(
                         begin * self.os_page_size,
                         (page - begin) * self.os_page_size,
+                        libc::MADV_FREE_REUSE,
                     )
                 };
             }
@@ -1652,17 +1674,14 @@ impl Segment {
         }
     }
 
-    #[cfg(unix)]
     fn scavenge_free_runs(&mut self, retain_bytes: &mut usize) -> usize {
-        use memmap2::UncheckedAdvice;
-
         // Darwin's DONTNEED does not discard dirty anonymous pages. Use the
         // same reusable/reuse pair as Go's runtime/mem_darwin.go; Linux keeps
         // its immediate-discard advice. Neither path changes the warm budget.
         #[cfg(target_vendor = "apple")]
-        let advice = UncheckedAdvice::FreeReusable;
+        let advice = libc::MADV_FREE_REUSABLE;
         #[cfg(not(target_vendor = "apple"))]
-        let advice = UncheckedAdvice::DontNeed;
+        let advice = libc::MADV_DONTNEED;
 
         let Some(mapping) = self.mapping.as_ref() else {
             return 0;
@@ -1699,10 +1718,9 @@ impl Segment {
                 let len = (page - start).saturating_mul(self.os_page_size);
                 // SAFETY: collection is stop-the-world, this run has no span
                 // owner in the page map, and no allocation can hold a Rust
-                // borrow into these free pages. The OS may replace their
-                // contents with zero-fill pages, which is why memmap2 models
-                // the operation as a conceptual write.
-                if unsafe { mapping.unchecked_advise_range(advice, offset, len) }.is_ok() {
+                // borrow into these free pages. The OS may discard their
+                // contents after this call.
+                if unsafe { mapping.advise(offset, len, advice) } {
                     for scavenged in &mut self.scavenged_os_pages[start..page] {
                         *scavenged = true;
                     }
@@ -1711,11 +1729,6 @@ impl Segment {
             }
         }
         released
-    }
-
-    #[cfg(not(unix))]
-    fn scavenge_free_runs(&mut self, _retain_bytes: &mut usize) -> usize {
-        0
     }
 
     // Return pages to the segment and coalesce adjacent free runs.
@@ -5088,6 +5101,21 @@ mod tests {
         })
         .join()
         .expect("allocation registration thread");
+    }
+
+    #[test]
+    fn test_allocation_count_is_local_and_survives_flushes() {
+        let before = __rt__testing_allocation_count();
+        let worker = std::thread::spawn(|| {
+            let start = __rt__testing_allocation_count();
+            for size in [8, PAGE_SIZE + 1, 8] {
+                assert!(!__gc__alloc(size, &BYTE_DESC).is_null());
+                __gc__thread_detach();
+            }
+            assert_eq!(__rt__testing_allocation_count() - start, 3);
+        });
+        idle_wait(|| worker.join()).expect("allocation counter worker");
+        assert_eq!(__rt__testing_allocation_count(), before);
     }
 
     #[test]

@@ -672,6 +672,70 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         self.store_place(destination, body, locals, owner)
     }
 
+    pub(super) fn lower_intrinsic_gc_sync_generator_frame_allocate(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        arguments: GenericArguments<'gcx>,
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+    ) -> CompileResult<()> {
+        let fail = || {
+            self.gcx.dcx().emit_error(
+                "invalid GC sync generator frame allocation contract".into(),
+                self.current_span,
+            );
+            crate::error::ReportedError
+        };
+        let [crate::sema::models::GenericArgument::Type(ty)] = arguments.as_ref() else {
+            return Err(fail());
+        };
+        if !args.is_empty()
+            || !matches!(self.place_ty(body, destination).kind(), TyKind::Pointer(inner, crate::hir::Mutability::Mutable) if inner == self.gcx.types.uint8)
+        {
+            return Err(fail());
+        }
+        let ty = self.mono_ty(*ty);
+        if !matches!(ty.kind(), TyKind::Tuple(fields) if fields.first() == Some(&self.gcx.types.uint))
+            || crate::sema::tycheck::utils::unresolved::storage_needs_substitution(self.gcx, ty)
+        {
+            self.gcx.dcx().emit_error(
+                "GC generator frame requires a concrete generated layout".into(),
+                self.current_span,
+            );
+            return Err(crate::error::ReportedError);
+        }
+        let lowered = self.lower_ty(ty).ok_or_else(fail)?;
+        let size = self.target_data.get_abi_size(&lowered).max(1);
+        let descriptor = self.gc_descriptor_for(ty);
+        let pointer = self.context.ptr_type(AddressSpace::default());
+        let allocate = self.module.get_function("__gc__alloc").unwrap_or_else(|| {
+            self.module.add_function(
+                "__gc__alloc",
+                pointer.fn_type(&[self.usize_ty.into(), pointer.into()], false),
+                Some(inkwell::module::Linkage::External),
+            )
+        });
+        {
+            self.emit_source_typed_gc_stack_map(
+                self.current_span.expect("generator frame allocation source span"),
+                crate::codegen::gc_stack_maps::StackMapSiteKind::Allocation,
+            );
+        }
+        let frame = self
+            .builder
+            .build_call(
+                allocate,
+                &[self.usize_ty.const_int(size, false).into(), descriptor.into()],
+                "gc_gen_frame",
+            )
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap();
+        self.store_place(destination, body, locals, frame)
+    }
+
     pub(super) fn lower_intrinsic_maybe_uninit(
         &mut self,
         body: &mir::Body<'gcx>,

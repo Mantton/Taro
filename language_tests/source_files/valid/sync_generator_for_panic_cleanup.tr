@@ -1,0 +1,27 @@
+// TEST
+import std::testing::assertEqual
+
+func trackedPanicGen(_ events: &List[string]) -> some Iterator[Element = int32] {
+    events.append("open")
+    defer {
+        events.append("defer-unwind")
+    }
+    yield 1
+    yield 2
+}
+
+@test
+@expectPanic("boom inside for")
+func forLoopPanicUnwindClosesSyncGenerator() {
+    var events = List[string]::new()
+    defer {
+        assertEqual(events.len(), 2 as usize, "panic unwind must run generator defer once")
+        assertEqual(events[0], "open", "generator opened before yield")
+        assertEqual(events[1], "defer-unwind", "generator defer ran on panic unwind")
+    }
+    for x in trackedPanicGen(&events) {
+        if x == 1 {
+            panic("boom inside for")
+        }
+    }
+}

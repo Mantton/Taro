@@ -1,0 +1,9 @@
+// A generic derived conformance whose super-interface the type never
+// declares fails every instantiation, so it is reported at the declaration.
+import std::hash::Hashable
+struct MissingSuper[T]: Hashable { value: T }
+func needsHash[T: Hashable](_ value: &T) {}
+func main() {
+    missing := MissingSuper[int32] { value: 1 }
+    needsHash(&missing)
+}

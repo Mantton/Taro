@@ -59,3 +59,52 @@ func spanAtDoesNotAllocateAnEscapingCopy() {
     std::testing::assertEqual(total, 6271_u64, "elements read through escaping references")
     std::testing::assertEqual(after.allocatedBytes - before.allocatedBytes, 0_u64, "Span.at must not heap-allocate a copy of the span")
 }
+
+@test
+func testCollectionReferenceSpanCoercionsShareStorage() {
+    var array: [int32; 3] = [10, 20, 30]
+    var list: List[int32] = [40, 50, 60]
+    var view: Span[int32] = &array
+    view[1] = 21
+    std::testing::assertEqual(array[1], 21_i32, "array reference coercion must share original storage")
+    view = &list
+    view[1] = 51
+    std::testing::assertEqual(list[1], 51_i32, "list reference coercion must share original storage")
+}
+
+@noinline
+func coercedLocalArrayView() -> Span[string] {
+    var values: [string; 2] = ["array".concat(" first"), "array".concat(" second")]
+    return &values
+}
+
+@test
+func testCoercedArrayViewRetainsEscapingBackingStorage() {
+    view := coercedLocalArrayView()
+    std::runtime::collect()
+    std::testing::assertEqual(view[0], "array first", "coerced view must retain the original array allocation")
+    std::testing::assertEqual(view[1], "array second", "retained array must trace its string elements")
+}
+
+@test
+func testCoercedListViewKeepsItsCapturedBufferAndLength() {
+    var list: List[string] = ["list".concat(" first"), "list".concat(" second")]
+    var view: Span[string] = &list
+    list.reserve(128)
+    list.clear()
+    std::runtime::collect()
+    std::testing::assertEqual(view.len(), 2 as usize, "view length is captured at conversion")
+    std::testing::assertEqual(view[1], "list second", "growth and clear must not invalidate the old view")
+}
+
+@test
+func testCollectionReferenceSpanCoercionsAcceptEmptyAndZeroSizedArrays() {
+    var empty: [int32; 0] = []
+    var emptyList: List[int32] = []
+    var arrayView: Span[int32] = &empty
+    var listView: Span[int32] = &emptyList
+    std::testing::assertTrue(arrayView.isEmpty() && listView.isEmpty(), "empty collections form empty views")
+    var units: [(); 2] = [(), ()]
+    var unitView: Span[()] = &units
+    std::testing::assertEqual(unitView.len(), 2 as usize, "zero-sized elements retain their logical count")
+}

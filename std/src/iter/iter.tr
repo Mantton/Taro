@@ -2,6 +2,8 @@ import std::optional::Optional
 import std::ops::Fn
 import std::cmp::Ord
 import std::collections::List
+import std::mem::MaybeUninit
+import std::io::Closeable
 
 /// Interface for types that can yield a sequence of values.
 ///
@@ -21,6 +23,7 @@ import std::collections::List
 public interface Iterator {
     type Element
     func next() -> Optional[Self::Element]
+    func closeIterator() {}
 
     /// Creates an iterator that yields `(index, item)` pairs.
     func enumerate() -> EnumerateIterator[Self::Element, Self] {
@@ -98,6 +101,7 @@ public interface Iterator {
 public interface AsyncIterator {
     type Element
     func next() async -> Optional[Self::Element]
+    func close() {}
 }
 
 /// Interface for types that can be constructed from an iterator.
@@ -376,6 +380,10 @@ conform[Item, Inner: Iterator[Element = Item]] EnumerateIterator[Item, Inner] to
             case .none => return .none
         }
     }
+
+    public func closeIterator() {
+        self.inner.closeIterator()
+    }
 }
 
 /// Interface for types that can be converted into an AsyncIterator.
@@ -491,6 +499,10 @@ conform[Item, Out, Inner: Iterator[Element = Item], F: Fn[Item, Out]] MapIterato
             case .none => return .none
         }
     }
+
+    public func closeIterator() {
+        self.inner.closeIterator()
+    }
 }
 
 conform[Item, Out, Inner: Iterator[Element = Item], F: Fn[Item, Out]] MapIterator[Item, Out, Inner, F] to Iterable {
@@ -547,6 +559,10 @@ conform[Item, Inner: Iterator[Element = Item], F: Fn[Item, bool]] FilterIterator
                 case .none => return .none
             }
         }
+    }
+
+    public func closeIterator() {
+        self.inner.closeIterator()
     }
 }
 
@@ -607,6 +623,10 @@ conform[Item, Inner: Iterator[Element = Item]] TakeIterator[Item, Inner] to Iter
         self.remaining -= 1
         return self.inner.next()
     }
+
+    public func closeIterator() {
+        self.inner.closeIterator()
+    }
 }
 
 conform[Item, Inner: Iterator[Element = Item]] TakeIterator[Item, Inner] to Iterable {
@@ -665,6 +685,10 @@ conform[Item, Inner: Iterator[Element = Item]] SkipIterator[Item, Inner] to Iter
         }
         return self.inner.next()
     }
+
+    public func closeIterator() {
+        self.inner.closeIterator()
+    }
 }
 
 conform[Item, Inner: Iterator[Element = Item]] SkipIterator[Item, Inner] to Iterable {
@@ -716,6 +740,11 @@ conform[A, B, IA: Iterator[Element = A], IB: Iterator[Element = B]] ZipIterator[
             }
             case .none => return .none
         }
+    }
+
+    public func closeIterator() {
+        self.a.closeIterator()
+        self.b.closeIterator()
     }
 }
 
@@ -783,6 +812,11 @@ conform[Item, A: Iterator[Element = Item], B: Iterator[Element = Item]] ChainIte
             }
         }
         return self.b.next()
+    }
+
+    func closeIterator() {
+        self.a.closeIterator()
+        self.b.closeIterator()
     }
 }
 
@@ -878,6 +912,13 @@ conform[
             }
         }
     }
+
+    func closeIterator() {
+        if var inner_iter = self.inner.take() {
+            inner_iter.closeIterator()
+        }
+        self.outer.closeIterator()
+    }
 }
 
 conform[
@@ -958,6 +999,10 @@ conform[Item, Inner: Iterator[Element = Item]] StepByIterator[Item, Inner] to It
             i = i + 1
         }
     }
+
+    func closeIterator() {
+        self.inner.closeIterator()
+    }
 }
 
 conform[Item, Inner: Iterator[Element = Item]] StepByIterator[Item, Inner] to Iterable {
@@ -1029,6 +1074,10 @@ conform[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] TakeWhileIter
             }
         }
         return result
+    }
+
+    func closeIterator() {
+        self.inner.closeIterator()
     }
 }
 
@@ -1103,6 +1152,10 @@ conform[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] SkipWhileIter
             }
         }
     }
+
+    func closeIterator() {
+        self.inner.closeIterator()
+    }
 }
 
 conform[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] SkipWhileIterator[Item, F, Inner] to Iterable {
@@ -1160,6 +1213,10 @@ conform[Item, Inner: Iterator[Element = Item]] PeekableIterator[Item, Inner] to 
             case .none => return self.inner.next()
         }
     }
+
+    func closeIterator() {
+        self.inner.closeIterator()
+    }
 }
 
 conform[Item, Inner: Iterator[Element = Item]] PeekableIterator[Item, Inner] to Iterable {
@@ -1198,5 +1255,116 @@ conform[
             inner: self.source.iter(),
             peeked: .none,
         )
+    }
+}
+
+/// Runtime iterator handle returned by synchronous generator functions
+/// (`func f(...) -> some Iterator[Element = T]` or `some Iterable[Element = T]`).
+///
+/// Calling a generator function allocates its frame without running the body;
+/// side effects begin on the first call to `next()`. Copies share the same
+/// suspended frame, matching standard iterator cursor semantics. Calling
+/// `close()` (directly, via `using`, or automatically when exiting a `for` loop)
+/// runs any active `defer` cleanups at the current suspension point and marks
+/// the generator exhausted.
+@lang("SyncGenerator")
+public struct SyncGenerator[Element] {
+    internal frame: *mut uint8
+    internal step: (*mut uint8, *mut uint8, uint8) -> uint8
+}
+
+extend[Element] SyncGenerator[Element] {
+    public func close() -> () {
+        var nullPtr: *mut uint8 = unsafe { 0 as usize as *mut uint8 }
+        _ := (self.step)(self.frame, nullPtr, 1_u8)
+    }
+}
+
+conform[Element] SyncGenerator[Element] to Iterator {
+    type Element = Element
+
+    public func next() -> Optional[Element] {
+        var slot = MaybeUninit[Element]::uninit()
+        status := (self.step)(self.frame, unsafe { slot.asMutPtr() as *mut uint8 }, 0_u8)
+        if status == 1_u8 {
+            return .some(unsafe { slot.assumeInit() })
+        }
+        return .none
+    }
+
+    public func closeIterator() {
+        var nullPtr: *mut uint8 = unsafe { 0 as usize as *mut uint8 }
+        _ := (self.step)(self.frame, nullPtr, 1_u8)
+    }
+}
+
+conform[Element] SyncGenerator[Element] to Iterable {
+    type Element = Element
+    type Iterator = SyncGenerator[Element]
+
+    public func iter() -> Self::Iterator {
+        self
+    }
+}
+
+conform[Element] SyncGenerator[Element] to Closeable {
+    type CloseResult = ()
+
+    public func close() -> () {
+        var nullPtr: *mut uint8 = unsafe { 0 as usize as *mut uint8 }
+        _ := (self.step)(self.frame, nullPtr, 1_u8)
+    }
+}
+
+/// Runtime async iterator handle returned by async generator functions
+/// (`func f(...) -> some AsyncIterator[Element = T]` or `some AsyncIterable[Element = T]`).
+///
+/// Calling an async generator function allocates its frame without running the
+/// body; side effects begin on the first `await next()`. Copies share the same
+/// suspended frame. Active `defer` cleanups run exactly once: on natural
+/// exhaustion, when cancelled while blocked on an inner `await`, or when
+/// `close()` is called (directly, via `using`, or when exiting `for await`).
+@lang("AsyncGenerator")
+public struct AsyncGenerator[Element] {
+    internal frame: *mut uint8
+    internal poll: (*mut uint8, *mut uint8, *mut uint8) -> uint8
+    internal closeFn: (*mut uint8) -> ()
+}
+
+extend[Element] AsyncGenerator[Element] {
+    public func close() -> () {
+        (self.closeFn)(self.frame)
+    }
+}
+
+conform[Element] AsyncGenerator[Element] to AsyncIterator {
+    type Element = Element
+
+    public func next() async -> Optional[Element] {
+        result := await std::intrinsic::__intrinsic_async_generator_next[Element](self.frame, self.poll)
+        // Keep the GC-allocated generator frame rooted across the awaited poll.
+        _ = self.frame
+        return result
+    }
+
+    public func close() {
+        (self.closeFn)(self.frame)
+    }
+}
+
+conform[Element] AsyncGenerator[Element] to AsyncIterable {
+    type Element = Element
+    type Iterator = AsyncGenerator[Element]
+
+    public func iter() -> Self::Iterator {
+        self
+    }
+}
+
+conform[Element] AsyncGenerator[Element] to Closeable {
+    type CloseResult = ()
+
+    public func close() -> () {
+        (self.closeFn)(self.frame)
     }
 }

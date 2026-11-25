@@ -1,0 +1,14 @@
+// When the only overload that accepts the arguments needs a conformance the
+// element type lacks, the error names that conformance instead of only
+// saying that no overload matches.
+struct Point { x: int32 }
+
+func main() {
+    var points: [Point] = [Point { x: 2 }, Point { x: 1 }]
+    points.sort()
+    queue := PriorityQueue[Point]::new()
+    var reals: [double] = [2.0, 1.0]
+    reals.sort()
+    // A wrong argument shape still gets the generic message.
+    reals.sort(1, 2)
+}

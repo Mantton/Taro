@@ -1,0 +1,16 @@
+error: cannot derive 'Debug' for 'Slot': field 'filled.1' has type 'Point', which does not conform to 'Debug'
+ -> language_tests/source_files/invalid/derived_debug_field_without_debug.tr:7:11
+	enum Slot: Debug {
+	           ^^^^^
+error: cannot derive 'Debug' for 'Slot': field 'labelled.at' has type 'Point', which does not conform to 'Debug'
+ -> language_tests/source_files/invalid/derived_debug_field_without_debug.tr:7:11
+	enum Slot: Debug {
+	           ^^^^^
+error: cannot derive 'Debug' for 'Slot': field 'record.origin' has type 'Point', which does not conform to 'Debug'
+ -> language_tests/source_files/invalid/derived_debug_field_without_debug.tr:7:11
+	enum Slot: Debug {
+	           ^^^^^
+error: cannot derive 'Debug' for 'Labelled': field 'position' has type 'Point', which does not conform to 'Debug'
+ -> language_tests/source_files/invalid/derived_debug_field_without_debug.tr:3:17
+	struct Labelled: Debug {
+	                 ^^^^^

@@ -1,0 +1,20 @@
+// Each candidate wraps one argument in an Optional and boxes the other into
+// an existential: they need as many conversions and boxings, so the call
+// stays ambiguous.
+interface Show {}
+
+conform usize to Show {}
+
+func both(_ a: usize?, _ b: any Show) -> string {
+    "first"
+}
+
+func both(_ a: any Show, _ b: usize?) -> string {
+    "second"
+}
+
+func main() {
+    var a: usize = 1
+    var b: usize = 2
+    println(both(a, b))
+}

@@ -1,0 +1,20 @@
+error: expected Left[int32], found Right
+ -> language_tests/source_files/invalid/enum_unit_constant_types.tr:3:32
+	const WRONG_ENUM: Left[int32] = Right::first
+	                                ^^^^^^^^^^^^
+error: expected int32, found uint8
+ -> language_tests/source_files/invalid/enum_unit_constant_types.tr:4:33
+	const WRONG_WIDTH: Left[int32] = Left[uint8]::first
+	                                 ^^^^^^^^^^^^^^^^^^
+error: expected int32, found bool
+ -> language_tests/source_files/invalid/enum_unit_constant_types.tr:6:25
+	    const COUNT: int32 = true
+	                         ^^^^
+error: expected Left[Self], found Right
+ -> language_tests/source_files/invalid/enum_unit_constant_types.tr:7:38
+	    const WRONG_DEFAULT: Left[Self] = Right::first
+	                                      ^^^^^^^^^^^^
+error: enum conversion is not a constant expression
+ -> language_tests/source_files/invalid/enum_unit_constant_types.tr:9:30
+	const IMPLICIT_WRAP: Right? = Right::first
+	                              ^^^^^^^^^^^^

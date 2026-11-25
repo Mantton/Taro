@@ -83,7 +83,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 let internal = self.lower_type(node);
                 Ty::new(TyKind::Reference(internal), gcx)
             }
-            hir::TypeKind::Tuple(elements) => {
+            hir::TypeKind::Tuple(elements, labels) => {
                 let mut lowered = Vec::with_capacity(elements.len());
                 for elem in elements {
                     lowered.push(self.lower_type(elem));
@@ -92,6 +92,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                     TyKind::Tuple(gcx.store.interners.intern_ty_list(lowered)),
                     gcx,
                 )
+                .with_source_labels(labels, gcx)
             }
             hir::TypeKind::Array { size, element } => {
                 let element = self.lower_type(element);
@@ -126,7 +127,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             }
             hir::TypeKind::ImplTrait { .. } => {
                 gcx.dcx().emit_error(
-                    "'some Interface' is only allowed as the complete return type of a concrete function or method with a body"
+                    "'some Interface' requires a complete parameter type or the complete return type of a concrete function or method with a body"
                         .into(),
                     Some(node.span),
                 );
@@ -544,7 +545,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 kind: param.kind,
             };
         }
-        let Some(value) = eval_const_expression_with_expected_type(gcx, &anon.value, expected_ty)
+        let Some(value) = eval_const_expression_with_expected_type(self, &anon.value, expected_ty)
         else {
             return self.error_const();
         };
@@ -777,10 +778,81 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         base_ty: &hir::Type,
         segment: &hir::PathSegment,
     ) -> Ty<'ctx> {
+        self.lookup_relative_type_path(base_ty, segment)
+            .unwrap_or_else(|base| self.unknown_associated_type(base, segment))
+    }
+
+    fn unknown_associated_type(&self, base: Ty<'ctx>, segment: &hir::PathSegment) -> Ty<'ctx> {
+        let gcx = self.gcx();
+        gcx.dcx().emit_error(
+            format!(
+                "unknown associated type '{}' on type '{}'",
+                gcx.symbol_text(segment.identifier.symbol),
+                base.format(gcx)
+            ).into(),
+            Some(segment.span),
+        );
+        gcx.types.error
+    }
+
+    /// A qualified bare name after `is` denotes a type if one exists.
+    /// Only a missing associated type may fall back to an enum constructor.
+    pub fn lower_is_target(&self, target: &hir::Type) -> (Ty<'ctx>, Option<hir::Pattern>) {
+        let hir::TypeKind::Nominal(hir::ResolvedPath::Relative(base, segment)) = &target.kind else {
+            return (self.lower_type(target), None);
+        };
+        match self.lookup_relative_type_path(base, segment) {
+            Ok(ty) => (ty, None),
+            Err(owner) => {
+                let gcx = self.gcx();
+                if let TyKind::Adt(def, _) = owner.kind()
+                    && gcx.definition_kind(def.id) == hir::DefinitionKind::Enum
+                    && gcx.get_enum_definition(def.id).variants.iter().any(|variant| {
+                        variant.name == segment.identifier.symbol
+                    })
+                {
+                    return (owner, Some(target.qualified_case_pattern()));
+                }
+                (self.unknown_associated_type(owner, segment), None)
+            }
+        }
+    }
+
+    /// A missing member retains its owner for callers that also accept value patterns.
+    fn lookup_relative_type_path(
+        &self,
+        base_ty: &hir::Type,
+        segment: &hir::PathSegment,
+    ) -> Result<Ty<'ctx>, Ty<'ctx>> {
         let gcx = self.gcx();
         let base_ty = crate::sema::tycheck::utils::normalize_aliases(gcx, self.lower_type(base_ty));
+        // Self and type aliases acquire a concrete owner during type lowering.
+        if let TyKind::Adt(owner, _) = base_ty.kind()
+            && let Some(scope) = gcx
+                .resolution_output(owner.id.package())
+                .definition_scope_mapping
+                .get(&owner.id)
+            && let Some(entry) = scope
+                .table
+                .borrow()
+                .get(&segment.identifier.symbol)
+                .and_then(|n| n.ty)
+            && let crate::sema::resolve::models::Resolution::Definition(id, kind) =
+                entry.resolution()
+        {
+            let resolution = hir::Resolution::Definition(id, kind);
+            let path = hir::Path {
+                span: segment.span,
+                resolution: resolution.clone(),
+                segments: vec![hir::PathSegment {
+                    resolution,
+                    ..segment.clone()
+                }],
+            };
+            return Ok(self.lower_resolved_type_path(segment.id, &path));
+        }
         if let TyKind::Parameter(param) = base_ty.kind() {
-            return self.lower_projection_type_path(param, segment);
+            return Ok(self.lower_projection_type_path(param, segment));
         }
         if let TyKind::Alias {
             kind: AliasKind::Projection,
@@ -788,14 +860,14 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             args,
         } = base_ty.kind()
         {
-            return self.lower_projection_member_path(base_ty, def_id, args, segment);
+            return Ok(self.lower_projection_member_path(base_ty, def_id, args, segment));
         }
         let Some(head) = type_head_from_value_ty(base_ty) else {
             gcx.dcx().emit_error(
                 "cannot resolve associated types on this type".into(),
                 Some(segment.span),
             );
-            return gcx.types.error;
+            return Ok(gcx.types.error);
         };
 
         let name = segment.identifier.symbol;
@@ -850,15 +922,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         }
 
         if candidates.is_empty() {
-            gcx.dcx().emit_error(
-                format!(
-                    "unknown associated type '{}' on type '{}'",
-                    gcx.symbol_text(name),
-                    base_ty.format(gcx)
-                ),
-                Some(segment.span),
-            );
-            return gcx.types.error;
+            return Err(base_ty);
         }
 
         let mut visible: Vec<_> = if let Some(from) = self.current_definition() {
@@ -886,7 +950,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 ),
                 Some(segment.span),
             );
-            return gcx.types.error;
+            return Ok(gcx.types.error);
         }
 
         // If multiple associated types share the same name on the same self type,
@@ -913,7 +977,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 ),
                 Some(segment.span),
             );
-            return gcx.types.error;
+            return Ok(gcx.types.error);
         }
 
         let (alias_id, _, _) = visible[0];
@@ -922,16 +986,16 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         let args = self.alias_arguments(alias_id, args, Some(base_ty));
         let ty = self.resolve_alias(alias_id);
         if ty.is_error() {
-            return ty;
+            return Ok(ty);
         }
-        Ty::new(
+        Ok(Ty::new(
             TyKind::Alias {
                 kind: AliasKind::Inherent,
                 def_id: alias_id,
                 args,
             },
             gcx,
-        )
+        ))
     }
 
     /// A retained alias must carry its parent's substitutions too. Expanding
@@ -1042,59 +1106,77 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             bindings,
         };
 
-        // 5. Look up associated type in interface requirements
-        let interface_name = gcx.definition_ident(interface_id).symbol;
-        let interface_name_text = gcx.symbol_text(interface_name);
-        let Some(requirements) = gcx.get_interface_requirements(interface_id) else {
-            gcx.dcx().emit_error(
-                format!("interface '{}' has no requirements", interface_name_text),
-                Some(interface.span),
-            );
-            return gcx.types.error;
+        // Aliases and function signatures are lowered before complete witness
+        // tables exist. Use the interface headers, including inherited items,
+        // and form the same projection as an unqualified generic member.
+        let mut candidates = Vec::new();
+        self.collect_projection_candidates(interface_ref, member.symbol, &mut candidates);
+        let (assoc_id, owner) = match candidates.as_slice() {
+            [candidate] => *candidate,
+            [] => {
+                gcx.dcx().emit_error(
+                    format!(
+                        "no associated type '{}' in interface '{}'",
+                        member.symbol,
+                        interface_ref.format(gcx)
+                    ),
+                    Some(member.span),
+                );
+                return gcx.types.error;
+            }
+            _ => {
+                gcx.dcx().emit_error(
+                    format!(
+                        "ambiguous associated type '{}' in interface '{}'",
+                        member.symbol,
+                        interface_ref.format(gcx)
+                    ),
+                    Some(member.span),
+                );
+                return gcx.types.error;
+            }
         };
-
-        let assoc_type = requirements.types.iter().find(|t| t.name == member.symbol);
-
-        let Some(assoc_type) = assoc_type else {
-            gcx.dcx().emit_error(
-                format!(
-                    "no associated type '{}' in interface '{}'",
-                    gcx.symbol_text(member.symbol),
-                    interface_name_text
-                ),
-                Some(member.span),
-            );
-            return gcx.types.error;
-        };
-
-        // 6. Resolve conformance witness
-        let witness = crate::sema::tycheck::resolve_conformance_witness(gcx, interface_ref);
-
-        let Some(witness) = witness else {
-            gcx.dcx().emit_error(
-                format!(
-                    "type '{}' does not conform to interface '{}'",
-                    target_ty.format(gcx),
-                    interface_name_text
-                ),
-                Some(node.span),
-            );
-            return gcx.types.error;
-        };
-
-        // 7. Look up the associated type in the witness
-        let Some(witness_ty) = witness.type_witnesses.get(&assoc_type.id) else {
-            gcx.dcx().emit_error(
-                format!(
-                    "associated type '{}' not satisfied in conformance",
-                    gcx.symbol_text(member.symbol)
-                ),
-                Some(member.span),
-            );
-            return gcx.types.error;
-        };
-
-        *witness_ty
+        let constraints: Vec<_> = self
+            .current_definition()
+            .into_iter()
+            .flat_map(|id| self.constraints_in_scope(id))
+            .map(|bound| bound.value)
+            .collect();
+        let env = gcx.store.arenas.global.alloc_slice_clone(&constraints);
+        let goal = interface_ref.to_goal_with_self_ty(gcx, env, target_ty);
+        match gcx.prove_interface_goal(goal, crate::sema::models::SelectionMode::Typecheck) {
+            crate::sema::models::GoalResult::Proven => {}
+            crate::sema::models::GoalResult::NoSolution => {
+                gcx.dcx().emit_error(
+                    crate::sema::error::TypeError::NonConformance {
+                        ty: target_ty,
+                        interface: interface_ref,
+                    }
+                    .format(gcx),
+                    Some(node.span),
+                );
+                return gcx.types.error;
+            }
+            crate::sema::models::GoalResult::Ambiguous => {
+                gcx.dcx().emit_error(
+                    format!(
+                        "ambiguous conformance of '{}' to '{}'",
+                        target_ty.format(gcx),
+                        interface_ref.format(gcx)
+                    ),
+                    Some(node.span),
+                );
+                return gcx.types.error;
+            }
+        }
+        Ty::new(
+            TyKind::Alias {
+                kind: AliasKind::Projection,
+                def_id: assoc_id,
+                args: owner.arguments,
+            },
+            gcx,
+        )
     }
 
     fn lower_projection_type_path(
@@ -1445,7 +1527,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
 
         let gcx = self.gcx();
         let Some(value) =
-            eval_const_expression_with_expected_type(gcx, &anon.value, gcx.types.uint)
+            eval_const_expression_with_expected_type(self, &anon.value, gcx.types.uint)
         else {
             return self.error_const();
         };
@@ -1606,6 +1688,11 @@ fn const_value_matches_type(value: ConstValue, ty: Ty<'_>) -> bool {
         TyKind::Bool => matches!(value, ConstValue::Bool(_)),
         TyKind::Rune => matches!(value, ConstValue::Rune(_)),
         TyKind::String => matches!(value, ConstValue::String(_)),
+        TyKind::Array { element, len } => {
+            matches!((element.kind(), len.kind, value),
+                (TyKind::UInt(crate::sema::models::UIntTy::U8), ConstKind::Value(ConstValue::Integer(size)), ConstValue::Bytes(bytes))
+                    if size == bytes.len() as i128)
+        }
         TyKind::Int(_) | TyKind::UInt(_) => matches!(value, ConstValue::Integer(_)),
         TyKind::Float(_) => matches!(value, ConstValue::Float(_)),
         TyKind::Tuple(items) => items.is_empty() && matches!(value, ConstValue::Unit),
@@ -1658,7 +1745,7 @@ pub fn check_generic_arg_count(
     let should_infer = segment.arguments.is_none();
 
     let defaults_count = generics.default_count();
-    let total_count = generics.total_count();
+    let total_count = generics.explicit_parameter_count();
     let owns_self = generics.has_self && generics.parent_count == 0;
 
     let min = if !should_infer {

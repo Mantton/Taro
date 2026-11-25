@@ -1,0 +1,14 @@
+enum Mode {
+    case fast
+    case safe
+}
+
+const func badCode(_ m: Mode) -> int32 {
+    return match m {
+        case .fast => 1
+    }
+}
+
+const CODE: int32 = badCode(.fast)
+
+func main() {}

@@ -1,0 +1,4 @@
+func hidden(_ value: dep::PublicOwner::Hidden) {}
+func local(_ value: dep::PublicOwner::Local) {}
+func enclosing(_ value: dep::LocalOwner::Child) {}
+func main() {}

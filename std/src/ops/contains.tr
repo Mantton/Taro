@@ -1,0 +1,10 @@
+/// Membership: `element in container` calls `container.contains(&element)`,
+/// and `element !in container` negates it.
+///
+/// The element is passed by reference, so a test does not copy it and the
+/// caller does not write `&`. A type may conform once per element type, as
+/// `string` does for both `rune` and `string`.
+@lang("Contains")
+public interface Contains[Element] {
+    func contains(_ element: &Element) -> bool
+}

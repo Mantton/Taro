@@ -1,0 +1,22 @@
+interface Named { func id() -> int32; }
+interface Sized { func size() -> int32; }
+struct Both { value: int32 }
+struct OnlyNamed { value: int32 }
+conform Both to Named { func id() -> int32 { self.value }; }
+conform Both to Sized { func size() -> int32 { self.value + 1 }; }
+conform OnlyNamed to Named { func id() -> int32 { self.value }; }
+func dispatch(_ value: any Named, _ first: bool) -> int32 {
+    match value {
+        case sized as any Sized if first => sized.size()
+        case concrete as Both => concrete.value
+        case _ => -1
+    }
+}
+func main() {
+    var both: any Named = Both { value: 8 }
+    var one: any Named = OnlyNamed { value: 8 }
+    assert(dispatch(both, true) == 9, "interface witness")
+    assert(dispatch(both, false) == 8, "failed guard keeps source")
+    assert(dispatch(one, true) == -1, "mismatch fallback")
+    println("overlap")
+}

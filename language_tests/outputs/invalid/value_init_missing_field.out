@@ -1,3 +1,7 @@
+warning: unused variable 'counter'; prefix it with '_' if this is intended
+ -> language_tests/source_files/invalid/value_init_missing_field.tr:3:14
+	func main() { counter := Counter() }
+	              ^^^^^^^
 error: constructor can complete with uninitialized fields
  -> language_tests/source_files/invalid/value_init_missing_field.tr:2:21
 	extend Counter { init() { self.first = 1 } }

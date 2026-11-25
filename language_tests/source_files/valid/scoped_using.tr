@@ -1,0 +1,17 @@
+struct Resource { log: &int32; id: int32 }
+conform Resource to Closeable {
+    type CloseResult = Result[(), int32]
+    func close() -> Result[(), int32] {
+        *self.log = *self.log * 10 + self.id
+        return .err(self.id)
+    }
+}
+func work(_ log: &int32) {
+    using first = Resource { log: log, id: 1 }
+    using second = Resource { log: log, id: 2 }
+}
+func main() {
+    var log: int32 = 0
+    work(&log)
+    println("${log}")
+}

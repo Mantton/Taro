@@ -1,0 +1,749 @@
+import std::intrinsic::{
+    __intrinsic_wrapping_add,
+    __intrinsic_wrapping_sub,
+    __intrinsic_wrapping_mul,
+    __intrinsic_overflows_add,
+    __intrinsic_overflows_sub,
+    __intrinsic_overflows_mul,
+}
+
+// Overflow-tolerant integer arithmetic. The bodies use compiler intrinsics
+// instead of `+`, `-` and `*`, so they never trap, even when inlined or
+// specialized into a package compiled with overflow checks. Saturating
+// results reach the bounds through comparisons only.
+
+const INT8_MIN: int8 = -128
+const INT8_MAX: int8 = 127
+const INT16_MIN: int16 = -32768
+const INT16_MAX: int16 = 32767
+const INT32_MIN: int32 = -2147483648
+const INT32_MAX: int32 = 2147483647
+const INT64_MIN: int64 = -9223372036854775808
+const INT64_MAX: int64 = 9223372036854775807
+const ISIZE_MAX: isize = (~(0 as usize) >> 1) as isize
+const ISIZE_MIN: isize = ~ISIZE_MAX
+const UINT8_MAX: uint8 = 255
+const UINT16_MAX: uint16 = 65535
+const UINT32_MAX: uint32 = 4294967295
+const UINT64_MAX: uint64 = 18446744073709551615
+const USIZE_MAX: usize = ~(0 as usize)
+
+extend int8 {
+    /// The smallest value representable by `int8` (`-128`).
+    public const MIN: int8 = -128
+    /// The largest value representable by `int8` (`127`).
+    public const MAX: int8 = 127
+    /// The size of `int8` in bits (`8`).
+    public const BITS: uint32 = 8
+
+    /// Returns `self + rhs`, or `.none` when the sum does not fit `int8`.
+    public func checkedAdd(_ rhs: int8) -> int8? {
+        if __intrinsic_overflows_add(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_add(self, rhs))
+    }
+
+    /// Returns `self - rhs`, or `.none` when the difference does not fit `int8`.
+    public func checkedSub(_ rhs: int8) -> int8? {
+        if __intrinsic_overflows_sub(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_sub(self, rhs))
+    }
+
+    /// Returns `self * rhs`, or `.none` when the product does not fit `int8`.
+    public func checkedMul(_ rhs: int8) -> int8? {
+        if __intrinsic_overflows_mul(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_mul(self, rhs))
+    }
+
+    /// Returns `self + rhs` modulo 2^N. Never traps.
+    public func wrappingAdd(_ rhs: int8) -> int8 {
+        __intrinsic_wrapping_add(self, rhs)
+    }
+
+    /// Returns `self - rhs` modulo 2^N. Never traps.
+    public func wrappingSub(_ rhs: int8) -> int8 {
+        __intrinsic_wrapping_sub(self, rhs)
+    }
+
+    /// Returns `self * rhs` modulo 2^N. Never traps.
+    public func wrappingMul(_ rhs: int8) -> int8 {
+        __intrinsic_wrapping_mul(self, rhs)
+    }
+
+    /// Returns `self + rhs`, clamped to the range of `int8`.
+    public func saturatingAdd(_ rhs: int8) -> int8 {
+        if !__intrinsic_overflows_add(self, rhs) {
+            return __intrinsic_wrapping_add(self, rhs)
+        }
+        if rhs < 0 { INT8_MIN } else { INT8_MAX }
+    }
+
+    /// Returns `self - rhs`, clamped to the range of `int8`.
+    public func saturatingSub(_ rhs: int8) -> int8 {
+        if !__intrinsic_overflows_sub(self, rhs) {
+            return __intrinsic_wrapping_sub(self, rhs)
+        }
+        if rhs < 0 { INT8_MAX } else { INT8_MIN }
+    }
+
+    /// Returns `self * rhs`, clamped to the range of `int8`.
+    public func saturatingMul(_ rhs: int8) -> int8 {
+        if !__intrinsic_overflows_mul(self, rhs) {
+            return __intrinsic_wrapping_mul(self, rhs)
+        }
+        if (self < 0) != (rhs < 0) { INT8_MIN } else { INT8_MAX }
+    }
+}
+
+extend int16 {
+    /// The smallest value representable by `int16` (`-32768`).
+    public const MIN: int16 = -32768
+    /// The largest value representable by `int16` (`32767`).
+    public const MAX: int16 = 32767
+    /// The size of `int16` in bits (`16`).
+    public const BITS: uint32 = 16
+
+    /// Returns `self + rhs`, or `.none` when the sum does not fit `int16`.
+    public func checkedAdd(_ rhs: int16) -> int16? {
+        if __intrinsic_overflows_add(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_add(self, rhs))
+    }
+
+    /// Returns `self - rhs`, or `.none` when the difference does not fit `int16`.
+    public func checkedSub(_ rhs: int16) -> int16? {
+        if __intrinsic_overflows_sub(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_sub(self, rhs))
+    }
+
+    /// Returns `self * rhs`, or `.none` when the product does not fit `int16`.
+    public func checkedMul(_ rhs: int16) -> int16? {
+        if __intrinsic_overflows_mul(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_mul(self, rhs))
+    }
+
+    /// Returns `self + rhs` modulo 2^N. Never traps.
+    public func wrappingAdd(_ rhs: int16) -> int16 {
+        __intrinsic_wrapping_add(self, rhs)
+    }
+
+    /// Returns `self - rhs` modulo 2^N. Never traps.
+    public func wrappingSub(_ rhs: int16) -> int16 {
+        __intrinsic_wrapping_sub(self, rhs)
+    }
+
+    /// Returns `self * rhs` modulo 2^N. Never traps.
+    public func wrappingMul(_ rhs: int16) -> int16 {
+        __intrinsic_wrapping_mul(self, rhs)
+    }
+
+    /// Returns `self + rhs`, clamped to the range of `int16`.
+    public func saturatingAdd(_ rhs: int16) -> int16 {
+        if !__intrinsic_overflows_add(self, rhs) {
+            return __intrinsic_wrapping_add(self, rhs)
+        }
+        if rhs < 0 { INT16_MIN } else { INT16_MAX }
+    }
+
+    /// Returns `self - rhs`, clamped to the range of `int16`.
+    public func saturatingSub(_ rhs: int16) -> int16 {
+        if !__intrinsic_overflows_sub(self, rhs) {
+            return __intrinsic_wrapping_sub(self, rhs)
+        }
+        if rhs < 0 { INT16_MAX } else { INT16_MIN }
+    }
+
+    /// Returns `self * rhs`, clamped to the range of `int16`.
+    public func saturatingMul(_ rhs: int16) -> int16 {
+        if !__intrinsic_overflows_mul(self, rhs) {
+            return __intrinsic_wrapping_mul(self, rhs)
+        }
+        if (self < 0) != (rhs < 0) { INT16_MIN } else { INT16_MAX }
+    }
+}
+
+extend int32 {
+    /// The smallest value representable by `int32` (`-2147483648`).
+    public const MIN: int32 = -2147483648
+    /// The largest value representable by `int32` (`2147483647`).
+    public const MAX: int32 = 2147483647
+    /// The size of `int32` in bits (`32`).
+    public const BITS: uint32 = 32
+
+    /// Returns `self + rhs`, or `.none` when the sum does not fit `int32`.
+    public func checkedAdd(_ rhs: int32) -> int32? {
+        if __intrinsic_overflows_add(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_add(self, rhs))
+    }
+
+    /// Returns `self - rhs`, or `.none` when the difference does not fit `int32`.
+    public func checkedSub(_ rhs: int32) -> int32? {
+        if __intrinsic_overflows_sub(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_sub(self, rhs))
+    }
+
+    /// Returns `self * rhs`, or `.none` when the product does not fit `int32`.
+    public func checkedMul(_ rhs: int32) -> int32? {
+        if __intrinsic_overflows_mul(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_mul(self, rhs))
+    }
+
+    /// Returns `self + rhs` modulo 2^N. Never traps.
+    public func wrappingAdd(_ rhs: int32) -> int32 {
+        __intrinsic_wrapping_add(self, rhs)
+    }
+
+    /// Returns `self - rhs` modulo 2^N. Never traps.
+    public func wrappingSub(_ rhs: int32) -> int32 {
+        __intrinsic_wrapping_sub(self, rhs)
+    }
+
+    /// Returns `self * rhs` modulo 2^N. Never traps.
+    public func wrappingMul(_ rhs: int32) -> int32 {
+        __intrinsic_wrapping_mul(self, rhs)
+    }
+
+    /// Returns `self + rhs`, clamped to the range of `int32`.
+    public func saturatingAdd(_ rhs: int32) -> int32 {
+        if !__intrinsic_overflows_add(self, rhs) {
+            return __intrinsic_wrapping_add(self, rhs)
+        }
+        if rhs < 0 { INT32_MIN } else { INT32_MAX }
+    }
+
+    /// Returns `self - rhs`, clamped to the range of `int32`.
+    public func saturatingSub(_ rhs: int32) -> int32 {
+        if !__intrinsic_overflows_sub(self, rhs) {
+            return __intrinsic_wrapping_sub(self, rhs)
+        }
+        if rhs < 0 { INT32_MAX } else { INT32_MIN }
+    }
+
+    /// Returns `self * rhs`, clamped to the range of `int32`.
+    public func saturatingMul(_ rhs: int32) -> int32 {
+        if !__intrinsic_overflows_mul(self, rhs) {
+            return __intrinsic_wrapping_mul(self, rhs)
+        }
+        if (self < 0) != (rhs < 0) { INT32_MIN } else { INT32_MAX }
+    }
+}
+
+extend int64 {
+    /// The smallest value representable by `int64` (`-9223372036854775808`).
+    public const MIN: int64 = -9223372036854775808
+    /// The largest value representable by `int64` (`9223372036854775807`).
+    public const MAX: int64 = 9223372036854775807
+    /// The size of `int64` in bits (`64`).
+    public const BITS: uint32 = 64
+
+    /// Returns `self + rhs`, or `.none` when the sum does not fit `int64`.
+    public func checkedAdd(_ rhs: int64) -> int64? {
+        if __intrinsic_overflows_add(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_add(self, rhs))
+    }
+
+    /// Returns `self - rhs`, or `.none` when the difference does not fit `int64`.
+    public func checkedSub(_ rhs: int64) -> int64? {
+        if __intrinsic_overflows_sub(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_sub(self, rhs))
+    }
+
+    /// Returns `self * rhs`, or `.none` when the product does not fit `int64`.
+    public func checkedMul(_ rhs: int64) -> int64? {
+        if __intrinsic_overflows_mul(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_mul(self, rhs))
+    }
+
+    /// Returns `self + rhs` modulo 2^N. Never traps.
+    public func wrappingAdd(_ rhs: int64) -> int64 {
+        __intrinsic_wrapping_add(self, rhs)
+    }
+
+    /// Returns `self - rhs` modulo 2^N. Never traps.
+    public func wrappingSub(_ rhs: int64) -> int64 {
+        __intrinsic_wrapping_sub(self, rhs)
+    }
+
+    /// Returns `self * rhs` modulo 2^N. Never traps.
+    public func wrappingMul(_ rhs: int64) -> int64 {
+        __intrinsic_wrapping_mul(self, rhs)
+    }
+
+    /// Returns `self + rhs`, clamped to the range of `int64`.
+    public func saturatingAdd(_ rhs: int64) -> int64 {
+        if !__intrinsic_overflows_add(self, rhs) {
+            return __intrinsic_wrapping_add(self, rhs)
+        }
+        if rhs < 0 { INT64_MIN } else { INT64_MAX }
+    }
+
+    /// Returns `self - rhs`, clamped to the range of `int64`.
+    public func saturatingSub(_ rhs: int64) -> int64 {
+        if !__intrinsic_overflows_sub(self, rhs) {
+            return __intrinsic_wrapping_sub(self, rhs)
+        }
+        if rhs < 0 { INT64_MAX } else { INT64_MIN }
+    }
+
+    /// Returns `self * rhs`, clamped to the range of `int64`.
+    public func saturatingMul(_ rhs: int64) -> int64 {
+        if !__intrinsic_overflows_mul(self, rhs) {
+            return __intrinsic_wrapping_mul(self, rhs)
+        }
+        if (self < 0) != (rhs < 0) { INT64_MIN } else { INT64_MAX }
+    }
+}
+
+extend isize {
+    /// The smallest value representable by `isize`.
+    public const MIN: isize = ~((~(0 as usize) >> 1) as isize)
+    /// The largest value representable by `isize`.
+    public const MAX: isize = (~(0 as usize) >> 1) as isize
+    /// The size of `isize` in bits (`32` or `64`).
+    public const BITS: uint32 = if (~(0 as usize) >> 31) > 1 { 64 } else { 32 }
+
+    /// Returns `self + rhs`, or `.none` when the sum does not fit `isize`.
+    public func checkedAdd(_ rhs: isize) -> isize? {
+        if __intrinsic_overflows_add(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_add(self, rhs))
+    }
+
+    /// Returns `self - rhs`, or `.none` when the difference does not fit `isize`.
+    public func checkedSub(_ rhs: isize) -> isize? {
+        if __intrinsic_overflows_sub(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_sub(self, rhs))
+    }
+
+    /// Returns `self * rhs`, or `.none` when the product does not fit `isize`.
+    public func checkedMul(_ rhs: isize) -> isize? {
+        if __intrinsic_overflows_mul(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_mul(self, rhs))
+    }
+
+    /// Returns `self + rhs` modulo 2^N. Never traps.
+    public func wrappingAdd(_ rhs: isize) -> isize {
+        __intrinsic_wrapping_add(self, rhs)
+    }
+
+    /// Returns `self - rhs` modulo 2^N. Never traps.
+    public func wrappingSub(_ rhs: isize) -> isize {
+        __intrinsic_wrapping_sub(self, rhs)
+    }
+
+    /// Returns `self * rhs` modulo 2^N. Never traps.
+    public func wrappingMul(_ rhs: isize) -> isize {
+        __intrinsic_wrapping_mul(self, rhs)
+    }
+
+    /// Returns `self + rhs`, clamped to the range of `isize`.
+    public func saturatingAdd(_ rhs: isize) -> isize {
+        if !__intrinsic_overflows_add(self, rhs) {
+            return __intrinsic_wrapping_add(self, rhs)
+        }
+        if rhs < 0 { ISIZE_MIN } else { ISIZE_MAX }
+    }
+
+    /// Returns `self - rhs`, clamped to the range of `isize`.
+    public func saturatingSub(_ rhs: isize) -> isize {
+        if !__intrinsic_overflows_sub(self, rhs) {
+            return __intrinsic_wrapping_sub(self, rhs)
+        }
+        if rhs < 0 { ISIZE_MAX } else { ISIZE_MIN }
+    }
+
+    /// Returns `self * rhs`, clamped to the range of `isize`.
+    public func saturatingMul(_ rhs: isize) -> isize {
+        if !__intrinsic_overflows_mul(self, rhs) {
+            return __intrinsic_wrapping_mul(self, rhs)
+        }
+        if (self < 0) != (rhs < 0) { ISIZE_MIN } else { ISIZE_MAX }
+    }
+}
+
+extend uint8 {
+    /// The smallest value representable by `uint8` (`0`).
+    public const MIN: uint8 = 0
+    /// The largest value representable by `uint8` (`255`).
+    public const MAX: uint8 = 255
+    /// The size of `uint8` in bits (`8`).
+    public const BITS: uint32 = 8
+
+    /// Returns `self + rhs`, or `.none` when the sum does not fit `uint8`.
+    public func checkedAdd(_ rhs: uint8) -> uint8? {
+        if __intrinsic_overflows_add(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_add(self, rhs))
+    }
+
+    /// Returns `self - rhs`, or `.none` when the difference does not fit `uint8`.
+    public func checkedSub(_ rhs: uint8) -> uint8? {
+        if __intrinsic_overflows_sub(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_sub(self, rhs))
+    }
+
+    /// Returns `self * rhs`, or `.none` when the product does not fit `uint8`.
+    public func checkedMul(_ rhs: uint8) -> uint8? {
+        if __intrinsic_overflows_mul(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_mul(self, rhs))
+    }
+
+    /// Returns `self + rhs` modulo 2^N. Never traps.
+    public func wrappingAdd(_ rhs: uint8) -> uint8 {
+        __intrinsic_wrapping_add(self, rhs)
+    }
+
+    /// Returns `self - rhs` modulo 2^N. Never traps.
+    public func wrappingSub(_ rhs: uint8) -> uint8 {
+        __intrinsic_wrapping_sub(self, rhs)
+    }
+
+    /// Returns `self * rhs` modulo 2^N. Never traps.
+    public func wrappingMul(_ rhs: uint8) -> uint8 {
+        __intrinsic_wrapping_mul(self, rhs)
+    }
+
+    /// Returns `self + rhs`, clamped to the range of `uint8`.
+    public func saturatingAdd(_ rhs: uint8) -> uint8 {
+        if !__intrinsic_overflows_add(self, rhs) {
+            return __intrinsic_wrapping_add(self, rhs)
+        }
+        UINT8_MAX
+    }
+
+    /// Returns `self - rhs`, clamped to the range of `uint8`.
+    public func saturatingSub(_ rhs: uint8) -> uint8 {
+        if !__intrinsic_overflows_sub(self, rhs) {
+            return __intrinsic_wrapping_sub(self, rhs)
+        }
+        0
+    }
+
+    /// Returns `self * rhs`, clamped to the range of `uint8`.
+    public func saturatingMul(_ rhs: uint8) -> uint8 {
+        if !__intrinsic_overflows_mul(self, rhs) {
+            return __intrinsic_wrapping_mul(self, rhs)
+        }
+        UINT8_MAX
+    }
+}
+
+extend uint16 {
+    /// The smallest value representable by `uint16` (`0`).
+    public const MIN: uint16 = 0
+    /// The largest value representable by `uint16` (`65535`).
+    public const MAX: uint16 = 65535
+    /// The size of `uint16` in bits (`16`).
+    public const BITS: uint32 = 16
+
+    /// Returns `self + rhs`, or `.none` when the sum does not fit `uint16`.
+    public func checkedAdd(_ rhs: uint16) -> uint16? {
+        if __intrinsic_overflows_add(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_add(self, rhs))
+    }
+
+    /// Returns `self - rhs`, or `.none` when the difference does not fit `uint16`.
+    public func checkedSub(_ rhs: uint16) -> uint16? {
+        if __intrinsic_overflows_sub(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_sub(self, rhs))
+    }
+
+    /// Returns `self * rhs`, or `.none` when the product does not fit `uint16`.
+    public func checkedMul(_ rhs: uint16) -> uint16? {
+        if __intrinsic_overflows_mul(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_mul(self, rhs))
+    }
+
+    /// Returns `self + rhs` modulo 2^N. Never traps.
+    public func wrappingAdd(_ rhs: uint16) -> uint16 {
+        __intrinsic_wrapping_add(self, rhs)
+    }
+
+    /// Returns `self - rhs` modulo 2^N. Never traps.
+    public func wrappingSub(_ rhs: uint16) -> uint16 {
+        __intrinsic_wrapping_sub(self, rhs)
+    }
+
+    /// Returns `self * rhs` modulo 2^N. Never traps.
+    public func wrappingMul(_ rhs: uint16) -> uint16 {
+        __intrinsic_wrapping_mul(self, rhs)
+    }
+
+    /// Returns `self + rhs`, clamped to the range of `uint16`.
+    public func saturatingAdd(_ rhs: uint16) -> uint16 {
+        if !__intrinsic_overflows_add(self, rhs) {
+            return __intrinsic_wrapping_add(self, rhs)
+        }
+        UINT16_MAX
+    }
+
+    /// Returns `self - rhs`, clamped to the range of `uint16`.
+    public func saturatingSub(_ rhs: uint16) -> uint16 {
+        if !__intrinsic_overflows_sub(self, rhs) {
+            return __intrinsic_wrapping_sub(self, rhs)
+        }
+        0
+    }
+
+    /// Returns `self * rhs`, clamped to the range of `uint16`.
+    public func saturatingMul(_ rhs: uint16) -> uint16 {
+        if !__intrinsic_overflows_mul(self, rhs) {
+            return __intrinsic_wrapping_mul(self, rhs)
+        }
+        UINT16_MAX
+    }
+}
+
+extend uint32 {
+    /// The smallest value representable by `uint32` (`0`).
+    public const MIN: uint32 = 0
+    /// The largest value representable by `uint32` (`4294967295`).
+    public const MAX: uint32 = 4294967295
+    /// The size of `uint32` in bits (`32`).
+    public const BITS: uint32 = 32
+
+    /// Returns `self + rhs`, or `.none` when the sum does not fit `uint32`.
+    public func checkedAdd(_ rhs: uint32) -> uint32? {
+        if __intrinsic_overflows_add(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_add(self, rhs))
+    }
+
+    /// Returns `self - rhs`, or `.none` when the difference does not fit `uint32`.
+    public func checkedSub(_ rhs: uint32) -> uint32? {
+        if __intrinsic_overflows_sub(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_sub(self, rhs))
+    }
+
+    /// Returns `self * rhs`, or `.none` when the product does not fit `uint32`.
+    public func checkedMul(_ rhs: uint32) -> uint32? {
+        if __intrinsic_overflows_mul(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_mul(self, rhs))
+    }
+
+    /// Returns `self + rhs` modulo 2^N. Never traps.
+    public func wrappingAdd(_ rhs: uint32) -> uint32 {
+        __intrinsic_wrapping_add(self, rhs)
+    }
+
+    /// Returns `self - rhs` modulo 2^N. Never traps.
+    public func wrappingSub(_ rhs: uint32) -> uint32 {
+        __intrinsic_wrapping_sub(self, rhs)
+    }
+
+    /// Returns `self * rhs` modulo 2^N. Never traps.
+    public func wrappingMul(_ rhs: uint32) -> uint32 {
+        __intrinsic_wrapping_mul(self, rhs)
+    }
+
+    /// Returns `self + rhs`, clamped to the range of `uint32`.
+    public func saturatingAdd(_ rhs: uint32) -> uint32 {
+        if !__intrinsic_overflows_add(self, rhs) {
+            return __intrinsic_wrapping_add(self, rhs)
+        }
+        UINT32_MAX
+    }
+
+    /// Returns `self - rhs`, clamped to the range of `uint32`.
+    public func saturatingSub(_ rhs: uint32) -> uint32 {
+        if !__intrinsic_overflows_sub(self, rhs) {
+            return __intrinsic_wrapping_sub(self, rhs)
+        }
+        0
+    }
+
+    /// Returns `self * rhs`, clamped to the range of `uint32`.
+    public func saturatingMul(_ rhs: uint32) -> uint32 {
+        if !__intrinsic_overflows_mul(self, rhs) {
+            return __intrinsic_wrapping_mul(self, rhs)
+        }
+        UINT32_MAX
+    }
+}
+
+extend uint64 {
+    /// The smallest value representable by `uint64` (`0`).
+    public const MIN: uint64 = 0
+    /// The largest value representable by `uint64` (`18446744073709551615`).
+    public const MAX: uint64 = 18446744073709551615
+    /// The size of `uint64` in bits (`64`).
+    public const BITS: uint32 = 64
+
+    /// Returns `self + rhs`, or `.none` when the sum does not fit `uint64`.
+    public func checkedAdd(_ rhs: uint64) -> uint64? {
+        if __intrinsic_overflows_add(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_add(self, rhs))
+    }
+
+    /// Returns `self - rhs`, or `.none` when the difference does not fit `uint64`.
+    public func checkedSub(_ rhs: uint64) -> uint64? {
+        if __intrinsic_overflows_sub(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_sub(self, rhs))
+    }
+
+    /// Returns `self * rhs`, or `.none` when the product does not fit `uint64`.
+    public func checkedMul(_ rhs: uint64) -> uint64? {
+        if __intrinsic_overflows_mul(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_mul(self, rhs))
+    }
+
+    /// Returns `self + rhs` modulo 2^N. Never traps.
+    public func wrappingAdd(_ rhs: uint64) -> uint64 {
+        __intrinsic_wrapping_add(self, rhs)
+    }
+
+    /// Returns `self - rhs` modulo 2^N. Never traps.
+    public func wrappingSub(_ rhs: uint64) -> uint64 {
+        __intrinsic_wrapping_sub(self, rhs)
+    }
+
+    /// Returns `self * rhs` modulo 2^N. Never traps.
+    public func wrappingMul(_ rhs: uint64) -> uint64 {
+        __intrinsic_wrapping_mul(self, rhs)
+    }
+
+    /// Returns `self + rhs`, clamped to the range of `uint64`.
+    public func saturatingAdd(_ rhs: uint64) -> uint64 {
+        if !__intrinsic_overflows_add(self, rhs) {
+            return __intrinsic_wrapping_add(self, rhs)
+        }
+        UINT64_MAX
+    }
+
+    /// Returns `self - rhs`, clamped to the range of `uint64`.
+    public func saturatingSub(_ rhs: uint64) -> uint64 {
+        if !__intrinsic_overflows_sub(self, rhs) {
+            return __intrinsic_wrapping_sub(self, rhs)
+        }
+        0
+    }
+
+    /// Returns `self * rhs`, clamped to the range of `uint64`.
+    public func saturatingMul(_ rhs: uint64) -> uint64 {
+        if !__intrinsic_overflows_mul(self, rhs) {
+            return __intrinsic_wrapping_mul(self, rhs)
+        }
+        UINT64_MAX
+    }
+}
+
+extend usize {
+    /// The smallest value representable by `usize` (`0`).
+    public const MIN: usize = 0
+    /// The largest value representable by `usize`.
+    public const MAX: usize = ~(0 as usize)
+    /// The size of `usize` in bits (`32` or `64`).
+    public const BITS: uint32 = if (~(0 as usize) >> 31) > 1 { 64 } else { 32 }
+
+    /// Returns `self + rhs`, or `.none` when the sum does not fit `usize`.
+    public func checkedAdd(_ rhs: usize) -> usize? {
+        if __intrinsic_overflows_add(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_add(self, rhs))
+    }
+
+    /// Returns `self - rhs`, or `.none` when the difference does not fit `usize`.
+    public func checkedSub(_ rhs: usize) -> usize? {
+        if __intrinsic_overflows_sub(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_sub(self, rhs))
+    }
+
+    /// Returns `self * rhs`, or `.none` when the product does not fit `usize`.
+    public func checkedMul(_ rhs: usize) -> usize? {
+        if __intrinsic_overflows_mul(self, rhs) {
+            return .none
+        }
+        return .some(__intrinsic_wrapping_mul(self, rhs))
+    }
+
+    /// Returns `self + rhs` modulo 2^N. Never traps.
+    public func wrappingAdd(_ rhs: usize) -> usize {
+        __intrinsic_wrapping_add(self, rhs)
+    }
+
+    /// Returns `self - rhs` modulo 2^N. Never traps.
+    public func wrappingSub(_ rhs: usize) -> usize {
+        __intrinsic_wrapping_sub(self, rhs)
+    }
+
+    /// Returns `self * rhs` modulo 2^N. Never traps.
+    public func wrappingMul(_ rhs: usize) -> usize {
+        __intrinsic_wrapping_mul(self, rhs)
+    }
+
+    /// Returns `self + rhs`, clamped to the range of `usize`.
+    public func saturatingAdd(_ rhs: usize) -> usize {
+        if !__intrinsic_overflows_add(self, rhs) {
+            return __intrinsic_wrapping_add(self, rhs)
+        }
+        USIZE_MAX
+    }
+
+    /// Returns `self - rhs`, clamped to the range of `usize`.
+    public func saturatingSub(_ rhs: usize) -> usize {
+        if !__intrinsic_overflows_sub(self, rhs) {
+            return __intrinsic_wrapping_sub(self, rhs)
+        }
+        0
+    }
+
+    /// Returns `self * rhs`, clamped to the range of `usize`.
+    public func saturatingMul(_ rhs: usize) -> usize {
+        if !__intrinsic_overflows_mul(self, rhs) {
+            return __intrinsic_wrapping_mul(self, rhs)
+        }
+        USIZE_MAX
+    }
+}

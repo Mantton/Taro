@@ -1,0 +1,4 @@
+error: no overload matches this call
+ -> language_tests/source_files/invalid/lazy_argument_overload_no_match.tr:5:19
+	    var x: int32 = select("nope")
+	                   ^^^^^^

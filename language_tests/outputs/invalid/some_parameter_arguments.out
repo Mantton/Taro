@@ -1,0 +1,8 @@
+error: excess generic arguments: function takes at most 0, provided 1
+ -> language_tests/source_files/invalid/some_parameter_arguments.tr:7:8
+	    mark[Item](Item {})
+	        ^^^^^^
+error: excess method generic arguments: expected at most 0, provided 1
+ -> language_tests/source_files/invalid/some_parameter_arguments.tr:8:4
+	    Reader {}.mark[Item](Item {})
+	    ^^^^^^^^^^^^^^^^^^^^

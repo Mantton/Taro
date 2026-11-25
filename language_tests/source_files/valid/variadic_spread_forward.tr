@@ -1,0 +1,14 @@
+func retain(_ values: int32...) -> Span[int32] { values }
+func forward(_ values: int32...) -> Span[int32] { retain(values...) }
+func fromIterable[S: Iterable[Element = int32]](_ values: S) -> Span[int32] { retain(values...) }
+func main() {
+    source := retain(1, 2, 3)
+    forwarded := forward(source...)
+    *forwarded.at(1) = 7
+    assert(*source.at(1) == 7, "forwarding a sole span preserves its storage")
+    gathered := fromIterable(source)
+    *gathered.at(1) = 9
+    assert(*source.at(1) == 7, "an abstract Iterable contributes copies of its yielded values")
+    assert(forward().isEmpty(), "an empty forwarded pack stays empty")
+    println("${forwarded.len()} ${*source.at(1)}")
+}

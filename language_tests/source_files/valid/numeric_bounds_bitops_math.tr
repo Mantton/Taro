@@ -1,0 +1,34 @@
+// End-to-end check of numeric associated constants, LLVM bit-manipulation
+// methods, and integer/Euclidean math helpers across debug and release builds.
+
+const SENTINEL: int32 = int32::MAX
+const INF: double = double::INFINITY
+
+func main() {
+    best := int32::MAX
+    assert(best == SENTINEL, "int32::MAX matches const")
+    assert(int64::BITS == 64_u32, "int64::BITS")
+    assert(INF.isInfinite() && !double::NAN.isFinite(), "float constants")
+
+    ones := 0b1011_0000_u32.countOnes()
+    assert(ones == 3_u32, "countOnes")
+
+    tz := 40_u64.trailingZeros()
+    assert(tz == 3_u32, "trailingZeros")
+    assert((0_u64).leadingZeros() == 64_u32, "leadingZeros(0)")
+
+    g := std::math::gcd(-18, 24)
+    assert(g == 6, "gcd(-18, 24)")
+    assert(std::math::lcm(-18, 24) == 72, "lcm(-18, 24)")
+
+    rem := (-7).remEuclid(4)
+    assert(rem == 1, "remEuclid")
+    assert((-7).divEuclid(4) == -2, "divEuclid")
+
+    assert(std::math::abs(-42) == 42, "math::abs int literal")
+    assert(std::math::abs(-4.2) == 4.2, "math::abs double literal")
+    assert(std::math::clamp(15, 0, 10) == 10, "math::clamp")
+    assert((15).clamp(0, 10) == 10, "Ord.clamp")
+    assert((12_u32).nextPowerOfTwo() == 16_u32, "nextPowerOfTwo")
+    assert((16_u32).ilog2() == 4_u32, "ilog2")
+}

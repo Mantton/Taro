@@ -1,0 +1,19 @@
+// A requirement's own `where Self == Boxed[int64]` must not give the
+// receiver's literal its type: the literal defaults to int32 and the call is
+// rejected, as `Boxed[int32] { value: 0 }.measure()` is.
+struct Boxed[T] {
+    value: T
+}
+
+interface Measure {
+    func measure() -> usize where Self == Boxed[int64] {
+        7
+    }
+}
+
+conform Boxed[int64] to Measure {}
+
+func main() {
+    n := Boxed { value: 0 }.measure() + 1
+    println("${n}")
+}

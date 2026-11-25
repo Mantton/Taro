@@ -1,0 +1,23 @@
+// A requirement whose result is `Self` publishes it for a receiver whose
+// literal is untyped: `Boxed { value: 0 }.again()` is `Boxed[{integer}]`.
+// The declared type of the variable then gives the literal its type,
+// int64, as it would with the receiver's type written out.
+struct Boxed[T] {
+    value: T
+}
+
+interface Again {
+    func again() -> Self
+}
+
+conform[T] Boxed[T] to Again {
+    func again() -> Self {
+        self
+    }
+}
+
+func main() {
+    var wide: Boxed[int64] = Boxed { value: 0 }.again()
+    var typed: Boxed[int64] = Boxed[int64] { value: 0 }.again()
+    println("${wide.value + 5000000000} ${typed.value + 5000000000}")
+}

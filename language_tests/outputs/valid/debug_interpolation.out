@@ -1,0 +1,15 @@
+Version { major: 1, minor: 4 }
+quit key('a')
+click { x: 1, y: 2 } and resize(width: 3, height: 4)
+display wins
+Version { major: 2, minor: 0 }
+"quoted by Debug"
+7
+display wins
+outer inner Version { major: 3, minor: 1 } done
+maybe=some(Version { major: 1, minor: 0 }) n=42 s=plain
+[Version { major: 1, minor: 0 }] first=Version { major: 1, minor: 0 } latest=Version { major: 9, minor: 1 }
+words=[a, b]
+Version { major: 5, minor: 5 }
+Square { side: 2 }
+err("bad") (1, "two") () r

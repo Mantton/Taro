@@ -1,0 +1,4 @@
+public func site(file: string = #file, line: int32 = #line, name: string = #function) -> string {
+    "${file}:${line}:${name}"
+}
+public func libraryFile() -> string { #file }

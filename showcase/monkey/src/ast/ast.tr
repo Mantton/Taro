@@ -1,5 +1,3 @@
-import monkey::token::Position
-
 /// Monkey's prefix operators.
 public enum PrefixOperator {
     case not

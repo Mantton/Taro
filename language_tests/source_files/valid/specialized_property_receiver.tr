@@ -1,0 +1,32 @@
+struct Box[T] { value: T }
+extend Box[int64] {
+    var measure: usize { get { 64 } }
+}
+extend[T] Box[T] {
+    var stored: T { get { self.value } }
+}
+extend[T] Box[T] where T == int64 {
+    var conditional: usize { get { 64 } }
+}
+interface Measured {
+    var measure: usize { get }
+    var conditional: usize { get }
+}
+conform Box[int32] to Measured {
+    var measure: usize { get { 32 } }
+    var conditional: usize { get { 32 } }
+}
+func main() {
+    var wide: int64 = Box { value: 5000000000 }.stored
+    value := Box { value: 0 }.measure + 1
+    typed := Box[int32] { value: 0 }.measure + 1
+    later := () => {
+        box := Box { value: 0 }
+        out := box.measure + 1
+        var _typed: Box[int64] = box
+        out
+    }
+    conditional := Box { value: 0 }.conditional
+    wideConditional := Box[int64] { value: 0 }.conditional
+    println("${wide} ${value} ${typed} ${later()} ${conditional} ${wideConditional}")
+}

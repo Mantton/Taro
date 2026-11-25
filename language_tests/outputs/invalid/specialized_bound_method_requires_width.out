@@ -1,0 +1,4 @@
+error: no member named 'measure' found on type Box[int32]
+ -> language_tests/source_files/invalid/specialized_bound_method_requires_width.tr:6:16
+	    callback := Box { value: 0 }.measure
+	                ^^^^^^^^^^^^^^^^^^^^^^^^

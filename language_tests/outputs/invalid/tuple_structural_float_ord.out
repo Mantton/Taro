@@ -1,0 +1,4 @@
+error: no overload matches this call: the candidate that accepts these arguments requires type '(double, int32)' to conform to interface 'Ord'
+ -> language_tests/source_files/invalid/tuple_structural_float_ord.tr:4:13
+	    var pq = PriorityQueue[(double, int32)]::new()
+	             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

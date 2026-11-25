@@ -1,0 +1,14 @@
+func main() {
+    var small: uint8 = 3
+    var optional: uint8? = small
+    first := match true {
+        case true => small
+        case false => 256
+    }
+    second := match true {
+        case true => 257
+        case false => small
+    }
+    fallback := optional ?? 258
+    println("${first} ${second} ${fallback}")
+}

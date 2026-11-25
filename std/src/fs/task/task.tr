@@ -178,3 +178,8 @@ extend &OpenOptions {
         return asyncFileFromRaw(stream, path, "open")
     }
 }
+
+conform AsyncFile to std::io::Closeable {
+    type CloseResult = Result[(), Error]
+    public func close() -> Result[(), Error] { self.close() }
+}

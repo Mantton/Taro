@@ -1,0 +1,4 @@
+error: duplicate tuple label `low`
+ -> language_tests/source_files/invalid/labeled_tuple_duplicate_literal.tr:2:21
+	    pair := (low: 1, low: 2)
+	                     ^^^

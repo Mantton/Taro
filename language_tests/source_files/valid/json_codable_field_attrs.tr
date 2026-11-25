@@ -1,0 +1,92 @@
+// TEST
+import std::encoding::Codable
+
+struct NonCodable {
+    id: int32
+}
+
+struct Profile: Codable {
+    @key("display_name") name: string
+    age: uint8
+    @skip cached: int32 = 99_i32
+    @skip note: string?
+    @skip flag: bool
+    @skip raw: NonCodable = NonCodable { id: 7_i32 }
+}
+
+struct AliasNoConflict: Codable {
+    @skip name: int32 = 5_i32
+    @key("name") label: string
+}
+
+struct Envelope[T]: Codable {
+    @key("payload") value: T
+    @skip tag: string = "v1"
+}
+
+final class Account: Codable {
+    @key("account_id") id: int32
+    @skip localToken: string = "ephemeral"
+}
+
+extend Account {
+    init(_ id: int32, _ localToken: string) {
+        self.id = id
+        self.localToken = localToken
+    }
+}
+
+@test
+func renamedAndSkippedStructFieldsRoundTrip() {
+    source := Profile {
+        name: "Ada",
+        age: 37_u8,
+        cached: 123_i32,
+        note: .some("transient"),
+        flag: true,
+        raw: NonCodable { id: 42_i32 },
+    }
+    encoded := std::json::encode(&source).unwrap()
+    assert(
+        encoded == "{\"display_name\":\"Ada\",\"age\":37}",
+        "renamed key used and skipped fields omitted from JSON",
+    )
+
+    // Even if JSON includes keys matching skipped Taro field names, they are ignored.
+    decoded := std::json::decode[Profile](
+        "{\"display_name\":\"Ada\",\"age\":37,\"cached\":555,\"note\":\"ignored\",\"flag\":true}",
+    ).unwrap()
+    assert(decoded.name == "Ada", "renamed field decoded")
+    assert(decoded.age == 37_u8, "regular field decoded")
+    assert(decoded.cached == 99_i32, "skipped field initialized from default expression")
+    assert(decoded.note.isNone(), "skipped Optional field initialized to none")
+    assert(!decoded.flag, "skipped Default field initialized via Default::default()")
+    assert(decoded.raw.id == 7_i32, "skipped non-Codable field initialized from default")
+}
+
+@test
+func skippedFieldNameDoesNotConflictWithRenamedKey() {
+    source := AliasNoConflict { name: 99_i32, label: "ok" }
+    encoded := std::json::encode(&source).unwrap()
+    assert(encoded == "{\"name\":\"ok\"}", "renamed field uses skipped field's identifier cleanly")
+    decoded := std::json::decode[AliasNoConflict](encoded).unwrap()
+    assert(decoded.name == 5_i32 && decoded.label == "ok", "decoded without conflict")
+}
+
+@test
+func genericStructWithFieldAttributes() {
+    source := Envelope[int32] { value: 42_i32, tag: "custom" }
+    encoded := std::json::encode(&source).unwrap()
+    assert(encoded == "{\"payload\":42}", "generic renamed key and skipped field")
+    decoded := std::json::decode[Envelope[int32]](encoded).unwrap()
+    assert(decoded.value == 42_i32 && decoded.tag == "v1", "generic decoded with skipped default")
+}
+
+@test
+func classWithFieldAttributes() {
+    source := Account(101_i32, "secret")
+    encoded := std::json::encode(&source).unwrap()
+    assert(encoded == "{\"account_id\":101}", "class renamed key and skipped field")
+    decoded := std::json::decode[Account](encoded).unwrap()
+    assert(decoded.id == 101_i32 && decoded.localToken == "ephemeral", "class decoded with skipped default")
+}

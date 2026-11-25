@@ -22,5 +22,5 @@ conform Counter to Readable {
 func main() {
     var values: std::collections::List[int32] = List[int32]::new()
     counter := Counter { value: 3 }
-    print(f"count {counter.read()}")
+    print("count ${counter.read()}")
 }

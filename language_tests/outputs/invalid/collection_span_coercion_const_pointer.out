@@ -1,0 +1,4 @@
+error: cannot take a reference through a `*const` pointer
+ -> language_tests/source_files/invalid/collection_span_coercion_const_pointer.tr:1:67
+	func view(_ pointer: *const [int32; 2]) -> [int32; ..] { unsafe { &*pointer } }
+	                                                                   ^^^^^^^^

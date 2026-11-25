@@ -1,0 +1,5 @@
+// PACKAGE: main_result_dependency_error
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_CONTAINS: error: no setting named 'timeout'
+// A Result `main` reports an error type declared, with its `Display`, in a
+// dependency package, after `!` boxes it into `any Error`.

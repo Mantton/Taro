@@ -17,18 +17,27 @@ impl<'ctx> Checker<'ctx> {
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         let receiver = self.synth(target, cs);
+        let may_be_lazy = self
+            .gcx()
+            .has_lazy_callable_named(self.gcx().intern_symbol("__subscript_get"));
         let keys = indices
             .iter()
-            .map(|index| crate::sema::tycheck::solve::ApplyArgument {
-                id: index.expression.id,
-                label: index.label.as_ref().map(|l| l.identifier),
-                ty: self.synth(&index.expression, cs),
-                span: index.span,
-            })
+            .map(|index| self.synth_call_argument(index, None, may_be_lazy, cs))
             .collect::<Vec<_>>();
         let output = cs.infer_cx.next_ty_var(expression.span);
+        let is_const_receiver = matches!(
+            &target.kind,
+            hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path))
+                if matches!(
+                    path.resolution,
+                    hir::Resolution::Definition(
+                        _,
+                        DefinitionKind::Constant | DefinitionKind::AssociatedConstant
+                    )
+                )
+        );
         let data = IndexAccessGoalData {
-            receiver_addressable: self.receiver_is_addressable(target, cs),
+            receiver_addressable: self.receiver_is_addressable(target, cs) || is_const_receiver,
             nodes,
             receiver,
             keys,

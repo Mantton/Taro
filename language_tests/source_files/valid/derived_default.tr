@@ -1,0 +1,59 @@
+// Listing Default on a struct derives `static func default() -> Self`: a
+// field takes its declared default expression, or else its type's Default.
+static var DEFAULTS_EVALUATED: int32 = 0
+
+func counted(_ value: int32) -> int32 {
+    DEFAULTS_EVALUATED += 1
+    value
+}
+
+struct Settings: Default {
+    retries: int32 = 3
+    name: string
+    tags: [string]
+    verbose: bool
+    timeout: double = 2.5
+    attempts: int32 = counted(7)
+}
+
+struct Server: Default {
+    host: string = "localhost"
+    port: uint16 = 8080
+    settings: Settings
+    fallback: Settings?
+}
+
+struct Slot[T]: Default {
+    value: T
+    count: usize
+}
+
+struct Labelled[T]: Default {
+    label: string = "unnamed"
+    value: T
+}
+
+func make[T: Default]() -> T {
+    T::default()
+}
+
+func main() {
+    settings := Settings::default()
+    println("settings: ${settings.retries} '${settings.name}' ${settings.tags.len()} ${settings.verbose} ${settings.timeout} ${settings.attempts}")
+    var again: Settings = make()
+    println("evaluated: ${DEFAULTS_EVALUATED} ${again.attempts}")
+
+    server := Server::default()
+    println("server: ${server.host}:${server.port} ${server.settings.retries} ${server.fallback.isNone()}")
+
+    slot := Slot[int64]::default()
+    var words: Slot[[string]] = make()
+    println("generic: ${slot.value} ${slot.count} ${words.value.len()}")
+
+    labelled := Labelled[Settings]::default()
+    println("labelled: ${labelled.label} ${labelled.value.retries}")
+
+    var edited = Settings::default()
+    edited.tags.append("x")
+    println("independent: ${edited.tags.len()} ${Settings::default().tags.len()}")
+}

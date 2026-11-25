@@ -1,0 +1,252 @@
+import std::cmp::Ord
+import std::iter::{FromIterator, Iterable, Iterator}
+import std::ops::Fn
+import std::panic::panic
+
+final class PriorityQueueStorage[Element] {
+    values: List[Element?]
+    before: any Fn(Element, Element) -> bool
+    busy: bool
+}
+
+extend[Element] PriorityQueueStorage[Element] {
+    init(_ before: any Fn(Element, Element) -> bool) {
+        self.values = List[Element?]::new()
+        self.before = before
+        self.busy = false
+    }
+}
+
+/// A shared binary heap. before(a, b) means a has higher priority than b.
+/// It must define a strict weak ordering. Equal priorities have no FIFO
+/// guarantee. Do not mutate ordering fields while elements are queued.
+/// Assignment shares the queue; copy() copies elements but shares captured
+/// comparator state. peek is O(1), push amortized O(log n), pop O(log n).
+public struct PriorityQueue[Element] {
+    internal storage: PriorityQueueStorage[Element]
+}
+
+extend[Element] PriorityQueue[Element] {
+    public static func new(by before: any Fn(Element, Element) -> bool) -> Self {
+        Self { storage: PriorityQueueStorage[Element](before) }
+    }
+
+    public func len() -> usize { self.storage.values.len() }
+    public func isEmpty() -> bool { self.storage.values.isEmpty() }
+    public func peek() -> Element? {
+        if self.isEmpty() { return .none }
+        return self.storage.values[0]
+    }
+
+    func beginMutation() {
+        if self.storage.busy { panic("priority queue mutated during comparison") }
+        self.storage.busy = true
+    }
+
+    /// Compare before moving slots: a comparator panic leaves the heap intact.
+    public func push(_ value: Element) {
+        self.beginMutation()
+        defer { self.storage.busy = false }
+        values := self.storage.values
+        var destination = values.len()
+        while destination > 0 {
+            parent := (destination - 1) / 2
+            if !self.storage.before(value, values[parent].unwrap()) { break }
+            destination = parent
+        }
+        var index = values.len()
+        values.append(.some(value))
+        while index > destination {
+            parent := (index - 1) / 2
+            values[index] = values[parent]
+            index = parent
+        }
+        values[destination] = .some(value)
+    }
+
+    /// Compare the entire sift path before committing any removal, so a
+    /// comparator panic leaves the heap intact. The path is one bit per level
+    /// (set when the right child was taken); a heap of at most usize::MAX
+    /// elements is shallower than 64 levels, so pop allocates nothing.
+    ///
+    /// The last element replaces the root. It came from the bottom of the heap
+    /// and nearly always belongs there, so the path descends to a leaf with
+    /// one comparison per level and then climbs to the replacement's position.
+    /// That is about log2(n) comparisons, where testing the replacement at
+    /// every level costs twice as many.
+    public func pop() -> Element? {
+        self.beginMutation()
+        defer { self.storage.busy = false }
+        values := self.storage.values
+        if values.isEmpty() { return .none }
+        result := values[0]
+        end := values.len() - 1
+        if end == 0 {
+            values[0] = .none
+            var _ = values.pop()
+            return result
+        }
+        replacement := values[end].unwrap()
+        var path: uint64 = 0
+        var depth: uint64 = 0
+        var index: usize = 0
+        // index < end/2 is precisely the set of parents with a left child
+        // in the remaining heap, and keeps 2*index+1 from overflowing.
+        while index < end / 2 {
+            var child = index * 2 + 1
+            if child + 1 < end && self.storage.before(values[child + 1].unwrap(), values[child].unwrap()) {
+                child += 1
+                path = path | (1_u64 << depth)
+            }
+            // Equal priorities are common. A replacement that no child of the
+            // root precedes stays at the root, with no walk to a leaf.
+            if depth == 0 && !self.storage.before(values[child].unwrap(), replacement) { break }
+            depth += 1
+            index = child
+        }
+        // Stop at the deepest element the replacement does not precede: its
+        // new parent then never follows it, and no child precedes it.
+        while depth > 0 && self.storage.before(replacement, values[index].unwrap()) {
+            index = (index - 1) / 2
+            depth -= 1
+        }
+        index = 0
+        var level: uint64 = 0
+        while level < depth {
+            child := index * 2 + 1 + (((path >> level) & 1_u64) as usize)
+            values[index] = values[child]
+            index = child
+            level += 1
+        }
+        values[index] = .some(replacement)
+        // Clear the vacated slot as well as shrinking: List intentionally
+        // retains removed slots for references, but this heap exposes none.
+        // A shrink alone could keep the returned object alive unnecessarily.
+        values[end] = .none
+        var _ = values.pop()
+        return result
+    }
+
+    /// Reserve storage for at least minCapacity elements, like List.reserve.
+    public func reserve(_ minCapacity: usize) {
+        self.beginMutation()
+        defer { self.storage.busy = false }
+        self.storage.values.reserve(minCapacity)
+    }
+
+    public func clear() {
+        self.beginMutation()
+        defer { self.storage.busy = false }
+        self.storage.values.clear()
+    }
+
+    public func copy() -> Self {
+        result := Self::new(by: self.storage.before)
+        result.storage.values = self.storage.values.copy()
+        return result
+    }
+
+    /// Build a priority queue from any iterable in O(n) time using bottom-up Floyd heapify.
+    public static func from[S: Iterable[Element = Element]](
+        _ source: S,
+        by before: any Fn(Element, Element) -> bool,
+    ) -> Self {
+        queue := Self::new(by: before)
+        for item in source {
+            queue.storage.values.append(.some(item))
+        }
+        queue.heapify()
+        return queue
+    }
+
+    /// Bottom-up O(n) Floyd heapify. Computes each sift-down path before moving
+    /// slots so a comparator panic never loses or duplicates elements, and holds
+    /// `busy` throughout to reject re-entrant mutation.
+    func heapify() {
+        values := self.storage.values
+        end := values.len()
+        if end <= 1 {
+            return
+        }
+        self.beginMutation()
+        defer { self.storage.busy = false }
+        var start = end / 2
+        while start > 0 {
+            start -= 1
+            self.siftDown(start, end)
+        }
+    }
+
+    func siftDown(_ start: usize, _ end: usize) {
+        values := self.storage.values
+        item := values[start].unwrap()
+        var index = start
+        var path: uint64 = 0
+        var depth: uint64 = 0
+        while index < end / 2 {
+            var child = index * 2 + 1
+            var tookRight = false
+            if child + 1 < end && self.storage.before(values[child + 1].unwrap(), values[child].unwrap()) {
+                child += 1
+                tookRight = true
+            }
+            if !self.storage.before(values[child].unwrap(), item) {
+                break
+            }
+            if tookRight {
+                path = path | (1_u64 << depth)
+            }
+            depth += 1
+            index = child
+        }
+        if depth > 0 {
+            var pos = start
+            var level: uint64 = 0
+            while level < depth {
+                child := pos * 2 + 1 + (((path >> level) & 1_u64) as usize)
+                values[pos] = values[child]
+                pos = child
+                level += 1
+            }
+            values[pos] = .some(item)
+        }
+    }
+}
+
+extend[Element: Ord] PriorityQueue[Element] {
+    /// A min-priority queue. Use `newMax()` for a max-heap or `new(by:)` for custom order.
+    public static func new() -> Self {
+        Self::new(by: (a: Element, b: Element) => a.cmp(b).isLess())
+    }
+
+    /// A max-priority queue (largest element has highest priority).
+    public static func newMax() -> Self {
+        Self::new(by: (a: Element, b: Element) => b.cmp(a).isLess())
+    }
+
+    /// Build a min-priority queue from any iterable in O(n) time.
+    public static func from[S: Iterable[Element = Element]](_ source: S) -> Self {
+        Self::from(source, by: (a: Element, b: Element) => a.cmp(b).isLess())
+    }
+
+    /// Build a max-priority queue from any iterable in O(n) time.
+    public static func fromMax[S: Iterable[Element = Element]](_ source: S) -> Self {
+        Self::from(source, by: (a: Element, b: Element) => b.cmp(a).isLess())
+    }
+}
+
+conform[Element: Ord] PriorityQueue[Element] to FromIterator {
+    type Element = Element
+
+    public static func fromIter[I: Iterator[Element = Element]](_ iter: &I) -> Self {
+        queue := Self::new()
+        loop {
+            match iter.next() {
+                case .some(item) => queue.storage.values.append(.some(item))
+                case .none => break
+            }
+        }
+        queue.heapify()
+        return queue
+    }
+}

@@ -225,6 +225,7 @@ impl Parser {
                     kind: TypeKind::ImplicitSelf,
                 }),
                 default_value: None,
+                is_lazy: false,
                 is_variadic: false,
                 span: accessor.span,
             },
@@ -251,6 +252,7 @@ impl Parser {
                     name: value,
                     annotated_type: output,
                     default_value: None,
+                    is_lazy: false,
                     is_variadic: false,
                     span: accessor.span,
                 });
@@ -283,6 +285,7 @@ impl Parser {
                 },
                 block,
                 is_unsafe: false,
+                is_const: false,
                 is_async: false,
                 is_final,
                 is_override,
@@ -313,6 +316,8 @@ impl Parser {
                 label: input.label.clone(),
                 span: input.span,
                 expression: self.native_identifier(input.name),
+                interpolated: false,
+                is_trailing_closure: false,
             })
             .collect();
         let call = Box::new(Expression {

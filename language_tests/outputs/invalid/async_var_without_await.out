@@ -1,0 +1,4 @@
+error: `async var` binding must be awaited before use
+ -> language_tests/source_files/invalid/async_var_without_await.tr:7:9
+	    y := x + 1_i32
+	         ^

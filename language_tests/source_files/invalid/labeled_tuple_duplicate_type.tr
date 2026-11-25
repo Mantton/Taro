@@ -1,0 +1,2 @@
+func width(_ pair: (low: int32, low: int32)) -> int32 { pair.0 }
+func main() {}

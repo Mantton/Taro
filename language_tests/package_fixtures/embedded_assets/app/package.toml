@@ -1,0 +1,6 @@
+[package]
+name = "github.com/example/embed-app"
+kind = "executable"
+
+[require]
+"github.com/example/embed-dep" = { path = "../dep", alias = "dep" }

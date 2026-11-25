@@ -39,8 +39,11 @@ pub struct Resolver<'arena> {
     pub expression_resolutions: FxHashMap<NodeID, ExpressionResolutionState>,
     pub(crate) member_bracket_diagnostics:
         FxHashMap<NodeID, crate::diagnostics::BracketDiagnostics>,
+    pub(crate) break_label_resolutions: FxHashMap<NodeID, Identifier>,
     /// Variant names per enum, filled in the first time an enum is asked about.
     enum_variants: RefCell<FxHashMap<DefinitionID, FxHashSet<Symbol>>>,
+    /// Lint facts, recorded only for the package compiled with lint warnings.
+    pub(crate) lint: Option<RefCell<super::lint::LintState>>,
 }
 
 impl<'a> Resolver<'a> {
@@ -66,7 +69,12 @@ impl<'a> Resolver<'a> {
             resolutions: Default::default(),
             expression_resolutions: Default::default(),
             member_bracket_diagnostics: Default::default(),
+            break_label_resolutions: Default::default(),
             enum_variants: Default::default(),
+            lint: context
+                .config
+                .lint_warnings
+                .then(|| RefCell::new(Default::default())),
 
             builin_types_bindings: PrimaryType::ALL
                 .iter()
@@ -128,6 +136,36 @@ impl<'a> Resolver<'a> {
             let package = resolutions.get(&id.package()).unwrap();
             let kind = *package.definition_to_kind.get(&id).unwrap();
             kind
+        }
+    }
+
+    pub(super) fn nested_scope(&self, id: DefinitionID) -> Option<Scope<'a>> {
+        if id.is_local_to_index(self.package_index()) {
+            self.definition_scope_mapping.get(&id).copied()
+        } else {
+            self.context
+                .store
+                .resolution_outputs
+                .borrow()
+                .get(&id.package())?
+                .definition_scope_mapping
+                .get(&id)
+                .copied()
+        }
+    }
+
+    pub(super) fn nested_type_parent(&self, id: DefinitionID) -> DefinitionID {
+        self.def_to_parent[&id]
+    }
+
+    pub(super) fn attach_nested_type(&mut self, nested: DefinitionID, owner: DefinitionID) {
+        self.def_to_parent.insert(nested, owner);
+        use super::models::Visibility;
+        if let Some(vis) = self.def_to_visibility.get_mut(&nested) {
+            match vis {
+                Visibility::Internal(parent) | Visibility::Private(parent) => *parent = owner,
+                Visibility::Public => {}
+            }
         }
     }
 
@@ -294,16 +332,16 @@ impl<'a> Resolver<'a> {
         match namespace {
             Type => {
                 // Forbid spelling if value already present or type already set
-                if slot.ty.is_some() || !slot.values.is_empty() {
-                    return Err(entry);
+                if let Some(previous) = slot.ty.or_else(|| slot.values.first().copied()) {
+                    return Err(previous);
                 }
                 slot.ty = Some(entry);
                 Ok(())
             }
             Value => {
                 // Forbid if a type already uses this name
-                if slot.ty.is_some() {
-                    return Err(entry);
+                if let Some(previous) = slot.ty {
+                    return Err(previous);
                 }
                 slot.values.push(entry);
                 Ok(())
@@ -331,7 +369,14 @@ impl<'a> Resolver<'a> {
                                 Resolution::Definition(_, DefinitionKind::Module)
                             );
 
-                            if !is_module {
+                            let nominal_scope = match resolution {
+                                Resolution::Definition(
+                                    id,
+                                    DefinitionKind::Struct | DefinitionKind::Enum,
+                                ) => self.nested_scope(id),
+                                _ => None,
+                            };
+                            if !is_module && nominal_scope.is_none() {
                                 return Err(ResolutionError::Expectation {
                                     expectation: ResolutionSource::Module,
                                     provided: resolution,
@@ -399,6 +444,7 @@ impl<'a> Resolver<'a> {
         &mut self,
         path: &[PathSegment],
         namespace: ScopeNamespace,
+        final_fallback: Option<ScopeNamespace>,
         scopes: &[LexicalScope<'a>],
     ) -> PathResult<'a> {
         let mut resulting_scope: Option<Scope<'a>> = None;
@@ -411,47 +457,57 @@ impl<'a> Resolver<'a> {
                 ScopeNamespace::Type
             };
 
-            let result = if let Some(scope) = resulting_scope {
-                self.resolve_in_scope(&segment.identifier, scope, namespace)
-            } else {
-                let lexical_binding =
-                    self.resolve_in_lexical_scopes(&segment.identifier, namespace, scopes);
-                match lexical_binding {
-                    Ok(binding) => match binding {
-                        LexicalScopeBinding::Declaration(holder) => Ok(holder),
-                        LexicalScopeBinding::Resolution(resolution) => {
-                            self.record_resolution(
-                                segment.id,
-                                ResolutionState::Complete(resolution.clone()),
-                            );
-
-                            if is_last {
-                                return PathResult::Resolution(ResolutionState::Complete(
-                                    resolution,
-                                ));
-                            } else {
-                                let unresolved_count = path.len() - 1 - index;
-                                return PathResult::Resolution(ResolutionState::Partial {
-                                    resolution,
-                                    unresolved_count,
-                                });
-                            }
-                        }
-                    },
-                    Err(e) => Err(e),
-                }
+            let lookup = |ns| match resulting_scope {
+                Some(scope) => self.resolve_in_scope(&segment.identifier, scope, ns)
+                    .map(LexicalScopeBinding::Declaration),
+                None => self.resolve_in_lexical_scopes(&segment.identifier, ns, scopes),
             };
-
-            let result = match result {
-                Ok(result) => result,
-                Err(e) => {
-                    return PathResult::Failed { error: e };
+            // A constructor pattern can name a value or a type. Probe the
+            // terminal name before recording its resolution; prefixes are
+            // shared and each path segment must be recorded exactly once.
+            let binding = match (lookup(namespace), is_last, final_fallback) {
+                (Err(error), true, Some(fallback)) => lookup(fallback).map_err(|_| error),
+                (first, _, _) => first,
+            };
+            let result = match binding {
+                Ok(LexicalScopeBinding::Declaration(holder)) => holder,
+                Ok(LexicalScopeBinding::Resolution(resolution)) => {
+                    if let (Some(lint), Resolution::LocalVariable(local)) = (&self.lint, &resolution) {
+                        lint.borrow_mut().note_local_reference(segment.id, *local, scopes);
+                    }
+                    self.record_resolution(segment.id, ResolutionState::Complete(resolution.clone()));
+                    let state = if is_last {
+                        ResolutionState::Complete(resolution)
+                    } else {
+                        ResolutionState::Partial { resolution, unresolved_count: path.len() - index - 1 }
+                    };
+                    return PathResult::Resolution(state);
                 }
+                Err(error) => return PathResult::Failed { error },
             };
 
             let resolution = result.resolution();
             let possibly_associated_type = ResolutionSource::Type.is_allowed(&resolution);
 
+            // A nominal owner can have both nested types and ordinary associated
+            // members. Enter its type namespace only for a declared nested name.
+            if let Resolution::Definition(id, DefinitionKind::Struct | DefinitionKind::Enum) =
+                resolution
+                && let Some(next) = path.get(index + 1)
+                && let Some(scope) = self.nested_scope(id)
+                && self
+                    .resolve_in_scope(&next.identifier, scope, ScopeNamespace::Type)
+                    .is_ok()
+            {
+                if let Some(args) = &segment.arguments {
+                    return PathResult::Failed {
+                        error: ResolutionError::NestedTypeOnSpecializedOwner(args.span),
+                    };
+                }
+                self.record_resolution(segment.id, ResolutionState::Complete(resolution));
+                resulting_scope = Some(scope);
+                continue;
+            }
             if let Some(scope) = self.scope_for_holder(&result) {
                 self.record_resolution(segment.id, ResolutionState::Complete(resolution));
                 resulting_scope = Some(scope)
@@ -488,7 +544,11 @@ impl<'a> Resolver<'a> {
         scope: Scope<'a>,
         namespace: ScopeNamespace,
     ) -> Result<Holder<'a>, ResolutionError> {
-        super::scope_lookup::resolve_in_scope(scope, *name, namespace)
+        let result = super::scope_lookup::resolve_in_scope(scope, *name, namespace);
+        if let (Some(lint), Ok(holder)) = (&self.lint, &result) {
+            lint.borrow_mut().note_lookup(holder);
+        }
+        result
     }
 
     pub fn resolve_in_lexical_scopes(
@@ -520,7 +580,9 @@ impl<'a> Resolver<'a> {
             }
 
             match &scope.kind {
-                ScopeKind::Block(..) | ScopeKind::File(..) => {
+                ScopeKind::Block(..)
+                | ScopeKind::File(..)
+                | ScopeKind::Definition(_, DefinitionKind::Struct | DefinitionKind::Enum) => {
                     // see through to outer scopes
                 }
                 _ => break,
@@ -704,6 +766,16 @@ impl<'a> Resolver<'a> {
 
 impl<'a> Resolver<'a> {
     pub fn build_output(self) -> ResolutionOutput<'a> {
+        if let Some(lint) = self.lint {
+            let facts = lint.into_inner().facts;
+            let mut store = self.context.store.lint_facts.borrow_mut();
+            let entry = store.entry(self.context.config.index).or_default();
+            entry.imports = facts.imports;
+            entry.used_imports = facts.used_imports;
+            entry.locals = facts.locals;
+            entry.read_locals = facts.read_locals;
+            entry.shadowed = facts.shadowed;
+        }
         ResolutionOutput {
             resolutions: self.resolutions,
             node_to_definition: self.node_to_def,
@@ -716,6 +788,7 @@ impl<'a> Resolver<'a> {
             block_scope_mapping: self.block_scope_mapping,
             expression_resolutions: self.expression_resolutions,
             member_bracket_diagnostics: self.member_bracket_diagnostics,
+            break_label_resolutions: self.break_label_resolutions,
             root_scope: self.root_module_scope.unwrap(),
         }
     }

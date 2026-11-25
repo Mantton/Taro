@@ -31,6 +31,10 @@ pub(crate) fn opaque_return_is_supported(
         )
 }
 
+pub(crate) fn is_owner_return(ty: Ty<'_>, owner: DefinitionID) -> bool {
+    matches!(ty.kind(), TyKind::Alias { kind: AliasKind::Opaque, def_id, .. } if def_id == owner)
+}
+
 pub(crate) fn opaque_return_ty<'ctx>(gcx: Gcx<'ctx>, owner: DefinitionID) -> Ty<'ctx> {
     let args = GenericsBuilder::identity_for_item(gcx, owner);
     Ty::new(
@@ -295,9 +299,9 @@ func main() {
     }
 
     #[test]
-    fn some_is_rejected_outside_concrete_return_positions() {
+    fn some_is_rejected_outside_parameters_and_concrete_returns() {
         for source in [
-            "func consume(_ value: some Named) {}\nfunc main() {}",
+            "func consume(_ value: (some Named, int32)) {}\nfunc main() {}",
             "type Hidden = some Named\nfunc main() {}",
             "interface Factory {\nstatic func make() -> some Named\n}\nfunc main() {}",
             "struct Holder { value: some Named }\nfunc main() {}",

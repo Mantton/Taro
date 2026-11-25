@@ -32,6 +32,17 @@ func fastFunction() { }
 func separateFunction() { }
 ```
 
+`@discardableResult` lets callers ignore a function's `Result` without the
+unused-Result warning (see
+[Unused Results](expressions.md#unused-results)). It is allowed on functions,
+methods and interface requirements that return `Result`, and takes no
+arguments:
+
+```taro
+@discardableResult
+func log(_ line: string) -> Result[(), Error] { ... }
+```
+
 `@NoCopy` marks a nominal type for the opt-in `taro vet` command:
 
 ```taro
@@ -49,7 +60,27 @@ This attribute adds no fields, runtime checks or language copy restriction.
 Normal `check`, `build` and `run` preserve ordinary value semantics. Vet is an
 advisory source check, not an ownership or synchronization guarantee; it does not
 prove the safety of arbitrary generic or unsafe operations. Findings use warning
-diagnostics and give `taro vet` a nonzero exit status.
+diagnostics and give `taro vet` a nonzero exit status. Vet also reports
+shadowing that hides a later read; see [Local Bindings](#local-bindings).
+
+`@deprecated` marks a declaration as deprecated and emits a warning at every use
+site, including across package boundaries:
+
+```taro
+@deprecated("use computeV2", replace = "computeV2")
+func computeV1(_ x: int64) -> int64 { x }
+
+@deprecated("migrate manually", replace = "newApi", advisory)
+func oldApi() -> int64 { 0 }
+
+@deprecated("legacy only")
+func legacyHelper() -> int64 { 0 }
+```
+
+When `replace = "newName"` is a simple identifier and `advisory` is omitted, the
+compiler attaches a machine-applicable rename suggestion. Run `taro fix` (or
+`taro fix --dry-run`) to apply machine-applicable suggestions in place while
+leaving advisory and message-only warnings untouched.
 
 ---
 
@@ -62,6 +93,31 @@ wildcard patterns. `let` was removed and reports an error suggesting the
 replacement. A shorthand declaration creates a new binding, including when its
 name shadows an earlier one. Use `=` to update an existing binding. Shorthand
 is not available for globals or conditional bindings.
+
+`_ := expression` evaluates and discards its result, like `var _ = expression`,
+without declaring a name. It may be repeated in the same scope.
+
+Because `:=` always declares, writing it where an assignment was meant
+silently leaves the outer binding unchanged. `taro vet` reports a `:=` or
+`var` declaration that shadows a local or parameter of the same function when
+that outer binding is read after the declaration's scope ends:
+
+```taro
+func load(_ verbose: bool) -> int32 {
+    config := 1
+    if verbose {
+        config := 2     // vet: 'config' shadows the variable declared on
+    }                   // line 2, which is read after this scope ends
+    return config       // still 1
+}
+```
+
+Write `config = 2` to update the outer binding, or rename the inner one. Vet
+does not report a redeclaration in the same scope, shadowing whose outer
+binding is not read afterwards, the bindings of `if var`, `guard var`, `while
+var`, `for` and `match` patterns, or a closure's declarations. Like the
+`@NoCopy` checks, findings are warnings that give `taro vet` a nonzero exit
+status; `check`, `build` and `run` do not report shadowing.
 
 Optional conditions are written `if var`, `while var` and `guard var`. All
 `case` bindings are writable value copies; `case var` has the same behavior. Conditions may join bindings with `&&`, making
@@ -86,7 +142,7 @@ func main() {
 
 ## Struct Declaration
 
-Structs define composite data types with named fields.
+Structs define nominal value types with named or positional fields.
 
 ```taro
 // Basic struct
@@ -146,6 +202,53 @@ struct CHeader {
 
 ---
 
+### Positional structs
+
+Give each field’s type in parentheses to declare a nominal struct with
+positional fields. Use parentheses for construction and patterns. Fields
+are writable through a mutable receiver and inherit the type’s visibility.
+
+```taro
+struct UserId(int64): PartialEq
+struct OrderId(int64)
+struct Pair[T](T, T)
+
+id := UserId(42)
+raw := id.0
+var pair: Pair[int64] = Pair(2, 5)
+pair.1 += 1
+var Pair(first, second) = pair
+```
+
+A function accepting `UserId` requires that nominal type. The separate
+`OrderId` and the underlying `int64` each require explicit construction to
+produce a `UserId`. A one-field struct has its field’s size and alignment.
+Derived conformances follow the same field requirements as named structs.
+Declaring an explicit initializer replaces the synthesized positional
+constructor. Its body can initialize fields by position, as in `self.0 = raw`.
+
+### Nested types in extensions
+
+An inherent extension can declare a struct, enum, class, or interface inside a
+nominal type in the same package. Use the owner's name to qualify it. All
+instantiations of a generic owner share the same nested declaration.
+
+```taro
+struct Queue[T] { value: T }
+extend Queue {
+    public enum State { case ready, closed }
+    struct Entry[V](V)
+}
+
+func initial() -> Queue::State { .ready }
+entry := Queue::Entry[int64](5000000000)
+```
+
+A nested type declares its own generic parameters. Extension parameters are
+outside its scope. Sibling declarations can refer to each other by name. A
+caller needs visibility of both the owner and the nested type. The same paths
+work in package signatures and imports, such as `import dep::Queue::State`.
+
 ## Enum Declaration
 
 Enums define sum types with multiple variants.
@@ -181,6 +284,21 @@ enum Direction {
 }
 ```
 
+Payload-free enums can opt into `CaseIterable` to enumerate their cases and
+read each case's declared name. Each call to `iter()` starts at the first
+case. An empty enum yields no cases.
+
+```taro
+enum Signal: CaseIterable, RawValue[uint8] { case stop = 90, go = 2 }
+
+for signal in Signal::ALL_CASES { println(signal.name) } // stop, then go
+raw := Signal::go.rawValue                              // 2
+signal := Signal::from(rawValue: 90)                     // .some(.stop)
+```
+
+`RawValue` can be adopted separately. Its integer type must fit all declared
+discriminants. Lookup of a missing raw value returns `.none`.
+
 ---
 
 ### Named Enum Payloads
@@ -206,12 +324,122 @@ func main() {
             // x: int32; y: int32. These are local copies.
             assert(x == 2, "copied payload")
             y = 5
+            assert(y == 5, "only the copy changes")
         }
     }
 }
 ```
 
 ---
+
+### Delegating through a stored field
+
+Use `by self.field` on a conformance to forward instance requirements to a
+stored value. An explicit method takes precedence for its matching signature.
+Other overloads continue to forward through the field.
+
+```taro
+interface Gauge {
+    func read() -> int32
+    func offset() -> int32
+}
+struct Wrapper { inner: any Gauge }
+conform Wrapper to Gauge by self.inner {
+    func read() -> int32 { self.inner.read() + 1 }
+}
+```
+
+Here `offset()` calls the implementation held in `inner`. Calls through
+`any Gauge` and a generic `G: Gauge` use the same wrapper witnesses.
+Use a reference conformance such as `conform &Counter to Meter by self.inner`
+when a forwarded call must mutate storage inside a value type. Place a
+conditional conformance’s `where` clause after the field. Implement a
+requirement that returns the wrapper’s own `Self` explicitly when the
+field’s method returns a different type.
+
+## Derived Conformances
+
+Listing one of these standard interfaces in a struct or enum's conformance
+list, with no implementation, asks the compiler to synthesize it:
+
+| Interface | Synthesized member | Recipe |
+| --- | --- | --- |
+| `Clone` | `clone()` | Clone each stored field or payload. |
+| `CaseIterable` | `name`, `caseAt(_:)` | Return the case identifier and look up a case by its zero-based declaration index. `ALL_CASES` provides iteration. |
+| `RawValue[Raw]` | `rawValue`, `from(rawValue:)` | Read and look up a payload-free enum's integer discriminants. |
+| `PartialEq`, `Equatable` | `eq(_:)` | Fields equal in order; enum values need the same case and equal payloads. |
+| `Hashable` | `hash(into:)` | Hash each field; enum values also hash their case. |
+| `Encodable`, `Decodable` | `encode(into:)`, `decode(from:)` | Field-by-field codec; `Codable` lists both. |
+| `PartialOrd` | `partialCmp(_:)` | Compare fields in declaration order with their own `partialCmp`; the first result that is not `.some(.equal)` is the answer, so a `.none` ends the comparison. |
+| `Ord` | `cmp(_:)` | Compare fields in order with their own `cmp`; the first result that is not `.equal` is the answer. |
+| `Default` | `static default()` | Each field's declared `= expression` default, or else its type's `Default::default()`. Structs only. |
+| `Debug` | `debug(_:)` | A struct writes `Name { field: value }`, or `Name` without fields; an enum writes its case name and payload. Each field uses its own `debug`. |
+
+Enums order their cases by declaration order. Two values of the same case
+compare their payloads in order, positional or named; cases without payloads
+equal themselves. `Comparable` is `PartialEq & PartialOrd & Ord`, and like
+`Codable` it can be listed directly:
+
+```taro
+struct Version: Comparable {
+    major: int32
+    minor: int32
+}
+
+enum Priority: Comparable { case low, normal, high }
+
+struct Settings: Default {
+    retries: int32 = 3     // a declared default wins
+    name: string           // otherwise string's default, ""
+    tags: [string]         // and an empty list
+}
+
+func main() {
+    var releases: [Version] = [Version { major: 2, minor: 0 }, Version { major: 1, minor: 4 }]
+    releases.sort()                    // uses the derived Ord
+    newer := releases[0] < releases[1] // operators use PartialOrd
+    empty := Settings::default()
+    println("${newer} ${empty.retries}")   // true 3
+}
+```
+
+A derived `Debug` omits generic arguments, and an enum value writes its case
+without the enum's name: `quit`, `key('a')`, `resize(width: 3, height: 4)` and
+`click { x: 1, y: 2 }`. String and rune fields are quoted and escaped the way
+a literal is written:
+
+```taro
+struct Person: Debug {
+    name: string
+    tags: [string]
+    manager: string?
+}
+
+func main() {
+    var tags: [string] = ["x", "y"]
+    ada := Person { name: "Ada", tags, manager: .none }
+    println("${ada}") // Person { name: "Ada", tags: ["x", "y"], manager: none }
+}
+```
+
+Every stored field, or every enum payload, must conform to the interface being
+derived; `Default` checks only the fields without a declared default. The
+error names the type, the field and the missing interface. A `double` field
+supports `PartialOrd` but not `Ord`, because NaN is unordered. Generic types
+conform conditionally: `Pair[T]: Comparable` is `Ord` exactly when `T` is.
+
+A derived interface never derives its super-interfaces. `Ord` needs
+`PartialOrd` and `PartialEq`, and `Hashable` needs `PartialEq`, each either
+listed as well or implemented in a `conform` block. A hand-written
+`partialCmp` beside a derived `cmp`, or the reverse, is allowed; keeping the
+two consistent is the author's job. To implement one of these interfaces by
+hand, write a `conform` block instead of listing it.
+
+`Clone`, `PartialEq` and `Hashable` are also derived for final classes, and the
+codecs for classes. `PartialOrd`, `Ord`, `Default` and `Debug` are derived for
+value types only: listing them on a class, or `Default` on an enum, is an error.
+A class may reach itself through its fields, so its `Debug` text is written by
+hand, where the author decides how to cut a cycle.
 
 ## Interface Declaration
 
@@ -345,12 +573,39 @@ func main() {
     move(from: origin, to: Point { x: 1, y: 2 })
     greetPerson()
     result := add(a: 1, b: sum(2, 3, 4))
+    println("${result}")
 }
 ```
 
 Parameter names are also argument labels unless `_` suppresses the label.
 A separate label, as in `from source: Point`, keeps the external and internal
 names distinct. Variadic parameters must be last and cannot have defaults.
+
+A parameter declared `@lazy T` receives a zero-argument closure. Supply an
+ordinary expression at the call site. Each invocation in the function body
+evaluates that expression, using the same capture rules as a handwritten
+closure. An unused argument never runs. For example, `assert(ready, describe())`
+calls `describe()` only if the assertion fails. The current compiler boxes the
+closure at the call site, which can allocate even when the callee skips it.
+
+```taro
+func fallback(_ value: int32?, or other: @lazy int32) -> int32 {
+    match value {
+        case .some(number) => number
+        case .none => other()
+    }
+}
+```
+
+A postfix `...` feeds an iterable's elements into a variadic parameter.
+For example, `sum(1, values..., 4)` consumes `values` once between the two
+scalar arguments. Each item receives the usual conversion to the parameter's
+element type. A collection passed without `...` supplies one argument.
+
+A sole spread whose static type is the matching `Span[T]` forwards its
+storage to a `T...` parameter. A write through the callee's span is visible through the original
+span. Mixed contributions, abstract `Iterable` parameters and sources requiring
+element conversion produce a fresh pack. A function can return that pack's span.
 
 Instance methods omit `self` from their parameter lists. The declaration
 containing the method determines its receiver:
@@ -400,18 +655,84 @@ Calls and saved method values follow the same lookup rules. Inherited instance
 and static overloads remain visible; a subclass static declaration hides only
 the inherited declaration with the same input signature.
 
-Within a candidate group, exact argument types take priority over conversions
-such as class upcasts, optional wrapping and interface boxing. A concrete
-declaration wins over a generic declaration only when their conversion costs
-tie. Overload selection uses static argument types; virtual dispatch then picks
-the override of the selected method. Return types alone cannot distinguish
-overloads, even when the declarations are never called.
+Within a candidate group, the candidate whose arguments need the fewest
+conversions, such as class upcasts, optional wrapping and interface boxing,
+wins, so exact argument types take priority. A concrete declaration wins over a
+generic declaration only when their conversion costs tie. If they still tie, the
+candidate that boxes fewer arguments into an `any` existential wins, because it
+keeps their concrete types. Any remaining tie is an ambiguity error. Overload
+selection uses static argument types; virtual dispatch then picks the override
+of the selected method. Return types alone cannot distinguish overloads, even
+when the declarations are never called.
+
+```taro
+interface Show {}
+conform usize to Show {}
+
+func describe(_ value: usize?) -> string { "optional" }
+func describe(_ value: any Show) -> string { "existential" }
+
+func main() {
+    var count: usize = 3
+    println(describe(count))    // optional: one wrap, no boxing
+}
+```
 
 Use `static func` for receiver-free factories and requirements. Explicit `self`
 and `&self` function parameters are rejected. Free functions retain their normal
 parameter lists. Methods that need their receiver's storage belong in
 `extend &T` or `conform &T`. Unrelated members belong in `extend`, rather than
 a `conform` body.
+
+### Entry Point
+
+An executable's `main` takes no parameters and has one of these forms, each of
+which may be `async`:
+
+- `func main()`: the program exits with status 0 when `main` returns.
+- `func main() -> Result[(), E]`: returning `.ok(())` exits with status 0.
+  Returning `.err(error)` writes `error: ` and the error's display form, and a
+  newline, to standard error, and the program exits with status 1.
+
+`E` must be printable the way string interpolation prints a value: it must
+conform to `std::fmt::Display`, or be an existential such as
+`any std::error::Error` whose interfaces include `Display`. Postfix `!` works in
+`main` as in any other function returning `Result`, including boxing a concrete
+error into `any std::error::Error`:
+
+```taro
+struct ConfigError {
+    key: string
+}
+
+conform ConfigError to std::fmt::Display {
+    func display(_ into: &std::fmt::Formatter) {
+        into.writeString("missing setting '${self.key}'")
+    }
+}
+
+conform ConfigError to std::error::Error {}
+
+func setting(_ key: string) -> Result[int32, ConfigError] {
+    if key == "workers" {
+        return .ok(4)
+    }
+    return .err(ConfigError { key })
+}
+
+func main() -> Result[(), any std::error::Error] {
+    workers := setting("workers")!
+    print("workers: ${workers}\n")
+    var _ = setting("timeout")! // prints `error: missing setting 'timeout'`, exits 1
+    return .ok(())
+}
+```
+
+The error is reported after `main` and its `defer` blocks have run, and after
+everything `main` wrote to standard output. The program then exits as it does
+when a unit `main` returns, with no backtrace. A panic in `main` is reported and
+exits as it does for a unit `main`. `taro run` exits with the program's status.
+Any other return type, or parameters on `main`, is a compile error.
 
 ---
 
@@ -443,7 +764,7 @@ extend Point {
 // Implementation of interface
 conform Point to Drawable {
     func draw() {
-        println(f"({self.x}, {self.y})")
+        println("(${self.x}, ${self.y})")
     }
 }
 
@@ -509,6 +830,7 @@ extend Counter {
 func main() {
     var counter: Counter = Counter(7)
     // Counter { origin: 1, value: 7 } // Error: use the initializer.
+    println("${counter.value}")
 }
 ```
 
@@ -519,6 +841,8 @@ Without an initializer, a field literal evaluates its explicit fields in written
 order, then fills omitted defaults in declaration order; explicit fields skip
 their defaults. Field visibility still applies to omitted fields. Synthesized
 `clone()` copies/clones the stored fields without rerunning defaults or `init`.
+A derived `default()` evaluates the declared defaults in declaration order but
+does not call `init` either.
 
 GC protects initialized reference-bearing fields during partial construction.
 The result becomes usable after the body and its defers return successfully.
@@ -637,6 +961,7 @@ func main() {
     point := Point::new(x: 10, y: 20)
     factory := Point::new
     another := factory(30, 40)
+    println("${point.x} ${another.x}")
 }
 ```
 
@@ -936,12 +1261,50 @@ Constants define compile-time values.
 const PI: double = 3.14159
 const MAX_SIZE: int32 = 1024
 const NAME: string = "Taro"
+
+enum Direction { case north, south }
+const START: Direction = Direction::north
+const FINISH: Direction = .south
 ```
 
-Constant initializers support literals, references to other constants, unary
-and binary operators, primitive numeric and rune casts, and `if` expressions.
+Constant initializers support literals, enum cases without payloads, references
+to other constants, built-in unary and binary operators, primitive numeric and
+rune casts, and `if` expressions.
 Only the selected `if` branch is evaluated. Aggregate construction and general
 function calls are not constant expressions.
+
+An extension can declare a constant for a type or a particular specialization.
+Use `Type::NAME` to read it, including in another constant or an array length.
+
+```taro
+struct Packet[T] { value: T }
+extend Packet[uint8] { const SIZE: usize = 8; }
+type Bytes = [uint8; Packet[uint8]::SIZE]
+```
+
+An interface can require a constant and provide a default. Reading that
+constant through a generic type parameter selects the implementation for the
+concrete type, including an override supplied by its conformance.
+
+```taro
+interface Labelled { const LABEL: string = "default"; }
+struct Tag {}
+conform Tag to Labelled { const LABEL: string = "tag"; }
+func label[T: Labelled](_ value: T) -> string { T::LABEL }
+```
+
+A concrete type can use an interface constant in a declaration header. The
+compiler selects the same visible conformance as it would in an expression,
+including when the conformance is declared later. In this example the field
+and the alias both have room for five bytes.
+
+```taro
+interface SizedPacket { const WIDTH: usize = 3; }
+struct PacketKind {}
+type Payload = [uint8; PacketKind::WIDTH]
+struct PacketHeader { bytes: [uint8; PacketKind::WIDTH] }
+conform PacketKind to SizedPacket { const WIDTH: usize = 5; }
+```
 
 ---
 
@@ -1009,12 +1372,15 @@ conform Meters to From[int32] {
 var distance: Meters = 12_i32.into()
 ```
 
+A static requirement implemented in a conformance is also callable on the
+concrete type, as `Meters::from(12_i32)`, unless an inherent static of the same
+name takes precedence.
+
 `TryFrom[Source]` chooses an associated `Error` and returns
 `Result[Self, Self::Error]`. Its blanket bridge supplies `TryInto[Target]`,
 including the same error type:
 
 ```taro
-import std::convert::Parse
 conform Meters to TryFrom[string] {
     type Error = std::convert::ParseError
     static func tryFrom(_ input: string) -> Result[Meters, Self::Error] {
@@ -1029,4 +1395,5 @@ argument context, or generic return type. Generic functions can use
 `T: From[S]` or `T: TryFrom[S]` and call the corresponding bridge on an `S`.
 Conversions use ordinary GC value/handle semantics. Implementing an overlapping
 `Into` or `TryInto` for a pair already supplied by its bridge is an error.
-Postfix Result propagation (`!`) continues to convert errors through `From`.
+Postfix Result propagation (`!`) continues to convert errors through `From`,
+or boxes them when the enclosing error type is an existential.

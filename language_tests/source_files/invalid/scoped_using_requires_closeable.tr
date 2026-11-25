@@ -1,0 +1,7 @@
+struct Handle {}
+extend Handle {
+    func close() {}
+}
+func main() {
+    using handle = Handle {}
+}

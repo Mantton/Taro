@@ -1,0 +1,27 @@
+// Lints report only for the package being compiled: this dependency's unused
+// imports must not warn while the app is compiled.
+import std::math::PI
+import std::time::Duration
+
+public interface Greeter {
+    func greet() -> string
+}
+
+conform int32 to Greeter {
+    func greet() -> string { "hello" }
+}
+
+public struct Unused {}
+
+public func helper() -> int32 {
+    spare := 3
+    return 1
+}
+
+// A dependency's joined line does not warn either.
+public func firstOf(_ values: [int32]) -> [int32] {
+    [
+        values
+        [0]
+    ]
+}

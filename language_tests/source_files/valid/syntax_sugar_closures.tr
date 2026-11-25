@@ -1,0 +1,40 @@
+// ENV: TARO_GC_STRESS=1
+struct Item { name: string; enabled: bool }
+func apply[F: Fn(int32) -> int32](_ f: F, _ value: int32) -> int32 { f(value) }
+func pair[F: Fn(int32, int32) -> int32](_ f: F) -> int32 { f(3, 4) }
+func tick(_ value: int32) async -> int32 {
+    await std::testing::yieldNow()
+    value + 1
+}
+func main() async {
+    var items: [Item] = [Item { name: "first", enabled: true }, Item { name: "second", enabled: false }]
+    names := items.filter(item => item.enabled).map(item => item.name)
+    assert(names.len() == 1 && names[0] == "first", "inferred single-parameter map/filter")
+    assert(apply(value => { value * 2 }, 3) == 6, "block body")
+    assert(apply(_ => 42, 3) == 42, "ignored parameter")
+    assert(apply((_: int32) => 41, 3) == 41, "typed ignored parameter")
+    assert(pair((_, value) => value) == 4, "mixed parameters")
+    assert(pair((_, _) => 42) == 42, "repeated ignored parameters bind no name")
+    var captured: int32 = 0
+    callback := (value: int32) => { captured += value; captured }
+    assert(apply(callback, 3) == 3, "ordinary capture")
+    assert(apply(value => { captured += value; captured }, 4) == 7 && captured == 7, "shorthand capture shares storage")
+    assert(apply(x => { inner := (y: int32) => x + y; inner(5) }, 3) == 8, "nested closure capture")
+    var nested: (int32) -> (int32) -> int32 = x => y => y + 1
+    assert(nested(3)(4) == 5, "right-associated arrows")
+    assert((3 |> apply(_ => 9, _)) == 9, "ignored closure parameter is not a pipe placeholder")
+    assert((3 |> apply(value => value + 1, _)) == 4, "pipe with shorthand closure")
+    var enabled = true
+    guarded := match 1 {
+        case value if enabled => value
+        case _ => 0
+    }
+    assert(guarded == 1, "match guard arrow terminates an identifier expression")
+    var unary: (int32) -> int32 = value => value + 2
+    assert(unary(3) == 5, "function pointer coercion")
+    asyncBody := (value: int32) => { await tick(value) }
+    assert((await asyncBody(3)) == 4, "existing inferred async behavior")
+    ignoredAsync := (_: int32) async => { await tick(6) }
+    assert((await ignoredAsync(3)) == 7, "explicit async ignored parameter")
+    print("PASS: shorthand and ignored closure parameters\n")
+}

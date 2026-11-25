@@ -1,0 +1,11 @@
+struct Counter { n: int32 }
+extend &Counter {
+    func step() -> int32 { self.n += 1; self.n }
+}
+func main() {
+    var counter = Counter { n: 0 }
+    var borrowed = &counter
+    assert(dep::ignore(borrowed.step()) == 0 && counter.n == 0, "imported argument remains deferred")
+    assert(dep::repeatValue(borrowed.step()) == 12 && counter.n == 2, "imported argument can run twice")
+    println("imported lazy argument")
+}

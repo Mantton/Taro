@@ -1,0 +1,4 @@
+error: error type 'Opaque' of entry point `main` must be printable: it must conform to `std::fmt::Display`
+ -> language_tests/source_files/invalid/main_result_unprintable_error.tr:6:5
+	func main() -> Result[(), Opaque] {
+	     ^^^^

@@ -1,0 +1,16 @@
+error: ambiguous overload; unable to pick a best candidate
+ -> language_tests/source_files/invalid/literal_receiver_class_ancestor_disagree_rejected.tr:78:10
+	        d.read()
+	          ^^^^
+error: ambiguous overload; unable to pick a best candidate
+ -> language_tests/source_files/invalid/literal_receiver_class_ancestor_disagree_rejected.tr:82:10
+	        d.read()
+	          ^^^^
+error: ambiguous overload; unable to pick a best candidate
+ -> language_tests/source_files/invalid/literal_receiver_class_ancestor_disagree_rejected.tr:86:10
+	        d.mark()
+	          ^^^^
+error: ambiguous overload; unable to pick a best candidate
+ -> language_tests/source_files/invalid/literal_receiver_class_ancestor_disagree_rejected.tr:90:10
+	        d.mark()
+	          ^^^^

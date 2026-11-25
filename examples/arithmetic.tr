@@ -25,4 +25,5 @@ func main() {
     diff := subtract(a: x, b: y)
     product := multiply(a: x, b: y)
     quotient := divide(a: x, b: y)
+    println("${sum} ${diff} ${product} ${quotient}")
 }

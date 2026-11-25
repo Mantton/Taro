@@ -1,0 +1,4 @@
+error: identifier `a` bound more than once in the same pattern
+ -> language_tests/source_files/invalid/tuple_shorthand_duplicate_binding.tr:2:8
+	    (a, a) := (1, 2)
+	        ^

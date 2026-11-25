@@ -1,0 +1,4 @@
+error: duplicate coding key "a" on type 'Conflict' (fields 'x' and 'a' map to the same key)
+ -> language_tests/source_files/invalid/codable_duplicate_key.tr:3:17
+	struct Conflict: Codable {
+	                 ^^^^^^^

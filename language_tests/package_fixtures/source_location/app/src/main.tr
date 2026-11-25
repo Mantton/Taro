@@ -1,0 +1,7 @@
+import dep::{site, libraryFile}
+
+func main() {
+    println(site())
+    println(second()); println(libraryFile())
+}
+func second() -> string { site() }

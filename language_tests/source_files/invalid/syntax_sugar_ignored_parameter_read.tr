@@ -1,0 +1,3 @@
+// EXPECT_STDERR_NOT_CONTAINS: internal error
+func apply(_ f: (int32) -> int32) {}
+func main() { apply(_ => _); }

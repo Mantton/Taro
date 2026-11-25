@@ -1,0 +1,10 @@
+explicit=[2, 4, 6] hits=6
+trailing=[2, 4, 6] hits=6
+transform=30
+config=510
+pair=34
+run=42 labeled=42
+structs=Point { x: 1, y: 2 } Empty Box { value: 99 }
+zero=1 nextLine=1
+foundBig=true
+async=42,31

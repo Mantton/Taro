@@ -1,0 +1,4 @@
+error: positional struct expects 1 argument, found 2
+ -> language_tests/source_files/invalid/tuple_struct_arity.tr:2:14
+	func main() { Count(1, 2) }
+	              ^^^^^^^^^^^

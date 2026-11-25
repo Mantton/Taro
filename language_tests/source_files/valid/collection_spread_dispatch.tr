@@ -1,0 +1,29 @@
+interface Reading { func read() -> int32; }
+final class Sample { n: int32 }
+extend Sample { init(_ n: int32) { self.n = n } }
+conform Sample to Reading { func read() -> int32 { self.n }; }
+class Bucket { samples: Span[any Reading] }
+extend Bucket {
+    init(_ samples: (any Reading)...) { self.samples = samples }
+    func count(_ values: int32...) -> usize { values.len() }
+}
+final class SubBucket: Bucket {}
+func choose(_ value: int32) -> int32 { -1 }
+func choose(_ values: int32...) -> int32 { values[0] }
+func assign[T](_ out: &T, _ value: T) { *out = value }
+func main() {
+    var parts: [int32; 2] = [7, 8]
+    var more: List[int32] = []
+    assign(&more, [parts...])
+    assert(more.len() == 2 && choose(parts...) == 7, "generic List context and variadic overload")
+    var samples = [Sample(1), Sample(2)]
+    var copy = [samples..., Sample(3)]
+    samples[1] = Sample(4)
+    std::runtime::collect()
+    assert(copy[1].n == 2, "inline array keeps each copied owner alive")
+    bucket := SubBucket(copy...)
+    assert(bucket.count(0, parts..., 3) == 4, "variadic instance method")
+    std::runtime::collect()
+    assert(bucket.samples.len() == 3 && bucket.samples[1].read() == 2, "inherited initializer boxes each yielded item")
+    println("spread dispatch")
+}

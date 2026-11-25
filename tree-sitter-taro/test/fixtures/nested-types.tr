@@ -1,0 +1,8 @@
+struct Queue[T] { value: T }
+extend Queue {
+    public enum State { case open, closed }
+    struct Entry[V](V)
+    class Token {}
+    interface Marker {}
+}
+func status() -> Queue::State { .open }

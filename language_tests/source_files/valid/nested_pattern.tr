@@ -1,0 +1,19 @@
+enum Key { case up; case down; case escape }
+struct Point { x: int32; y: int32 }
+enum Event { case key(Key, int32); case digit(int32); case click(Point); case other }
+func classify(_ event: Event) -> int32 {
+    match event {
+        case .key(.up | .down, mods) => mods
+        case .digit(n @ 1..=9) => n + 10
+        case .click(pos @ Point { x, .. }) if x < 50 => pos.x + pos.y
+        case _ => -1
+    }
+}
+func main() {
+    assert(classify(.key(.up, 3)) == 3 && classify(.key(.down, 5)) == 5, "nested alternatives")
+    assert(classify(.key(.escape, 5)) == -1, "nonmatching key")
+    assert(classify(.digit(9)) == 19 && classify(.digit(10)) == -1, "bound range")
+    assert(classify(.click(Point { x: 7, y: 5 })) == 12, "whole value and field")
+    assert(classify(.click(Point { x: 50, y: 5 })) == -1, "failed guard")
+    println("nested")
+}

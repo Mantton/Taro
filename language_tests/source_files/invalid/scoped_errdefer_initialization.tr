@@ -1,0 +1,7 @@
+func main() {
+    var n: int32
+    if true {
+        errdefer { n = 9 }
+    }
+    println("${n}")
+}

@@ -1,0 +1,4 @@
+error: cannot capture `async var` binding in a closure
+ -> language_tests/source_files/invalid/async_var_capture.tr:8:21
+	        return await x
+	                     ^

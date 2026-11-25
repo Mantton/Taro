@@ -1,0 +1,40 @@
+// Inside ( ) or [ ], a line that starts with '(' or '[', or with '&' or '*'
+// directly followed by its operand, joins the previous line's expression.
+// That is how a missing comma reads, so the parser warns. An operator
+// followed by a space, a method chain, and lines inside braces are silent.
+// EXPECT_STDERR_COUNT: 4 warning: this line continues the expression on the previous line; add a ',' if a new element was meant
+// EXPECT_STDERR_CONTAINS: continued_lines.tr:22:8
+// EXPECT_STDERR_CONTAINS: continued_lines.tr:23:8
+// EXPECT_STDERR_CONTAINS: continued_lines.tr:24:8
+// EXPECT_STDERR_CONTAINS: continued_lines.tr:26:8
+func double(_ a: int32) -> int32 {
+    a * 2
+}
+
+
+func main() {
+    var values: [int32] = [1, 2, 3]
+    mask := 6
+    flags := 3
+    scale := 2
+    joined := [
+        double
+        (2), values
+        [0], mask
+        &flags, mask
+        * scale, scale
+        *scale
+    ]
+    chained := (
+        "a b"
+            .split(" ")
+            .len()
+    )
+    block := [
+        {
+            double
+            (2)
+        }
+    ]
+    println("${joined} ${chained} ${block}")
+}

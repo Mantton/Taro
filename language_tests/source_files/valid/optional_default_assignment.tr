@@ -1,0 +1,106 @@
+// `target ??= value` assigns only when the target is nil. The value runs only
+// then, and the target's own sub-expressions run exactly once.
+
+struct Settings { name: string?; retries: int32? }
+
+struct Profile { settings: Settings }
+
+class Session { token: string? }
+extend Session { init() { self.token = nil } }
+
+static var CALLS: int32 = 0
+static var TRACE: string = ""
+
+func fallback[T](_ value: T) -> T {
+    CALLS += 1
+    value
+}
+
+func traced(_ label: string, _ index: usize) -> usize {
+    TRACE = TRACE + label
+    index
+}
+
+func pick(_ session: Session) -> Session {
+    TRACE = TRACE + "p"
+    session
+}
+
+func load(_ name: string) async -> string {
+    await std::testing::yieldNow()
+    "loaded ${name}"
+}
+
+func parse(_ text: string) -> int32? {
+    if text == "7" { 7 } else { nil }
+}
+
+func firstParsed(_ text: string) -> int32? {
+    var value: int32? = nil
+    value ??= parse(text)!
+    value ??= fallback(99)
+    value
+}
+
+func main() async {
+    // A local: the value runs only while the target is nil.
+    var count: int32? = nil
+    count ??= fallback(1)
+    count ??= fallback(2)
+    println("local: ${count ?? -1} calls=${CALLS}")
+
+    // The value may itself be optional; nil keeps the target nil.
+    var maybe: int32? = nil
+    var nothing: int32? = nil
+    var five: int32? = 5
+    maybe ??= fallback(nothing)
+    println("optional value: ${maybe.isNone()} calls=${CALLS}")
+    maybe ??= fallback(five)
+    println("optional value: ${maybe ?? -1} calls=${CALLS}")
+
+    // Struct fields, and a nested field through a reference.
+    var settings = Settings { name: nil, retries: 3 }
+    settings.name ??= "default"
+    settings.retries ??= fallback(9)
+    println("fields: ${settings.name ?? "?"} ${settings.retries ?? -1} calls=${CALLS}")
+    var profile = Profile { settings: Settings { name: nil, retries: nil } }
+    reference := &profile
+    reference.settings.name ??= "through reference"
+    reference.settings.name ??= fallback("ignored")
+    println("nested: ${profile.settings.name ?? "?"} calls=${CALLS}")
+
+    // A class field reached through a call: the call runs once.
+    session := Session()
+    pick(session).token ??= "fresh"
+    pick(session).token ??= fallback("stale")
+    println("class: ${session.token ?? "?"} trace=${TRACE} calls=${CALLS}")
+    session.token = nil
+    session.token ??= "direct"
+    println("class field: ${session.token ?? "?"}")
+
+    // Subscripts: indices run once, and a set happens only for nil.
+    TRACE = ""
+    var slots: List[int32?] = [nil, 2]
+    slots[traced("a", 0)] ??= 10
+    slots[traced("b", 1)] ??= fallback(20)
+    println("list: ${slots[0] ?? -1} ${slots[1] ?? -1} trace=${TRACE} calls=${CALLS}")
+    var fixed: [string?; 2] = [nil, "kept"]
+    fixed[0] ??= "filled"
+    fixed[1] ??= "replaced"
+    println("array: ${fixed[0] ?? "?"} ${fixed[1] ?? "?"}")
+
+    // A dictionary of optional values uses its get/set accessors.
+    var cache: [string: int32?] = [:]
+    cache["hit"] = 1
+    cache["miss"] = nil
+    cache["hit"] ??= fallback(100)
+    cache["miss"] ??= 2
+    println("dictionary: ${cache["hit"] ?? -1} ${cache["miss"] ?? -1} calls=${CALLS}")
+
+    // The value may await or propagate.
+    var page: string? = nil
+    page ??= await load("page")
+    page ??= await load("again")
+    println("await: ${page ?? "?"}")
+    println("propagate: ${firstParsed("7") ?? -1} ${firstParsed("x") ?? -1}")
+}

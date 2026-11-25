@@ -1,0 +1,46 @@
+struct Box[T] { value: T }
+extend Box[int64] {
+    func measure() -> usize { 64 }
+    func set(_ value: string) -> usize { 64 }
+}
+extend[T] Box[T] {
+    func set(_ value: T) -> usize { 17 }
+}
+extend[T] Box[T] where T == int64 {
+    func conditional() -> usize { 64 }
+}
+interface Measured {
+    func measure() -> usize
+    func conditional() -> usize
+}
+conform Box[int32] to Measured {
+    func measure() -> usize { 32 }
+    func conditional() -> usize { 32 }
+}
+interface Value {}
+conform int64 to Value {}
+
+struct Pair[A, B] { first: A, second: B }
+extend[B] Pair[int64, B] {
+    func pick(_ value: any Value) -> int64 { 0 }
+}
+extend[A, B] Pair[A, B] {
+    func pick(_ value: A) -> A { value }
+}
+
+func main() {
+    narrow := Box { value: 0 }.measure() + 1
+    typed := Box[int32] { value: 0 }.measure() + 1
+    later := () => {
+        box := Box { value: 0 }
+        out := box.measure() + 1
+        var _typed: Box[int64] = box
+        out
+    }
+    generic := Box { value: 0 }.set(5000000000_i64)
+    partial := Pair { first: 0, second: 0 }.pick(5000000000_i64)
+    control := Pair[int64, int32] { first: 0, second: 0 }.pick(5000000000_i64)
+    conditional := Box { value: 0 }.conditional()
+    typedConditional := Box[int32] { value: 0 }.conditional()
+    println("${narrow} ${typed} ${later()} ${generic} ${partial} ${control} ${conditional} ${typedConditional}")
+}

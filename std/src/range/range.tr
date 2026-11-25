@@ -1,50 +1,66 @@
 import std::iter::{Iterator, Iterable}
 import std::optional::Optional
 import std::cmp::Ord
+import std::ops::{Contains, PartialEq}
+import std::hash::{Hashable, Hasher}
 
-/// Values that can advance one step at a time for range iteration.
+/// Values that can move one step at a time for range iteration.
+/// Range iterators call `stepForward()` only on a value below the range's
+/// upper bound and `stepBackward()` only on a value above its lower bound,
+/// so neither is called at a type's extreme while iterating.
 public interface Step: Ord {
     func stepForward() -> Self
+    func stepBackward() -> Self
 }
 
 conform int8 to Step {
     public func stepForward() -> int8 { self + 1 }
+    public func stepBackward() -> int8 { self - 1 }
 }
 
 conform int16 to Step {
     public func stepForward() -> int16 { self + 1 }
+    public func stepBackward() -> int16 { self - 1 }
 }
 
 conform int32 to Step {
     public func stepForward() -> int32 { self + 1 }
+    public func stepBackward() -> int32 { self - 1 }
 }
 
 conform int64 to Step {
     public func stepForward() -> int64 { self + 1 }
+    public func stepBackward() -> int64 { self - 1 }
 }
 
 conform uint8 to Step {
     public func stepForward() -> uint8 { self + 1 }
+    public func stepBackward() -> uint8 { self - 1 }
 }
 
 conform uint16 to Step {
     public func stepForward() -> uint16 { self + 1 }
+    public func stepBackward() -> uint16 { self - 1 }
 }
 
 conform uint32 to Step {
     public func stepForward() -> uint32 { self + 1 }
+    public func stepBackward() -> uint32 { self - 1 }
 }
 
 conform uint64 to Step {
     public func stepForward() -> uint64 { self + 1 }
+    public func stepBackward() -> uint64 { self - 1 }
 }
 
 conform isize to Step {
     public func stepForward() -> isize { self + 1 }
+    public func stepBackward() -> isize { self - 1 }
 }
 
 conform usize to Step {
     public func stepForward() -> usize { self + 1 }
+    public func stepBackward() -> usize { self - 1 }
 }
 
 /// A half-open range from `start` to `end` (exclusive).
@@ -58,6 +74,12 @@ public struct Range[Bound: Step] {
 extend[Bound: Step] Range[Bound] {
     public static func new(_ start: Bound, _ end: Bound) -> Self {
         Range[Bound] { start: start, end: end }
+    }
+
+    /// The range's elements from `end` exclusive down to `start` inclusive:
+    /// `(0..3).reversed()` yields 2, 1, 0. Never steps below `start`.
+    public func reversed() -> ReversedRangeIterator[Bound] {
+        ReversedRangeIterator[Bound] ( start: self.start, current: self.end )
     }
 }
 
@@ -109,6 +131,15 @@ extend[Bound: Step] ClosedRange[Bound] {
     public static func new(_ start: Bound, _ end: Bound) -> Self {
         ClosedRange[Bound] { start: start, end: end }
     }
+
+    /// The range's elements from `end` down to `start`, both inclusive:
+    /// `(1..=3).reversed()` yields 3, 2, 1. Never steps below `start`.
+    public func reversed() -> ReversedClosedRangeIterator[Bound] {
+        ReversedClosedRangeIterator[Bound] (
+            start: self.start,
+            current: .some(self.end),
+        )
+    }
 }
 
 public final class ClosedRangeIterator[Bound: Step] {
@@ -159,6 +190,21 @@ conform[Bound: Step] ClosedRange[Bound] to Iterable {
     }
 }
 
+/// `start <= value < end`. An empty or reversed range contains nothing.
+conform[Bound: Step] Range[Bound] to Contains[Bound] {
+    public func contains(_ value: &Bound) -> bool {
+        self.start <= *value && *value < self.end
+    }
+}
+
+/// `start <= value <= end`, including a bound at its type's limit. A reversed
+/// range contains nothing.
+conform[Bound: Step] ClosedRange[Bound] to Contains[Bound] {
+    public func contains(_ value: &Bound) -> bool {
+        self.start <= *value && *value <= self.end
+    }
+}
+
 conform[Bound: Step] RangeIterator[Bound] to Iterable {
     type Element = Bound
     type Iterator = RangeIterator[Bound]
@@ -169,4 +215,274 @@ conform[Bound: Step] ClosedRangeIterator[Bound] to Iterable {
     type Element = Bound
     type Iterator = ClosedRangeIterator[Bound]
     public func iter() -> Self::Iterator { self }
+}
+
+/// Iterates a half-open range from its upper end. `current` is one past the
+/// next element; it steps back only while above `start`.
+public final class ReversedRangeIterator[Bound: Step] {
+    start: Bound
+    current: Bound
+}
+
+extend[Bound: Step] ReversedRangeIterator[Bound] {
+    init(start: Bound, current: Bound) {
+        self.start = start
+        self.current = current
+    }
+}
+
+conform[Bound: Step] ReversedRangeIterator[Bound] to Iterator {
+    type Element = Bound
+
+    public func next() -> Optional[Self::Element] {
+        if self.current <= self.start {
+            return .none
+        }
+
+        value := self.current.stepBackward()
+        self.current = value
+        return .some(value)
+    }
+}
+
+conform[Bound: Step] ReversedRangeIterator[Bound] to Iterable {
+    type Element = Bound
+    type Iterator = ReversedRangeIterator[Bound]
+    public func iter() -> Self::Iterator { self }
+}
+
+/// Iterates a closed range from its upper end. `current` is the next element,
+/// or none once `start` has been yielded.
+public final class ReversedClosedRangeIterator[Bound: Step] {
+    start: Bound
+    current: Optional[Bound]
+}
+
+extend[Bound: Step] ReversedClosedRangeIterator[Bound] {
+    init(start: Bound, current: Optional[Bound]) {
+        self.start = start
+        self.current = current
+    }
+}
+
+conform[Bound: Step] ReversedClosedRangeIterator[Bound] to Iterator {
+    type Element = Bound
+
+    public func next() -> Optional[Self::Element] {
+        match self.current {
+            case .none => .none
+            case .some(current) => {
+                if current < self.start {
+                    self.current = .none
+                    return .none
+                }
+
+                var next: Optional[Bound] = if current > self.start {
+                    .some(current.stepBackward())
+                } else {
+                    .none
+                }
+                self.current = next
+                return .some(current)
+            }
+        }
+    }
+}
+
+conform[Bound: Step] ReversedClosedRangeIterator[Bound] to Iterable {
+    type Element = Bound
+    type Iterator = ReversedClosedRangeIterator[Bound]
+    public func iter() -> Self::Iterator { self }
+}
+
+/// A half-open lower-bounded range starting at `start` (`start..`).
+@lang("RangeFrom")
+public struct RangeFrom[Bound: Step] {
+    start: Bound
+}
+
+extend[Bound: Step] RangeFrom[Bound] {
+    public static func new(_ start: Bound) -> Self {
+        RangeFrom[Bound] { start: start }
+    }
+}
+
+/// Advances lazily on subsequent `next()` calls so yielding `Bound::MAX` does
+/// not overflow until a caller asks for an element past the maximum.
+public final class RangeFromIterator[Bound: Step] {
+    current: Bound
+    started: bool
+}
+
+extend[Bound: Step] RangeFromIterator[Bound] {
+    init(start: Bound) {
+        self.current = start
+        self.started = false
+    }
+}
+
+conform[Bound: Step] RangeFromIterator[Bound] to Iterator {
+    type Element = Bound
+
+    public func next() -> Optional[Self::Element] {
+        if !self.started {
+            self.started = true
+            return .some(self.current)
+        }
+        self.current = self.current.stepForward()
+        return .some(self.current)
+    }
+}
+
+conform[Bound: Step] RangeFromIterator[Bound] to Iterable {
+    type Element = Bound
+    type Iterator = RangeFromIterator[Bound]
+    public func iter() -> Self::Iterator { self }
+}
+
+conform[Bound: Step] RangeFrom[Bound] to Iterable {
+    type Iterator = RangeFromIterator[Bound]
+    type Element = Bound
+
+    public func iter() -> Self::Iterator {
+        RangeFromIterator[Bound] ( start: self.start )
+    }
+}
+
+/// `start <= value`.
+conform[Bound: Step] RangeFrom[Bound] to Contains[Bound] {
+    public func contains(_ value: &Bound) -> bool {
+        self.start <= *value
+    }
+}
+
+/// A half-open upper-bounded range up to `end` exclusive (`..end`).
+@lang("RangeTo")
+public struct RangeTo[Bound: Step] {
+    end: Bound
+}
+
+extend[Bound: Step] RangeTo[Bound] {
+    public static func new(_ end: Bound) -> Self {
+        RangeTo[Bound] { end: end }
+    }
+}
+
+/// `value < end`.
+conform[Bound: Step] RangeTo[Bound] to Contains[Bound] {
+    public func contains(_ value: &Bound) -> bool {
+        *value < self.end
+    }
+}
+
+/// An inclusive upper-bounded range up to `end` inclusive (`..=end`).
+@lang("RangeToInclusive")
+public struct RangeToInclusive[Bound: Step] {
+    end: Bound
+}
+
+extend[Bound: Step] RangeToInclusive[Bound] {
+    public static func new(_ end: Bound) -> Self {
+        RangeToInclusive[Bound] { end: end }
+    }
+}
+
+/// `value <= end`.
+conform[Bound: Step] RangeToInclusive[Bound] to Contains[Bound] {
+    public func contains(_ value: &Bound) -> bool {
+        *value <= self.end
+    }
+}
+
+/// An unbounded range (`..`).
+@lang("RangeFull")
+public struct RangeFull {}
+
+extend RangeFull {
+    public static func new() -> Self {
+        RangeFull {}
+    }
+}
+
+/// Every value is contained in an unbounded range.
+conform[Element] RangeFull to Contains[Element] {
+    public func contains(_ value: &Element) -> bool {
+        var _ = value
+        true
+    }
+}
+
+conform[Bound: Step] Range[Bound] to PartialEq {
+    public func eq(_ other: Range[Bound]) -> bool {
+        self.start == other.start && self.end == other.end
+    }
+}
+
+conform[Bound: Step & Hashable] Range[Bound] to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
+        self.start.hash(into: hasher)
+        self.end.hash(into: hasher)
+    }
+}
+
+conform[Bound: Step] ClosedRange[Bound] to PartialEq {
+    public func eq(_ other: ClosedRange[Bound]) -> bool {
+        self.start == other.start && self.end == other.end
+    }
+}
+
+conform[Bound: Step & Hashable] ClosedRange[Bound] to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
+        self.start.hash(into: hasher)
+        self.end.hash(into: hasher)
+    }
+}
+
+conform[Bound: Step] RangeFrom[Bound] to PartialEq {
+    public func eq(_ other: RangeFrom[Bound]) -> bool {
+        self.start == other.start
+    }
+}
+
+conform[Bound: Step & Hashable] RangeFrom[Bound] to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
+        self.start.hash(into: hasher)
+    }
+}
+
+conform[Bound: Step] RangeTo[Bound] to PartialEq {
+    public func eq(_ other: RangeTo[Bound]) -> bool {
+        self.end == other.end
+    }
+}
+
+conform[Bound: Step & Hashable] RangeTo[Bound] to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
+        self.end.hash(into: hasher)
+    }
+}
+
+conform[Bound: Step] RangeToInclusive[Bound] to PartialEq {
+    public func eq(_ other: RangeToInclusive[Bound]) -> bool {
+        self.end == other.end
+    }
+}
+
+conform[Bound: Step & Hashable] RangeToInclusive[Bound] to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
+        self.end.hash(into: hasher)
+    }
+}
+
+conform RangeFull to PartialEq {
+    public func eq(_ other: RangeFull) -> bool {
+        var _ = other
+        true
+    }
+}
+
+conform RangeFull to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
+        var _ = hasher
+    }
 }

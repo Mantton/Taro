@@ -332,3 +332,18 @@ conform Client to Transport {
         return await self.send(request)
     }
 }
+
+conform Request to std::io::Closeable {
+    type CloseResult = Result[(), std::io::Error]
+    public func close() -> Result[(), std::io::Error] { self.close() }
+}
+
+conform Response to std::io::Closeable {
+    type CloseResult = Result[(), std::io::Error]
+    public func close() -> Result[(), std::io::Error] { self.close() }
+}
+
+conform Client to std::io::Closeable {
+    type CloseResult = ()
+    public func close() { self.close() }
+}

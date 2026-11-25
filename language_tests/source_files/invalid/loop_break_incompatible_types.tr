@@ -1,0 +1,11 @@
+func bad(_ flag: bool) -> int64 {
+    x := loop {
+        if flag {
+            break 1_i64
+        }
+        break "two"
+    }
+    return x
+}
+
+func main() {}

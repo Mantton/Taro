@@ -54,6 +54,9 @@ pub(super) fn build_conformance_witness<'ctx>(
                 build_witness_from_record(gcx, type_head, &record, selected.subst)?
             }
             crate::sema::models::CandidateSource::BuiltinTuple => ConformanceWitness::default(),
+            crate::sema::models::CandidateSource::BuiltinTupleConformance => {
+                build_builtin_tuple_conformance_witness(gcx, goal)?
+            }
             crate::sema::models::CandidateSource::BuiltinCallable => {
                 build_callable_witness(gcx, goal)?
             }
@@ -135,6 +138,15 @@ pub(crate) fn inherited_class_witness<'ctx>(
     record: &ConformanceRecord<'ctx>,
     subst: GenericArguments<'ctx>,
 ) -> Option<ConformanceWitness<'ctx>> {
+    let goal = inherited_class_goal(gcx, record, subst)?;
+    build_conformance_witness(gcx, goal, SelectionMode::Typecheck).ok()
+}
+
+pub(crate) fn inherited_class_goal<'ctx>(
+    gcx: Gcx<'ctx>,
+    record: &ConformanceRecord<'ctx>,
+    subst: GenericArguments<'ctx>,
+) -> Option<InterfaceGoal<'ctx>> {
     if record.target.is_blanket() {
         return None;
     }
@@ -176,23 +188,19 @@ pub(crate) fn inherited_class_witness<'ctx>(
     if gcx.conformance_record(id)?.target.is_blanket() {
         return None;
     }
-    build_conformance_witness(gcx, goal, SelectionMode::Typecheck).ok()
+    Some(goal)
 }
 
-fn build_witness_from_record<'ctx>(
+/// Resolve associated bindings independently of method witnesses so forwarders
+/// can check a projected parameter or result before publishing their bodies.
+pub(crate) fn associated_type_witnesses<'ctx>(
     gcx: Gcx<'ctx>,
     type_head: TypeHead,
     record: &ConformanceRecord<'ctx>,
     subst: GenericArguments<'ctx>,
-) -> Result<ConformanceWitness<'ctx>, SelectionError<'ctx>> {
-    let interface_id = record.interface.id;
-    let Some(requirements) = gcx.get_interface_requirements(interface_id) else {
-        return Ok(ConformanceWitness::default());
-    };
-
-    let mut witness = ConformanceWitness::default();
-    witness.extension_id = Some(record.extension);
-
+    requirements: &crate::sema::models::InterfaceRequirements<'ctx>,
+) -> Result<FxHashMap<crate::hir::DefinitionID, Ty<'ctx>>, SelectionError<'ctx>> {
+    let mut bindings = FxHashMap::default();
     let inherited = inherited_class_witness(gcx, record, subst);
     for assoc in &requirements.types {
         let explicit = find_explicit_type_witness(gcx, type_head, assoc.name, record)
@@ -222,18 +230,38 @@ fn build_witness_from_record<'ctx>(
                 gcx, record,
             )));
         };
-        witness.type_witnesses.insert(assoc.id, ty);
+        bindings.insert(assoc.id, ty);
     }
 
     // Resolve dependencies between associated defaults/bindings once, in the
     // selected conformance's coordinates. This also diagnoses unused cycles.
-    let types = witness.type_witnesses.clone();
+    let types = bindings.clone();
     for (id, ty) in &types {
-        witness.type_witnesses.insert(
+        bindings.insert(
             *id,
             substitute_projection_witnesses(gcx, *ty, &types, record, subst),
         );
     }
+
+    Ok(bindings)
+}
+
+fn build_witness_from_record<'ctx>(
+    gcx: Gcx<'ctx>,
+    type_head: TypeHead,
+    record: &ConformanceRecord<'ctx>,
+    subst: GenericArguments<'ctx>,
+) -> Result<ConformanceWitness<'ctx>, SelectionError<'ctx>> {
+    let interface_id = record.interface.id;
+    let Some(requirements) = gcx.get_interface_requirements(interface_id) else {
+        return Ok(ConformanceWitness::default());
+    };
+
+    let mut witness = ConformanceWitness::default();
+    witness.extension_id = Some(record.extension);
+
+    witness.type_witnesses =
+        associated_type_witnesses(gcx, type_head, record, subst, requirements)?;
 
     for property in &requirements.properties {
         let Some(entries) = find_property_witnesses(
@@ -277,7 +305,7 @@ fn build_witness_from_record<'ctx>(
             constant.id,
             constant.name,
             constant.ty,
-            constant.default.is_some(),
+            constant.has_default,
             record,
             subst,
             &witness.type_witnesses,
@@ -502,6 +530,29 @@ fn find_property_accessor_witness<'ctx>(
         type_witnesses,
     )
     .or_else(|| default_accessor_witness(gcx, requirement_id, requirement.getter_is_required))
+    .or_else(|| {
+        if !record.is_inline
+            || ![
+                crate::hir::StdItem::RawValue,
+                crate::hir::StdItem::CaseIterable,
+            ]
+            .iter()
+            .any(|item| gcx.std_item_def(*item) == Some(record.interface.id))
+        {
+            return None;
+        }
+        crate::sema::tycheck::derive::try_synthesize_method(
+            gcx,
+            type_head,
+            record.interface.self_ty()?,
+            record.interface.id,
+            record.interface.arguments,
+            gcx.definition_ident(requirement_id).symbol,
+            requirement_id,
+            GenericsBuilder::identity_for_item(gcx, requirement_id),
+        )
+        .map(|synthesized| synthesized.witness)
+    })
 }
 
 fn default_accessor_witness<'ctx>(
@@ -718,6 +769,71 @@ fn build_builtin_clone_witness<'ctx>(
     Ok(witness)
 }
 
+fn build_builtin_tuple_conformance_witness<'ctx>(
+    gcx: Gcx<'ctx>,
+    goal: InterfaceGoal<'ctx>,
+) -> Result<ConformanceWitness<'ctx>, SelectionError<'ctx>> {
+    let self_ty = normalize_aliases(gcx, goal.self_ty);
+    let item = crate::mir::tuple_conformances::CONFORMANCE_ITEMS
+        .iter()
+        .copied()
+        .find(|&item| gcx.std_item_def(item) == Some(goal.interface_id))
+        .ok_or(SelectionError::NoCandidates(goal))?;
+    if !crate::mir::tuple_conformances::has_synthetic_method(item) {
+        return Ok(ConformanceWitness::default());
+    }
+    let Some(requirements) = gcx.get_interface_requirements(goal.interface_id) else {
+        return Ok(ConformanceWitness::default());
+    };
+    let primary_name = crate::mir::tuple_conformances::primary_method_name(item)
+        .ok_or(SelectionError::NoCandidates(goal))?;
+    let helper = crate::mir::tuple_conformances::declaration(
+        gcx,
+        item,
+        gcx.definition_ident(goal.interface_id).span,
+    )
+    .ok_or(SelectionError::NoCandidates(goal))?;
+
+    let mut witness = ConformanceWitness::default();
+    for method in &requirements.methods {
+        if gcx.symbol_eq(method.name, primary_name) {
+            let mut args = vec![crate::sema::models::GenericArgument::Type(self_ty)];
+            let parent_count = gcx.generics_of(method.id).parent_count;
+            let identity = GenericsBuilder::identity_for_item(gcx, method.id);
+            if identity.len() > parent_count {
+                args.extend_from_slice(&identity[parent_count..]);
+            }
+            let args_template = gcx.store.interners.intern_generic_args(args);
+            witness.method_witnesses.insert(
+                method.id,
+                MethodWitness {
+                    implementation: MethodImplementation::Concrete(helper),
+                    args_template,
+                },
+            );
+        } else if !method.is_required {
+            let mut args = vec![crate::sema::models::GenericArgument::Type(self_ty)];
+            if crate::mir::tuple_conformances::is_rhs_parameterized(item) {
+                args.push(crate::sema::models::GenericArgument::Type(self_ty));
+            }
+            let parent_count = gcx.generics_of(method.id).parent_count;
+            let identity = GenericsBuilder::identity_for_item(gcx, method.id);
+            if identity.len() > parent_count {
+                args.extend_from_slice(&identity[parent_count..]);
+            }
+            let args_template = gcx.store.interners.intern_generic_args(args);
+            witness.method_witnesses.insert(
+                method.id,
+                MethodWitness {
+                    implementation: MethodImplementation::Default(method.id),
+                    args_template,
+                },
+            );
+        }
+    }
+    Ok(witness)
+}
+
 fn build_callable_witness<'ctx>(
     gcx: Gcx<'ctx>,
     goal: InterfaceGoal<'ctx>,
@@ -751,6 +867,13 @@ fn build_callable_witness<'ctx>(
         }
         return Ok(witness);
     }
+    // The adapter is registered once per closure definition, and its stored
+    // signature becomes the synthesized body. It must be the final one.
+    assert!(
+        !goal.self_ty.has_inference_variables(),
+        "callable adapter demanded for unresolved type {}",
+        goal.self_ty.format(gcx)
+    );
     let TypeHead::Closure(closure_def_id) =
         type_head_from_value_ty(goal.self_ty).ok_or(SelectionError::NoCandidates(goal))?
     else {
@@ -803,6 +926,32 @@ fn build_callable_witness<'ctx>(
     }
     witness.extension_id = None;
     Ok(witness)
+}
+
+/// The type a conformance record gives one associated type of its interface,
+/// in the record's own generic parameters: its explicit binding, or the
+/// interface's default. `None` when the binding would come from a class
+/// ancestor's conformance instead, which only selection can find.
+pub(crate) fn record_type_witness_template<'ctx>(
+    gcx: Gcx<'ctx>,
+    record: &ConformanceRecord<'ctx>,
+    assoc_id: crate::hir::DefinitionID,
+) -> Option<Ty<'ctx>> {
+    let requirements = gcx.get_interface_requirements(record.interface.id)?;
+    let assoc = requirements
+        .types
+        .iter()
+        .find(|assoc| assoc.id == assoc_id)?;
+    if let Some(explicit) = find_explicit_type_witness(gcx, record.target, assoc.name, record) {
+        return Some(explicit);
+    }
+    let target = gcx.get_impl_target_ty(record.extension)?;
+    if !record.target.is_blanket() && gcx.class_base(target).is_some() {
+        return None;
+    }
+    assoc
+        .default_type
+        .map(|ty| instantiate_ty_with_args(gcx, ty, record.interface.arguments))
 }
 
 fn find_explicit_type_witness<'ctx>(
@@ -1057,10 +1206,11 @@ fn find_constant_witness<'ctx>(
             .collect()
     });
 
-    for candidate in &candidates {
-        if gcx.get_type(*candidate) == expected_ty {
-            return Some(*candidate);
-        }
+    if !candidates.is_empty() {
+        return candidates.into_iter().find(|candidate| {
+            let declared = instantiate_ty_with_args(gcx, gcx.get_type(*candidate), subst);
+            normalize_aliases(gcx, declared) == normalize_aliases(gcx, expected_ty)
+        });
     }
 
     if let Some(id) = inherited_class_witness(gcx, record, subst)
@@ -1081,7 +1231,7 @@ fn find_constant_witness<'ctx>(
     None
 }
 
-fn method_signature_matches<'ctx>(
+pub(crate) fn method_signature_matches<'ctx>(
     gcx: Gcx<'ctx>,
     interface_fn_id: crate::hir::DefinitionID,
     impl_fn_id: crate::hir::DefinitionID,
@@ -1243,7 +1393,7 @@ fn build_method_args_template<'ctx>(
     gcx.store.interners.intern_generic_args(args)
 }
 
-fn substitute_projection_witnesses<'ctx, T: TypeFoldable<'ctx>>(
+pub(crate) fn substitute_projection_witnesses<'ctx, T: TypeFoldable<'ctx>>(
     gcx: Gcx<'ctx>,
     ty: T,
     type_witnesses: &FxHashMap<crate::hir::DefinitionID, Ty<'ctx>>,

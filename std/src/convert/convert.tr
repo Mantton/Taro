@@ -143,3 +143,12 @@ public interface Parse {
 public func parse[T: Parse](_ input: string) -> Result[T, ParseError] {
     T::parse(input)
 }
+
+/// Converts between a value and its raw representation. A payload-free enum
+/// can derive this interface for an integer type that fits every case.
+/// Missing discriminants return `.none`.
+@lang("RawValue")
+public interface RawValue[Raw] {
+    var rawValue: Raw { get }
+    static func from(rawValue value: Raw) -> Self?
+}

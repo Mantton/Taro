@@ -1,0 +1,42 @@
+enum Token[T] { case head, tail }
+struct Box[T] { value: T }
+extend[T] Box[T] {
+    const EMPTY: Token[T]? = .none
+}
+extend Box[uint8] {
+    const NUMBER: int32 = 8
+    const DOUBLE: int32 = Self::NUMBER * 2
+    const TAG: Token[uint8] = .tail
+}
+extend Box[int64] {
+    const NUMBER: int32 = 64
+}
+extend[T] Token[T] { const DEFAULT_TOKEN: Self = .head; }
+struct Pair[A, B] {}
+extend[A, B] Pair[B, A] { const TOKEN: Token[B] = .tail; }
+type ByteBox = Box[uint8]
+extend ByteBox { const ALIAS_SIZE: int32 = 5; }
+class Base[T] { value: T }
+class Child: Base[uint8] {}
+extend[T] Base[T] { const VALUE: T? = .none; }
+extend Base[uint8] { const SIZE: int32 = 3; }
+const TOTAL: int32 = ByteBox::DOUBLE + Box[int64]::NUMBER
+func empty[T](_ value: Box[T]) -> Token[T]? { Box[T]::EMPTY }
+func pass[T](_ tag: Token[T], _ value: T) -> bool {
+    match tag { case .head => false; case .tail => true; }
+}
+type Sized = [uint8; Box[uint8]::NUMBER]
+func first(_ bytes: Sized) -> uint8 { bytes[0] }
+func main() {
+    var context: Token[string] = .DEFAULT_TOKEN
+    var inferred: Token[bool] = Token::DEFAULT_TOKEN
+    var inherited: uint8? = Child::VALUE
+    var bytes: [uint8; 8] = [0; 8]
+    assert(first(bytes) == 0 && !pass(context, "") && !pass(inferred, true), "contextual constant")
+    assert(pass(Pair[uint8, string]::TOKEN, 1_u8), "extension substitutions")
+    assert(ByteBox::NUMBER == 8 && Box[int64]::NUMBER == 64, "specialization")
+    assert(inherited.isNone() && Child::SIZE == 3 && Box[uint8]::ALIAS_SIZE == 5, "inherited and aliased extension targets")
+    assert(TOTAL == 80 && empty(Box[uint8] { value: 1 }).isNone(), "generic and constant reads")
+    match ByteBox::TAG { case .head => panic("wrong tag"); case .tail => (); }
+    println("PASS")
+}

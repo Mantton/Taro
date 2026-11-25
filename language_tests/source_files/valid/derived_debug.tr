@@ -1,0 +1,77 @@
+// Listing Debug on a struct or enum derives `debug`: a struct writes its name
+// and fields, an enum its case name and payload. Generic arguments are not
+// written, and a generic type is Debug only when its arguments are.
+import std::fmt::{Formatter, debugString}
+
+struct Version: Debug {
+    major: int32
+    minor: int32
+}
+
+struct Empty: Debug {}
+
+struct Box[T]: Debug {
+    value: T
+}
+
+struct Person: Debug {
+    name: string
+    tags: [string]
+    manager: string?
+    initial: rune
+}
+
+enum Event: Debug {
+    case quit
+    case key(rune)
+    case click { x: int32, y: int32 }
+    case resize(width: int32, height: int32)
+    case pair(int32, Version)
+}
+
+enum Choice[T]: Debug {
+    case nothing
+    case one(T)
+}
+
+// A conformance block, rather than the conformance list, writes its own text.
+struct Secret {
+    value: string
+}
+
+conform Secret to Debug {
+    func debug(_ into: &Formatter) {
+        into.writeString("Secret(<hidden>)")
+    }
+}
+
+struct Holder: Debug {
+    secret: Secret
+}
+
+func render[T: Debug](_ value: T) -> string {
+    debugString(value)
+}
+
+func main() {
+    println(debugString(Version { major: 1, minor: 4 }))
+    println(debugString(Empty {}))
+    println(debugString(Box { value: 1 }))
+    println(debugString(Box { value: Version { major: 2, minor: 0 } }))
+    println(debugString(Box { value: "text" }))
+    var tags: [string] = ["x", "y"]
+    println(debugString(Person { name: "Ada", tags, manager: .none, initial: 'A' }))
+    println(debugString(Event::quit))
+    println(debugString(Event::key('a')))
+    println(debugString(Event::click { x: 1, y: 2 }))
+    println(debugString(Event::resize(width: 3, height: 4)))
+    println(debugString(Event::pair(5, Version { major: 0, minor: 1 })))
+    var nothing: Choice[string] = .nothing
+    println(debugString(nothing))
+    println(debugString(Choice::one(Box { value: 'q' })))
+    println(debugString(Holder { secret: Secret { value: "pw" } }))
+    var events: [Event] = [.quit, .key('\n')]
+    println(render(events))
+    var maybe: Version? = .some(Version { major: 3, minor: 3 })
+    println(render(maybe))
+}

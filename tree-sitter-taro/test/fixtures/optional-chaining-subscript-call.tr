@@ -1,0 +1,6 @@
+func check(_ grid: List[List[int32]?]?, _ cb: ((int32) -> int32)?) -> int32 {
+    first := grid?.[0]?.[1] ?? 0
+    second := cb?.(first) ?? 0
+    third := cb?.(second) { a, b => a + b }
+    third ?? 0
+}

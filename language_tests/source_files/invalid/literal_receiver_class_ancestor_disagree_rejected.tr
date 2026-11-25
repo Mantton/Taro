@@ -1,0 +1,93 @@
+// Both the defaulted and annotated int32 receiver inherit the base interface
+// and gain a competing requirement on Derived[int32].
+class Base {
+    stamp: int32
+}
+
+extend Base {
+    public init() {
+        self.stamp = 1
+    }
+}
+
+class Derived[T]: Base {
+    value: T
+}
+
+extend[T] Derived[T] {
+    public init(_ value: T) {
+        super.init()
+        self.value = value
+    }
+}
+interface Reader {
+    func read() -> usize
+}
+
+interface Other {
+    func read() -> usize
+}
+
+conform Base to Reader {
+    func read() -> usize {
+        7
+    }
+}
+
+conform Derived[int32] to Other {
+    func read() -> usize {
+        9
+    }
+}
+
+interface Tagged[U] {
+    func tag(_ value: U) -> usize
+}
+
+conform Base to Tagged[bool] {
+    func tag(_ value: bool) -> usize {
+        1
+    }
+}
+
+conform Derived[int32] to Tagged[string] {
+    func tag(_ value: string) -> usize {
+        2
+    }
+}
+
+interface Marked[U] {
+    func mark() -> usize
+}
+
+conform Base to Marked[bool] {
+    func mark() -> usize {
+        1
+    }
+}
+
+conform Derived[int32] to Marked[string] {
+    func mark() -> usize {
+        2
+    }
+}
+
+func main() {
+    literalRead := () => {
+        var d = Derived(0)
+        d.read()
+    }
+    typedRead := () => {
+        var d: Derived[int32] = Derived(0)
+        d.read()
+    }
+    literalMark := () => {
+        var d = Derived(0)
+        d.mark()
+    }
+    typedMark := () => {
+        var d: Derived[int32] = Derived(0)
+        d.mark()
+    }
+    print("${literalRead()} ${typedRead()} ${literalMark()} ${typedMark()}")
+}

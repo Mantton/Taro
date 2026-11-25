@@ -1,0 +1,5 @@
+// EXPECT_STDERR_CONTAINS: expected Span[int32]
+// EXPECT_STDERR_NOT_CONTAINS: internal error
+interface Source { type Value; }
+func view[S: Source](_ value: &S::Value) -> [int32; ..] { value }
+func main() {}

@@ -64,6 +64,7 @@ fn imported_synthetic_function_and_parameter_ids_are_reserved_before_fresh_alloc
         );
         let generics = gcx.store.arenas.generics.alloc(Generics {
             parameters: vec![GenericParameterDefinition {
+                is_anonymous: false,
                 id: parameter,
                 index: 0,
                 name: gcx.intern_symbol("T"),

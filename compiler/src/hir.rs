@@ -1,7 +1,9 @@
 pub use crate::ast::BinaryOperator;
+pub use crate::ast::DeferKind;
 pub use crate::ast::Label;
 pub use crate::ast::Mutability;
 pub use crate::ast::OperatorKind;
+pub use crate::ast::TupleLabels;
 pub use crate::ast::UnaryOperator;
 use crate::ast::VisitorResult;
 use crate::compile::context::GlobalContext;
@@ -63,6 +65,8 @@ pub enum AttributeArg {
 /// Well-known attributes recognized by the compiler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KnownAttribute {
+    /// `@onUnsatisfied("...")` customizes a missing interface-bound diagnostic.
+    OnUnsatisfied,
     /// `@inline` - hint that this function should be inlined
     Inline,
     /// `@noinline` - prevent inlining of this function
@@ -73,6 +77,8 @@ pub enum KnownAttribute {
     Test,
     /// `@bench` - marks a function as a benchmark case
     Bench,
+    /// `@fuzz` - marks a function as a byte-input fuzz target
+    Fuzz,
     /// `@tag(...)` - test tag metadata on namespaces and test functions
     Tag,
     /// `@skip` or `@skip("reason")` - skip this test
@@ -85,22 +91,34 @@ pub enum KnownAttribute {
     Repr,
     /// `@NoCopy` - advisory vet marker on a nominal type declaration
     NoCopy,
+    /// `@discardableResult` - calls to this `Result`-returning function may be
+    /// used as statements without the unused-`Result` warning
+    DiscardableResult,
+    /// `@deprecated(...)` - marks a declaration as deprecated with optional message and replacement
+    Deprecated,
+    /// `@key("...")` - custom coding key for a stored field
+    Key,
 }
 
 impl KnownAttribute {
     pub fn from_name(name: &str) -> Option<KnownAttribute> {
         match name {
+            "onUnsatisfied" => Some(KnownAttribute::OnUnsatisfied),
             "inline" => Some(KnownAttribute::Inline),
             "noinline" => Some(KnownAttribute::NoInline),
             "cfg" => Some(KnownAttribute::Cfg),
             "test" => Some(KnownAttribute::Test),
             "bench" => Some(KnownAttribute::Bench),
+            "fuzz" => Some(KnownAttribute::Fuzz),
             "tag" => Some(KnownAttribute::Tag),
             "skip" => Some(KnownAttribute::Skip),
             "expectPanic" => Some(KnownAttribute::ExpectPanic),
             "lang" => Some(KnownAttribute::Lang),
             "repr" => Some(KnownAttribute::Repr),
             "NoCopy" => Some(KnownAttribute::NoCopy),
+            "discardableResult" => Some(KnownAttribute::DiscardableResult),
+            "deprecated" => Some(KnownAttribute::Deprecated),
+            "key" => Some(KnownAttribute::Key),
             _ => None,
         }
     }
@@ -232,6 +250,7 @@ pub struct Interface {
 
 #[derive(Debug, Clone)]
 pub struct Struct {
+    pub positional: bool,
     pub class_header: Option<ClassHeader>,
     pub generics: Generics,
     pub fields: Vec<FieldDefinition>,
@@ -278,6 +297,7 @@ pub struct Function {
     pub signature: FunctionSignature,
     pub block: Option<Block>,
     pub is_unsafe: bool,
+    pub is_const: bool,
     pub is_async: bool,
     pub is_final: bool,
     pub is_override: bool,
@@ -309,6 +329,8 @@ pub struct FunctionParameter {
     pub name: Identifier,
     pub annotated_type: Box<Type>,
     pub default_value: Option<Box<Expression>>,
+    pub caller_bindings: Option<[NodeID; 3]>,
+    pub is_lazy: bool,
     pub is_variadic: bool,
     pub span: Span,
 }
@@ -381,6 +403,8 @@ pub struct Impl {
     pub generics: Generics,
     /// Some for `conform T to I`, absent for `extend T`.
     pub interface: Option<Box<Type>>,
+    /// The stored field named in a conformance’s optional `by self.field` clause.
+    pub delegate: Option<Identifier>,
     /// The type implementing the interface (the target type)
     pub target: Box<Type>,
     pub declarations: Vec<AssociatedDeclaration>,
@@ -428,6 +452,19 @@ pub struct Type {
     pub kind: TypeKind,
 }
 
+impl Type {
+    /// Reuse the resolved path and source location when a qualified `is` target
+    /// is an enum constructor.
+    pub fn qualified_case_pattern(&self) -> Pattern {
+        let TypeKind::Nominal(path) = &self.kind else { unreachable!("qualified enum case") };
+        Pattern {
+            id: self.id,
+            span: self.span,
+            kind: PatternKind::Member(ConstructorPath::Qualified { path: path.clone() }),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum TypeKind {
     /// `Foo` | `Foo[T]` | Foo.Bar | `Foo.Bar[T]`
@@ -443,7 +480,7 @@ pub enum TypeKind {
     /// Tuple Type
     ///
     /// `(T, V)`
-    Tuple(Vec<Box<Type>>),
+    Tuple(Vec<Box<Type>>, TupleLabels),
     /// An Array with a fixed size `N`
     ///
     /// `[T;N]`
@@ -483,6 +520,8 @@ pub struct TypeParameters {
 
 #[derive(Debug, Clone)]
 pub struct TypeParameter {
+    /// Introduced by a parameter-position `some` and inferred at each call.
+    pub is_anonymous: bool,
     pub id: DefinitionID,
     pub span: Span,
     pub identifier: Identifier,
@@ -588,6 +627,7 @@ pub enum VariantKind {
 #[derive(Debug, Clone)]
 pub struct FieldDefinition {
     pub def_id: DefinitionID,
+    pub attributes: AttributeList,
     pub default_value: Option<Box<Expression>>,
     pub mutability: Mutability,
     pub label: Option<Label>,
@@ -613,10 +653,22 @@ pub enum StatementKind {
         label: Option<Label>,
         block: Block,
     },
-    Defer(Block),
+    Defer(DeferKind, Block),
     Guard {
         condition: Box<Expression>,
         else_block: Block,
+    },
+    /// `#for field in #fields(T) { ... }`
+    ComptimeFor {
+        pattern: Pattern,
+        target_type: Box<Type>,
+        body: Block,
+    },
+    /// `#if cond { ... } [else { ... }]`
+    ComptimeIf {
+        condition: Box<Expression>,
+        then_block: Block,
+        else_block: Option<Block>,
     },
 }
 
@@ -627,6 +679,7 @@ pub struct Local {
     pub pattern: Pattern,
     pub ty: Option<Box<Type>>,
     pub initializer: Option<Box<Expression>>,
+    pub is_async: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -650,6 +703,28 @@ pub struct Expression {
     pub id: NodeID,
     pub kind: ExpressionKind,
     pub span: Span,
+}
+
+impl Expression {
+    /// Delay an argument using the ordinary capture and invocation rules for
+    /// a zero-argument closure. Its body retains the source node identities.
+    pub fn lazy_argument(id: NodeID, def_id: DefinitionID, body: Box<Expression>) -> Self {
+        let span = body.span;
+        Self {
+            id,
+            span,
+            kind: ExpressionKind::Closure(ClosureExpr {
+                def_id,
+                params: vec![],
+                return_ty: None,
+                is_async: false,
+                implicit_await: false,
+                body,
+                snapshot_captures: false,
+                span,
+            }),
+        }
+    }
 }
 
 /// Private call and receiver identities for native accessor selection.
@@ -698,26 +773,40 @@ pub enum ExpressionKind {
     },
     /// `[a, b, c]`
     Array(Vec<Box<Expression>>),
+    /// One collection contribution in a call or array literal, written `source...`.
+    Spread(Box<Expression>),
     /// `[expr; len]`
     Repeat {
         value: Box<Expression>,
         count: AnonConst,
     },
     /// `(a, b, c)`
-    Tuple(Vec<Box<Expression>>),
+    Tuple(Vec<Box<Expression>>, TupleLabels),
+    /// `_` leaf of a tuple assignee; never a value expression.
+    Discard,
     /// `if foo { } else { }`
     If(IfExpression),
     /// `match foo {
     ///     case <pattern> => ...
     /// }`
     Match(MatchExpression),
+    /// `select {
+    ///     case <pattern> = await <expr> => ...
+    /// }`
+    Select(SelectExpression),
+    /// `loop { ... }` or `label: loop { ... }`
+    Loop {
+        label: Option<Label>,
+        block: Block,
+    },
     /// `return` | `return expr`
     Return {
         value: Option<Box<Expression>>,
     },
-    /// `break` | `break label`
+    /// `break` | `break label` | `break expr`
     Break {
         label: Option<Identifier>,
+        value: Option<Box<Expression>>,
     },
     /// `continue` | `continue label`
     Continue {
@@ -730,6 +819,8 @@ pub enum ExpressionKind {
     },
     /// `receiver.method(...)`
     MethodCall {
+        /// Language sugar can require a particular interface witness.
+        interface: Option<StdItem>,
         receiver: Box<Expression>,
         name: Identifier,
         arguments: Vec<ExpressionArgument>,
@@ -748,6 +839,8 @@ pub enum ExpressionKind {
     AssignOp(BinaryOperator, Box<Expression>, Box<Expression>),
     ///` a = b`
     Assign(Box<Expression>, Box<Expression>),
+    /// `a ??= b`: assigns `b` only when the optional `a` is nil.
+    AssignOptional(Box<Expression>, Box<Expression>),
     /// `a as int`
     CastAs(Box<Expression>, Box<Type>),
     /// `a as? any Interface`
@@ -774,11 +867,16 @@ pub enum ExpressionKind {
     Closure(ClosureExpr),
     /// `await expr` — suspend until the future completes
     Await(Box<Expression>),
+    /// `yield expr` — suspend a generator and produce a value
+    Yield(Box<Expression>),
+    /// `#typeName(T)`
+    TypeName(Box<Type>),
     Malformed,
 }
 
 #[derive(Debug, Clone)]
 pub enum Literal {
+    Bytes(crate::span::InternedBytes),
     Bool(bool),
     Rune(char),
     String(Symbol),
@@ -844,6 +942,21 @@ pub struct MatchExpression {
 }
 
 #[derive(Debug, Clone)]
+pub struct SelectExpression {
+    pub arms: Vec<SelectArm>,
+    pub kw_span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct SelectArm {
+    pub pattern: Pattern,
+    /// Synthetic zero-arg async closure `() async => { <operation> }`
+    pub operation: Box<Expression>,
+    pub body: Box<Expression>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
 pub struct MatchArm {
     pub pattern: Pattern,
     pub body: Box<Expression>,
@@ -899,6 +1012,10 @@ pub struct ClosureExpr {
     pub return_ty: Option<Box<Type>>,
     /// Whether this closure is async and lowers through the async transform.
     pub is_async: bool,
+    /// Whether the closure body has an implicit expression-scoped `await`
+    /// (used for `async var` initializers so `async var x = fetch()` works
+    /// without a redundant `await`, and sync expressions don't warn).
+    pub implicit_await: bool,
     /// Closure body expression
     pub body: Box<Expression>,
     /// Whether `move` keyword was specified (forces by-move capture)
@@ -929,6 +1046,43 @@ pub struct Pattern {
     pub kind: PatternKind,
 }
 
+impl Pattern {
+    pub fn has_alternatives(&self) -> bool {
+        match &self.kind {
+            PatternKind::Or(..) => true,
+            PatternKind::At { pattern, .. } => pattern.has_alternatives(),
+            PatternKind::Tuple(parts, _) | PatternKind::PathTuple { fields: parts, .. } => {
+                parts.iter().any(Pattern::has_alternatives)
+            }
+            PatternKind::PathNamed { fields, .. } => fields.iter().any(|f| f.pattern.has_alternatives()),
+            _ => false,
+        }
+    }
+
+    /// Visit only bindings introduced by this pattern, including each alternative.
+    /// Types and constant endpoint expressions cannot introduce arm locals.
+    pub fn for_each_binding(&self, visit: &mut impl FnMut(NodeID, Identifier)) {
+        match &self.kind {
+            PatternKind::Binding { name } => visit(self.id, *name),
+            PatternKind::At { binding, pattern } => {
+                binding.for_each_binding(visit);
+                pattern.for_each_binding(visit);
+            }
+            PatternKind::TypeTest { binding: Some(p), .. } => p.for_each_binding(visit),
+            PatternKind::Or(parts, _) | PatternKind::Tuple(parts, _)
+            | PatternKind::PathTuple { fields: parts, .. } => {
+                for part in parts { part.for_each_binding(visit); }
+            }
+            PatternKind::PathNamed { fields, .. } => {
+                for field in fields { field.pattern.for_each_binding(visit); }
+            }
+            PatternKind::TypeTest { binding: None, .. } | PatternKind::Wildcard
+            | PatternKind::Rest | PatternKind::Member(_) | PatternKind::Range { .. }
+            | PatternKind::Literal { .. } => {}
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum PatternKind {
     /// _
@@ -953,6 +1107,16 @@ pub enum PatternKind {
         fields: Vec<NamedPatternField>,
         rest: bool,
         field_span: Span,
+    },
+    /// Bind the input before the subpattern applies any projections.
+    At { binding: Box<Pattern>, pattern: Box<Pattern> },
+    /// `is T` or `name as T`. The binding belongs to the success arm.
+    TypeTest { target: Box<Type>, binding: Option<Box<Pattern>> },
+    /// Two compile-time scalar bounds, as in `LOW..=HIGH`.
+    Range {
+        start: Box<Expression>,
+        end: Box<Expression>,
+        inclusive: bool,
     },
     // Foo | Bar
     Or(Vec<Pattern>, Span),
@@ -983,15 +1147,24 @@ pub enum StdItem {
     ListIterator,
     ClassHandle,
     AtomicHandle,
+    SyncGenerator,
+    AsyncGenerator,
     Set,
     Dictionary,
     Range,
     ClosedRange,
+    RangeFrom,
+    RangeTo,
+    RangeToInclusive,
+    RangeFull,
     MaybeUninit,
     Span,
     Benchmark,
+    /// Shows a `Debug` value where `Display` is expected (string interpolation).
+    DebugDisplay,
 
     // Interfaces
+    Closeable,
     Deref,
     AnyObject,
     Clone,
@@ -1030,8 +1203,15 @@ pub enum StdItem {
     Shr,
     ShrAssign,
     BitNot,
+    Contains,
     PartialEq,
     PartialOrd,
+    Ord,
+    Default,
+    Display,
+    Debug,
+    RawValue,
+    CaseIterable,
 
     // Optional variants/constructors
     OptionalSomeVariant,
@@ -1047,6 +1227,18 @@ pub enum StdItem {
     Task,
     PanicPayload,
     // Builtin
+    BenchmarkReport,
+    /// Reports the error a `Result`-returning entry point returned.
+    MainErrorReport,
+    DebugValue,
+    DebugValueAt,
+    DebugString,
+    Assert,
+    AssertWithMessage,
+    DebugAssert,
+    DebugAssertWithMessage,
+    AssertFail,
+    AssertFailWithMessage,
 }
 
 impl StdItem {
@@ -1058,13 +1250,31 @@ impl StdItem {
             StdItem::ListIterator => Some("ListIterator"),
             StdItem::ClassHandle => Some("ClassHandle"),
             StdItem::AtomicHandle => Some("AtomicHandle"),
+            StdItem::SyncGenerator => Some("SyncGenerator"),
+            StdItem::AsyncGenerator => Some("AsyncGenerator"),
             StdItem::Set => Some("Set"),
             StdItem::Dictionary => Some("Dictionary"),
             StdItem::Range => Some("Range"),
             StdItem::ClosedRange => Some("ClosedRange"),
+            StdItem::RangeFrom => Some("RangeFrom"),
+            StdItem::RangeTo => Some("RangeTo"),
+            StdItem::RangeToInclusive => Some("RangeToInclusive"),
+            StdItem::RangeFull => Some("RangeFull"),
             StdItem::MaybeUninit => Some("MaybeUninit"),
             StdItem::Span => Some("Span"),
             StdItem::Benchmark => Some("Benchmark"),
+            StdItem::BenchmarkReport => Some("BenchmarkReport"),
+            StdItem::MainErrorReport => Some("MainErrorReport"),
+            StdItem::DebugValue => Some("DebugValue"),
+            StdItem::DebugValueAt => Some("DebugValueAt"),
+            StdItem::DebugString => Some("DebugString"),
+            StdItem::Assert => Some("Assert"),
+            StdItem::AssertWithMessage => Some("AssertWithMessage"),
+            StdItem::DebugAssert => Some("DebugAssert"),
+            StdItem::DebugAssertWithMessage => Some("DebugAssertWithMessage"),
+            StdItem::AssertFail => Some("AssertFail"),
+            StdItem::AssertFailWithMessage => Some("AssertFailWithMessage"),
+            StdItem::Closeable => Some("Closeable"),
             StdItem::Deref => Some("Deref"),
             StdItem::AnyObject => Some("AnyObject"),
             StdItem::Clone => Some("Clone"),
@@ -1103,8 +1313,16 @@ impl StdItem {
             StdItem::Shr => Some("Shr"),
             StdItem::ShrAssign => Some("ShrAssign"),
             StdItem::BitNot => Some("BitNot"),
+            StdItem::Contains => Some("Contains"),
             StdItem::PartialEq => Some("PartialEq"),
             StdItem::PartialOrd => Some("PartialOrd"),
+            StdItem::Ord => Some("Ord"),
+            StdItem::Default => Some("Default"),
+            StdItem::Display => Some("Display"),
+            StdItem::RawValue => Some("RawValue"),
+            StdItem::CaseIterable => Some("CaseIterable"),
+            StdItem::Debug => Some("Debug"),
+            StdItem::DebugDisplay => Some("DebugDisplay"),
             StdItem::Task => Some("Task"),
             StdItem::PanicPayload => Some("PanicPayload"),
             StdItem::OptionalSomeVariant => Some("OptionalSomeVariant"),
@@ -1126,13 +1344,31 @@ impl StdItem {
             "ListIterator" => Some(Self::ListIterator),
             "ClassHandle" => Some(Self::ClassHandle),
             "AtomicHandle" => Some(Self::AtomicHandle),
+            "SyncGenerator" => Some(Self::SyncGenerator),
+            "AsyncGenerator" => Some(Self::AsyncGenerator),
             "Set" => Some(Self::Set),
             "Dictionary" => Some(Self::Dictionary),
             "Range" => Some(Self::Range),
             "ClosedRange" => Some(Self::ClosedRange),
+            "RangeFrom" => Some(Self::RangeFrom),
+            "RangeTo" => Some(Self::RangeTo),
+            "RangeToInclusive" => Some(Self::RangeToInclusive),
+            "RangeFull" => Some(Self::RangeFull),
             "MaybeUninit" => Some(Self::MaybeUninit),
             "Span" => Some(Self::Span),
             "Benchmark" => Some(Self::Benchmark),
+            "BenchmarkReport" => Some(Self::BenchmarkReport),
+            "MainErrorReport" => Some(Self::MainErrorReport),
+            "DebugValue" => Some(Self::DebugValue),
+            "DebugValueAt" => Some(Self::DebugValueAt),
+            "DebugString" => Some(Self::DebugString),
+            "Assert" => Some(Self::Assert),
+            "AssertWithMessage" => Some(Self::AssertWithMessage),
+            "DebugAssert" => Some(Self::DebugAssert),
+            "DebugAssertWithMessage" => Some(Self::DebugAssertWithMessage),
+            "AssertFail" => Some(Self::AssertFail),
+            "AssertFailWithMessage" => Some(Self::AssertFailWithMessage),
+            "Closeable" => Some(Self::Closeable),
             "Deref" => Some(Self::Deref),
             "AnyObject" => Some(Self::AnyObject),
             "Clone" => Some(Self::Clone),
@@ -1171,8 +1407,16 @@ impl StdItem {
             "Shr" => Some(Self::Shr),
             "ShrAssign" => Some(Self::ShrAssign),
             "BitNot" => Some(Self::BitNot),
+            "Contains" => Some(Self::Contains),
             "PartialEq" => Some(Self::PartialEq),
             "PartialOrd" => Some(Self::PartialOrd),
+            "Ord" => Some(Self::Ord),
+            "Default" => Some(Self::Default),
+            "Display" => Some(Self::Display),
+            "RawValue" => Some(Self::RawValue),
+            "CaseIterable" => Some(Self::CaseIterable),
+            "Debug" => Some(Self::Debug),
+            "DebugDisplay" => Some(Self::DebugDisplay),
             "Task" => Some(Self::Task),
             "PanicPayload" => Some(Self::PanicPayload),
             _ => None,
@@ -1182,20 +1426,39 @@ impl StdItem {
     pub fn expected_def_kind(self) -> Option<DefinitionKind> {
         match self {
             StdItem::Optional | StdItem::Result => Some(DefinitionKind::Enum),
+            StdItem::BenchmarkReport
+            | StdItem::MainErrorReport
+            | StdItem::DebugValue
+            | StdItem::DebugValueAt
+            | StdItem::DebugString
+            | StdItem::Assert
+            | StdItem::AssertWithMessage
+            | StdItem::DebugAssert
+            | StdItem::DebugAssertWithMessage
+            | StdItem::AssertFail
+            | StdItem::AssertFailWithMessage => Some(DefinitionKind::Function),
             StdItem::List
             | StdItem::ListIterator
             | StdItem::ClassHandle
             | StdItem::AtomicHandle
+            | StdItem::SyncGenerator
+            | StdItem::AsyncGenerator
             | StdItem::Set
             | StdItem::Dictionary
             | StdItem::Range
             | StdItem::ClosedRange
+            | StdItem::RangeFrom
+            | StdItem::RangeTo
+            | StdItem::RangeToInclusive
+            | StdItem::RangeFull
             | StdItem::MaybeUninit
             | StdItem::Span
             | StdItem::Benchmark
+            | StdItem::DebugDisplay
             | StdItem::Task
             | StdItem::PanicPayload => Some(DefinitionKind::Struct),
-            StdItem::Deref
+            StdItem::Closeable
+            | StdItem::Deref
             | StdItem::AnyObject
             | StdItem::Clone
             | StdItem::Hashable
@@ -1233,8 +1496,15 @@ impl StdItem {
             | StdItem::Shr
             | StdItem::ShrAssign
             | StdItem::BitNot
+            | StdItem::Contains
             | StdItem::PartialEq
-            | StdItem::PartialOrd => Some(DefinitionKind::Interface),
+            | StdItem::PartialOrd
+            | StdItem::Ord
+            | StdItem::Default
+            | StdItem::Display
+            | StdItem::RawValue
+            | StdItem::CaseIterable
+            | StdItem::Debug => Some(DefinitionKind::Interface),
             StdItem::OptionalSomeVariant
             | StdItem::OptionalNoneVariant
             | StdItem::ResultOkVariant
@@ -1268,6 +1538,8 @@ impl StdItem {
                 | StdItem::MaybeUninit
                 | StdItem::Span
                 | StdItem::Benchmark
+                | StdItem::BenchmarkReport
+                | StdItem::MainErrorReport
                 | StdItem::Deref
                 | StdItem::AnyObject
                 | StdItem::Clone
@@ -1319,7 +1591,7 @@ impl StdItem {
         )
     }
 
-    pub const ALL_REQUIRED: [StdItem; 60] = [
+    pub const ALL_REQUIRED: [StdItem; 62] = [
         StdItem::Optional,
         StdItem::Result,
         StdItem::List,
@@ -1332,6 +1604,8 @@ impl StdItem {
         StdItem::MaybeUninit,
         StdItem::Span,
         StdItem::Benchmark,
+        StdItem::BenchmarkReport,
+        StdItem::MainErrorReport,
         StdItem::Deref,
         StdItem::AnyObject,
         StdItem::Clone,
@@ -1382,7 +1656,8 @@ impl StdItem {
         StdItem::ResultErrCtor,
     ];
 
-    pub const ALL_INTERFACES: [StdItem; 39] = [
+    pub const ALL_INTERFACES: [StdItem; 47] = [
+        StdItem::Closeable,
         StdItem::AnyObject,
         StdItem::Clone,
         StdItem::Hashable,
@@ -1420,8 +1695,15 @@ impl StdItem {
         StdItem::Shr,
         StdItem::ShrAssign,
         StdItem::BitNot,
+        StdItem::Contains,
         StdItem::PartialEq,
         StdItem::PartialOrd,
+        StdItem::Ord,
+        StdItem::Default,
+        StdItem::Display,
+        StdItem::Debug,
+        StdItem::RawValue,
+        StdItem::CaseIterable,
     ];
 
     /// Whether this interface can be auto-derived when declared inline.
@@ -1434,6 +1716,12 @@ impl StdItem {
                 | Self::PartialEq
                 | Self::Encodable
                 | Self::Decodable
+                | Self::PartialOrd
+                | Self::Ord
+                | Self::Default
+                | Self::Debug
+                | Self::RawValue
+                | Self::CaseIterable
         )
     }
 
@@ -1473,6 +1761,8 @@ impl StdItem {
             OperatorKind::Neg => Some(Self::Neg),
             OperatorKind::Not => Some(Self::Not),
             OperatorKind::BitwiseNot => Some(Self::BitNot),
+            // Membership
+            OperatorKind::Contains => Some(Self::Contains),
             // Comparison
             OperatorKind::Eq | OperatorKind::Neq => Some(Self::PartialEq),
             OperatorKind::Lt | OperatorKind::Gt | OperatorKind::Leq | OperatorKind::Geq => {
@@ -1702,6 +1992,14 @@ pub trait HirVisitor: Sized {
 
     fn visit_match_arm(&mut self, node: &MatchArm) -> Self::Result {
         walk_match_arm(self, node)
+    }
+
+    fn visit_select_expression(&mut self, node: &SelectExpression) -> Self::Result {
+        walk_select_expression(self, node)
+    }
+
+    fn visit_select_arm(&mut self, node: &SelectArm) -> Self::Result {
+        walk_select_arm(self, node)
     }
 
     fn visit_anon_const(&mut self, node: &AnonConst) -> Self::Result {
@@ -1997,7 +2295,7 @@ pub fn walk_type<V: HirVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
         TypeKind::Pointer(internal, _) | TypeKind::Reference(internal) => {
             try_visit!(visitor.visit_type(internal));
         }
-        TypeKind::Tuple(elems) => {
+        TypeKind::Tuple(elems, _) => {
             walk_list!(visitor, visit_type, elems);
         }
         TypeKind::Array { size, element } => {
@@ -2173,7 +2471,7 @@ pub fn walk_statement<V: HirVisitor>(visitor: &mut V, s: &Statement) -> V::Resul
             visit_optional!(visitor, visit_label, label);
             try_visit!(visitor.visit_block(block));
         }
-        StatementKind::Defer(block) => {
+        StatementKind::Defer(_, block) => {
             try_visit!(visitor.visit_block(block));
         }
         StatementKind::Guard {
@@ -2182,6 +2480,24 @@ pub fn walk_statement<V: HirVisitor>(visitor: &mut V, s: &Statement) -> V::Resul
         } => {
             try_visit!(visitor.visit_expression(condition));
             try_visit!(visitor.visit_block(else_block));
+        }
+        StatementKind::ComptimeFor {
+            pattern,
+            target_type,
+            body,
+        } => {
+            try_visit!(visitor.visit_type(target_type));
+            try_visit!(visitor.visit_pattern(pattern));
+            try_visit!(visitor.visit_block(body));
+        }
+        StatementKind::ComptimeIf {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            try_visit!(visitor.visit_expression(condition));
+            try_visit!(visitor.visit_block(then_block));
+            visit_optional!(visitor, visit_block, else_block);
         }
     }
     V::Result::output()
@@ -2245,7 +2561,7 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, node: &Expression) -> V::
             try_visit!(visitor.visit_expression(value));
             try_visit!(visitor.visit_anon_const(count));
         }
-        ExpressionKind::Tuple(expressions) => {
+        ExpressionKind::Tuple(expressions, _) => {
             walk_list!(visitor, visit_expression, expressions);
         }
         ExpressionKind::If(expr) => {
@@ -2254,10 +2570,21 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, node: &Expression) -> V::
         ExpressionKind::Match(expr) => {
             try_visit!(visitor.visit_match_expression(expr));
         }
+        ExpressionKind::Select(expr) => {
+            try_visit!(visitor.visit_select_expression(expr));
+        }
+        ExpressionKind::Loop { label, block } => {
+            visit_optional!(visitor, visit_label, label);
+            try_visit!(visitor.visit_block(block));
+        }
         ExpressionKind::Return { value } => {
             visit_optional!(visitor, visit_expression, value);
         }
-        ExpressionKind::Break { label } | ExpressionKind::Continue { label } => {
+        ExpressionKind::Break { label, value } => {
+            visit_optional!(visitor, visit_identifier, label);
+            visit_optional!(visitor, visit_expression, value);
+        }
+        ExpressionKind::Continue { label } => {
             visit_optional!(visitor, visit_identifier, label);
         }
         ExpressionKind::Call { callee, arguments } => {
@@ -2272,7 +2599,7 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, node: &Expression) -> V::
             try_visit!(visitor.visit_expression(receiver));
             walk_list!(visitor, visit_expression_argument, arguments);
         }
-        ExpressionKind::Reference(expression) => {
+        ExpressionKind::Reference(expression) | ExpressionKind::Spread(expression) => {
             try_visit!(visitor.visit_expression(expression));
         }
         ExpressionKind::Dereference(expression) => {
@@ -2293,7 +2620,7 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, node: &Expression) -> V::
             try_visit!(visitor.visit_expression(lhs));
             try_visit!(visitor.visit_expression(rhs));
         }
-        ExpressionKind::Assign(lhs, rhs) => {
+        ExpressionKind::Assign(lhs, rhs) | ExpressionKind::AssignOptional(lhs, rhs) => {
             try_visit!(visitor.visit_expression(lhs));
             try_visit!(visitor.visit_expression(rhs));
         }
@@ -2336,13 +2663,49 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, node: &Expression) -> V::
             visit_optional!(visitor, visit_type, &closure.return_ty);
             try_visit!(visitor.visit_expression(&closure.body));
         }
-        ExpressionKind::Await(expression) => {
+        ExpressionKind::Await(expression) | ExpressionKind::Yield(expression) => {
             try_visit!(visitor.visit_expression(expression));
         }
-        ExpressionKind::Malformed => {}
+        ExpressionKind::TypeName(ty) => {
+            try_visit!(visitor.visit_type(ty));
+        }
+        ExpressionKind::Discard | ExpressionKind::Malformed => {}
     };
 
     V::Result::output()
+}
+
+/// Returns `true` if `block` contains a `yield` expression owned by the
+/// current function body (ignoring nested functions and closures).
+pub fn block_contains_yield(block: &Block) -> bool {
+    struct YieldFinder {
+        found: bool,
+    }
+
+    impl HirVisitor for YieldFinder {
+        fn visit_declaration(&mut self, _node: &Declaration) {
+            // Nested functions/items own their own bodies.
+        }
+
+        fn visit_expression(&mut self, node: &Expression) {
+            if self.found {
+                return;
+            }
+            match &node.kind {
+                ExpressionKind::Yield(_) => {
+                    self.found = true;
+                }
+                ExpressionKind::Closure(_) => {
+                    // Closures do not belong to the enclosing generator body.
+                }
+                _ => walk_expression(self, node),
+            }
+        }
+    }
+
+    let mut finder = YieldFinder { found: false };
+    walk_block(&mut finder, block);
+    finder.found
 }
 
 pub fn walk_expression_argument<V: HirVisitor>(
@@ -2364,6 +2727,21 @@ pub fn walk_if_expression<V: HirVisitor>(visitor: &mut V, node: &IfExpression) -
 pub fn walk_match_expression<V: HirVisitor>(visitor: &mut V, node: &MatchExpression) -> V::Result {
     try_visit!(visitor.visit_expression(&node.value));
     walk_list!(visitor, visit_match_arm, &node.arms);
+    V::Result::output()
+}
+
+pub fn walk_select_expression<V: HirVisitor>(
+    visitor: &mut V,
+    node: &SelectExpression,
+) -> V::Result {
+    walk_list!(visitor, visit_select_arm, &node.arms);
+    V::Result::output()
+}
+
+pub fn walk_select_arm<V: HirVisitor>(visitor: &mut V, node: &SelectArm) -> V::Result {
+    try_visit!(visitor.visit_expression(&node.operation));
+    try_visit!(visitor.visit_pattern(&node.pattern));
+    try_visit!(visitor.visit_expression(&node.body));
     V::Result::output()
 }
 
@@ -2413,6 +2791,20 @@ pub fn walk_pattern<V: HirVisitor>(visitor: &mut V, pattern: &Pattern) -> V::Res
         }
         PatternKind::Or(patterns, _) => {
             walk_list!(visitor, visit_pattern, patterns);
+        }
+        PatternKind::At { binding, pattern } => {
+            try_visit!(visitor.visit_pattern(binding));
+            try_visit!(visitor.visit_pattern(pattern));
+        }
+        PatternKind::TypeTest { target, binding } => {
+            try_visit!(visitor.visit_type(target));
+            if let Some(binding) = binding {
+                try_visit!(visitor.visit_pattern(binding));
+            }
+        }
+        PatternKind::Range { start, end, .. } => {
+            try_visit!(visitor.visit_expression(start));
+            try_visit!(visitor.visit_expression(end));
         }
         PatternKind::Literal { .. } => {}
     }

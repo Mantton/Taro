@@ -1,0 +1,23 @@
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: assert_comparison_failure.tr:22
+// EXPECT_STDERR_CONTAINS: leftSide() == rightSide()
+// EXPECT_STDERR_CONTAINS: left (leftSide()): 10
+// EXPECT_STDERR_CONTAINS: right (rightSide()): 20
+// EXPECT_STDERR_CONTAINS: counts=1,1
+static var leftCount: int32 = 0
+static var rightCount: int32 = 0
+
+func leftSide() -> int32 {
+    leftCount += 1
+    10
+}
+
+func rightSide() -> int32 {
+    rightCount += 1
+    20
+}
+
+func main() {
+    defer { eprintln("counts=${leftCount},${rightCount}") }
+    assert(leftSide() == rightSide())
+}

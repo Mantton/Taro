@@ -1,19 +1,21 @@
 ; Comments
 (line_comment) @comment
+(block_comment) @comment
 (doc_comment) @comment.documentation
 
 ; Literals
 (string_literal) @string
-(f_string_literal) @string
 (escape_sequence) @string.escape
-(f_string_escape) @string.escape
+(string_escape) @string.escape
 (rune_literal) @string.special
-(f_string_brace_escape) @string.escape
-(f_string_interpolation "{" @punctuation.special)
-(f_string_interpolation "}" @punctuation.special)
+(string_interpolation_start) @punctuation.special
+(interpolation_format) @string.special
+(string_interpolation_end) @punctuation.special
 (number_literal) @number
 (boolean_literal) @constant.builtin
 (nil_literal) @constant.builtin
+(source_location_literal) @constant.builtin
+(embed_expression directive: _ @function.builtin)
 
 ; Type identifiers
 (type_identifier) @type
@@ -39,12 +41,15 @@
     (identifier) @function.call))
 
 ; Parameters
+(parameter "@lazy" @attribute)
 (parameter
   label: (identifier) @variable.parameter)
 (parameter
   name: (identifier) @variable.parameter)
 (closure_parameter
   name: (identifier) @variable.parameter)
+(closure_expression
+  parameter: (identifier) @variable.parameter)
 
 ; Call argument labels
 (argument
@@ -95,6 +100,7 @@
 "<<" @operator
 ">>" @operator
 "!" @operator
+"!in" @keyword
 "~" @operator
 "=" @operator
 "+=" @operator
@@ -112,6 +118,7 @@
 "|>" @operator
 "?." @operator
 "??" @operator
+"??=" @operator
 ".." @operator
 "..=" @operator
 "..." @operator
@@ -155,6 +162,8 @@
 (break_statement) @keyword.control
 (continue_statement) @keyword.control
 "return" @keyword.control
+(using_statement "using" @keyword.control)
+(errdefer_statement "errdefer" @keyword.control)
 "defer" @keyword.control
 "guard" @keyword.control
 
@@ -182,6 +191,7 @@
 "as!" @keyword
 "is" @keyword
 "in" @keyword
+(delegation_clause "by" @keyword field: (identifier) @property)
 "where" @keyword
 "any" @keyword
 "unsafe" @keyword

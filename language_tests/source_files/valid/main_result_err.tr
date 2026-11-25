@@ -1,0 +1,19 @@
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_CONTAINS: error: configuration missing
+// EXPECT_STDERR_COUNT: 1 error:
+// `main` may return a Result. Returning `.err` reports the error's display
+// form on standard error and exits with status 1.
+struct MissingConfig {}
+
+conform MissingConfig to std::fmt::Display {
+    func display(_ into: &std::fmt::Formatter) {
+        into.writeString("configuration missing")
+    }
+}
+
+conform MissingConfig to std::error::Error {}
+
+func main() -> Result[(), any std::error::Error] {
+    print("before the error\n")
+    return .err(MissingConfig {})
+}

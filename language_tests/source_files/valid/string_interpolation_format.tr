@@ -1,0 +1,99 @@
+import std::fmt::{Display, FormatState, Formattable, Formatter}
+
+struct Both: Debug {
+    value: int32
+}
+
+conform Both to Display {
+    func display(_ into: &Formatter) {
+        into.writeString("display:${self.value}")
+    }
+}
+
+struct DebugOnly: Debug {
+    tag: string
+}
+
+struct CustomFormat {
+    code: int32
+}
+
+conform CustomFormat to Display {
+    func display(_ into: &Formatter) {
+        into.writeString("custom(${self.code})")
+    }
+}
+
+conform CustomFormat to Formattable {
+    func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
+        into.writeString("spec=")
+        into.writeRune(spec)
+        into.writeString(" fill=")
+        into.writeRune(state.fill)
+        if state.hasWidth {
+            into.writeString(" w=${state.width}")
+        }
+        if state.hasPrecision {
+            into.writeString(" p=${state.precision}")
+        }
+        if state.leftAlign {
+            into.writeString(" left")
+        }
+        if state.center {
+            into.writeString(" center")
+        }
+        if state.zeroPad {
+            into.writeString(" zero")
+        }
+        into.writeString(" code=${self.code}")
+    }
+}
+
+func labeled(prefix: string, value: int32) -> string {
+    "${prefix}=${value:04x}"
+}
+
+func main() {
+    var mask: int32 = 255
+    println("${mask:x} ${mask:b}")
+    var negByte: int8 = -1
+    println("${negByte:x} ${negByte:b}")
+    println("${-7:04} ${5:08b} ${10:04x}")
+
+    name := "hi"
+    println("|${name:<4}|${name:>4}|${name:^5}|${name:*^5}|${name:·^5}|")
+    println("|${"café":<6}|${"héllo":.3}|")
+
+    price := 3.5
+    println("|${price:>8.2}|")
+    println("${price:e} ${price:.2e} ${9.999:.2} ${9.999:.2e} ${2.5:.0} ${3.5:.0}")
+    println("${-0.0:.2} ${0.0:e} ${0.0:.2e}")
+
+    both := Both { value: 7 }
+    println("plain=${both} debug=${both:?} padded=|${both:>20?}|")
+    println("str-plain=${name} str-debug=${name:?}")
+    only := DebugOnly { tag: "ok" }
+    println("only=${only:?}")
+
+    custom := CustomFormat { code: 9 }
+    println("|${custom:*^40.2x}|")
+    println("${custom:?}")
+
+    // Literal percent, nested interpolation, and labeled arguments inside a hole.
+    println("100% done: ${"nested ${mask:x} 50%"} ${labeled(prefix: "hex", value: 26)}")
+
+    // Multiple side-effecting holes execute strictly in source order.
+    var order: [int32] = []
+    step := (n: int32) => {
+        order.append(n)
+        n * 10
+    }
+    println("${step(1):x}-${step(2):b}-${step(3):>4}")
+    println("${order:?}")
+
+    // Labeled loop expression inside interpolation (with and without format specifier).
+    println("${outer: loop { break 42 }}|${outer: loop { break 7 }:>4}|")
+
+    // Zero-padding applies only to finite numbers, never strings or inf/nan.
+    println("[${"-hello":08}][${double::INFINITY:08}][${-double::INFINITY:08}][${double::NAN:08}][${-3.5:08.2}]")
+}

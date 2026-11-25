@@ -1,0 +1,16 @@
+error: @discardableResult is only allowed on functions and methods
+ -> language_tests/source_files/invalid/discardable_result_placement.tr:2:0
+	@discardableResult
+	^^^^^^^^^^^^^^^^^^
+error: @discardableResult is only allowed on functions and methods
+ -> language_tests/source_files/invalid/discardable_result_placement.tr:5:0
+	@discardableResult
+	^^^^^^^^^^^^^^^^^^
+error: @discardableResult does not take arguments
+ -> language_tests/source_files/invalid/discardable_result_placement.tr:8:0
+	@discardableResult("reason")
+	^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+error: @discardableResult is only allowed on functions and methods
+ -> language_tests/source_files/invalid/discardable_result_placement.tr:12:4
+	    @discardableResult
+	    ^^^^^^^^^^^^^^^^^^

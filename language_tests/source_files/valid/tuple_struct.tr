@@ -1,0 +1,32 @@
+import std::hash::{DefaultHasher, Hashable, Hasher}
+func fingerprint[T: Hashable](_ value: T) -> uint64 {
+    var h = DefaultHasher::new()
+    value.hash(into: &h)
+    return h.finish()
+}
+struct NamedId: PartialEq, Hashable { raw: int64 }
+struct UserId(int64): PartialEq, Hashable
+struct OrderId(int64): PartialEq, Hashable
+struct Pair[T](T, T)
+func identify(_ id: UserId) -> int64 { id.0 }
+func identify(_ id: OrderId) -> int64 { -id.0 }
+func record(_ state: &int32, _ digit: int32) -> int32 {
+    *state = *state * 10 + digit
+    return digit
+}
+func main() {
+    user := UserId(42)
+    order := OrderId(42)
+    assert(identify(user) == 42 && identify(order) == -42, "nominal overloads")
+    assert(user == UserId(42) && user != UserId(41), "derived equality")
+    assert(fingerprint(user) == fingerprint(NamedId { raw: 42 }) && fingerprint(user) != fingerprint(UserId(41)), "derived hash")
+    assert(std::mem::sizeOf[UserId]() == std::mem::sizeOf[int64](), "one-field layout")
+    assert(std::mem::alignOf[UserId]() == std::mem::alignOf[int64](), "one-field alignment")
+    var pair: Pair[int64] = Pair(5, 5000000000)
+    pair.0 += 3
+    assert(pair.0 == 8 && pair.1 == 5000000000, "generic fields and mutation")
+    var sequence = 0
+    ordered := Pair(record(&sequence, 3), record(&sequence, 4))
+    assert(sequence == 34 && ordered.0 == 3 && ordered.1 == 4, "arguments evaluated once in field order")
+    println("wrappers")
+}

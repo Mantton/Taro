@@ -1,0 +1,4 @@
+error: Entry[int32] needs a ranking; call {rank} or conform Entry[int32] to Ranked
+ -> language_tests/source_files/invalid/on_unsatisfied_bound.tr:6:16
+	    var score = choose(Entry[int32] { value: 1 })
+	                ^^^^^^

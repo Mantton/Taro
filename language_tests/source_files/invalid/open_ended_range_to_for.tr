@@ -1,0 +1,5 @@
+func main() {
+    for x in ..5 {
+        _ = x
+    }
+}

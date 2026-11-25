@@ -17,6 +17,7 @@
 (extension_declaration) @class.around
 (conformance_declaration) @class.around
 (declaration_body) @class.inside
+(extension_body) @class.inside
 
 (block) @block.around
 

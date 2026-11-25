@@ -1,0 +1,97 @@
+type Outcome = Result[string, string]
+
+func action(_ log: &int32, _ digit: int32) { *log = *log * 10 + digit }
+func errdefer(_ value: int32) -> int32 { value + 1 }
+func source(_ fail: bool) -> Outcome {
+    if fail { return .err("payload") }
+    return .ok("done")
+}
+func tail(_ fail: bool, _ log: &int32) -> Outcome {
+    errdefer action(log, 1)
+    source(fail)
+}
+func propagate(_ fail: bool, _ log: &int32) -> Outcome {
+    errdefer action(log, 1)
+    if true {
+        errdefer action(log, 2)
+        value := source(fail)!
+        if value == "done" { return .ok(value) }
+    }
+    return .err("unreachable")
+}
+func loops(_ log: &int32) -> Outcome {
+    var i: int32 = 0
+    errdefer action(log, 1)
+    loop {
+        errdefer action(log, 9)
+        i += 1
+        if i == 1 { continue }
+        break
+    }
+    return .err("explicit")
+}
+func optional(_ log: &int32) -> Optional[int32] {
+    errdefer action(log, 9)
+    return .none
+}
+func boundary(_ log: &int32) -> Outcome {
+    errdefer action(log, 9)
+    inner := () -> Outcome => {
+        errdefer action(log, 4)
+        return .err("inner")
+    }
+    var _ = inner()
+    return .ok("outer")
+}
+func closureTail(_ log: &int32) {
+    inner := () -> Outcome => {
+        errdefer action(log, 5)
+        source(true)
+    }
+    var _ = inner()
+}
+func forwarded(_ direct: bool, _ log: &int32) -> Outcome {
+    if direct {
+        return if direct {
+            errdefer action(log, 6)
+            source(true)
+        } else { source(false) }
+    }
+    saved := if direct { source(false) } else {
+        errdefer action(log, 9)
+        source(true)
+    }
+    return saved
+}
+func main() {
+    var log: int32 = 0
+    assert(tail(false, &log).isOk() && log == 0, "implicit success")
+    assert(tail(true, &log).isErr() && log == 1, "implicit error")
+    log = 0
+    assert(propagate(false, &log).isOk() && log == 0, "nested success")
+    match propagate(true, &log) {
+        case .err(message) => assert(message == "payload" && log == 21, "propagation")
+        case .ok(_) => panic("expected error")
+    }
+    log = 0
+    var _ = loops(&log)
+    assert(log == 1, "loop exits retire cleanups")
+    var _ = optional(&log)
+    assert(log == 1, "Optional.none")
+    var _ = boundary(&log)
+    assert(log == 14, "independent closure")
+    log = 0
+    closureTail(&log)
+    assert(log == 5, "implicit closure return")
+    var _ = forwarded(true, &log)
+    var _ = forwarded(false, &log)
+    assert(log == 56, "return branch and completed initializer block")
+    var uninitialized: int32
+    if true {
+        errdefer println("${uninitialized}")
+    }
+    first := errdefer(4)
+    errdefer := 6
+    errdefer += 1
+    println("${first} ${errdefer}")
+}

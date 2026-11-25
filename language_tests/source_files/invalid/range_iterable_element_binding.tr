@@ -1,0 +1,9 @@
+import std::iter::Iterable
+
+func needsStrings[T: Iterable[Element = string]](_ source: T) {}
+
+func main() {
+    // Both ranges are iterable, but their elements are integers.
+    needsStrings(1_i32..5_i32)
+    needsStrings(1_i32..=5_i32)
+}

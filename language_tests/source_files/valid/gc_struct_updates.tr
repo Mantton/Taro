@@ -16,7 +16,7 @@ func main() {
     original = make()
     std::runtime::collect()
     assert(changed.tag == 2 && *changed.reference == "kept reference", "references survive collecting explicit fields")
-    assert(f"{changed.payload}" == "kept payload", "erased fields survive update copying and collection")
+    assert("${changed.payload}" == "kept payload", "erased fields survive update copying and collection")
     *changed.reference = "shared"
     assert(*changed.reference == "shared", "copied reference remains writable")
 }

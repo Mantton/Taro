@@ -1,0 +1,10 @@
+func errdefer(_ value: int32) -> int32 { value }
+
+func example() {
+    errdefer { cleanup() }
+    errdefer handle.close()
+    errdefer(1)
+    errdefer := 2
+    errdefer += 1
+    errdefer = errdefer as int32
+}

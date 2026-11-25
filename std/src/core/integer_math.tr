@@ -1,0 +1,1291 @@
+import std::panic::panic
+import std::intrinsic::{
+    __intrinsic_ctpop,
+    __intrinsic_ctlz,
+    __intrinsic_cttz,
+    __intrinsic_bswap,
+    __intrinsic_bitreverse,
+    __intrinsic_fshl,
+    __intrinsic_fshr,
+}
+
+@inline internal func checkedInt8Abs(_ value: int8) -> int8 {
+    if value == int8::MIN {
+        panic("attempt to negate with overflow")
+    }
+    if value < 0 { (0 as int8).wrappingSub(value) } else { value }
+}
+
+@inline internal func checkedInt16Abs(_ value: int16) -> int16 {
+    if value == int16::MIN {
+        panic("attempt to negate with overflow")
+    }
+    if value < 0 { (0 as int16).wrappingSub(value) } else { value }
+}
+
+@inline internal func checkedInt32Abs(_ value: int32) -> int32 {
+    if value == int32::MIN {
+        panic("attempt to negate with overflow")
+    }
+    if value < 0 { (0 as int32).wrappingSub(value) } else { value }
+}
+
+@inline internal func checkedInt64Abs(_ value: int64) -> int64 {
+    if value == int64::MIN {
+        panic("attempt to negate with overflow")
+    }
+    if value < 0 { (0 as int64).wrappingSub(value) } else { value }
+}
+
+@inline internal func checkedIsizeAbs(_ value: isize) -> isize {
+    if value == isize::MIN {
+        panic("attempt to negate with overflow")
+    }
+    if value < 0 { (0 as isize).wrappingSub(value) } else { value }
+}
+
+// Bit-manipulation and integer math methods across all fixed-width and
+// pointer-sized integer types. Bit counts, rotations, byte-swaps, and bit
+// reversals lower directly to LLVM scalar intrinsics; checked/Euclidean
+// routines guard overflow explicitly so debug and release builds share
+// deterministic trap semantics.
+
+extend int8 {
+    /// Returns the number of `1` bits in the two's-complement representation of `self`.
+    @inline public func countOnes() -> uint32 { __intrinsic_ctpop(self) }
+    /// Returns the number of `0` bits in the two's-complement representation of `self`.
+    @inline public func countZeros() -> uint32 { __intrinsic_ctpop(~self) }
+    /// Returns the number of leading `0` bits (returns `Self::BITS` for `0`).
+    @inline public func leadingZeros() -> uint32 { __intrinsic_ctlz(self) }
+    /// Returns the number of trailing `0` bits (returns `Self::BITS` for `0`).
+    @inline public func trailingZeros() -> uint32 { __intrinsic_cttz(self) }
+    /// Returns the number of leading `1` bits.
+    @inline public func leadingOnes() -> uint32 { __intrinsic_ctlz(~self) }
+    /// Returns the number of trailing `1` bits.
+    @inline public func trailingOnes() -> uint32 { __intrinsic_cttz(~self) }
+    /// Rotates the bits of `self` left by `n mod Self::BITS`.
+    @inline public func rotateLeft(_ n: uint32) -> int8 { __intrinsic_fshl(self, self, n) }
+    /// Rotates the bits of `self` right by `n mod Self::BITS`.
+    @inline public func rotateRight(_ n: uint32) -> int8 { __intrinsic_fshr(self, self, n) }
+    /// Reverses the byte order of `self` (no-op for `int8`).
+    @inline public func swapBytes() -> int8 { __intrinsic_bswap(self) }
+    /// Reverses the bit order of `self`.
+    @inline public func reverseBits() -> int8 { __intrinsic_bitreverse(self) }
+
+    /// Returns the absolute value of `self`, panicking on `int8::MIN`.
+    @inline public func abs() -> int8 {
+        if self == Self::MIN {
+            panic("attempt to negate with overflow")
+        }
+        if self < 0 { (0 as int8).wrappingSub(self) } else { self }
+    }
+
+    /// Returns the wrapping absolute value of `self` (`int8::MIN` wraps to `int8::MIN`).
+    @inline public func wrappingAbs() -> int8 {
+        if self < 0 { (0 as int8).wrappingSub(self) } else { self }
+    }
+
+    /// Returns the exact magnitude of `self` as `uint8`. Never overflows.
+    @inline public func unsignedAbs() -> uint8 {
+        if self < 0 { (0 as uint8).wrappingSub(self as uint8) } else { self as uint8 }
+    }
+
+    /// Returns `-1` if `self < 0`, `0` if `self == 0`, or `1` if `self > 0`.
+    @inline public func signum() -> int8 {
+        if self > 0 { 1 } else if self < 0 { -1 } else { 0 }
+    }
+
+    /// Raises `self` to `exp`, wrapping on overflow.
+    public func wrappingPow(_ exp: uint32) -> int8 {
+        var base = self
+        var power = exp
+        var acc: int8 = 1
+        while power > 0 {
+            if (power & 1) != 0 {
+                acc = acc.wrappingMul(base)
+            }
+            power = power >> 1
+            if power > 0 {
+                base = base.wrappingMul(base)
+            }
+        }
+        acc
+    }
+
+    /// Raises `self` to `exp`, returning `.none` on overflow.
+    public func checkedPow(_ exp: uint32) -> int8? {
+        var base = self
+        var power = exp
+        var acc: int8 = 1
+        while power > 0 {
+            if (power & 1) != 0 {
+                match acc.checkedMul(base) {
+                    case .some(v) => acc = v
+                    case .none => return .none
+                }
+            }
+            power = power >> 1
+            if power > 0 {
+                match base.checkedMul(base) {
+                    case .some(v) => base = v
+                    case .none => return .none
+                }
+            }
+        }
+        return .some(acc)
+    }
+
+    /// Raises `self` to `exp`, panicking on overflow.
+    public func pow(_ exp: uint32) -> int8 {
+        match self.checkedPow(exp) {
+            case .some(v) => v
+            case .none => panic("attempt to multiply with overflow")
+        }
+    }
+
+    /// Euclidean division satisfying `self == q * rhs + r` with `0 <= r < |rhs|`.
+    public func divEuclid(_ rhs: int8) -> int8 {
+        if rhs == 0 {
+            panic("attempt to divide by zero")
+        }
+        if self == Self::MIN && rhs == -1 {
+            panic("attempt to divide with overflow")
+        }
+        q := self / rhs
+        r := self % rhs
+        if r < 0 {
+            if rhs > 0 { q - 1 } else { q + 1 }
+        } else {
+            q
+        }
+    }
+
+    /// Euclidean remainder satisfying `0 <= r < |rhs|`.
+    public func remEuclid(_ rhs: int8) -> int8 {
+        if rhs == 0 {
+            panic("attempt to calculate the remainder with a divisor of zero")
+        }
+        if self == Self::MIN && rhs == -1 {
+            panic("attempt to calculate the remainder with overflow")
+        }
+        r := self % rhs
+        if r < 0 {
+            if rhs > 0 { r.wrappingAdd(rhs) } else { r.wrappingSub(rhs) }
+        } else {
+            r
+        }
+    }
+}
+
+extend int16 {
+    /// Returns the number of `1` bits in the two's-complement representation of `self`.
+    @inline public func countOnes() -> uint32 { __intrinsic_ctpop(self) }
+    /// Returns the number of `0` bits in the two's-complement representation of `self`.
+    @inline public func countZeros() -> uint32 { __intrinsic_ctpop(~self) }
+    /// Returns the number of leading `0` bits (returns `Self::BITS` for `0`).
+    @inline public func leadingZeros() -> uint32 { __intrinsic_ctlz(self) }
+    /// Returns the number of trailing `0` bits (returns `Self::BITS` for `0`).
+    @inline public func trailingZeros() -> uint32 { __intrinsic_cttz(self) }
+    /// Returns the number of leading `1` bits.
+    @inline public func leadingOnes() -> uint32 { __intrinsic_ctlz(~self) }
+    /// Returns the number of trailing `1` bits.
+    @inline public func trailingOnes() -> uint32 { __intrinsic_cttz(~self) }
+    /// Rotates the bits of `self` left by `n mod Self::BITS`.
+    @inline public func rotateLeft(_ n: uint32) -> int16 { __intrinsic_fshl(self, self, n) }
+    /// Rotates the bits of `self` right by `n mod Self::BITS`.
+    @inline public func rotateRight(_ n: uint32) -> int16 { __intrinsic_fshr(self, self, n) }
+    /// Reverses the byte order of `self`.
+    @inline public func swapBytes() -> int16 { __intrinsic_bswap(self) }
+    /// Reverses the bit order of `self`.
+    @inline public func reverseBits() -> int16 { __intrinsic_bitreverse(self) }
+
+    /// Returns the absolute value of `self`, panicking on `int16::MIN`.
+    @inline public func abs() -> int16 {
+        if self == Self::MIN {
+            panic("attempt to negate with overflow")
+        }
+        if self < 0 { (0 as int16).wrappingSub(self) } else { self }
+    }
+
+    /// Returns the wrapping absolute value of `self` (`int16::MIN` wraps to `int16::MIN`).
+    @inline public func wrappingAbs() -> int16 {
+        if self < 0 { (0 as int16).wrappingSub(self) } else { self }
+    }
+
+    /// Returns the exact magnitude of `self` as `uint16`. Never overflows.
+    @inline public func unsignedAbs() -> uint16 {
+        if self < 0 { (0 as uint16).wrappingSub(self as uint16) } else { self as uint16 }
+    }
+
+    /// Returns `-1` if `self < 0`, `0` if `self == 0`, or `1` if `self > 0`.
+    @inline public func signum() -> int16 {
+        if self > 0 { 1 } else if self < 0 { -1 } else { 0 }
+    }
+
+    /// Raises `self` to `exp`, wrapping on overflow.
+    public func wrappingPow(_ exp: uint32) -> int16 {
+        var base = self
+        var power = exp
+        var acc: int16 = 1
+        while power > 0 {
+            if (power & 1) != 0 {
+                acc = acc.wrappingMul(base)
+            }
+            power = power >> 1
+            if power > 0 {
+                base = base.wrappingMul(base)
+            }
+        }
+        acc
+    }
+
+    /// Raises `self` to `exp`, returning `.none` on overflow.
+    public func checkedPow(_ exp: uint32) -> int16? {
+        var base = self
+        var power = exp
+        var acc: int16 = 1
+        while power > 0 {
+            if (power & 1) != 0 {
+                match acc.checkedMul(base) {
+                    case .some(v) => acc = v
+                    case .none => return .none
+                }
+            }
+            power = power >> 1
+            if power > 0 {
+                match base.checkedMul(base) {
+                    case .some(v) => base = v
+                    case .none => return .none
+                }
+            }
+        }
+        return .some(acc)
+    }
+
+    /// Raises `self` to `exp`, panicking on overflow.
+    public func pow(_ exp: uint32) -> int16 {
+        match self.checkedPow(exp) {
+            case .some(v) => v
+            case .none => panic("attempt to multiply with overflow")
+        }
+    }
+
+    /// Euclidean division satisfying `self == q * rhs + r` with `0 <= r < |rhs|`.
+    public func divEuclid(_ rhs: int16) -> int16 {
+        if rhs == 0 {
+            panic("attempt to divide by zero")
+        }
+        if self == Self::MIN && rhs == -1 {
+            panic("attempt to divide with overflow")
+        }
+        q := self / rhs
+        r := self % rhs
+        if r < 0 {
+            if rhs > 0 { q - 1 } else { q + 1 }
+        } else {
+            q
+        }
+    }
+
+    /// Euclidean remainder satisfying `0 <= r < |rhs|`.
+    public func remEuclid(_ rhs: int16) -> int16 {
+        if rhs == 0 {
+            panic("attempt to calculate the remainder with a divisor of zero")
+        }
+        if self == Self::MIN && rhs == -1 {
+            panic("attempt to calculate the remainder with overflow")
+        }
+        r := self % rhs
+        if r < 0 {
+            if rhs > 0 { r.wrappingAdd(rhs) } else { r.wrappingSub(rhs) }
+        } else {
+            r
+        }
+    }
+}
+
+extend int32 {
+    /// Returns the number of `1` bits in the two's-complement representation of `self`.
+    @inline public func countOnes() -> uint32 { __intrinsic_ctpop(self) }
+    /// Returns the number of `0` bits in the two's-complement representation of `self`.
+    @inline public func countZeros() -> uint32 { __intrinsic_ctpop(~self) }
+    /// Returns the number of leading `0` bits (returns `Self::BITS` for `0`).
+    @inline public func leadingZeros() -> uint32 { __intrinsic_ctlz(self) }
+    /// Returns the number of trailing `0` bits (returns `Self::BITS` for `0`).
+    @inline public func trailingZeros() -> uint32 { __intrinsic_cttz(self) }
+    /// Returns the number of leading `1` bits.
+    @inline public func leadingOnes() -> uint32 { __intrinsic_ctlz(~self) }
+    /// Returns the number of trailing `1` bits.
+    @inline public func trailingOnes() -> uint32 { __intrinsic_cttz(~self) }
+    /// Rotates the bits of `self` left by `n mod Self::BITS`.
+    @inline public func rotateLeft(_ n: uint32) -> int32 { __intrinsic_fshl(self, self, n) }
+    /// Rotates the bits of `self` right by `n mod Self::BITS`.
+    @inline public func rotateRight(_ n: uint32) -> int32 { __intrinsic_fshr(self, self, n) }
+    /// Reverses the byte order of `self`.
+    @inline public func swapBytes() -> int32 { __intrinsic_bswap(self) }
+    /// Reverses the bit order of `self`.
+    @inline public func reverseBits() -> int32 { __intrinsic_bitreverse(self) }
+
+    /// Returns the absolute value of `self`, panicking on `int32::MIN`.
+    @inline public func abs() -> int32 {
+        if self == Self::MIN {
+            panic("attempt to negate with overflow")
+        }
+        if self < 0 { (0 as int32).wrappingSub(self) } else { self }
+    }
+
+    /// Returns the wrapping absolute value of `self` (`int32::MIN` wraps to `int32::MIN`).
+    @inline public func wrappingAbs() -> int32 {
+        if self < 0 { (0 as int32).wrappingSub(self) } else { self }
+    }
+
+    /// Returns the exact magnitude of `self` as `uint32`. Never overflows.
+    @inline public func unsignedAbs() -> uint32 {
+        if self < 0 { (0 as uint32).wrappingSub(self as uint32) } else { self as uint32 }
+    }
+
+    /// Returns `-1` if `self < 0`, `0` if `self == 0`, or `1` if `self > 0`.
+    @inline public func signum() -> int32 {
+        if self > 0 { 1 } else if self < 0 { -1 } else { 0 }
+    }
+
+    /// Raises `self` to `exp`, wrapping on overflow.
+    public func wrappingPow(_ exp: uint32) -> int32 {
+        var base = self
+        var power = exp
+        var acc: int32 = 1
+        while power > 0 {
+            if (power & 1) != 0 {
+                acc = acc.wrappingMul(base)
+            }
+            power = power >> 1
+            if power > 0 {
+                base = base.wrappingMul(base)
+            }
+        }
+        acc
+    }
+
+    /// Raises `self` to `exp`, returning `.none` on overflow.
+    public func checkedPow(_ exp: uint32) -> int32? {
+        var base = self
+        var power = exp
+        var acc: int32 = 1
+        while power > 0 {
+            if (power & 1) != 0 {
+                match acc.checkedMul(base) {
+                    case .some(v) => acc = v
+                    case .none => return .none
+                }
+            }
+            power = power >> 1
+            if power > 0 {
+                match base.checkedMul(base) {
+                    case .some(v) => base = v
+                    case .none => return .none
+                }
+            }
+        }
+        return .some(acc)
+    }
+
+    /// Raises `self` to `exp`, panicking on overflow.
+    public func pow(_ exp: uint32) -> int32 {
+        match self.checkedPow(exp) {
+            case .some(v) => v
+            case .none => panic("attempt to multiply with overflow")
+        }
+    }
+
+    /// Euclidean division satisfying `self == q * rhs + r` with `0 <= r < |rhs|`.
+    public func divEuclid(_ rhs: int32) -> int32 {
+        if rhs == 0 {
+            panic("attempt to divide by zero")
+        }
+        if self == Self::MIN && rhs == -1 {
+            panic("attempt to divide with overflow")
+        }
+        q := self / rhs
+        r := self % rhs
+        if r < 0 {
+            if rhs > 0 { q - 1 } else { q + 1 }
+        } else {
+            q
+        }
+    }
+
+    /// Euclidean remainder satisfying `0 <= r < |rhs|`.
+    public func remEuclid(_ rhs: int32) -> int32 {
+        if rhs == 0 {
+            panic("attempt to calculate the remainder with a divisor of zero")
+        }
+        if self == Self::MIN && rhs == -1 {
+            panic("attempt to calculate the remainder with overflow")
+        }
+        r := self % rhs
+        if r < 0 {
+            if rhs > 0 { r.wrappingAdd(rhs) } else { r.wrappingSub(rhs) }
+        } else {
+            r
+        }
+    }
+}
+
+extend int64 {
+    /// Returns the number of `1` bits in the two's-complement representation of `self`.
+    @inline public func countOnes() -> uint32 { __intrinsic_ctpop(self) }
+    /// Returns the number of `0` bits in the two's-complement representation of `self`.
+    @inline public func countZeros() -> uint32 { __intrinsic_ctpop(~self) }
+    /// Returns the number of leading `0` bits (returns `Self::BITS` for `0`).
+    @inline public func leadingZeros() -> uint32 { __intrinsic_ctlz(self) }
+    /// Returns the number of trailing `0` bits (returns `Self::BITS` for `0`).
+    @inline public func trailingZeros() -> uint32 { __intrinsic_cttz(self) }
+    /// Returns the number of leading `1` bits.
+    @inline public func leadingOnes() -> uint32 { __intrinsic_ctlz(~self) }
+    /// Returns the number of trailing `1` bits.
+    @inline public func trailingOnes() -> uint32 { __intrinsic_cttz(~self) }
+    /// Rotates the bits of `self` left by `n mod Self::BITS`.
+    @inline public func rotateLeft(_ n: uint32) -> int64 { __intrinsic_fshl(self, self, n) }
+    /// Rotates the bits of `self` right by `n mod Self::BITS`.
+    @inline public func rotateRight(_ n: uint32) -> int64 { __intrinsic_fshr(self, self, n) }
+    /// Reverses the byte order of `self`.
+    @inline public func swapBytes() -> int64 { __intrinsic_bswap(self) }
+    /// Reverses the bit order of `self`.
+    @inline public func reverseBits() -> int64 { __intrinsic_bitreverse(self) }
+
+    /// Returns the absolute value of `self`, panicking on `int64::MIN`.
+    @inline public func abs() -> int64 {
+        if self == Self::MIN {
+            panic("attempt to negate with overflow")
+        }
+        if self < 0 { (0 as int64).wrappingSub(self) } else { self }
+    }
+
+    /// Returns the wrapping absolute value of `self` (`int64::MIN` wraps to `int64::MIN`).
+    @inline public func wrappingAbs() -> int64 {
+        if self < 0 { (0 as int64).wrappingSub(self) } else { self }
+    }
+
+    /// Returns the exact magnitude of `self` as `uint64`. Never overflows.
+    @inline public func unsignedAbs() -> uint64 {
+        if self < 0 { (0 as uint64).wrappingSub(self as uint64) } else { self as uint64 }
+    }
+
+    /// Returns `-1` if `self < 0`, `0` if `self == 0`, or `1` if `self > 0`.
+    @inline public func signum() -> int64 {
+        if self > 0 { 1 } else if self < 0 { -1 } else { 0 }
+    }
+
+    /// Raises `self` to `exp`, wrapping on overflow.
+    public func wrappingPow(_ exp: uint32) -> int64 {
+        var base = self
+        var power = exp
+        var acc: int64 = 1
+        while power > 0 {
+            if (power & 1) != 0 {
+                acc = acc.wrappingMul(base)
+            }
+            power = power >> 1
+            if power > 0 {
+                base = base.wrappingMul(base)
+            }
+        }
+        acc
+    }
+
+    /// Raises `self` to `exp`, returning `.none` on overflow.
+    public func checkedPow(_ exp: uint32) -> int64? {
+        var base = self
+        var power = exp
+        var acc: int64 = 1
+        while power > 0 {
+            if (power & 1) != 0 {
+                match acc.checkedMul(base) {
+                    case .some(v) => acc = v
+                    case .none => return .none
+                }
+            }
+            power = power >> 1
+            if power > 0 {
+                match base.checkedMul(base) {
+                    case .some(v) => base = v
+                    case .none => return .none
+                }
+            }
+        }
+        return .some(acc)
+    }
+
+    /// Raises `self` to `exp`, panicking on overflow.
+    public func pow(_ exp: uint32) -> int64 {
+        match self.checkedPow(exp) {
+            case .some(v) => v
+            case .none => panic("attempt to multiply with overflow")
+        }
+    }
+
+    /// Euclidean division satisfying `self == q * rhs + r` with `0 <= r < |rhs|`.
+    public func divEuclid(_ rhs: int64) -> int64 {
+        if rhs == 0 {
+            panic("attempt to divide by zero")
+        }
+        if self == Self::MIN && rhs == -1 {
+            panic("attempt to divide with overflow")
+        }
+        q := self / rhs
+        r := self % rhs
+        if r < 0 {
+            if rhs > 0 { q - 1 } else { q + 1 }
+        } else {
+            q
+        }
+    }
+
+    /// Euclidean remainder satisfying `0 <= r < |rhs|`.
+    public func remEuclid(_ rhs: int64) -> int64 {
+        if rhs == 0 {
+            panic("attempt to calculate the remainder with a divisor of zero")
+        }
+        if self == Self::MIN && rhs == -1 {
+            panic("attempt to calculate the remainder with overflow")
+        }
+        r := self % rhs
+        if r < 0 {
+            if rhs > 0 { r.wrappingAdd(rhs) } else { r.wrappingSub(rhs) }
+        } else {
+            r
+        }
+    }
+}
+
+extend isize {
+    /// Returns the number of `1` bits in the two's-complement representation of `self`.
+    @inline public func countOnes() -> uint32 { __intrinsic_ctpop(self) }
+    /// Returns the number of `0` bits in the two's-complement representation of `self`.
+    @inline public func countZeros() -> uint32 { __intrinsic_ctpop(~self) }
+    /// Returns the number of leading `0` bits (returns `Self::BITS` for `0`).
+    @inline public func leadingZeros() -> uint32 { __intrinsic_ctlz(self) }
+    /// Returns the number of trailing `0` bits (returns `Self::BITS` for `0`).
+    @inline public func trailingZeros() -> uint32 { __intrinsic_cttz(self) }
+    /// Returns the number of leading `1` bits.
+    @inline public func leadingOnes() -> uint32 { __intrinsic_ctlz(~self) }
+    /// Returns the number of trailing `1` bits.
+    @inline public func trailingOnes() -> uint32 { __intrinsic_cttz(~self) }
+    /// Rotates the bits of `self` left by `n mod Self::BITS`.
+    @inline public func rotateLeft(_ n: uint32) -> isize { __intrinsic_fshl(self, self, n) }
+    /// Rotates the bits of `self` right by `n mod Self::BITS`.
+    @inline public func rotateRight(_ n: uint32) -> isize { __intrinsic_fshr(self, self, n) }
+    /// Reverses the byte order of `self`.
+    @inline public func swapBytes() -> isize { __intrinsic_bswap(self) }
+    /// Reverses the bit order of `self`.
+    @inline public func reverseBits() -> isize { __intrinsic_bitreverse(self) }
+
+    /// Returns the absolute value of `self`, panicking on `isize::MIN`.
+    @inline public func abs() -> isize {
+        if self == Self::MIN {
+            panic("attempt to negate with overflow")
+        }
+        if self < 0 { (0 as isize).wrappingSub(self) } else { self }
+    }
+
+    /// Returns the wrapping absolute value of `self` (`isize::MIN` wraps to `isize::MIN`).
+    @inline public func wrappingAbs() -> isize {
+        if self < 0 { (0 as isize).wrappingSub(self) } else { self }
+    }
+
+    /// Returns the exact magnitude of `self` as `usize`. Never overflows.
+    @inline public func unsignedAbs() -> usize {
+        if self < 0 { (0 as usize).wrappingSub(self as usize) } else { self as usize }
+    }
+
+    /// Returns `-1` if `self < 0`, `0` if `self == 0`, or `1` if `self > 0`.
+    @inline public func signum() -> isize {
+        if self > 0 { 1 } else if self < 0 { -1 } else { 0 }
+    }
+
+    /// Raises `self` to `exp`, wrapping on overflow.
+    public func wrappingPow(_ exp: uint32) -> isize {
+        var base = self
+        var power = exp
+        var acc: isize = 1
+        while power > 0 {
+            if (power & 1) != 0 {
+                acc = acc.wrappingMul(base)
+            }
+            power = power >> 1
+            if power > 0 {
+                base = base.wrappingMul(base)
+            }
+        }
+        acc
+    }
+
+    /// Raises `self` to `exp`, returning `.none` on overflow.
+    public func checkedPow(_ exp: uint32) -> isize? {
+        var base = self
+        var power = exp
+        var acc: isize = 1
+        while power > 0 {
+            if (power & 1) != 0 {
+                match acc.checkedMul(base) {
+                    case .some(v) => acc = v
+                    case .none => return .none
+                }
+            }
+            power = power >> 1
+            if power > 0 {
+                match base.checkedMul(base) {
+                    case .some(v) => base = v
+                    case .none => return .none
+                }
+            }
+        }
+        return .some(acc)
+    }
+
+    /// Raises `self` to `exp`, panicking on overflow.
+    public func pow(_ exp: uint32) -> isize {
+        match self.checkedPow(exp) {
+            case .some(v) => v
+            case .none => panic("attempt to multiply with overflow")
+        }
+    }
+
+    /// Euclidean division satisfying `self == q * rhs + r` with `0 <= r < |rhs|`.
+    public func divEuclid(_ rhs: isize) -> isize {
+        if rhs == 0 {
+            panic("attempt to divide by zero")
+        }
+        if self == Self::MIN && rhs == -1 {
+            panic("attempt to divide with overflow")
+        }
+        q := self / rhs
+        r := self % rhs
+        if r < 0 {
+            if rhs > 0 { q - 1 } else { q + 1 }
+        } else {
+            q
+        }
+    }
+
+    /// Euclidean remainder satisfying `0 <= r < |rhs|`.
+    public func remEuclid(_ rhs: isize) -> isize {
+        if rhs == 0 {
+            panic("attempt to calculate the remainder with a divisor of zero")
+        }
+        if self == Self::MIN && rhs == -1 {
+            panic("attempt to calculate the remainder with overflow")
+        }
+        r := self % rhs
+        if r < 0 {
+            if rhs > 0 { r.wrappingAdd(rhs) } else { r.wrappingSub(rhs) }
+        } else {
+            r
+        }
+    }
+}
+
+extend uint8 {
+    /// Returns the number of `1` bits in `self`.
+    @inline public func countOnes() -> uint32 { __intrinsic_ctpop(self) }
+    /// Returns the number of `0` bits in `self`.
+    @inline public func countZeros() -> uint32 { __intrinsic_ctpop(~self) }
+    /// Returns the number of leading `0` bits (returns `Self::BITS` for `0`).
+    @inline public func leadingZeros() -> uint32 { __intrinsic_ctlz(self) }
+    /// Returns the number of trailing `0` bits (returns `Self::BITS` for `0`).
+    @inline public func trailingZeros() -> uint32 { __intrinsic_cttz(self) }
+    /// Returns the number of leading `1` bits.
+    @inline public func leadingOnes() -> uint32 { __intrinsic_ctlz(~self) }
+    /// Returns the number of trailing `1` bits.
+    @inline public func trailingOnes() -> uint32 { __intrinsic_cttz(~self) }
+    /// Rotates the bits of `self` left by `n mod Self::BITS`.
+    @inline public func rotateLeft(_ n: uint32) -> uint8 { __intrinsic_fshl(self, self, n) }
+    /// Rotates the bits of `self` right by `n mod Self::BITS`.
+    @inline public func rotateRight(_ n: uint32) -> uint8 { __intrinsic_fshr(self, self, n) }
+    /// Reverses the byte order of `self` (no-op for `uint8`).
+    @inline public func swapBytes() -> uint8 { __intrinsic_bswap(self) }
+    /// Reverses the bit order of `self`.
+    @inline public func reverseBits() -> uint8 { __intrinsic_bitreverse(self) }
+
+    /// Returns `true` if `self` is a power of two (`1, 2, 4, ...`).
+    @inline public func isPowerOfTwo() -> bool {
+        self != 0 && (self & self.wrappingSub(1)) == 0
+    }
+
+    /// Returns the smallest power of two `>= self`, or `.none` on overflow.
+    public func checkedNextPowerOfTwo() -> uint8? {
+        if self <= 1 {
+            return .some(1)
+        }
+        lz := (self - 1).leadingZeros()
+        if lz == 0 {
+            return .none
+        }
+        shift := (Self::BITS - lz) as uint8
+        return .some((1 as uint8) << shift)
+    }
+
+    /// Returns the smallest power of two `>= self`, panicking on overflow.
+    public func nextPowerOfTwo() -> uint8 {
+        match self.checkedNextPowerOfTwo() {
+            case .some(v) => v
+            case .none => panic("nextPowerOfTwo overflow")
+        }
+    }
+
+    /// Returns the base-2 logarithm of `self`, rounded down. Panics if `self == 0`.
+    public func ilog2() -> uint32 {
+        if self == 0 {
+            panic("argument of integer logarithm must be positive")
+        }
+        (Self::BITS - 1) - self.leadingZeros()
+    }
+
+    /// Raises `self` to `exp`, wrapping on overflow.
+    public func wrappingPow(_ exp: uint32) -> uint8 {
+        var base = self
+        var power = exp
+        var acc: uint8 = 1
+        while power > 0 {
+            if (power & 1) != 0 {
+                acc = acc.wrappingMul(base)
+            }
+            power = power >> 1
+            if power > 0 {
+                base = base.wrappingMul(base)
+            }
+        }
+        acc
+    }
+
+    /// Raises `self` to `exp`, returning `.none` on overflow.
+    public func checkedPow(_ exp: uint32) -> uint8? {
+        var base = self
+        var power = exp
+        var acc: uint8 = 1
+        while power > 0 {
+            if (power & 1) != 0 {
+                match acc.checkedMul(base) {
+                    case .some(v) => acc = v
+                    case .none => return .none
+                }
+            }
+            power = power >> 1
+            if power > 0 {
+                match base.checkedMul(base) {
+                    case .some(v) => base = v
+                    case .none => return .none
+                }
+            }
+        }
+        return .some(acc)
+    }
+
+    /// Raises `self` to `exp`, panicking on overflow.
+    public func pow(_ exp: uint32) -> uint8 {
+        match self.checkedPow(exp) {
+            case .some(v) => v
+            case .none => panic("attempt to multiply with overflow")
+        }
+    }
+
+    /// Euclidean division (`self / rhs`), panicking when `rhs == 0`.
+    @inline public func divEuclid(_ rhs: uint8) -> uint8 {
+        if rhs == 0 {
+            panic("attempt to divide by zero")
+        }
+        self / rhs
+    }
+
+    /// Euclidean remainder (`self % rhs`), panicking when `rhs == 0`.
+    @inline public func remEuclid(_ rhs: uint8) -> uint8 {
+        if rhs == 0 {
+            panic("attempt to calculate the remainder with a divisor of zero")
+        }
+        self % rhs
+    }
+}
+
+extend uint16 {
+    /// Returns the number of `1` bits in `self`.
+    @inline public func countOnes() -> uint32 { __intrinsic_ctpop(self) }
+    /// Returns the number of `0` bits in `self`.
+    @inline public func countZeros() -> uint32 { __intrinsic_ctpop(~self) }
+    /// Returns the number of leading `0` bits (returns `Self::BITS` for `0`).
+    @inline public func leadingZeros() -> uint32 { __intrinsic_ctlz(self) }
+    /// Returns the number of trailing `0` bits (returns `Self::BITS` for `0`).
+    @inline public func trailingZeros() -> uint32 { __intrinsic_cttz(self) }
+    /// Returns the number of leading `1` bits.
+    @inline public func leadingOnes() -> uint32 { __intrinsic_ctlz(~self) }
+    /// Returns the number of trailing `1` bits.
+    @inline public func trailingOnes() -> uint32 { __intrinsic_cttz(~self) }
+    /// Rotates the bits of `self` left by `n mod Self::BITS`.
+    @inline public func rotateLeft(_ n: uint32) -> uint16 { __intrinsic_fshl(self, self, n) }
+    /// Rotates the bits of `self` right by `n mod Self::BITS`.
+    @inline public func rotateRight(_ n: uint32) -> uint16 { __intrinsic_fshr(self, self, n) }
+    /// Reverses the byte order of `self`.
+    @inline public func swapBytes() -> uint16 { __intrinsic_bswap(self) }
+    /// Reverses the bit order of `self`.
+    @inline public func reverseBits() -> uint16 { __intrinsic_bitreverse(self) }
+
+    /// Returns `true` if `self` is a power of two (`1, 2, 4, ...`).
+    @inline public func isPowerOfTwo() -> bool {
+        self != 0 && (self & self.wrappingSub(1)) == 0
+    }
+
+    /// Returns the smallest power of two `>= self`, or `.none` on overflow.
+    public func checkedNextPowerOfTwo() -> uint16? {
+        if self <= 1 {
+            return .some(1)
+        }
+        lz := (self - 1).leadingZeros()
+        if lz == 0 {
+            return .none
+        }
+        shift := (Self::BITS - lz) as uint16
+        return .some((1 as uint16) << shift)
+    }
+
+    /// Returns the smallest power of two `>= self`, panicking on overflow.
+    public func nextPowerOfTwo() -> uint16 {
+        match self.checkedNextPowerOfTwo() {
+            case .some(v) => v
+            case .none => panic("nextPowerOfTwo overflow")
+        }
+    }
+
+    /// Returns the base-2 logarithm of `self`, rounded down. Panics if `self == 0`.
+    public func ilog2() -> uint32 {
+        if self == 0 {
+            panic("argument of integer logarithm must be positive")
+        }
+        (Self::BITS - 1) - self.leadingZeros()
+    }
+
+    /// Raises `self` to `exp`, wrapping on overflow.
+    public func wrappingPow(_ exp: uint32) -> uint16 {
+        var base = self
+        var power = exp
+        var acc: uint16 = 1
+        while power > 0 {
+            if (power & 1) != 0 {
+                acc = acc.wrappingMul(base)
+            }
+            power = power >> 1
+            if power > 0 {
+                base = base.wrappingMul(base)
+            }
+        }
+        acc
+    }
+
+    /// Raises `self` to `exp`, returning `.none` on overflow.
+    public func checkedPow(_ exp: uint32) -> uint16? {
+        var base = self
+        var power = exp
+        var acc: uint16 = 1
+        while power > 0 {
+            if (power & 1) != 0 {
+                match acc.checkedMul(base) {
+                    case .some(v) => acc = v
+                    case .none => return .none
+                }
+            }
+            power = power >> 1
+            if power > 0 {
+                match base.checkedMul(base) {
+                    case .some(v) => base = v
+                    case .none => return .none
+                }
+            }
+        }
+        return .some(acc)
+    }
+
+    /// Raises `self` to `exp`, panicking on overflow.
+    public func pow(_ exp: uint32) -> uint16 {
+        match self.checkedPow(exp) {
+            case .some(v) => v
+            case .none => panic("attempt to multiply with overflow")
+        }
+    }
+
+    /// Euclidean division (`self / rhs`), panicking when `rhs == 0`.
+    @inline public func divEuclid(_ rhs: uint16) -> uint16 {
+        if rhs == 0 {
+            panic("attempt to divide by zero")
+        }
+        self / rhs
+    }
+
+    /// Euclidean remainder (`self % rhs`), panicking when `rhs == 0`.
+    @inline public func remEuclid(_ rhs: uint16) -> uint16 {
+        if rhs == 0 {
+            panic("attempt to calculate the remainder with a divisor of zero")
+        }
+        self % rhs
+    }
+}
+
+extend uint32 {
+    /// Returns the number of `1` bits in `self`.
+    @inline public func countOnes() -> uint32 { __intrinsic_ctpop(self) }
+    /// Returns the number of `0` bits in `self`.
+    @inline public func countZeros() -> uint32 { __intrinsic_ctpop(~self) }
+    /// Returns the number of leading `0` bits (returns `Self::BITS` for `0`).
+    @inline public func leadingZeros() -> uint32 { __intrinsic_ctlz(self) }
+    /// Returns the number of trailing `0` bits (returns `Self::BITS` for `0`).
+    @inline public func trailingZeros() -> uint32 { __intrinsic_cttz(self) }
+    /// Returns the number of leading `1` bits.
+    @inline public func leadingOnes() -> uint32 { __intrinsic_ctlz(~self) }
+    /// Returns the number of trailing `1` bits.
+    @inline public func trailingOnes() -> uint32 { __intrinsic_cttz(~self) }
+    /// Rotates the bits of `self` left by `n mod Self::BITS`.
+    @inline public func rotateLeft(_ n: uint32) -> uint32 { __intrinsic_fshl(self, self, n) }
+    /// Rotates the bits of `self` right by `n mod Self::BITS`.
+    @inline public func rotateRight(_ n: uint32) -> uint32 { __intrinsic_fshr(self, self, n) }
+    /// Reverses the byte order of `self`.
+    @inline public func swapBytes() -> uint32 { __intrinsic_bswap(self) }
+    /// Reverses the bit order of `self`.
+    @inline public func reverseBits() -> uint32 { __intrinsic_bitreverse(self) }
+
+    /// Returns `true` if `self` is a power of two (`1, 2, 4, ...`).
+    @inline public func isPowerOfTwo() -> bool {
+        self != 0 && (self & self.wrappingSub(1)) == 0
+    }
+
+    /// Returns the smallest power of two `>= self`, or `.none` on overflow.
+    public func checkedNextPowerOfTwo() -> uint32? {
+        if self <= 1 {
+            return .some(1)
+        }
+        lz := (self - 1).leadingZeros()
+        if lz == 0 {
+            return .none
+        }
+        shift := Self::BITS - lz
+        return .some((1 as uint32) << shift)
+    }
+
+    /// Returns the smallest power of two `>= self`, panicking on overflow.
+    public func nextPowerOfTwo() -> uint32 {
+        match self.checkedNextPowerOfTwo() {
+            case .some(v) => v
+            case .none => panic("nextPowerOfTwo overflow")
+        }
+    }
+
+    /// Returns the base-2 logarithm of `self`, rounded down. Panics if `self == 0`.
+    public func ilog2() -> uint32 {
+        if self == 0 {
+            panic("argument of integer logarithm must be positive")
+        }
+        (Self::BITS - 1) - self.leadingZeros()
+    }
+
+    /// Raises `self` to `exp`, wrapping on overflow.
+    public func wrappingPow(_ exp: uint32) -> uint32 {
+        var base = self
+        var power = exp
+        var acc: uint32 = 1
+        while power > 0 {
+            if (power & 1) != 0 {
+                acc = acc.wrappingMul(base)
+            }
+            power = power >> 1
+            if power > 0 {
+                base = base.wrappingMul(base)
+            }
+        }
+        acc
+    }
+
+    /// Raises `self` to `exp`, returning `.none` on overflow.
+    public func checkedPow(_ exp: uint32) -> uint32? {
+        var base = self
+        var power = exp
+        var acc: uint32 = 1
+        while power > 0 {
+            if (power & 1) != 0 {
+                match acc.checkedMul(base) {
+                    case .some(v) => acc = v
+                    case .none => return .none
+                }
+            }
+            power = power >> 1
+            if power > 0 {
+                match base.checkedMul(base) {
+                    case .some(v) => base = v
+                    case .none => return .none
+                }
+            }
+        }
+        return .some(acc)
+    }
+
+    /// Raises `self` to `exp`, panicking on overflow.
+    public func pow(_ exp: uint32) -> uint32 {
+        match self.checkedPow(exp) {
+            case .some(v) => v
+            case .none => panic("attempt to multiply with overflow")
+        }
+    }
+
+    /// Euclidean division (`self / rhs`), panicking when `rhs == 0`.
+    @inline public func divEuclid(_ rhs: uint32) -> uint32 {
+        if rhs == 0 {
+            panic("attempt to divide by zero")
+        }
+        self / rhs
+    }
+
+    /// Euclidean remainder (`self % rhs`), panicking when `rhs == 0`.
+    @inline public func remEuclid(_ rhs: uint32) -> uint32 {
+        if rhs == 0 {
+            panic("attempt to calculate the remainder with a divisor of zero")
+        }
+        self % rhs
+    }
+}
+
+extend uint64 {
+    /// Returns the number of `1` bits in `self`.
+    @inline public func countOnes() -> uint32 { __intrinsic_ctpop(self) }
+    /// Returns the number of `0` bits in `self`.
+    @inline public func countZeros() -> uint32 { __intrinsic_ctpop(~self) }
+    /// Returns the number of leading `0` bits (returns `Self::BITS` for `0`).
+    @inline public func leadingZeros() -> uint32 { __intrinsic_ctlz(self) }
+    /// Returns the number of trailing `0` bits (returns `Self::BITS` for `0`).
+    @inline public func trailingZeros() -> uint32 { __intrinsic_cttz(self) }
+    /// Returns the number of leading `1` bits.
+    @inline public func leadingOnes() -> uint32 { __intrinsic_ctlz(~self) }
+    /// Returns the number of trailing `1` bits.
+    @inline public func trailingOnes() -> uint32 { __intrinsic_cttz(~self) }
+    /// Rotates the bits of `self` left by `n mod Self::BITS`.
+    @inline public func rotateLeft(_ n: uint32) -> uint64 { __intrinsic_fshl(self, self, n) }
+    /// Rotates the bits of `self` right by `n mod Self::BITS`.
+    @inline public func rotateRight(_ n: uint32) -> uint64 { __intrinsic_fshr(self, self, n) }
+    /// Reverses the byte order of `self`.
+    @inline public func swapBytes() -> uint64 { __intrinsic_bswap(self) }
+    /// Reverses the bit order of `self`.
+    @inline public func reverseBits() -> uint64 { __intrinsic_bitreverse(self) }
+
+    /// Returns `true` if `self` is a power of two (`1, 2, 4, ...`).
+    @inline public func isPowerOfTwo() -> bool {
+        self != 0 && (self & self.wrappingSub(1)) == 0
+    }
+
+    /// Returns the smallest power of two `>= self`, or `.none` on overflow.
+    public func checkedNextPowerOfTwo() -> uint64? {
+        if self <= 1 {
+            return .some(1)
+        }
+        lz := (self - 1).leadingZeros()
+        if lz == 0 {
+            return .none
+        }
+        shift := (Self::BITS - lz) as uint64
+        return .some((1 as uint64) << shift)
+    }
+
+    /// Returns the smallest power of two `>= self`, panicking on overflow.
+    public func nextPowerOfTwo() -> uint64 {
+        match self.checkedNextPowerOfTwo() {
+            case .some(v) => v
+            case .none => panic("nextPowerOfTwo overflow")
+        }
+    }
+
+    /// Returns the base-2 logarithm of `self`, rounded down. Panics if `self == 0`.
+    public func ilog2() -> uint32 {
+        if self == 0 {
+            panic("argument of integer logarithm must be positive")
+        }
+        (Self::BITS - 1) - self.leadingZeros()
+    }
+
+    /// Raises `self` to `exp`, wrapping on overflow.
+    public func wrappingPow(_ exp: uint32) -> uint64 {
+        var base = self
+        var power = exp
+        var acc: uint64 = 1
+        while power > 0 {
+            if (power & 1) != 0 {
+                acc = acc.wrappingMul(base)
+            }
+            power = power >> 1
+            if power > 0 {
+                base = base.wrappingMul(base)
+            }
+        }
+        acc
+    }
+
+    /// Raises `self` to `exp`, returning `.none` on overflow.
+    public func checkedPow(_ exp: uint32) -> uint64? {
+        var base = self
+        var power = exp
+        var acc: uint64 = 1
+        while power > 0 {
+            if (power & 1) != 0 {
+                match acc.checkedMul(base) {
+                    case .some(v) => acc = v
+                    case .none => return .none
+                }
+            }
+            power = power >> 1
+            if power > 0 {
+                match base.checkedMul(base) {
+                    case .some(v) => base = v
+                    case .none => return .none
+                }
+            }
+        }
+        return .some(acc)
+    }
+
+    /// Raises `self` to `exp`, panicking on overflow.
+    public func pow(_ exp: uint32) -> uint64 {
+        match self.checkedPow(exp) {
+            case .some(v) => v
+            case .none => panic("attempt to multiply with overflow")
+        }
+    }
+
+    /// Euclidean division (`self / rhs`), panicking when `rhs == 0`.
+    @inline public func divEuclid(_ rhs: uint64) -> uint64 {
+        if rhs == 0 {
+            panic("attempt to divide by zero")
+        }
+        self / rhs
+    }
+
+    /// Euclidean remainder (`self % rhs`), panicking when `rhs == 0`.
+    @inline public func remEuclid(_ rhs: uint64) -> uint64 {
+        if rhs == 0 {
+            panic("attempt to calculate the remainder with a divisor of zero")
+        }
+        self % rhs
+    }
+}
+
+extend usize {
+    /// Returns the number of `1` bits in `self`.
+    @inline public func countOnes() -> uint32 { __intrinsic_ctpop(self) }
+    /// Returns the number of `0` bits in `self`.
+    @inline public func countZeros() -> uint32 { __intrinsic_ctpop(~self) }
+    /// Returns the number of leading `0` bits (returns `Self::BITS` for `0`).
+    @inline public func leadingZeros() -> uint32 { __intrinsic_ctlz(self) }
+    /// Returns the number of trailing `0` bits (returns `Self::BITS` for `0`).
+    @inline public func trailingZeros() -> uint32 { __intrinsic_cttz(self) }
+    /// Returns the number of leading `1` bits.
+    @inline public func leadingOnes() -> uint32 { __intrinsic_ctlz(~self) }
+    /// Returns the number of trailing `1` bits.
+    @inline public func trailingOnes() -> uint32 { __intrinsic_cttz(~self) }
+    /// Rotates the bits of `self` left by `n mod Self::BITS`.
+    @inline public func rotateLeft(_ n: uint32) -> usize { __intrinsic_fshl(self, self, n) }
+    /// Rotates the bits of `self` right by `n mod Self::BITS`.
+    @inline public func rotateRight(_ n: uint32) -> usize { __intrinsic_fshr(self, self, n) }
+    /// Reverses the byte order of `self`.
+    @inline public func swapBytes() -> usize { __intrinsic_bswap(self) }
+    /// Reverses the bit order of `self`.
+    @inline public func reverseBits() -> usize { __intrinsic_bitreverse(self) }
+
+    /// Returns `true` if `self` is a power of two (`1, 2, 4, ...`).
+    @inline public func isPowerOfTwo() -> bool {
+        self != 0 && (self & self.wrappingSub(1)) == 0
+    }
+
+    /// Returns the smallest power of two `>= self`, or `.none` on overflow.
+    public func checkedNextPowerOfTwo() -> usize? {
+        if self <= 1 {
+            return .some(1)
+        }
+        lz := (self - 1).leadingZeros()
+        if lz == 0 {
+            return .none
+        }
+        shift := (Self::BITS - lz) as usize
+        return .some((1 as usize) << shift)
+    }
+
+    /// Returns the smallest power of two `>= self`, panicking on overflow.
+    public func nextPowerOfTwo() -> usize {
+        match self.checkedNextPowerOfTwo() {
+            case .some(v) => v
+            case .none => panic("nextPowerOfTwo overflow")
+        }
+    }
+
+    /// Returns the base-2 logarithm of `self`, rounded down. Panics if `self == 0`.
+    public func ilog2() -> uint32 {
+        if self == 0 {
+            panic("argument of integer logarithm must be positive")
+        }
+        (Self::BITS - 1) - self.leadingZeros()
+    }
+
+    /// Raises `self` to `exp`, wrapping on overflow.
+    public func wrappingPow(_ exp: uint32) -> usize {
+        var base = self
+        var power = exp
+        var acc: usize = 1
+        while power > 0 {
+            if (power & 1) != 0 {
+                acc = acc.wrappingMul(base)
+            }
+            power = power >> 1
+            if power > 0 {
+                base = base.wrappingMul(base)
+            }
+        }
+        acc
+    }
+
+    /// Raises `self` to `exp`, returning `.none` on overflow.
+    public func checkedPow(_ exp: uint32) -> usize? {
+        var base = self
+        var power = exp
+        var acc: usize = 1
+        while power > 0 {
+            if (power & 1) != 0 {
+                match acc.checkedMul(base) {
+                    case .some(v) => acc = v
+                    case .none => return .none
+                }
+            }
+            power = power >> 1
+            if power > 0 {
+                match base.checkedMul(base) {
+                    case .some(v) => base = v
+                    case .none => return .none
+                }
+            }
+        }
+        return .some(acc)
+    }
+
+    /// Raises `self` to `exp`, panicking on overflow.
+    public func pow(_ exp: uint32) -> usize {
+        match self.checkedPow(exp) {
+            case .some(v) => v
+            case .none => panic("attempt to multiply with overflow")
+        }
+    }
+
+    /// Euclidean division (`self / rhs`), panicking when `rhs == 0`.
+    @inline public func divEuclid(_ rhs: usize) -> usize {
+        if rhs == 0 {
+            panic("attempt to divide by zero")
+        }
+        self / rhs
+    }
+
+    /// Euclidean remainder (`self % rhs`), panicking when `rhs == 0`.
+    @inline public func remEuclid(_ rhs: usize) -> usize {
+        if rhs == 0 {
+            panic("attempt to calculate the remainder with a divisor of zero")
+        }
+        self % rhs
+    }
+}

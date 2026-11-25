@@ -1,0 +1,4 @@
+error: type 'Boxed[int32]' does not conform to interface 'Wrap'
+ -> language_tests/source_files/invalid/literal_receiver_projection_condition_fails.tr:41:32
+	    count := Boxed { value: 0 }.wrap().count() + 1
+	                                ^^^^

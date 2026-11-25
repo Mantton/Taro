@@ -1,0 +1,11 @@
+func fileCopy(_ path: string) -> Result[std::fs::File, std::io::Error] {
+    using file = std::fs::File::create(path)!
+    return .ok(file)
+}
+func main() {
+    using dir = std::fs::createTempDir().unwrap()
+    path := dir.path() + "/file"
+    file := fileCopy(path).unwrap()
+    assert(file.close().isErr(), "the returned copy shares the closed resource")
+    println("closed")
+}

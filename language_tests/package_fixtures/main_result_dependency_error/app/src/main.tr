@@ -1,0 +1,9 @@
+import dep
+
+func main() -> Result[(), any std::error::Error] {
+    workers := dep::setting("workers")!
+    print("workers ${workers}\n")
+    var _ = dep::setting("timeout")!
+    print("unreachable\n")
+    return .ok(())
+}

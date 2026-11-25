@@ -1,5 +1,5 @@
 import std::collections::List
-import std::encoding::{DecodeError, DecodeErrorKind}
+import std::encoding::DecodeError
 import std::mem::Span
 import std::panic::panic
 import std::result::Result

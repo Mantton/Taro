@@ -16,6 +16,7 @@ copies and shared handles, with a tracing collector and asynchronous tasks.
 - Inline struct/array copies, shared collections, and writable GC references
 - GC classes with inheritance and explicit `std::weak::Weak[T]` references
 - Multithreaded async tasks, cancellation, groups, selection, and timeouts
+- Multiline and raw strings with hash-matched expression interpolation
 - First-class tests and benchmarks
 - LLVM code generation with incremental builds, bitcode, and optional LTO
 - Internal C ABI integration and compact language-level panic reports
@@ -80,7 +81,7 @@ enum Command {
 
 func execute(command: Command) {
     match command {
-        case .move(point) => print(f"moving to {point.x}, {point.y}\n")
+        case .move(point) => print("moving to ${point.x}, ${point.y}\n")
         case .quit => print("quitting\n")
     }
 }
@@ -142,6 +143,7 @@ attributes and regression directives.
 | [Grammar](docs/GRAMMAR.md) | Formal lexical and syntactic reference |
 | [Development](docs/development.md) | Building, diagnostics, benchmarks, troubleshooting |
 | [Testing](docs/testing.md) | Language harness and repository regression suites |
+| [Collections](docs/collections.md) | Collection selection, sorting, search, queues, heaps, and sharing semantics |
 | [Code generation](docs/codegen.md) | Profiles, bitcode, LTO, incremental artifacts, cross-compilation |
 | [Packages](docs/packages.md) | Manifests, dependency resolution, and lockfiles |
 | [Async runtime](docs/async-runtime.md) | Executor lifecycle and concurrency invariants |

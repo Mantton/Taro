@@ -1,0 +1,4 @@
+error: `@skip` field 'state' on type 'BadSkip' requires a default value, an Optional type, or Default conformance to derive 'Decodable'
+ -> language_tests/source_files/invalid/codable_skip_no_default.tr:7:16
+	struct BadSkip: Codable {
+	                ^^^^^^^

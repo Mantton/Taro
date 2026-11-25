@@ -1,0 +1,76 @@
+import std::default::Default
+import std::cmp::Comparable
+import std::optional::Optional
+import std::collections::{Counter, Deque, Dictionary, List, Set}
+import std::testing::{assertEqual, assertTrue}
+
+func make[T: Default]() -> T {
+    T::default()
+}
+
+@test
+func testStdDefaultIntegersAreZero() {
+    assertEqual(int8::default(), 0_i8, "int8")
+    assertEqual(int16::default(), 0_i16, "int16")
+    assertEqual(int32::default(), 0_i32, "int32")
+    assertEqual(int64::default(), 0_i64, "int64")
+    assertEqual(uint8::default(), 0_u8, "uint8")
+    assertEqual(uint16::default(), 0_u16, "uint16")
+    assertEqual(uint32::default(), 0_u32, "uint32")
+    assertEqual(uint64::default(), 0_u64, "uint64")
+    assertEqual(isize::default(), 0 as isize, "isize")
+    assertEqual(usize::default(), 0 as usize, "usize")
+    var generic: int64 = make()
+    assertEqual(generic, 0_i64, "generic integer default")
+}
+
+@test
+func testStdDefaultScalars() {
+    assertTrue(float::default() == 0.0, "float")
+    assertTrue(double::default() == 0.0, "double")
+    assertEqual(bool::default(), false, "bool")
+    assertEqual(rune::default(), '\0', "rune")
+    assertEqual(string::default(), "", "string")
+    var text: string = make()
+    assertTrue(text.isEmpty(), "generic string default")
+    var _: () = make()
+}
+
+struct DefaultTestPlain { value: int32 }
+
+struct DefaultTestDerived: Default, Comparable {
+    count: int32 = 2
+    name: string
+    level: uint8
+}
+
+@test
+func testStdDefaultOptionalIsNoneWithoutPayloadBound() {
+    var plain: Optional[DefaultTestPlain] = make()
+    assertTrue(plain.isNone(), "Optional of a type without Default")
+    assertTrue(Optional[int32]::default().isNone(), "Optional[int32]")
+}
+
+@test
+func testStdDefaultCollectionsAreEmpty() {
+    assertTrue(List[int32]::default().isEmpty(), "List")
+    assertTrue(Dictionary[string, int32]::default().isEmpty(), "Dictionary")
+    assertTrue(Set[int32]::default().isEmpty(), "Set")
+    assertTrue(Deque[int32]::default().isEmpty(), "Deque")
+    assertEqual(Counter[string]::default().len(), 0 as usize, "Counter")
+    var list: [string] = make()
+    list.append("independent")
+    var other: [string] = make()
+    assertEqual(list.len(), 1 as usize, "a default list is a fresh list")
+    assertTrue(other.isEmpty(), "each default list is separate")
+}
+
+@test
+func testStdDerivedDefaultAndOrderingInsideStd() {
+    derived := DefaultTestDerived::default()
+    assertEqual(derived.count, 2_i32, "declared field default")
+    assertTrue(derived.name.isEmpty() && derived.level == 0_u8, "field type defaults")
+    var larger = DefaultTestDerived::default()
+    larger.name = "b"
+    assertTrue(derived < larger, "derived ordering compares fields in order")
+}

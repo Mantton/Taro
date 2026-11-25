@@ -1,0 +1,191 @@
+// Holding a match arm's result literal for the other arms must not leave
+// anything else in the arm unresolved when the arm is checked: lookups on
+// literal receivers, subscripts, Optional bindings and patterns, closure
+// captures, compound assignments and class upcasts all resolve as they do
+// outside a match.
+import std::ops::AddAssign
+
+struct Box[T] {
+    v: T
+}
+
+interface Takes {
+    subscript(_ index: usize) -> usize {
+        get {
+            index * 2
+        }
+    }
+}
+
+// A parameterised interface: a call through it waits for the receiver's
+// literal default.
+interface Width[U] {
+    func width() -> usize {
+        4
+    }
+
+    func maybe() -> usize? {
+        .some(6)
+    }
+
+    func number() -> int32 {
+        5
+    }
+
+    func child() -> Derived {
+        Derived()
+    }
+
+    func fail() -> ! {
+        panic("never")
+    }
+}
+
+conform[T] Box[T] to Takes {}
+conform Box[int32] to Width[bool] {}
+
+struct Wrapper[T] {
+    value: T
+}
+
+struct Cell[T] {
+    v: T
+}
+
+conform &Cell[int32] to AddAssign[int32] {
+    func addAssign(_ other: int32) {
+        self.v += other
+    }
+}
+
+class Base {}
+
+extend Base {
+    init() {}
+}
+
+class Derived: Base {}
+
+class Object {
+    value: int32
+}
+
+extend Object {
+    init(_ value: int32) {
+        self.value = value
+    }
+}
+
+conform Object to AddAssign[int32] {
+    func addAssign(_ rhs: int32) {
+        self.value += rhs
+    }
+}
+
+struct Holder {
+    readonly object: Object
+}
+
+extend Holder {
+    var exposed: Object {
+        get {
+            self.object
+        }
+    }
+}
+
+func main() {
+    k := 1
+    flag := true
+    var key: usize = 4
+
+    // An interface subscript on a literal receiver, with an annotation.
+    var picked: usize = match k {
+        case 1 => Box { v: 0 }[key]
+        case _ => 0
+    }
+
+    // A deferred lookup's result wrapped by a nested match for an Optional.
+    nested := match k {
+        case 1 => {
+            n := Box { v: 0 }.width()
+            var o: usize? = match flag {
+                case true => n
+                case _ => nil
+            }
+            o ?? 0
+        }
+        case _ => 0
+    }
+
+    // An inferred pattern on a deferred lookup's Optional result.
+    unwrapped := match k {
+        case 1 => {
+            o := Box { v: 0 }.maybe()
+            match o {
+                case .some(x) => x
+                case .none => 0
+            }
+        }
+        case _ => 0
+    }
+
+    // A closure capturing a local whose type comes from a literal.
+    captured := match k {
+        case 1 => {
+            wrapper := Wrapper { value: 7 }
+            read := () => wrapper.value
+            read()
+        }
+        case _ => 0
+    }
+    var typed: int32 = captured
+
+    // A compound assignment whose operator conformance needs the literal's
+    // default.
+    added := match k {
+        case 1 => {
+            var cell = Cell { v: 0 }
+            cell += 1_i32
+            cell.v
+        }
+        case _ => 0
+    }
+
+    // A deferred call whose class result is upcast, and one that never returns.
+    base := Base()
+    var upcast: Base = match flag {
+        case true => Box { v: 0 }.child()
+        case _ => base
+    }
+    var diverging: int32 = match flag {
+        case true => 4
+        case _ => Box { v: 0 }.fail()
+    }
+
+    // An Optional binding on a deferred lookup.
+    bound := match k {
+        case 1 => {
+            var total: usize = 1
+            if var x = (Box { v: 0 }).maybe() {
+                total = x
+            }
+            total
+        }
+        case _ => 0
+    }
+
+    // A compound assignment to a read-only property whose operator comes from
+    // a deferred call's result.
+    holder := Holder { object: Object(1) }
+    exposed := match k {
+        case 1 => {
+            holder.exposed += Box { v: 0 }.number()
+            holder.object.value
+        }
+        case _ => 0
+    }
+
+    println("${picked} ${nested} ${unwrapped} ${typed} ${added}")
+    println("${upcast === base} ${diverging} ${bound} ${exposed}")
+}

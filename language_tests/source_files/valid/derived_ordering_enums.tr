@@ -1,0 +1,71 @@
+// Derived enum orderings compare cases by declaration order, then the
+// payloads of two values of the same case in order.
+enum Priority: Comparable {
+    case low
+    case normal
+    case high
+}
+
+enum Shape: PartialEq, PartialOrd, Ord {
+    case point
+    case circle(int32)
+    case rect(width: int32, height: int32)
+    case named { label: string, size: int32 }
+}
+
+enum Tagged[T]: Comparable {
+    case none
+    case some(T, int32)
+}
+
+struct Task: Comparable {
+    priority: Priority
+    id: int32
+}
+
+func describe(_ ordering: Ordering) -> string {
+    match ordering {
+        case .less => "less"
+        case .equal => "equal"
+        case .greater => "greater"
+    }
+}
+
+func main() {
+    println("priority: ${Priority::low < Priority::normal} ${Priority::high > Priority::normal} ${Priority::normal <= Priority::normal} ${describe(Priority::high.cmp(Priority::low))}")
+    var levels: [Priority] = [Priority::high, Priority::low, Priority::normal, Priority::low]
+    levels.sort()
+    var line = ""
+    for level in levels {
+        line = line + " " + match level {
+            case .low => "low"
+            case .normal => "normal"
+            case .high => "high"
+        }
+    }
+    println("sorted:${line}")
+
+    point := Shape::point
+    small := Shape::circle(1)
+    large := Shape::circle(5)
+    wide := Shape::rect(width: 4, height: 1)
+    tall := Shape::rect(width: 4, height: 9)
+    named := Shape::named { label: "a", size: 1 }
+    println("cases: ${point < small} ${large < wide} ${named > tall} ${describe(point.cmp(point))}")
+    println("positional: ${small < large} ${describe(large.cmp(small))} ${describe(small.cmp(Shape::circle(1)))}")
+    println("named: ${wide < tall} ${describe(tall.cmp(wide))} ${named < Shape::named { label: "a", size: 2 }} ${named > Shape::named { label: "B", size: 9 }}")
+
+    println("generic: ${Tagged[string]::none < Tagged[string]::some("a", 0)} ${Tagged[string]::some("b", 0) > Tagged[string]::some("a", 9)} ${describe(Tagged[int32]::some(1, 2).cmp(Tagged[int32]::some(1, 3)))}")
+
+    var tasks = PriorityQueue[Task]::new()
+    tasks.push(Task { priority: Priority::high, id: 1 })
+    tasks.push(Task { priority: Priority::low, id: 2 })
+    tasks.push(Task { priority: Priority::normal, id: 3 })
+    tasks.push(Task { priority: Priority::low, id: 1 })
+    var order = ""
+    while !tasks.isEmpty() {
+        next := tasks.pop().unwrap()
+        order = order + " ${next.priority == Priority::low}/${next.id}"
+    }
+    println("queue:${order}")
+}

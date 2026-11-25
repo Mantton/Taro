@@ -1,0 +1,3 @@
+enum State { case ready }
+struct State(int32)
+func main() {}

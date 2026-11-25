@@ -1,0 +1,14 @@
+struct Record { value: int32 }
+extend Record {
+    init(_ value: int32, _ log: &int32) -> Result[Self, string] {
+        errdefer { *log += 1 }
+        if value < 0 { return .err("negative") }
+        self.value = value
+    }
+}
+func main() {
+    var log: int32 = 0
+    assert(Record(7, &log).unwrap().value == 7 && log == 0, "implicit initializer success")
+    assert(Record(-1, &log).isErr() && log == 1, "initializer failure")
+    println("${log}")
+}

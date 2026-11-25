@@ -1,0 +1,36 @@
+error: cannot derive 'Clone' for 'Account': field 'owner' has type 'Plain', which does not conform to 'Clone'
+ -> language_tests/source_files/invalid/derived_memberwise_fields.tr:13:42
+	final class Account: PartialEq, Hashable, Clone {
+	                                          ^^^^^
+error: cannot derive 'Hashable' for 'Account': field 'owner' has type 'Plain', which does not conform to 'Hashable'
+ -> language_tests/source_files/invalid/derived_memberwise_fields.tr:13:32
+	final class Account: PartialEq, Hashable, Clone {
+	                                ^^^^^^^^
+error: cannot derive 'PartialEq' for 'Account': field 'owner' has type 'Plain', which does not conform to 'PartialEq'
+ -> language_tests/source_files/invalid/derived_memberwise_fields.tr:13:21
+	final class Account: PartialEq, Hashable, Clone {
+	                     ^^^^^^^^^
+error: cannot derive 'Clone' for 'Slot': field 'filled.1' has type 'Plain', which does not conform to 'Clone'
+ -> language_tests/source_files/invalid/derived_memberwise_fields.tr:8:22
+	enum Slot: PartialEq, Clone {
+	                      ^^^^^
+error: cannot derive 'Clone' for 'Slot': field 'labelled.at' has type 'Plain', which does not conform to 'Clone'
+ -> language_tests/source_files/invalid/derived_memberwise_fields.tr:8:22
+	enum Slot: PartialEq, Clone {
+	                      ^^^^^
+error: cannot derive 'PartialEq' for 'Slot': field 'filled.1' has type 'Plain', which does not conform to 'PartialEq'
+ -> language_tests/source_files/invalid/derived_memberwise_fields.tr:8:11
+	enum Slot: PartialEq, Clone {
+	           ^^^^^^^^^
+error: cannot derive 'PartialEq' for 'Slot': field 'labelled.at' has type 'Plain', which does not conform to 'PartialEq'
+ -> language_tests/source_files/invalid/derived_memberwise_fields.tr:8:11
+	enum Slot: PartialEq, Clone {
+	           ^^^^^^^^^
+error: cannot derive 'Hashable' for 'Keyed': field 'plain' has type 'Plain', which does not conform to 'Hashable'
+ -> language_tests/source_files/invalid/derived_memberwise_fields.tr:4:25
+	struct Keyed: PartialEq, Hashable {
+	                         ^^^^^^^^
+error: cannot derive 'PartialEq' for 'Keyed': field 'plain' has type 'Plain', which does not conform to 'PartialEq'
+ -> language_tests/source_files/invalid/derived_memberwise_fields.tr:4:14
+	struct Keyed: PartialEq, Hashable {
+	              ^^^^^^^^^

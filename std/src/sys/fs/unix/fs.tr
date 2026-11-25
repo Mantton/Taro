@@ -1,6 +1,5 @@
 import std::ffi::CString
 import std::io::Error
-import std::libc
 import std::result::Result
 
 extern "blocking" {

@@ -1,0 +1,26 @@
+// Derived orderings and defaults declared in a dependency.
+public struct Version: Comparable {
+    public major: int32
+    public minor: int32
+}
+
+public enum Channel: Comparable {
+    case stable
+    case beta(int32)
+    case nightly { build: int32 }
+}
+
+public struct Tagged[T]: Comparable, Default {
+    public value: T
+    public tag: string = "untagged"
+}
+
+public struct Settings: Default {
+    public retries: int32 = 3
+    public name: string
+    public versions: [Version]
+}
+
+public func newest[T: Ord](_ values: [T]) -> T {
+    values.sorted()[values.len() - 1]
+}

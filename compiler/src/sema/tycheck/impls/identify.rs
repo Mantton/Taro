@@ -31,6 +31,50 @@ impl<'ctx> Actor<'ctx> {
         };
 
         self.context.cache_impl_type_head(impl_id, head);
+        if node.interface.is_none() {
+            if let TypeHead::Nominal(owner) = head
+                && self
+                    .context
+                    .try_get_struct_definition(owner)
+                    .is_some_and(|s| s.class_info.is_some())
+            {
+                super::super::collect::function::register_decoder_headers(
+                    self.context,
+                    owner,
+                    impl_id,
+                    node,
+                );
+            }
+            let constants: Vec<_> = node
+                .declarations
+                .iter()
+                .filter(|decl| matches!(decl.kind, hir::AssociatedDeclarationKind::Constant(_)))
+                .collect();
+            if !constants.is_empty() {
+                self.context
+                    .store
+                    .constant_extension_targets
+                    .borrow_mut()
+                    .insert(
+                        impl_id,
+                        self.context
+                            .store
+                            .arenas
+                            .global
+                            .alloc(node.target.as_ref().clone()),
+                    );
+                self.context.with_session_type_database(|db| {
+                    let index = db.type_head_to_members.entry(head).or_default();
+                    for decl in constants {
+                        index
+                            .inherent_constants
+                            .entry(decl.identifier.symbol)
+                            .or_default()
+                            .push(decl.id);
+                    }
+                });
+            }
+        }
     }
 
     fn is_std_package(&self, pkg: crate::PackageIndex) -> bool {
@@ -94,7 +138,7 @@ impl<'ctx> Actor<'ctx> {
             hir::TypeKind::Nominal(path) => self.type_head_for_nominal(ty, path),
             hir::TypeKind::Pointer(.., m) => Some(TypeHead::Pointer(*m)),
             hir::TypeKind::Reference(..) => Some(TypeHead::Reference),
-            hir::TypeKind::Tuple(items) => {
+            hir::TypeKind::Tuple(items, _) => {
                 let Ok(arity) = u16::try_from(items.len()) else {
                     self.context
                         .dcx()

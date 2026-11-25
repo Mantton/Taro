@@ -1,0 +1,15 @@
+/// Exit status of a program whose `main` returned `.err`.
+const MAIN_ERROR_EXIT_STATUS: int32 = 1
+
+/// Report the error that a `Result`-returning `main` returned, and return the
+/// process exit status.
+///
+/// The compiler calls this from the entry wrapper it generates for
+/// `func main() -> Result[(), E]` after `main` and its `defer` blocks have
+/// run. The line is written with one call so it is not interleaved with other
+/// standard error output.
+@lang("MainErrorReport")
+internal func reportMainError(_ error: any std::fmt::Display) -> int32 {
+    std::eprint("error: ${error}\n")
+    return MAIN_ERROR_EXIT_STATUS
+}

@@ -1,0 +1,8 @@
+error: invalid redeclaration of 'size'; return type alone cannot distinguish overloads
+ -> language_tests/source_files/invalid/labeled_tuple_overload.tr:2:5
+	func size(_ value: (start: int32, end: int32)) -> int32 { value.1 }
+	     ^^^^
+info: previous declaration is here
+ -> language_tests/source_files/invalid/labeled_tuple_overload.tr:1:5
+	func size(_ value: (low: int32, high: int32)) -> int32 { value.0 }
+	     ^^^^

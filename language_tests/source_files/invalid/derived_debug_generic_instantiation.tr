@@ -1,0 +1,8 @@
+// A generic derived Debug holds only for arguments that have Debug.
+import std::fmt::debugString
+struct Plain { value: int32 }
+struct Pair[T]: Debug { first: T, second: T }
+func main() {
+    var fine = debugString(Pair[int32] { first: 1, second: 2 })
+    var broken = debugString(Pair[Plain] { first: Plain { value: 1 }, second: Plain { value: 2 } })
+}

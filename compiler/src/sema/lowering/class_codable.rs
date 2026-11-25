@@ -99,23 +99,32 @@ pub fn matching_initializer<'ctx>(
     expected: &LabeledFunctionSignature<'ctx>,
     own: GenericArguments<'ctx>,
 ) -> Option<DefinitionID> {
+    let matches = |id, signature: &LabeledFunctionSignature<'ctx>| {
+        if gcx.generics_of(id).parameters.len() != own.len() {
+            return false;
+        }
+        let Some(args) = gcx.class_method_arguments(class, id, own) else {
+            return false;
+        };
+        let actual = instantiate_signature_with_args(gcx, signature, args);
+        actual.inputs.len() == expected.inputs.len()
+            && actual.inputs.iter().zip(&expected.inputs).all(|(a, b)| {
+                a.label == b.label && normalize_aliases(gcx, a.ty) == normalize_aliases(gcx, b.ty)
+            })
+            && normalize_aliases(gcx, actual.output) == normalize_aliases(gcx, expected.output)
+    };
     gcx.class_info(class)?
         .initializers
         .iter()
-        .find_map(|entry| {
-            if gcx.generics_of(entry.definition).parameters.len() != own.len() {
-                return None;
+        .map(|entry| entry.definition)
+        .find(|id| matches(*id, gcx.get_signature(*id)))
+        .or_else(|| {
+            if gcx.store.collecting_constant_headers.get()
+                && let TyKind::Adt(adt, _) = class.kind()
+            {
+                return crate::sema::tycheck::find_decoder_header(gcx, adt.id, matches);
             }
-            let args = gcx.class_method_arguments(class, entry.definition, own)?;
-            let actual =
-                instantiate_signature_with_args(gcx, gcx.get_signature(entry.definition), args);
-            (actual.inputs.len() == expected.inputs.len()
-                && actual.inputs.iter().zip(&expected.inputs).all(|(a, b)| {
-                    a.label == b.label
-                        && normalize_aliases(gcx, a.ty) == normalize_aliases(gcx, b.ty)
-                })
-                && normalize_aliases(gcx, actual.output) == normalize_aliases(gcx, expected.output))
-            .then_some(entry.definition)
+            None
         })
 }
 

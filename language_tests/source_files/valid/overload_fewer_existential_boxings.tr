@@ -1,0 +1,56 @@
+// When two overloads need the same number of conversions, the one that boxes
+// fewer arguments into an existential wins: wrapping a usize in `usize?`
+// keeps its concrete type, boxing it in `any Show` erases it. Each overload
+// set is declared in both orders.
+struct Box[T] {
+    v: T
+}
+
+interface Takes {
+    func takeIt(_ n: usize) -> usize {
+        n
+    }
+}
+
+interface Show {}
+
+conform usize to Show {}
+conform string to Show {}
+conform[T] Box[T] to Takes {}
+
+func choose(_ x: usize?, _ y: int32) -> string {
+    "optional"
+}
+
+func choose(_ x: any Show, _ y: int32) -> string {
+    "existential"
+}
+
+func reversed(_ x: any Show, _ y: int32) -> string {
+    "existential"
+}
+
+func reversed(_ x: usize?, _ y: int32) -> string {
+    "optional"
+}
+
+func main() {
+    var n: usize = 3
+
+    // A typed local, a typed and an untyped literal receiver, and a lookup
+    // that resolves only after its receiver's literal default.
+    println(choose(n, 1))
+    println(reversed(n, 1))
+    println(choose(Box[int32] { v: 0 }.takeIt(3), 1))
+    println(reversed(Box[int32] { v: 0 }.takeIt(3), 1))
+    println(choose(Box { v: 0 }.takeIt(3), 1))
+    println(reversed(Box { v: 0 }.takeIt(3), 1))
+    println(choose((0..10).iter().count(), 1))
+    println(reversed((0..10).iter().count(), 1))
+
+    // Only one candidate accepts these.
+    println(choose(nil, 1))
+    println(reversed(nil, 1))
+    println(choose("text", 1))
+    println(reversed("text", 1))
+}

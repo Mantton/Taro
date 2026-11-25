@@ -1,0 +1,12 @@
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: panic: stop
+struct Resource {}
+conform Resource to Closeable {
+    type CloseResult = ()
+    func close() { println("closed") }
+}
+func main() {
+    defer println("outer")
+    using resource = Resource {}
+    panic("stop")
+}

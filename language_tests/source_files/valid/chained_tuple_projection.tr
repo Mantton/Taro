@@ -1,0 +1,8 @@
+func main() {
+    var nested = ((2_i32, 5_i32), (8_i32, 9_i32))
+    nested.0.1 += 7
+    assert(nested.0.1 == 12 && nested.1.0 == 8, "adjacent positional projections")
+    literal := (1.25, 0.5)
+    assert(literal.0 == 1.25 && literal.1 == 0.5, "decimal literals")
+    println("${nested.1.1}")
+}

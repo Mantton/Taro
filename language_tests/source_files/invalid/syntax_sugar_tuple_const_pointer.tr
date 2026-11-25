@@ -1,0 +1,3 @@
+// EXPECT_STDERR_NOT_CONTAINS: internal error
+func set(_ pointer: *const int32) { unsafe { (*pointer,) = (2,); } }
+func main() {}

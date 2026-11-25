@@ -1,0 +1,9 @@
+struct Box[T] { value: T }
+
+extend Box[int64] {
+    var measure: usize { get { 64 } }
+}
+
+func main() {
+    _ = Box { value: 0 }.measure
+}

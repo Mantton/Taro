@@ -1,0 +1,17 @@
+struct Handle {}
+conform Handle to Closeable {
+    type CloseResult = ()
+    func close() { println("closed") }
+}
+func main() async {
+    var (started, running) = std::sync::bounded[int32](1).unwrap()
+    task := std::task::spawn(() async => {
+        using handle = Handle {}
+        started.trySend(1).unwrap()
+        await std::task::sleep(std::time::Duration::fromSeconds(60_u64))
+    })
+    var _ = await running.recv()
+    task.cancel()
+    var _ = await task.result()
+    println("joined")
+}

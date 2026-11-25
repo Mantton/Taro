@@ -670,3 +670,13 @@ extend &Command {
         return self
     }
 }
+
+conform ChildStdin to std::io::Closeable {
+    type CloseResult = Result[(), Error]
+    public func close() -> Result[(), Error] { self.close() }
+}
+
+conform ChildStdout to std::io::Closeable {
+    type CloseResult = Result[(), Error]
+    public func close() -> Result[(), Error] { self.close() }
+}

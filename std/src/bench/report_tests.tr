@@ -1,0 +1,37 @@
+import std::collections::List
+import std::testing::assertEqual
+
+@test
+func benchmarkSummaryPreservesSamplesAndUsesMedianP95AndMad() {
+    var samples = List[double]::new()
+    samples.append(100.0)
+    samples.append(2.0)
+    samples.append(1.0)
+    samples.append(3.0)
+    summary := summarizeBenchmarkSamples(samples)
+    assertEqual(summary.median, 2.5, "median averages the middle pair")
+    assertEqual(summary.p95, 100.0, "p95 uses nearest rank")
+    assertEqual(summary.mad, 1.0, "MAD is the median absolute deviation")
+    assertEqual(*samples.at(0), 100.0, "report preserves sample order")
+    assertEqual(*samples.at(2), 1.0, "report preserves raw samples")
+}
+
+@test
+func benchmarkSummaryHandlesZeroAndOddSampleCounts() {
+    var samples = List[double]::new()
+    samples.append(0.0)
+    zero := summarizeBenchmarkSamples(samples)
+    assertEqual(zero.median, 0.0, "zero-duration median")
+    assertEqual(zero.p95, 0.0, "zero-duration p95")
+    assertEqual(zero.mad, 0.0, "zero-duration MAD")
+
+    var value: double = 20.0
+    while value > 0.0 {
+        samples.append(value)
+        value -= 1.0
+    }
+    odd := summarizeBenchmarkSamples(samples)
+    assertEqual(odd.median, 10.0, "odd median is the middle value")
+    assertEqual(odd.p95, 19.0, "nearest rank may be below the maximum")
+    assertEqual(odd.mad, 5.0, "odd median absolute deviation")
+}

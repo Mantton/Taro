@@ -27,6 +27,7 @@ fn allocator(gcx: Gcx<'_>, span: Span) -> DefinitionID {
     let name = gcx.intern_symbol("Frame");
     let generics = gcx.store.arenas.generics.alloc(Generics {
         parameters: vec![GenericParameterDefinition {
+            is_anonymous: false,
             name,
             id: parameter,
             index: 0,

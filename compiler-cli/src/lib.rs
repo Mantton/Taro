@@ -35,8 +35,12 @@ pub struct Cli {
 pub enum CliCommand {
     Build(BuildArgs),
     Check(CheckArgs),
-    /// Check for accidental copies of @NoCopy values.
+    /// Check for accidental copies of @NoCopy values and for shadowing that hides a later read.
     Vet(CheckArgs),
+    /// Apply machine-applicable diagnostic fixes (such as deprecated API renames).
+    Fix(FixArgs),
+    /// Format Taro source files using the canonical standard-library style.
+    Fmt(FmtArgs),
     Run(RunArgs),
     Test(TestArgs),
     Bench(BenchArgs),
@@ -47,6 +51,9 @@ pub enum CliCommand {
 
 #[derive(Args, Clone, Debug)]
 pub struct BuildArgs {
+    /// Explain stack placement, heap escapes, and existential boxing at their source locations.
+    #[arg(long)]
+    pub explain_allocations: bool,
     #[command(flatten)]
     pub common: CommonCompileArgs,
     /// Select the final build artifact.
@@ -61,6 +68,25 @@ pub struct BuildArgs {
 pub struct CheckArgs {
     #[command(flatten)]
     pub common: CommonCompileArgs,
+}
+
+#[derive(Args, Clone, Debug)]
+pub struct FixArgs {
+    #[command(flatten)]
+    pub common: CommonCompileArgs,
+    /// Show which fixes would be applied without editing files.
+    #[arg(long = "dry-run")]
+    pub dry_run: bool,
+}
+
+#[derive(Args, Clone, Debug)]
+pub struct FmtArgs {
+    /// Check whether files are formatted without rewriting them; exits nonzero on drift.
+    #[arg(long = "check")]
+    pub check: bool,
+    /// Files or directories to format (defaults to current directory).
+    #[arg(default_value = ".")]
+    pub paths: Vec<PathBuf>,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -91,6 +117,27 @@ pub struct TestArgs {
     /// Case-insensitive test tag filter. Repeat to match any requested tag.
     #[arg(long = "tag")]
     pub tag: Vec<String>,
+    /// Extract and run fenced `taro` documentation examples from doc comments and Markdown.
+    #[arg(long = "doc")]
+    pub doc: bool,
+    /// Instrument the package with LLVM source coverage and report covered lines/regions.
+    #[arg(long = "coverage", conflicts_with = "doc")]
+    pub coverage: bool,
+    /// Discover and run a named `@fuzz` target instead of regular `@test` cases.
+    #[arg(long = "fuzz", value_name = "TARGET", conflicts_with_all = ["doc", "coverage"])]
+    pub fuzz: Option<String>,
+    /// Maximum number of generated inputs to execute for `--fuzz` (default: 1000).
+    #[arg(long = "fuzz-runs", value_name = "COUNT", requires = "fuzz")]
+    pub fuzz_runs: Option<u64>,
+    /// Fixed 64-bit PRNG seed for reproducible `--fuzz` campaigns.
+    #[arg(long = "fuzz-seed", value_name = "SEED", requires = "fuzz")]
+    pub fuzz_seed: Option<u64>,
+    /// Maximum byte length of generated `--fuzz` inputs (default: 4096).
+    #[arg(long = "fuzz-max-len", value_name = "BYTES", requires = "fuzz")]
+    pub fuzz_max_len: Option<usize>,
+    /// Replay one saved byte-input file against the selected `--fuzz` target.
+    #[arg(long = "fuzz-replay", value_name = "FILE", requires = "fuzz")]
+    pub fuzz_replay: Option<PathBuf>,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -410,6 +457,7 @@ impl CommonCompileArgs {
                 optimization,
                 artifact: ModuleArtifactKind::Object,
                 lto: LtoMode::Off,
+                coverage: false,
             },
             overflow_checks: self.overflow_checks_enabled(),
             timings: self.timings,
@@ -611,6 +659,7 @@ mod tests {
             CliCommand::Test(test) => {
                 assert_eq!(test.normalized_test_filter().as_deref(), Some("Core.Tests"));
                 assert_eq!(test.normalized_test_tags(), vec!["Smoke", "slow"]);
+                assert!(!test.doc);
             }
             other => panic!("expected test command, got {other:?}"),
         }

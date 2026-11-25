@@ -8,8 +8,14 @@ use crate::{
 
 pub fn resolve_usages(resolver: &mut Resolver) -> CompileResult<()> {
     let actor = Actor { resolver };
-    actor.run();
+    actor.run(true);
     resolver.context.dcx.ok()
+}
+
+/// Bind available imports before attaching nested types to their owners.
+/// Imports that depend on those types stay pending for the next pass.
+pub(super) fn resolve_available(resolver: &mut Resolver) {
+    Actor { resolver }.run(false);
 }
 
 struct Actor<'r, 'a> {
@@ -17,7 +23,7 @@ struct Actor<'r, 'a> {
 }
 
 impl<'r, 'a> Actor<'r, 'a> {
-    fn run(mut self) {
+    fn run(mut self, report_errors: bool) {
         loop {
             let start = self.unresolved_count();
             self.resolve(false);
@@ -28,7 +34,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             }
         }
 
-        if self.unresolved_count() != 0 {
+        if report_errors && self.unresolved_count() != 0 {
             self.resolve(true);
         }
     }
@@ -131,6 +137,10 @@ impl<'r, 'a> Actor<'r, 'a> {
             }
             return false;
         };
+
+        if let Some(lint) = &self.resolver.lint {
+            lint.borrow_mut().note_import(usage, &holder);
+        }
 
         let entries = holder.all_entries();
         for entry in entries.into_iter() {

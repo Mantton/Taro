@@ -1,0 +1,56 @@
+// Lines that begin with `else` or `where` continue the previous line, and
+// newlines inside parentheses and brackets do not end statements.
+func classify(_ value: int32) -> string {
+    if value > 10 {
+        return "large"
+    }
+    else if value > 0 {
+        return "small"
+    }
+    else {
+        return "none"
+    }
+}
+
+func positive(_ value: int32) -> bool {
+    guard value > 0
+    else { return false }
+    true
+}
+
+func largest[T](_ values: List[T]) -> T
+    where T: Ord {
+    values[0]
+}
+
+func sum(
+    _ first: int32,
+    _ second: int32
+) -> int32 {
+    first + second
+}
+
+func main() {
+    total := sum(
+        1,
+        2
+    )
+    matrix := [
+        [1, 2, 3],
+        [4, 5, 6]
+    ]
+    point := (
+        total,
+        matrix
+    )
+    result := sum(
+        total
+            + 1,
+        apply((
+            item: int32
+        ) => {
+            log(item)
+            item * 2
+        })
+    )
+}

@@ -1,0 +1,19 @@
+import std::fmt::debugString
+
+struct Vault {
+    public label: string
+    private code: int32
+}
+
+extend Vault {
+    static func make() -> Vault {
+        Vault { label: "main", code: 1234 }
+    }
+}
+
+func main() {
+    v := Vault::make()
+    #for field in #fields(Vault) {
+        _ = debugString(field.get(v))
+    }
+}

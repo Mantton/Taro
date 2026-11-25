@@ -1,0 +1,13 @@
+interface Later { func next(_ value: int32) async -> int32; }
+struct Base {}
+conform Base to Later {
+    func next(_ value: int32) async -> int32 { value + 2 }
+}
+struct Wrapper { inner: Base }
+conform Wrapper to Later by self.inner {}
+func read[L: Later](_ value: L) async -> int32 { await value.next(3) }
+func main() async {
+    var wrapper = Wrapper { inner: Base {} }
+    assert(await read(wrapper) == 5, "async forwarding")
+    println("async forwarding")
+}

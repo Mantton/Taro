@@ -1,0 +1,20 @@
+error: only payload-free enums can derive RawValue
+ -> language_tests/source_files/invalid/derived_enum_raw_value.tr:5:7
+	struct Record: RawValue[uint8] {}
+	       ^^^^^^
+error: cannot derive RawValue for raw type 'bool'; expected an integer type
+ -> language_tests/source_files/invalid/derived_enum_raw_value.tr:4:5
+	enum WrongType: RawValue[bool] { case off, on }
+	     ^^^^^^^^^
+error: cannot derive RawValue for case 'number' with a payload
+ -> language_tests/source_files/invalid/derived_enum_raw_value.tr:3:37
+	enum Payload: RawValue[uint8] { case number(int32) }
+	                                     ^^^^^^
+error: enum discriminant 128 is out of range for raw type 'int8'
+ -> language_tests/source_files/invalid/derived_enum_raw_value.tr:2:43
+	enum SignedOverflow: RawValue[int8] { case past = 128 }
+	                                           ^^^^
+error: enum discriminant 256 is out of range for raw type 'uint8'
+ -> language_tests/source_files/invalid/derived_enum_raw_value.tr:1:50
+	enum Overflow: RawValue[uint8] { case edge = 255, past }
+	                                                  ^^^^

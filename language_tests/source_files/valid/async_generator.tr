@@ -1,0 +1,204 @@
+import std::io::Closeable
+import std::runtime::collect
+import std::sync::{Receiver, Sender, bounded}
+import std::task::{TaskError, spawn, yieldNow}
+import std::testing::assertEqual
+
+final class LineReader {
+    lines: List[string]
+    index: usize
+}
+
+extend LineReader {
+    init(lines: List[string]) {
+        self.lines = lines
+        self.index = 0
+    }
+
+    func nextLine() async -> Optional[string] {
+        await yieldNow()
+        if self.index >= self.lines.len() {
+            return .none
+        }
+        line := self.lines[self.index]
+        self.index += 1
+        return .some(line)
+    }
+}
+
+func lines(_ reader: &LineReader, _ events: &List[string]) -> some AsyncIterable[Element = string] {
+    events.append("open")
+    defer {
+        events.append("cleanup")
+    }
+    while var line = await reader.nextLine() {
+        yield line
+    }
+    events.append("eof")
+}
+
+func awaitThenYield(_ events: &List[string]) -> some AsyncIterator[Element = int32] {
+    events.append("start")
+    defer {
+        events.append("defer")
+    }
+    var acc: int32 = 10
+    await yieldNow()
+    yield acc
+    await yieldNow()
+    acc += 7
+    yield acc
+    events.append("end")
+}
+
+func blockingStream(
+    _ rx: Receiver[int32],
+    _ readyTx: Sender[int32],
+    _ events: &List[string],
+) -> some AsyncIterable[Element = int32] {
+    events.append("enter")
+    defer {
+        events.append("cancel-cleanup")
+    }
+    await yieldNow()
+    yield 1
+    events.append("blocking")
+    _ = await readyTx.send(1)
+    // Suspends until a value arrives or the consumer task is cancelled.
+    if var next = await rx.recv() {
+        yield next
+    }
+    events.append("unreachable-after-cancel")
+}
+
+func earlyReturnConsumer(_ reader: &LineReader, _ events: &List[string]) async -> string {
+    for await line in lines(reader, events) {
+        if line == "second" {
+            return line
+        }
+    }
+    return "none"
+}
+
+func asyncPair[T](_ a: T, _ b: T) -> some AsyncIterator[Element = T] {
+    await yieldNow()
+    yield a
+    await yieldNow()
+    yield b
+}
+
+func main() async {
+    // 1. Construction vs first-resume, await followed by yield, natural exhaustion
+    var events1 = List[string]::new()
+    var g1 = awaitThenYield(&events1)
+    assertEqual(events1.len(), 0 as usize, "async generator construction runs no body code")
+    assertEqual((await g1.next()).unwrap(), 10, "first yielded value after await")
+    assertEqual(events1.len(), 1 as usize, "only start ran before first yield")
+    assertEqual(events1[0], "start", "events1[0]")
+    assertEqual((await g1.next()).unwrap(), 17, "second yielded value after second await")
+    assert((await g1.next()).isNone(), "natural exhaustion returns none")
+    assert((await g1.next()).isNone(), "repeated next after exhaustion returns none")
+    assertEqual(events1.len(), 3 as usize, "natural exhaustion runs end and defer once")
+    assertEqual(events1[1], "end", "events1[1]")
+    assertEqual(events1[2], "defer", "events1[2]")
+    // Closing an already-exhausted generator must not re-run cleanup.
+    g1.close()
+    assertEqual(events1.len(), 3 as usize, "close after natural exhaustion is a no-op")
+
+    // 2. Full `for await` consumption over borrowed `&LineReader`
+    var data2 = List[string]::new()
+    data2.append("first")
+    data2.append("second")
+    data2.append("third")
+    var reader2 = LineReader(lines: data2)
+    var events2 = List[string]::new()
+    var collected = List[string]::new()
+    for await line in lines(&reader2, &events2) {
+        collected.append(line)
+    }
+    assertEqual(collected.len(), 3 as usize, "all 3 lines collected")
+    assertEqual(collected[0], "first", "collected[0]")
+    assertEqual(collected[1], "second", "collected[1]")
+    assertEqual(collected[2], "third", "collected[2]")
+    assertEqual(events2.len(), 3 as usize, "open, eof, cleanup ran once")
+    assertEqual(events2[0], "open", "events2[0]")
+    assertEqual(events2[1], "eof", "events2[1]")
+    assertEqual(events2[2], "cleanup", "events2[2]")
+
+    // 3. Early-exiting consumer via `break` in `for await`: cleanup runs synchronously once
+    var data3 = List[string]::new()
+    data3.append("a")
+    data3.append("b")
+    data3.append("c")
+    var reader3 = LineReader(lines: data3)
+    var events3 = List[string]::new()
+    var seen3: int32 = 0
+    for await line in lines(&reader3, &events3) {
+        seen3 += 1
+        if line == "a" {
+            break
+        }
+    }
+    assertEqual(seen3, 1, "stopped after first line")
+    assertEqual(events3.len(), 2 as usize, "early break runs cleanup exactly once")
+    assertEqual(events3[0], "open", "events3[0]")
+    assertEqual(events3[1], "cleanup", "events3[1]")
+
+    // 4. Early-exiting consumer via `return` from `for await`: cleanup runs once
+    var data4 = List[string]::new()
+    data4.append("first")
+    data4.append("second")
+    data4.append("third")
+    var reader4 = LineReader(lines: data4)
+    var events4 = List[string]::new()
+    found := await earlyReturnConsumer(&reader4, &events4)
+    assertEqual(found, "second", "returned matching line")
+    assertEqual(events4.len(), 2 as usize, "early return runs cleanup exactly once")
+    assertEqual(events4[0], "open", "events4[0]")
+    assertEqual(events4[1], "cleanup", "events4[1]")
+
+    // 5. Cancellation while blocked on an inner `await`: cleanup runs exactly once
+    var (valTx, valRx) = bounded[int32](1).unwrap()
+    var (readyTx, readyRx) = bounded[int32](1).unwrap()
+    var cancelEvents = List[string]::new()
+    var received = List[int32]::new()
+    consumer := spawn(() async => {
+        for await item in blockingStream(valRx, readyTx, &cancelEvents) {
+            received.append(item)
+        }
+    })
+    // Wait deterministically until the generator is blocked at `await rx.recv()`.
+    var _ = await readyRx.recv()
+    consumer.cancel()
+    outcome := await consumer.result()
+    match outcome {
+        case .err(.cancelled) => {}
+        case _ => assert(false, "consumer task must observe cancellation")
+    }
+    _ = valTx.close()
+    assertEqual(received.len(), 1 as usize, "yielded 1 before blocking")
+    assertEqual(received[0], 1, "received[0]")
+    assertEqual(cancelEvents.len(), 3 as usize, "enter, blocking, cancel-cleanup ran once")
+    assertEqual(cancelEvents[0], "enter", "cancelEvents[0]")
+    assertEqual(cancelEvents[1], "blocking", "cancelEvents[1]")
+    assertEqual(cancelEvents[2], "cancel-cleanup", "cancelEvents[2]")
+
+    // 6. Explicit close via `close()` (idempotent) after first yield
+    var events6 = List[string]::new()
+    var g6 = awaitThenYield(&events6)
+    assertEqual((await g6.next()).unwrap(), 10, "g6 first")
+    g6.close()
+    g6.close()
+    assert((await g6.next()).isNone(), "g6 closed returns none")
+    assertEqual(events6.len(), 2 as usize, "g6 defer ran once")
+    assertEqual(events6[0], "start", "events6[0]")
+    assertEqual(events6[1], "defer", "events6[1]")
+
+    // 7. Generic async generator with GC-traced strings across await & yield
+    var words = asyncPair("async-" + "one", "async-" + "two")
+    collect()
+    assertEqual((await words.next()).unwrap(), "async-one", "first string survives GC")
+    collect()
+    assertEqual((await words.next()).unwrap(), "async-two", "second string survives GC")
+    assert((await words.next()).isNone(), "generic async generator exhausted")
+}

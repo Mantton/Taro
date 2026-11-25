@@ -1,0 +1,4 @@
+error: expected int32, found string
+ -> language_tests/source_files/invalid/nested_pattern_type.tr:5:41
+	        case (whole @ (.left(n) | .right(n)), _) => n
+	                                         ^

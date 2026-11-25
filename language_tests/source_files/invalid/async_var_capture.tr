@@ -1,0 +1,11 @@
+func work() async -> int32 {
+    return 1_i32
+}
+
+func main() async {
+    async var x = work()
+    task := std::task::spawn(() async => {
+        return await x
+    })
+    var _ = await task.result()
+}

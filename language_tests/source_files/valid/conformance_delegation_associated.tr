@@ -1,0 +1,18 @@
+interface Source {
+    type Item
+    func fetch() -> Self::Item
+}
+struct Local {}
+conform Local to Source {
+    type Item = int32
+    func fetch() -> int32 { 37 }
+}
+struct Wrapper { inner: Local }
+conform Wrapper to Source by self.inner {
+    type Item = int32
+}
+func read[S: Source](_ source: S) -> S::Item { source.fetch() }
+func main() {
+    assert(read(Wrapper { inner: Local {} }) == 37, "associated result")
+    println("associated result")
+}

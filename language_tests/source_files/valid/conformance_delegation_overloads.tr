@@ -1,0 +1,25 @@
+interface Origin {
+    func origin() -> int32 { 1 }
+}
+interface Picker: Origin {
+    func pick(_ value: int32) -> int32
+    func pick(named value: int32) -> int32
+}
+struct Inner {}
+conform Inner to Origin {
+    func origin() -> int32 { 2 }
+}
+conform Inner to Picker {
+    func pick(_ value: int32) -> int32 { value + 1 }
+    func pick(named value: int32) -> int32 { value + 2 }
+}
+struct Outer { inner: Inner }
+conform Outer to Origin by self.inner {}
+conform Outer to Picker by self.inner {
+    func pick(named value: int32) -> int32 { 10 + self.inner.pick(named: value) }
+}
+func score[P: Picker](_ value: P) -> int32 { value.origin() + value.pick(1) + value.pick(named: 1) }
+func main() {
+    assert(score(Outer { inner: Inner {} }) == 17, "default dispatch and labeled overloads")
+    println("default and overload")
+}

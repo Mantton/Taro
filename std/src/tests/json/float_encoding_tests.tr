@@ -1,0 +1,139 @@
+import std::collections::List
+import std::core::{doubleToBits, floatToBits}
+import std::encoding::{Codable, Encodable, Encoder}
+import std::result::Result
+import std::testing::{assertEqual, fail}
+
+func jsonFloatWithBits(_ bits: uint32) -> float {
+    unsafe { ((&bits as *const uint32) as *const float).read() }
+}
+
+func jsonDoubleWithBits(_ bits: uint64) -> double {
+    unsafe { ((&bits as *const uint64) as *const double).read() }
+}
+
+@test
+func jsonFloatingPointNumbersRoundTripAtTheirOwnPrecision() {
+    var floats: [(uint32, string)] = [
+        (0, "0"),
+        (0x80000000, "-0"),
+        (0x42280000, "42"),
+        (0x3dcccccd, "0.1"),
+        (1, "1e-45"),
+        (0x00800000, "1.1754944e-38"),
+        (0x7f7fffff, "3.4028235e38"),
+    ]
+    for (bits, expected) in floats {
+        value := jsonFloatWithBits(bits)
+        text := std::json::encode(&value).unwrap()
+        assertEqual(text, expected, "float JSON number spelling")
+        assertEqual(floatToBits(std::json::decode[float](text).unwrap()), bits, "float JSON round trip")
+    }
+
+    var doubles: [(uint64, string)] = [
+        (0, "0"),
+        (0x8000000000000000, "-0"),
+        (0x4045000000000000, "42"),
+        (0x3ff0000000000001, "1.0000000000000002"),
+        (1, "5e-324"),
+        (0x0010000000000000, "2.2250738585072014e-308"),
+        (0x7fefffffffffffff, "1.7976931348623157e308"),
+    ]
+    for (bits, expected) in doubles {
+        value := jsonDoubleWithBits(bits)
+        text := std::json::encode(&value).unwrap()
+        assertEqual(text, expected, "double JSON number spelling")
+        assertEqual(doubleToBits(std::json::decode[double](text).unwrap()), bits, "double JSON round trip")
+    }
+}
+
+struct JsonFloatReadings: Codable {
+    scale: float
+    samples: List[double]
+}
+
+@test
+func jsonFloatingPointNumbersComposeWithDerivedAndStreamingCodecs() {
+    var samples = List[double]::new()
+    samples.append(-0.0)
+    samples.append(0.0001)
+    samples.append(0.00001)
+    samples.append(1e15)
+    samples.append(1e16)
+    value := JsonFloatReadings { scale: 0.1, samples }
+
+    var encoder = std::json::Encoder::new(JsonShortWriter::new(1))
+    encoder.encodeLine(&value).unwrap()
+    text := encoder.getInner().toString()
+    assertEqual(text, "{\"scale\":0.1,\"samples\":[-0,0.0001,1e-5,1000000000000000,1e16]}\n",
+        "streaming JSON uses the same number spelling through short writes")
+
+    decoded := std::json::decode[JsonFloatReadings](text).unwrap()
+    assertEqual(floatToBits(decoded.scale), floatToBits(value.scale), "derived float field round trip")
+    assertEqual(decoded.samples.len(), samples.len(), "derived list length")
+    var index: usize = 0
+    while index < samples.len() {
+        assertEqual(doubleToBits(*decoded.samples.at(index)), doubleToBits(*samples.at(index)),
+            "derived double element round trip")
+        index += 1
+    }
+}
+
+func assertNonFiniteJsonError[T](_ result: Result[T, std::json::EncodeError], _ path: string) {
+    match result {
+        case .ok(_) => fail("non-finite values should fail JSON encoding")
+        case .err(error) => {
+            assertEqual(error.kind(), .invalidValue, "non-finite JSON error category")
+            assertEqual(error.path(), path, "non-finite JSON error path")
+        }
+    }
+}
+
+@test
+func jsonFloatingPointErrorsRetainRootAndNestedPaths() {
+    var floatBits: [uint32] = [0x7fc00001, 0x7f800000, 0xff800000]
+    for bits in floatBits {
+        value := jsonFloatWithBits(bits)
+        assertNonFiniteJsonError(std::json::encode(&value), "$")
+        record := JsonFloatReadings { scale: value, samples: List[double]::new() }
+        assertNonFiniteJsonError(std::json::encode(&record), "$[\"scale\"]")
+    }
+
+    var doubleBits: [uint64] = [0x7ff8000000000001, 0x7ff0000000000000, 0xfff0000000000000]
+    for bits in doubleBits {
+        value := jsonDoubleWithBits(bits)
+        assertNonFiniteJsonError(std::json::encode(&value), "$")
+        var samples = List[double]::new()
+        samples.append(1.0)
+        samples.append(value)
+        record := JsonFloatReadings { scale: 1.0, samples }
+        assertNonFiniteJsonError(std::json::encode(&record), "$[\"samples\"][1]")
+    }
+}
+
+struct JsonReplacementReading {
+    output: JsonShortWriter
+}
+
+conform JsonReplacementReading to Encodable {
+    public func encode[E: Encoder](into encoder: E) -> Result[(), E::Error] {
+        encoder.beginObject(.none)!
+        encoder.beginField("reading")!
+        match encoder.encodeDouble(jsonDoubleWithBits(0x7ff0000000000000)) {
+            case .ok(_) => fail("non-finite values should fail JSON encoding")
+            case .err(_) => {}
+        }
+        assertEqual(self.output.toString(), "{\"reading\":", "failure writes no number token")
+        encoder.encodeDouble(1.25)!
+        return encoder.endObject()
+    }
+}
+
+@test
+func jsonFloatingPointFailureLeavesTheSelectedSlotAvailable() {
+    writer := JsonShortWriter::new(1)
+    var encoder = std::json::Encoder::new(writer)
+    reading := JsonReplacementReading { output: writer }
+    encoder.encode(&reading).unwrap()
+    assertEqual(writer.toString(), "{\"reading\":1.25}", "replacement fills the selected field")
+}

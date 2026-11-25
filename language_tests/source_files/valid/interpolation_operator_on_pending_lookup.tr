@@ -1,0 +1,58 @@
+// An operator whose operand is a lookup still waiting for its receiver's
+// type (`count()` on the result of `map`) gives its result a type only once
+// the lookup resolves. A coercion of that result to an existential, as for
+// the `any Display` arguments of an interpolation with two or more values,
+// or to an Optional, waits for it instead of fixing it to the target first.
+import std::fmt::Display
+
+func describe(_ a: any Display, _ b: any Display) -> string {
+    "${a}|${b}"
+}
+
+interface Kind {
+    func kind() -> string
+}
+
+conform int32 to Kind {
+    func kind() -> string { "int32" }
+}
+
+conform int64 to Kind {
+    func kind() -> string { "int64" }
+}
+
+conform uint8 to Kind {
+    func kind() -> string { "uint8" }
+}
+
+func main() {
+    var xs: [int32; 2] = [1, 2]
+    var one: usize = 1
+    five := () => 5
+
+    // A typed receiver, an array literal and a range chain.
+    println("${1} ${xs.map((x) => x * 2).count() + 1}")
+    println("${1} ${[1, 2].map((x) => x * 2).count() + 1}")
+    println("${true} ${(0..10).iter().map((x) => x * 2).count() + 1}")
+
+    // The segments swapped, a typed operand and a closure call first.
+    println("${[1, 2].map((x) => x * 2).count() + 1} ${1}")
+    println("${1} ${[1, 2].map((x) => x * 2).count() + one}")
+    println("${five()} ${(0..10).iter().map((x) => x * 2).count() + 1}")
+
+    // Not an argument of `println`.
+    s := "${1} ${[1, 2].map((x) => x * 2).count() + 1}"
+    println(s)
+
+    // The same coercions outside interpolation.
+    var shown: any Display = [1, 2].map((x) => x * 2).count() + 1
+    var wrapped: usize? = [1, 2].map((x) => x * 2).count() * 2
+    println("${shown} ${wrapped ?? 0} ${describe(1, [1, 2, 3].map((x) => x).count() - 1)}")
+
+    // Operators on literals wait for nothing: they still take the
+    // Optional's payload type, or box their default.
+    var w: int64? = 1 + 2
+    var u: uint8? = 200 + 50
+    var k: any Kind = 1 + 2
+    println("${(w ?? 0).kind()} ${w ?? 0} ${(u ?? 0).kind()} ${u ?? 0} ${k.kind()}")
+}

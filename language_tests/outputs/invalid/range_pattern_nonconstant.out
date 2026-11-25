@@ -1,0 +1,4 @@
+error: a range pattern bound must be a compile-time constant
+ -> language_tests/source_files/invalid/range_pattern_nonconstant.tr:1:69
+	func testBound(_ value: int32, _ bound: int32) -> bool { value is 0..bound }
+	                                                                     ^^^^^

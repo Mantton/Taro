@@ -1,0 +1,6 @@
+// A class value may reach itself through its fields, so it cannot derive Debug.
+final class Account: Debug {
+    owner: string
+    next: Account?
+}
+func main() {}

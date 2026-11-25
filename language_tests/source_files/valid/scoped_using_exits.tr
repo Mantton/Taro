@@ -1,0 +1,52 @@
+struct Handle { id: int32; log: &int32 }
+
+extend Handle {
+    func close() { panic("inherent close selected") }
+}
+conform Handle to Closeable {
+    type CloseResult = ()
+    func close() { *self.log = *self.log * 10 + self.id }
+}
+func acquire(_ id: int32, _ calls: &int32, _ log: &int32) -> Result[Handle, int32] {
+    *calls += 1
+    if id == 3 { return .err(id) }
+    return .ok(Handle { id, log })
+}
+func work(_ calls: &int32, _ log: &int32) -> Result[(), int32] {
+    using first = acquire(1, calls, log)!
+    defer { *log = *log * 10 + 8 }
+    using second = acquire(2, calls, log)!
+    using third = acquire(3, calls, log)!
+    panic("failed acquisition returned")
+}
+func using(_ n: int32) -> int32 { n + 1 }
+func loops(_ log: &int32) {
+    var n: int32 = 0
+    loop {
+        n = using(n)
+        using item = Handle { id: n, log }
+        if n == 1 { continue }
+        break
+    }
+}
+func shadow(_ log: &int32) {
+    using x = Handle { id: 1, log }
+    if true {
+        using x = Handle { id: 2, log }
+        x = Handle { id: 3, log }
+        return
+    }
+}
+func main() {
+    var calls: int32 = 0
+    var log: int32 = 0
+    assert(work(&calls, &log).isErr(), "propagated acquisition error")
+    println("${calls} ${log}")
+    log = 0
+    loops(&log)
+    println("${log}")
+    log = 0
+    shadow(&log)
+    using := 7
+    println("${log} ${using}")
+}

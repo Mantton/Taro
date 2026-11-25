@@ -1,0 +1,8 @@
+error: type 'Range[int32]' does not conform to interface 'Iterable<Element = string>'
+ -> language_tests/source_files/invalid/range_iterable_element_binding.tr:7:4
+	    needsStrings(1_i32..5_i32)
+	    ^^^^^^^^^^^^
+error: type 'ClosedRange[int32]' does not conform to interface 'Iterable<Element = string>'
+ -> language_tests/source_files/invalid/range_iterable_element_binding.tr:8:4
+	    needsStrings(1_i32..=5_i32)
+	    ^^^^^^^^^^^^

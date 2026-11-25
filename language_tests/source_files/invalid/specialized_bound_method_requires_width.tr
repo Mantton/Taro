@@ -1,0 +1,8 @@
+struct Box[T] { value: T }
+extend Box[int64] {
+    func measure() -> usize { 64 }
+}
+func main() {
+    callback := Box { value: 0 }.measure
+    _ = callback()
+}

@@ -7,4 +7,14 @@ func arrows() {
     pending := () async -> int32 => { return 42 }
     call := move(3)
     tuple := (1, 2)
+    shorthand := value => value + 1
+    ignored := _ => 42
+    ignoredTyped := (_: int32) => 42
+    ignoredPair := (_, value) => value
+    nested := x => y => x + y
+    enabled := true
+    result := match 1 {
+        case value if enabled => value
+        case _ => 0
+    }
 }

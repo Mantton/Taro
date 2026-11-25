@@ -1,0 +1,8 @@
+error: type 'Boxed[int32]' does not conform to interface 'Size'
+ -> language_tests/source_files/invalid/literal_receiver_unproved_conformance.tr:20:28
+	    n := Boxed { value: 0 }.size() + 1
+	                            ^^^^
+error: no member named 'size' found on type Boxed[int32]
+ -> language_tests/source_files/invalid/literal_receiver_unproved_conformance.tr:21:35
+	    m := Boxed[int32] { value: 0 }.size()
+	                                   ^^^^

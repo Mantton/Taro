@@ -18,27 +18,25 @@ struct Actor<'ctx> {
     context: GlobalContext<'ctx>,
 }
 
-impl<'ctx> Actor<'ctx> {
-    fn cache_impl_target_ty(&mut self, impl_id: DefinitionID, node: &hir::Impl) {
-        let Some(head) = self.context.get_impl_type_head(impl_id) else {
+pub(crate) fn cache_target(context: GlobalContext<'_>, impl_id: DefinitionID, target: &hir::Type) {
+    let Some(head) = context.get_impl_type_head(impl_id) else {
+        return;
+    };
+
+    if let TypeHead::Nominal(target_id) = head {
+        if context.definition_kind(target_id) == DefinitionKind::Interface {
             return;
-        };
-
-        if let TypeHead::Nominal(target_id) = head {
-            if self.context.definition_kind(target_id) == DefinitionKind::Interface {
-                return;
-            }
         }
+    }
 
-        let ctx = DefTyLoweringCtx::new(impl_id, self.context);
-        let ty = ctx.lowerer().lower_type(&node.target);
-        self.context.cache_impl_target_ty(impl_id, ty);
-        // Aliases are transparent to coherence and member lookup, including
-        // aliases imported from another package.
-        let normalized = crate::sema::tycheck::utils::normalize_aliases(self.context, ty);
-        if let Some(head) = crate::sema::tycheck::utils::type_head_from_value_ty(normalized) {
-            self.context.cache_impl_type_head(impl_id, head);
-        }
+    let ctx = DefTyLoweringCtx::new(impl_id, context);
+    let ty = ctx.lowerer().lower_type(target);
+    context.cache_impl_target_ty(impl_id, ty);
+    // Aliases are transparent to coherence and member lookup, including
+    // aliases imported from another package.
+    let normalized = crate::sema::tycheck::utils::normalize_aliases(context, ty);
+    if let Some(head) = crate::sema::tycheck::utils::type_head_from_value_ty(normalized) {
+        context.cache_impl_type_head(impl_id, head);
     }
 }
 
@@ -48,6 +46,6 @@ impl HirVisitor for Actor<'_> {
             return;
         };
 
-        self.cache_impl_target_ty(declaration.id, node);
+        cache_target(self.context, declaration.id, &node.target);
     }
 }

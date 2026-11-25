@@ -10,10 +10,13 @@ use crate::{
 };
 use std::time::{Duration, Instant};
 
+pub(crate) mod allocation_report;
+pub(crate) mod assets;
 pub mod bench_collector;
 pub mod config;
 pub mod context;
 pub mod entry;
+pub mod fuzz_collector;
 pub mod harness;
 pub mod test_collector;
 
@@ -95,6 +98,7 @@ enum CompilationMode<'a> {
     Emit,
     Test(&'a test_collector::TestSelection),
     Bench(&'a bench_collector::BenchmarkSelection),
+    Fuzz(&'a str),
 }
 
 impl CompilationMode<'_> {
@@ -104,6 +108,7 @@ impl CompilationMode<'_> {
             Self::Emit => "emit",
             Self::Test(_) => "test",
             Self::Bench(_) => "bench",
+            Self::Fuzz(_) => "fuzz",
         }
     }
 }
@@ -135,6 +140,12 @@ impl<'state> Compiler<'state> {
         selection: &bench_collector::BenchmarkSelection,
     ) -> CompileResult<Option<std::path::PathBuf>> {
         self.compile(CompilationMode::Bench(selection))
+            .map(|(_, executable)| executable)
+    }
+
+    /// Compile one named `@fuzz` target with a generated fuzz harness.
+    pub fn fuzz(&mut self, target_name: &str) -> CompileResult<Option<std::path::PathBuf>> {
+        self.compile(CompilationMode::Fuzz(target_name))
             .map(|(_, executable)| executable)
     }
 
@@ -170,6 +181,17 @@ impl<'state> Compiler<'state> {
                     (
                         codegen::llvm::PackageEntry::Benchmarks(benchmarks),
                         "codegen.llvm_bench",
+                        "emit_harness",
+                    )
+                }
+                CompilationMode::Fuzz(target_name) => {
+                    let discovered = fuzz_collector::collect_fuzz_targets(&package, self.context)?;
+                    let target =
+                        fuzz_collector::select_fuzz_target(discovered, target_name, self.context)?;
+                    timings.push_elapsed("fuzz.collect", phase_started_at);
+                    (
+                        codegen::llvm::PackageEntry::Fuzz(target),
+                        "codegen.llvm_fuzz",
                         "emit_harness",
                     )
                 }
@@ -479,6 +501,16 @@ impl<'state> Compiler<'state> {
         timings: &mut TimingReport,
         tolerate_std_item_errors: bool,
     ) -> CompileResult<hir::Package> {
+        self.context
+            .store
+            .embedded_inputs
+            .borrow_mut()
+            .remove(&self.context.package_index());
+        self.context
+            .store
+            .warning_marks
+            .borrow_mut()
+            .insert(self.context.config.index, self.context.dcx.warning_count());
         {
             let mut table = self.context.store.package_mapping.borrow_mut();
             table.insert(
@@ -521,7 +553,11 @@ impl<'state> Compiler<'state> {
         let target = cfg_eval::target_info(self.context);
 
         let phase_started_at = Instant::now();
-        let mut package = parse::parser::parse_package(package, &self.context.dcx)?;
+        let mut package = parse::parser::parse_package(
+            package,
+            &self.context.dcx,
+            self.context.config.lint_warnings,
+        )?;
         timings.push_elapsed("parse.ast", phase_started_at);
 
         // AST passes

@@ -1,0 +1,4 @@
+error: positional struct fields take unlabeled arguments
+ -> language_tests/source_files/invalid/tuple_struct_label.tr:2:20
+	func main() { Count(raw: 1) }
+	                    ^^^^

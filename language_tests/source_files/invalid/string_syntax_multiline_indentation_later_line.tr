@@ -1,0 +1,8 @@
+// The indentation error must point at the badly indented line, not at the
+// first line of the string text.
+func main() {
+    var _ = """
+        ok
+      bad
+        """
+}

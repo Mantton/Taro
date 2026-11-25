@@ -230,6 +230,24 @@ mod tests {
             },
         );
     }
+
+    #[test]
+    fn superinterface_associated_type_binding_normalizes_projection() {
+        let diagnostics = crate::test_support::analyze_script_diagnostics(
+            r#"
+interface Combine[Rhs = Self] {
+    type Output = Self
+    func combine(_ rhs: Rhs) -> Self::Output
+}
+interface Closed: Combine[Self, Output = Self] {}
+func twice[T: Closed](_ x: T) -> T {
+    x.combine(x)
+}
+func main() {}
+"#,
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
 }
 
 impl<'a, 'ctx> TypeFolder<'ctx> for NormalizeFolder<'a, 'ctx> {
@@ -384,7 +402,7 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
             // that context's variable table, even if they resolve later.
             let constraints: Vec<_> = self
                 .env
-                .constraints()
+                .witness_constraints()
                 .into_iter()
                 .filter(|constraint| match *constraint {
                     Constraint::TypeEquality(left, right) => {
@@ -414,13 +432,9 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
             )
         };
 
-        // An instantiated callee requirement can repeat the very conformance
-        // whose associated type we are resolving. Leaving it in the selection
-        // environment creates both a ParamEnv candidate and the concrete impl,
-        // making the witness ambiguous. Such a bound carries no type witness
-        // unless it has an explicit associated binding (handled before this
-        // lookup), so exclude only that goal-equivalent bound while retaining
-        // caller bounds needed by a conditional implementation.
+        // A declaration may also assume the goal itself. Selection needs a
+        // concrete associated type witness here. Any explicit type binding
+        // has already been considered by the projection lookup.
         let param_env = if !full_param_env.iter().any(is_goal_bound) {
             full_param_env
         } else {
@@ -479,15 +493,19 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
         }
 
         // A type can implement one interface for several argument lists.
-        // Match the complete header, resolving caller variables first, rather
-        // than taking the first bound for Self and the interface name alone.
-        let declared_bound = self
+        // Match the complete header (including superinterfaces implied by a
+        // declared bound), resolving caller variables first, rather than
+        // taking the first bound for Self and the interface name alone.
+        let matching_bounds: Vec<_> = self
             .env
             .bounds_for_type(gcx, self_ty, |bound_ty| {
                 self.icx.resolve_vars_if_possible(bound_ty) == self_ty
             })
             .into_iter()
-            .find(|bound| {
+            .flat_map(|bound| {
+                crate::sema::impl_engine::ref_ops::collect_interface_with_superfaces(gcx, bound)
+            })
+            .filter(|bound| {
                 bound.id == interface_id
                     && bound.arguments.len() == args.len()
                     && self
@@ -505,23 +523,27 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
             .map(|bound| InterfaceReference {
                 arguments: args,
                 ..bound
-            });
-        if let Some(bound_iface) = declared_bound {
-            // An associated type binding on a generic bound is already the
-            // canonical answer. Exact structural lookup is intentional here:
-            // an impl-local receiver that only later resolves to this type must
-            // fall through to its concrete witness so associated variables such
-            // as `Inner` can be inferred.
+            })
+            .collect();
+        if !matching_bounds.is_empty() {
+            // An associated type binding on a generic bound (or one of its
+            // superinterfaces) is already the canonical answer. Exact
+            // structural lookup is intentional here: an impl-local receiver
+            // that only later resolves to this type must fall through to its
+            // concrete witness so associated variables such as `Inner` can be
+            // inferred.
             let assoc_name = gcx.definition_ident(assoc_id).symbol;
-            if let Some(binding) = bound_iface
-                .bindings
-                .iter()
-                .find(|binding| binding.name == assoc_name)
-            {
-                return Some(self.icx.resolve_vars_if_possible(binding.ty));
+            for bound_iface in &matching_bounds {
+                if let Some(binding) = bound_iface
+                    .bindings
+                    .iter()
+                    .find(|binding| binding.name == assoc_name)
+                {
+                    return Some(self.icx.resolve_vars_if_possible(binding.ty));
+                }
             }
             // Found matching bound - look up type witness from conformance.
-            let witness = self.conformance_witness(bound_iface)?;
+            let witness = self.conformance_witness(matching_bounds[0])?;
             return witness.type_witnesses.get(&assoc_id).copied();
         }
 

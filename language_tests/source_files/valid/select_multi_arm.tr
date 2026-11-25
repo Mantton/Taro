@@ -1,0 +1,239 @@
+// TAR-52: Multi-arm typed `select { case pat = await op => body }` using
+// scoped child lifetimes, deterministic source-order tie-breaking, and full
+// loser cancellation & draining.
+// ENV: TARO_WORKERS=4
+import std::sync::{Receiver, Sender}
+
+func waitInt(
+    _ started: Sender[int32],
+    _ cleaned: Sender[int32],
+    _ ch: Receiver[int32],
+    _ armId: int32,
+) async -> int32 {
+    var won = false
+    defer {
+        if !won {
+            cleaned.trySend(armId).unwrap()
+        }
+    }
+    started.trySend(armId).unwrap()
+    val := (await ch.recv()).unwrap()
+    won = true
+    return val
+}
+
+func waitStr(
+    _ started: Sender[int32],
+    _ cleaned: Sender[int32],
+    _ ch: Receiver[string],
+    _ armId: int32,
+) async -> string {
+    var won = false
+    defer {
+        if !won {
+            cleaned.trySend(armId).unwrap()
+        }
+    }
+    started.trySend(armId).unwrap()
+    val := (await ch.recv()).unwrap()
+    won = true
+    return val
+}
+
+func waitBool(
+    _ started: Sender[int32],
+    _ cleaned: Sender[int32],
+    _ ch: Receiver[bool],
+    _ armId: int32,
+) async -> bool {
+    var won = false
+    defer {
+        if !won {
+            cleaned.trySend(armId).unwrap()
+        }
+    }
+    started.trySend(armId).unwrap()
+    val := (await ch.recv()).unwrap()
+    won = true
+    return val
+}
+
+func suspendedBg(
+    _ started: Sender[int32],
+    _ cleaned: Sender[int32],
+    _ never: Receiver[int32],
+) async -> int32 {
+    defer { cleaned.trySend(77_i32).unwrap() }
+    started.trySend(77_i32).unwrap()
+    var _ = await never.recv()
+    return 0_i32
+}
+
+func drainedCount(_ events: Receiver[int32]) -> int32 {
+    var count = 0_i32
+    while true {
+        match events.tryRecv() {
+            case .ok(.some(_)) => count += 1_i32
+            case _ => return count
+        }
+    }
+    return count
+}
+
+func selectReturnFromWinner(
+    _ startedTx: Sender[int32],
+    _ startedRx: Receiver[int32],
+    _ cleanedTx: Sender[int32],
+    _ outerCleanedTx: Sender[int32],
+    _ intRx: Receiver[int32],
+    _ strRx: Receiver[string],
+    _ boolTx: Sender[bool],
+    _ boolRx: Receiver[bool],
+    _ neverRx: Receiver[int32],
+) async -> string {
+    defer { outerCleanedTx.trySend(1_i32).unwrap() }
+    async var _bg = suspendedBg(startedTx, outerCleanedTx, neverRx)
+    var _ = await startedRx.recv()
+
+    // Trigger arm 2 (bool) once all 3 arms are live via a helper task.
+    async var _driver = {
+        var _ = await startedRx.recv()
+        var _ = await startedRx.recv()
+        var _ = await startedRx.recv()
+        boolTx.trySend(true).unwrap()
+    }
+
+    select {
+        case n = await waitInt(startedTx, cleanedTx, intRx, 0_i32) => {
+            return std::sprintf("int:%d", n)
+        }
+        case s = await waitStr(startedTx, cleanedTx, strRx, 1_i32) => {
+            return std::sprintf("str:%s", s)
+        }
+        case flag = await waitBool(startedTx, cleanedTx, boolRx, 2_i32) => {
+            assert(flag, "winning arm bound bool value")
+            return "returned-from-arm-2"
+        }
+    }
+}
+
+func main() async {
+    var (startedTx, startedRx) = std::sync::bounded[int32](16).unwrap()
+    var (cleanedTx, cleanedRx) = std::sync::unbounded[int32]()
+    var (outerCleanedTx, outerCleanedRx) = std::sync::unbounded[int32]()
+
+    var (intTx, intRx) = std::sync::bounded[int32](4).unwrap()
+    var (strTx, strRx) = std::sync::bounded[string](4).unwrap()
+    var (boolTx, boolRx) = std::sync::bounded[bool](4).unwrap()
+    var (neverTx, neverRx) = std::sync::bounded[int32](1).unwrap()
+
+    // 1. Three arms with differing result types (int32, string, bool).
+    //    Deterministically trigger arm 1 after all 3 arms start.
+    var winnerRuns = 0_i32
+    var losersCleanedBeforeBody = 0_i32
+    {
+        async var _trigger = {
+            var _ = await startedRx.recv()
+            var _ = await startedRx.recv()
+            var _ = await startedRx.recv()
+            strTx.trySend("hello").unwrap()
+        }
+
+        outcome := select {
+            case n = await waitInt(startedTx, cleanedTx, intRx, 0_i32) => {
+                winnerRuns += 1_i32
+                std::sprintf("int:%d", n)
+            }
+            case msg = await waitStr(startedTx, cleanedTx, strRx, 1_i32) => {
+                winnerRuns += 1_i32
+                losersCleanedBeforeBody = drainedCount(cleanedRx)
+                std::sprintf("str:%s", msg)
+            }
+            case _ = await waitBool(startedTx, cleanedTx, boolRx, 2_i32) => {
+                winnerRuns += 1_i32
+                "bool"
+            }
+        }
+        assert(outcome == "str:hello", "arm 1 bound string result")
+        assert(winnerRuns == 1_i32, "winner body executed exactly once")
+        assert(losersCleanedBeforeBody == 2_i32, "both losing arms cancelled and drained before winner body ran")
+    }
+
+    // 2. Deterministic tie-breaking: when multiple arms are already ready,
+    //    the first arm in source order wins.
+    var tieRound = 0_i32
+    while tieRound < 10_i32 {
+        intTx.trySend(7_i32).unwrap()
+        strTx.trySend("second").unwrap()
+        boolTx.trySend(true).unwrap()
+
+        // Drain via ready sync returns to exercise immediate-ready tie-breaking.
+        picked := select {
+            case n = await 100_i32 => n
+            case s = await "two" => if s == "two" { 2_i32 } else { 0_i32 }
+            case b = await true => if b { 3_i32 } else { 0_i32 }
+        }
+        assert(picked == 100_i32, "first ready arm in source order wins tie-break")
+        var _ = intRx.tryRecv()
+        var _ = strRx.tryRecv()
+        var _ = boolRx.tryRecv()
+        tieRound += 1_i32
+    }
+
+    // 3. Return directly from winner body cleans up losing arms, outer defer,
+    //    and outer unawaited `async var`.
+    returned := await selectReturnFromWinner(
+        startedTx,
+        startedRx,
+        cleanedTx,
+        outerCleanedTx,
+        intRx,
+        strRx,
+        boolTx,
+        boolRx,
+        neverRx,
+    )
+    assert(returned == "returned-from-arm-2", "return from winner body propagated value")
+    assert(drainedCount(cleanedRx) == 2_i32, "return from winner body drained both losing arms")
+    assert(drainedCount(outerCleanedRx) == 2_i32, "return from winner body ran outer defer and drained outer async var")
+
+    // 4. Parent cancellation while blocked in 3-arm select cancels and drains
+    //    all 3 arms before parent outcome is published.
+    var cancelDrained = 0_i32
+    var round = 0_i32
+    while round < 15_i32 {
+        parent := std::task::spawn(() async => {
+            var _ = select {
+                case _ = await waitInt(startedTx, cleanedTx, intRx, 0_i32) => 0_i32
+                case _ = await waitStr(startedTx, cleanedTx, strRx, 1_i32) => 1_i32
+                case _ = await waitBool(startedTx, cleanedTx, boolRx, 2_i32) => 2_i32
+            }
+        })
+        var _ = await startedRx.recv()
+        var _ = await startedRx.recv()
+        var _ = await startedRx.recv()
+        parent.cancel()
+        match await parent.result() {
+            case .err(.cancelled) => {}
+            case _ => panic("expected parent select task cancellation")
+        }
+        if drainedCount(cleanedRx) == 3_i32 {
+            cancelDrained += 1_i32
+        }
+        round += 1_i32
+    }
+    assert(cancelDrained == 15_i32, "parent cancellation drained all 3 select arms every round")
+
+    // 5. Contextual keyword safety: `std::task::select` still works.
+    pairResult := (await std::task::select(
+        () async => { 1_i32 },
+        () async => { "two" },
+    )).unwrap()
+    match pairResult {
+        case .first(v) => assert(v == 1_i32, "std::task::select still works")
+        case .second(_) => {}
+    }
+
+    var _ = intTx
+    var _ = neverTx
+}

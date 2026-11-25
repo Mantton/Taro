@@ -1,4 +1,4 @@
-import dep::{Named, makeNamed, preserveNamed}
+import dep::{Named, makeNamed, preserveNamed, readSome}
 
 func readName[T: Named](_ value: T) -> string {
     value.name()
@@ -12,6 +12,8 @@ func main() {
     hidden := makeNamed("remote")
     assert(hidden.name() == "remote", "direct cross-package opaque dispatch")
     assert(readName(hidden) == "remote", "generic cross-package opaque dispatch")
+
+    assert(readSome(hidden) == "remote", "anonymous dependency parameter")
 
     erased := makeNamed("erased")
     assert(readErased(erased) == "erased", "cross-package opaque existential coercion")

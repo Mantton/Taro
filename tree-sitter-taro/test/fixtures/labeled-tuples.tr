@@ -1,0 +1,7 @@
+func bounds(_ a: int32, _ b: int32) -> (low: int32, high: int32) {
+    (low: a, high: b)
+}
+func inspect(_ range: (int32, high: int32)) {
+    var pair = (range, inner: (value: 3))
+    var plus = (x: int32) => x + pair.inner.value
+}

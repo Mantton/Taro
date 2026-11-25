@@ -1,0 +1,4 @@
+error: type 'Box[int32]' does not conform to interface 'Read'
+ -> language_tests/source_files/invalid/qualified_projection_requires_conformance.tr:13:18
+	        result := Read::read(Box { value: 0 })
+	                  ^^^^^^^^^^

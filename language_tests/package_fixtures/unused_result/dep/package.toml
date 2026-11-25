@@ -1,0 +1,3 @@
+[package]
+name = "github.com/example/unused-result-dep"
+kind = "library"

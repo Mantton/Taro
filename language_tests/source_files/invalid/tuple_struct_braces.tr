@@ -1,0 +1,2 @@
+struct Marker()
+func main() { Marker {} }

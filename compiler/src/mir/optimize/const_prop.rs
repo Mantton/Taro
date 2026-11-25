@@ -196,6 +196,9 @@ fn find_candidates(body: &Body<'_>) -> Vec<bool> {
                     record_operand_use(value, block_id, statement_index, &mut uses, &mut invalid);
                     invalid[resume_arg.local.index()] = true;
                 }
+                TerminatorKind::GeneratorYield { value, .. } => {
+                    record_operand_use(value, block_id, statement_index, &mut uses, &mut invalid);
+                }
                 TerminatorKind::Goto { .. }
                 | TerminatorKind::UnresolvedGoto
                 | TerminatorKind::Return
@@ -357,7 +360,8 @@ fn rewrite_terminator_operands<'ctx>(
             }
         }
         TerminatorKind::SwitchInt { discr, .. } => rewrite_operand(discr, constants),
-        TerminatorKind::Yield { value, .. } => rewrite_operand(value, constants),
+        TerminatorKind::Yield { value, .. }
+        | TerminatorKind::GeneratorYield { value, .. } => rewrite_operand(value, constants),
         TerminatorKind::Goto { .. }
         | TerminatorKind::UnresolvedGoto
         | TerminatorKind::Return

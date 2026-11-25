@@ -1,0 +1,7 @@
+enum Event { case left(int32); case right(string) }
+func main() {
+    var event: Event = .left(1)
+    match (event, true) {
+        case (whole @ (.left(n) | .right(n)), _) => n
+    }
+}

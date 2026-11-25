@@ -1,0 +1,4 @@
+error: delegation requires an accessible stored field named 'missing'
+ -> language_tests/source_files/invalid/conformance_delegation_missing_field.tr:3:33
+	conform Counter to Reset by self.missing {}
+	                                 ^^^^^^^

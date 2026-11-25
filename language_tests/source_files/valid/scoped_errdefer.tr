@@ -1,0 +1,21 @@
+func step(_ fail: bool) -> Result[int32, int32] {
+    if fail { return .err(17) }
+    return .ok(3)
+}
+func apply(_ fail: bool, _ log: &int32) -> Result[int32, int32] {
+    defer { *log = *log * 10 + 1 }
+    errdefer { *log = *log * 10 + 2 }
+    defer { *log = *log * 10 + 3 }
+    if true {
+        errdefer { *log = *log * 10 + 9 }
+    }
+    return step(fail)
+}
+func main() {
+    var log: int32 = 0
+    var _ = apply(false, &log)
+    println("${log}")
+    log = 0
+    var _ = apply(true, &log)
+    println("${log}")
+}

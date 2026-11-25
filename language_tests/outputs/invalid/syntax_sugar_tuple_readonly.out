@@ -1,0 +1,4 @@
+error: cannot assign to an immutable field
+ -> language_tests/source_files/invalid/syntax_sugar_tuple_readonly.tr:3:35
+	func main() { var s = S { x: 1 }; (s.x,) = (2,); }
+	                                   ^^^

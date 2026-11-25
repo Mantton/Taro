@@ -1,0 +1,4 @@
+error: local binding requires an irrefutable pattern
+ -> language_tests/source_files/invalid/nested_pattern_refutable_local.tr:2:8
+	    var (n @ (1 | 3), _) = (7, true)
+	        ^^^^^^^^^^^^^^^^

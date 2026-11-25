@@ -18,6 +18,14 @@ pub fn run(package: &hir::Package, context: GlobalContext) -> CompileResult<()> 
     Actor::run(package, context)
 }
 
+pub(super) fn collect_header_constraints(
+    gcx: GlobalContext<'_>,
+    id: DefinitionID,
+    generics: &hir::Generics,
+) {
+    Actor { context: gcx }.collect_definition(id, generics, None);
+}
+
 struct Actor<'ctx> {
     context: GlobalContext<'ctx>,
 }

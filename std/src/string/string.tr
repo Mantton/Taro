@@ -1,10 +1,13 @@
+import std::default::Default
 import std::hash::{Hashable, Hasher}
-import std::ops::{PartialEq, Add}
+import std::ops::{PartialEq, Add, Contains}
+import std::cmp::{Ord, Ordering, PartialOrd}
 import std::mem::Span
 import std::panic::panic
 import std::iter::{Iterator, Iterable}
 import std::optional::Optional
 import std::collections::List
+import std::range::{Range, ClosedRange, RangeFrom, RangeTo, RangeToInclusive, RangeFull}
 import std::rune::replacementCharacter
 import std::intrinsic::{
     __intrinsic_memcpy,
@@ -29,6 +32,100 @@ public func stringFromBytes(_ bytes: Span[uint8]) -> string {
     }
     data := unsafe { __gc__string_copy(bytes.asPtr(), bytes.len()) }
     return unsafe { __intrinsic_string_from_parts(data, bytes.len()) }
+}
+
+/// Encodes a span of Unicode scalar values into an immutable UTF-8 string
+/// using a single pre-sized buffer allocation.
+public func stringFromRunes(_ runes: Span[rune]) -> string {
+    count := runes.len()
+    if count == 0 {
+        return ""
+    }
+    var totalBytes: usize = 0
+    var i: usize = 0
+    while i < count {
+        totalBytes = checkedStringAdd(totalBytes, (*runes.at(i)).lenUtf8())
+        i += 1
+    }
+    var builder = Builder::new()
+    builder.reserve(totalBytes)
+    i = 0
+    while i < count {
+        builder.writeRune(*runes.at(i))
+        i += 1
+    }
+    return builder.toString()
+}
+
+func joinStringSpan(_ parts: Span[string], _ separator: string) -> string {
+    count := parts.len()
+    if count == 0 {
+        return ""
+    }
+    if count == 1 {
+        return *parts.at(0 as usize)
+    }
+    sepLen := stringLen(separator)
+    var totalBytes: usize = checkedStringMul(sepLen, count - (1 as usize))
+    var i: usize = 0
+    while i < count {
+        totalBytes = checkedStringAdd(totalBytes, stringLen(*parts.at(i)))
+        i += 1
+    }
+    if totalBytes == 0 {
+        return ""
+    }
+    var builder = Builder::new()
+    builder.reserve(totalBytes)
+    i = 0
+    while i < count {
+        if i > 0 && sepLen > 0 {
+            builder.writeString(separator)
+        }
+        builder.writeString(*parts.at(i))
+        i += 1
+    }
+    return builder.toString()
+}
+
+func mapUnicodeLowerRune(_ r: rune) -> rune {
+    v := r as uint32
+    if v >= 0x41_u32 && v <= 0x5A_u32 {
+        return std::intrinsic::__intrinsic_rune_from_u32_unchecked(v + 0x20_u32)
+    }
+    if (v >= 0x00C0_u32 && v <= 0x00D6_u32) || (v >= 0x00D8_u32 && v <= 0x00DE_u32) {
+        return std::intrinsic::__intrinsic_rune_from_u32_unchecked(v + 0x20_u32)
+    }
+    if v == 0x0178_u32 {
+        return std::intrinsic::__intrinsic_rune_from_u32_unchecked(0x00FF_u32)
+    }
+    if (v >= 0x0391_u32 && v <= 0x03A1_u32) || (v >= 0x03A3_u32 && v <= 0x03AB_u32) {
+        return std::intrinsic::__intrinsic_rune_from_u32_unchecked(v + 0x20_u32)
+    }
+    if v >= 0x0410_u32 && v <= 0x042F_u32 {
+        return std::intrinsic::__intrinsic_rune_from_u32_unchecked(v + 0x20_u32)
+    }
+    return r
+}
+
+func mapUnicodeUpperRune(_ r: rune) -> rune {
+    v := r as uint32
+    if v >= 0x61_u32 && v <= 0x7A_u32 {
+        return std::intrinsic::__intrinsic_rune_from_u32_unchecked(v - 0x20_u32)
+    }
+    if (v >= 0x00E0_u32 && v <= 0x00F6_u32) || (v >= 0x00F8_u32 && v <= 0x00FE_u32) {
+        return std::intrinsic::__intrinsic_rune_from_u32_unchecked(v - 0x20_u32)
+    }
+    if v == 0x00FF_u32 {
+        return std::intrinsic::__intrinsic_rune_from_u32_unchecked(0x0178_u32)
+    }
+    if (v >= 0x03B1_u32 && v <= 0x03C1_u32) || (v >= 0x03C3_u32 && v <= 0x03CB_u32) {
+        return std::intrinsic::__intrinsic_rune_from_u32_unchecked(v - 0x20_u32)
+    }
+    if v >= 0x0430_u32 && v <= 0x044F_u32 {
+        return std::intrinsic::__intrinsic_rune_from_u32_unchecked(v - 0x20_u32)
+    }
+    return r
 }
 
 /// Wraps immutable GC-managed or static bytes without copying, as on main.
@@ -232,6 +329,39 @@ conform string to Hashable {
 conform string to PartialEq {
     @inline
     public func eq(_ other: string) -> bool { stringEq(self, other) }
+}
+
+/// Lexicographic comparison of the UTF-8 bytes. For valid UTF-8 this is the
+/// order of the Unicode scalar values; it is not locale or collation order.
+func stringCmp(_ lhs: string, _ rhs: string) -> Ordering {
+    lhsLen := stringLen(lhs)
+    rhsLen := stringLen(rhs)
+    shared := if lhsLen < rhsLen { lhsLen } else { rhsLen }
+    lhsPtr := stringData(lhs)
+    rhsPtr := stringData(rhs)
+    var index: usize = 0
+    // Skip equal words; the first differing word is resolved bytewise.
+    while shared - index >= 8 {
+        if equalityWord(lhsPtr.add(index)) != equalityWord(rhsPtr.add(index)) { break }
+        index += 8
+    }
+    while index < shared {
+        lhsByte := unsafe { lhsPtr.add(index).read() }
+        rhsByte := unsafe { rhsPtr.add(index).read() }
+        if lhsByte != rhsByte {
+            return if lhsByte < rhsByte { .less } else { .greater }
+        }
+        index += 1
+    }
+    return lhsLen.cmp(rhsLen)
+}
+
+conform string to PartialOrd {
+    public func partialCmp(_ other: string) -> Optional[Ordering] { .some(stringCmp(self, other)) }
+}
+
+conform string to Ord {
+    public func cmp(_ other: string) -> Ordering { stringCmp(self, other) }
 }
 
 extend string {
@@ -565,6 +695,65 @@ extend string {
         return self.substring(start, count)
     }
 
+    /// Byte-indexed slicing, matching `sliceBytes`. Panics if out of bounds or
+    /// if `range.start > range.end`.
+    public subscript(range: Range[usize]) -> string {
+        get {
+            len := stringLen(self)
+            if range.start > range.end || range.end > len {
+                panic("string range out of range")
+            }
+            self.sliceBytes(range.start, range.end - range.start)
+        }
+    }
+
+    public subscript(range: ClosedRange[usize]) -> string {
+        get {
+            len := stringLen(self)
+            if range.start > range.end || range.end >= len {
+                panic("string range out of range")
+            }
+            self.sliceBytes(range.start, range.end - range.start + (1 as usize))
+        }
+    }
+
+    public subscript(range: RangeFrom[usize]) -> string {
+        get {
+            len := stringLen(self)
+            if range.start > len {
+                panic("string range out of range")
+            }
+            self.sliceBytes(range.start, len - range.start)
+        }
+    }
+
+    public subscript(range: RangeTo[usize]) -> string {
+        get {
+            len := stringLen(self)
+            if range.end > len {
+                panic("string range out of range")
+            }
+            self.sliceBytes(0 as usize, range.end)
+        }
+    }
+
+    public subscript(range: RangeToInclusive[usize]) -> string {
+        get {
+            len := stringLen(self)
+            if range.end >= len {
+                panic("string range out of range")
+            }
+            self.sliceBytes(0 as usize, range.end + (1 as usize))
+        }
+    }
+
+    public subscript(range: RangeFull) -> string {
+        get {
+            var _ = range
+            self
+        }
+    }
+
     /// Returns `count` decoded runes starting at rune index `start`.
     ///
     /// Invalid UTF-8 bytes each count as one rune and are preserved verbatim.
@@ -614,6 +803,279 @@ extend string {
 
     public func decodeRune(_ index: usize) -> (rune, usize) {
         decodeRune(self, index)
+    }
+
+    /// Encodes a span of runes into a UTF-8 string.
+    public static func fromRunes(_ runes: Span[rune]) -> string {
+        stringFromRunes(runes)
+    }
+
+    /// Collects all decoded UTF-8 runes into an O(1)-indexable `List[rune]`.
+    public func chars() -> List[rune] {
+        len := stringLen(self)
+        var result = List[rune]::new()
+        var byteIndex: usize = 0
+        while byteIndex < len {
+            var (r, width) = decodeRune(self, byteIndex)
+            result.append(r)
+            byteIndex += width
+        }
+        return result
+    }
+
+    /// Returns a copy with ASCII uppercase bytes (`'A'..='Z'`) converted to lowercase.
+    /// Returns `self` without allocating if no byte needs changing.
+    public func toAsciiLowercase() -> string {
+        len := stringLen(self)
+        data := stringData(self)
+        var firstChanged = len
+        var i: usize = 0
+        while i < len {
+            if unsafe { data.add(i).read() }.isAsciiUppercase() {
+                firstChanged = i
+                break
+            }
+            i += 1
+        }
+        if firstChanged == len {
+            return self
+        }
+        var builder = Builder::new()
+        builder.reserve(len)
+        builder.writeStringRange(self, 0 as usize, firstChanged)
+        i = firstChanged
+        while i < len {
+            builder.writeByte(unsafe { data.add(i).read() }.toAsciiLowercase())
+            i += 1
+        }
+        return builder.toString()
+    }
+
+    /// Returns a copy with ASCII lowercase bytes (`'a'..='z'`) converted to uppercase.
+    /// Returns `self` without allocating if no byte needs changing.
+    public func toAsciiUppercase() -> string {
+        len := stringLen(self)
+        data := stringData(self)
+        var firstChanged = len
+        var i: usize = 0
+        while i < len {
+            if unsafe { data.add(i).read() }.isAsciiLowercase() {
+                firstChanged = i
+                break
+            }
+            i += 1
+        }
+        if firstChanged == len {
+            return self
+        }
+        var builder = Builder::new()
+        builder.reserve(len)
+        builder.writeStringRange(self, 0 as usize, firstChanged)
+        i = firstChanged
+        while i < len {
+            builder.writeByte(unsafe { data.add(i).read() }.toAsciiUppercase())
+            i += 1
+        }
+        return builder.toString()
+    }
+
+    /// Returns a lowercase copy covering ASCII, Latin-1, Greek, and Cyrillic letters
+    /// while preserving UTF-8 validity and leaving other scalars unchanged.
+    /// Uses an allocation-free ASCII fast path when all bytes are ASCII.
+    public func toLowercase() -> string {
+        len := stringLen(self)
+        data := stringData(self)
+        var hasNonAscii = false
+        var i: usize = 0
+        while i < len {
+            if !unsafe { data.add(i).read() }.isAscii() {
+                hasNonAscii = true
+                break
+            }
+            i += 1
+        }
+        if !hasNonAscii {
+            return self.toAsciiLowercase()
+        }
+        var builder = Builder::new()
+        builder.reserve(len)
+        var byteIndex: usize = 0
+        while byteIndex < len {
+            var (r, width) = decodeRune(self, byteIndex)
+            mapped := mapUnicodeLowerRune(r)
+            if mapped == r {
+                builder.writeStringRange(self, byteIndex, width)
+            } else {
+                builder.writeRune(mapped)
+            }
+            byteIndex += width
+        }
+        return builder.toString()
+    }
+
+    /// Returns an uppercase copy covering ASCII, Latin-1 (including `'ß'` -> `"SS"`),
+    /// Greek, and Cyrillic letters while preserving UTF-8 validity and leaving other
+    /// scalars unchanged. Uses an allocation-free ASCII fast path when all bytes are ASCII.
+    public func toUppercase() -> string {
+        len := stringLen(self)
+        data := stringData(self)
+        var hasNonAscii = false
+        var i: usize = 0
+        while i < len {
+            if !unsafe { data.add(i).read() }.isAscii() {
+                hasNonAscii = true
+                break
+            }
+            i += 1
+        }
+        if !hasNonAscii {
+            return self.toAsciiUppercase()
+        }
+        var builder = Builder::new()
+        builder.reserve(len)
+        var byteIndex: usize = 0
+        while byteIndex < len {
+            var (r, width) = decodeRune(self, byteIndex)
+            if (r as uint32) == 0x00DF_u32 {
+                builder.writeString("SS")
+            } else {
+                mapped := mapUnicodeUpperRune(r)
+                if mapped == r {
+                    builder.writeStringRange(self, byteIndex, width)
+                } else {
+                    builder.writeRune(mapped)
+                }
+            }
+            byteIndex += width
+        }
+        return builder.toString()
+    }
+
+    /// Returns `true` if `self` and `other` have equal length and match ignoring ASCII case.
+    public func eqIgnoreAsciiCase(_ other: string) -> bool {
+        len := stringLen(self)
+        if len != stringLen(other) {
+            return false
+        }
+        lhs := stringData(self)
+        rhs := stringData(other)
+        var i: usize = 0
+        while i < len {
+            if !unsafe { lhs.add(i).read() }.eqIgnoreAsciiCase(unsafe { rhs.add(i).read() }) {
+                return false
+            }
+            i += 1
+        }
+        return true
+    }
+
+    /// Splits `self` on runs of one or more Unicode whitespace characters, omitting
+    /// leading and trailing empty segments.
+    public func splitWhitespace() -> List[string] {
+        var result = List[string]::new()
+        len := stringLen(self)
+        var index: usize = 0
+        while index < len {
+            // Skip whitespace run
+            while index < len {
+                var (r, width) = decodeRune(self, index)
+                if !r.isWhitespace() {
+                    break
+                }
+                index += width
+            }
+            if index >= len {
+                break
+            }
+            wordStart := index
+            while index < len {
+                var (r, width) = decodeRune(self, index)
+                if r.isWhitespace() {
+                    break
+                }
+                index += width
+            }
+            result.append(self.substring(wordStart, index - wordStart))
+        }
+        return result
+    }
+
+    /// Removes `prefix` once from the start of `self`, or returns `.none` if absent.
+    public func stripPrefix(_ prefix: string) -> string? {
+        if !self.startsWith(prefix) {
+            return .none
+        }
+        prefixLen := stringLen(prefix)
+        return .some(self.substring(prefixLen, stringLen(self) - prefixLen))
+    }
+
+    /// Removes `suffix` once from the end of `self`, or returns `.none` if absent.
+    public func stripSuffix(_ suffix: string) -> string? {
+        if !self.endsWith(suffix) {
+            return .none
+        }
+        suffixLen := stringLen(suffix)
+        return .some(self.substring(0 as usize, stringLen(self) - suffixLen))
+    }
+
+    /// Left-pads `self` with `fill` runes up to `targetRuneLen` runes.
+    /// Returns `self` unchanged without allocating if `self.runeCount() >= targetRuneLen`.
+    public func padStart(_ targetRuneLen: usize, with fill: rune = ' ') -> string {
+        current := self.runeCount()
+        if current >= targetRuneLen {
+            return self
+        }
+        padCount := targetRuneLen - current
+        totalBytes := checkedStringAdd(
+            stringLen(self),
+            checkedStringMul(padCount, fill.lenUtf8()),
+        )
+        var builder = Builder::new()
+        builder.reserve(totalBytes)
+        var i: usize = 0
+        while i < padCount {
+            builder.writeRune(fill)
+            i += 1
+        }
+        builder.writeString(self)
+        return builder.toString()
+    }
+
+    /// Right-pads `self` with `fill` runes up to `targetRuneLen` runes.
+    /// Returns `self` unchanged without allocating if `self.runeCount() >= targetRuneLen`.
+    public func padEnd(_ targetRuneLen: usize, with fill: rune = ' ') -> string {
+        current := self.runeCount()
+        if current >= targetRuneLen {
+            return self
+        }
+        padCount := targetRuneLen - current
+        totalBytes := checkedStringAdd(
+            stringLen(self),
+            checkedStringMul(padCount, fill.lenUtf8()),
+        )
+        var builder = Builder::new()
+        builder.reserve(totalBytes)
+        builder.writeString(self)
+        var i: usize = 0
+        while i < padCount {
+            builder.writeRune(fill)
+            i += 1
+        }
+        return builder.toString()
+    }
+}
+
+extend List[string] {
+    /// Joins all strings with `separator` in a single pre-sized allocation.
+    public func join(_ separator: string) -> string {
+        joinStringSpan(self.asSpan(), separator)
+    }
+}
+
+extend Span[string] {
+    /// Joins all strings with `separator` in a single pre-sized allocation.
+    public func join(_ separator: string) -> string {
+        joinStringSpan(self, separator)
     }
 }
 
@@ -757,4 +1219,24 @@ conform CharacterIterator to Iterable {
     type Element = rune
     type Iterator = CharacterIterator
     public func iter() -> CharacterIterator { self }
+}
+
+/// Whether `needle` occurs as a contiguous byte substring. An empty needle
+/// is in every string.
+conform string to Contains[string] {
+    public func contains(_ needle: &string) -> bool { self.contains(*needle) }
+}
+
+/// Whether the rune is one of the string's UTF-8 scalar values.
+conform string to Contains[rune] {
+    public func contains(_ value: &rune) -> bool {
+        for character in self.characters() {
+            if character == *value { return true }
+        }
+        return false
+    }
+}
+
+conform string to Default {
+    public static func default() -> string { "" }
 }

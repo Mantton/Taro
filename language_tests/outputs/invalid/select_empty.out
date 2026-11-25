@@ -1,0 +1,4 @@
+error: `select` requires at least one `case` arm
+ -> language_tests/source_files/invalid/select_empty.tr:2:4
+	    select {}
+	    ^^^^^^

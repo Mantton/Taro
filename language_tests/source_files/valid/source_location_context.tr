@@ -1,0 +1,19 @@
+const MODULE: string = #function
+func deferLine(body: any Fn() -> int32 = () => #line + 10) -> int32 { body() }
+struct Reporter {}
+extend Reporter {
+    func whereAmI() -> string {
+        f := () => #function
+        f()
+    }
+}
+func main() {
+    func nested() -> string { #function }
+    println(MODULE)
+    println(nested())
+    var reporter = Reporter {}
+    println(reporter.whereAmI())
+    a := deferLine()
+    b := deferLine(body: () => 42)
+    println("${a} ${b}")
+}

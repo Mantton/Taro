@@ -1,0 +1,4 @@
+error: type '(Opaque, int32)' does not conform to interface 'PartialEq[(Opaque, int32)]'
+ -> language_tests/source_files/invalid/tuple_structural_non_eq.tr:6:8
+	    _ = a == b
+	        ^^^^^^

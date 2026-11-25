@@ -1,0 +1,8 @@
+error: Duplicate Symbol State
+ -> language_tests/source_files/invalid/nested_type_duplicate.tr:6:11
+	    struct State(int32)
+	           ^^^^^
+info: 'State' is defined here.
+ -> language_tests/source_files/invalid/nested_type_duplicate.tr:3:9
+	    enum State { case ready }
+	         ^^^^^

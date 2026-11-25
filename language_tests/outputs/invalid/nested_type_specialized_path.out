@@ -1,0 +1,4 @@
+error: qualify a nested type with its unspecialized owner
+ -> language_tests/source_files/invalid/nested_type_specialized_path.tr:5:24
+	func take(_ value: Queue[int32]::Entry) {}
+	                        ^^^^^^^

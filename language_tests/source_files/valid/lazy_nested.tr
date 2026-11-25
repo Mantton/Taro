@@ -1,0 +1,12 @@
+struct Gate {}
+extend Gate {
+    func force(_ value: @lazy int32) -> int32 { value() }
+}
+func choose(_ value: int32) -> int32 { value + 100 }
+func choose(_ value: @lazy bool) -> int32 { 0 }
+func message(_ flag: bool) -> string {
+    gate := Gate {}
+    n := gate.force(choose(if flag { return 41_i32 } else { 7_i32 }))
+    "${n}"
+}
+func main() { println("${message(true)} ${message(false)}") }

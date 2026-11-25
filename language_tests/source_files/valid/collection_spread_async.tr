@@ -1,0 +1,18 @@
+func load(_ text: string) async -> List[string] {
+    await std::testing::yieldNow()
+    [text]
+}
+func keep(_ pieces: string...) async -> Span[string] {
+    await std::testing::yieldNow()
+    pieces
+}
+func collect(_ left: List[string]) async -> Span[string] {
+    await keep("first", left..., (await load("third"))..., "last")
+}
+func main() async {
+    var source: List[string] = ["second"]
+    result := await collect(source)
+    source[0] = "changed"
+    assert(result.len() == 4 && result[1] == "second" && result[2] == "third", "mixed pack has independent storage across suspension")
+    println("spread async")
+}

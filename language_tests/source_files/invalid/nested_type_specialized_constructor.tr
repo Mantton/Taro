@@ -1,0 +1,8 @@
+struct Queue[T] { value: T }
+extend Queue {
+    struct Entry(int64)
+}
+func main() {
+    var entry = Queue[int32]::Entry(42)
+    println(entry.0)
+}

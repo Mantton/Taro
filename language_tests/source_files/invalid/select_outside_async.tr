@@ -1,0 +1,11 @@
+func work() async -> int32 {
+    return 1_i32
+}
+
+func syncFn() {
+    select {
+        case x = await work() => { var _ = x }
+    }
+}
+
+func main() {}

@@ -1,4 +1,4 @@
-import std::ops::PartialEq
+import std::ops::{Fn, PartialEq}
 import std::panic::panic
 
 /// Assertion functions for use in @test functions.
@@ -32,3 +32,40 @@ public func fail(_ message: string) {
 }
 
 public func yieldNow() async {}
+
+extern "taro_rt" {
+    func __rt__testing_allocation_count() -> uint64
+    unsafe func __rt__test_run_subtest(
+        _ name: string,
+        _ callback: (*mut uint8) -> (),
+        _ context: *mut uint8,
+    )
+}
+
+func subtestTrampoline[F: Fn[(), ()]](_ context: *mut uint8) {
+    body := unsafe { *(context as *const F) }
+    body()
+}
+
+/// Run a named child case inside an `@test` function.
+///
+/// Panics inside `body` are caught and reported under `name` without stopping
+/// sibling subtests; any failing subtest marks the enclosing test as failed.
+public func subtest[F: Fn[(), ()]](_ name: string, _ body: F) {
+    var callback = body
+    unsafe {
+        __rt__test_run_subtest(
+            name,
+            subtestTrampoline[F],
+            (&callback as *const F) as *mut uint8,
+        )
+    }
+}
+
+/// Run body once and count the managed allocations it makes on the calling
+/// thread. The measurement starts after the closure and its captures exist.
+public func allocations[F: Fn[(), ()]](_ body: F) -> uint64 {
+    before := __rt__testing_allocation_count()
+    body()
+    return __rt__testing_allocation_count() - before
+}

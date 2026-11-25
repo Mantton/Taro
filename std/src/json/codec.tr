@@ -558,6 +558,10 @@ conform Value to std::encoding::Decodable {
 }
 
 /// Encode any format-neutral value to one compact JSON string.
+///
+/// Finite `float` and `double` values use the shortest decimal that
+/// round-trips at their original precision, preserving negative zero as
+/// `-0`. NaN and infinities return an `invalidValue` error at their value path.
 public func encode[Source: std::encoding::Encodable](_ source: &Source) -> Result[string, JsonEncodeError] {
     encodeWithOptions(source, Options::new())
 }

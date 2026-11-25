@@ -62,3 +62,8 @@ extend Key {
         return .ok(unsafe { __list_copy_bytes(bytes, length) })
     }
 }
+
+conform Key to std::io::Closeable {
+    type CloseResult = ()
+    public func close() { self.close() }
+}

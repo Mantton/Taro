@@ -1,0 +1,11 @@
+const func exceedSteps() -> int32 {
+    var i: int32 = 0
+    while i < 200000 {
+        i += 1
+    }
+    return i
+}
+
+const VALUE: int32 = exceedSteps()
+
+func main() {}

@@ -1,0 +1,24 @@
+// Arms that have no common type are still rejected, at the arm that
+// disagrees, whether the first arm is typed or an untyped literal.
+func main() {
+    var n: usize = 3
+    var flag = true
+    k := 2
+    a := match k {
+        case 1 => n
+        case _ => "text"
+    }
+    b := match k {
+        case 1 => 0
+        case _ => "text"
+    }
+    c := match k {
+        case 1 => 1.5
+        case _ => n
+    }
+    var d: usize = match k {
+        case 1 => n
+        case _ => flag
+    }
+    println("${a} ${b} ${c} ${d}")
+}

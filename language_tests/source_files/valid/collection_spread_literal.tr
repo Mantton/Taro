@@ -1,0 +1,27 @@
+func staticCopy[T, const N: usize](_ values: [T; N]) -> [T; N] {
+    var empty: [T; 0] = []
+    [empty..., values...]
+}
+func gather[S: Iterable[Element = int32]](_ values: S) -> List[int32?] {
+    [nil, values..., nil]
+}
+func checkFour(_ values: [string; 4]) -> string { values[2] }
+func twoWords() -> [string; 2] { ["a", "b"] }
+func main() {
+    fixed := ["start", twoWords()..., "end"]
+    assert(checkFour(fixed) == "b", "a returned array contributes its declared length")
+    var source = twoWords()
+    var copy = staticCopy(source)
+    copy[0] = "changed"
+    assert(source[0] == "a" && copy[0] == "changed", "the array copy owns its slots")
+    var empty: [string; 0] = []
+    assert(staticCopy(empty).len() == 0, "an empty fixed array has no first element")
+    var small: [int32; 2] = [4, 5]
+    optionals := gather(small)
+    assert(optionals.len() == 4 && optionals[0].isNone() && optionals[2].unwrap() == 5, "coerce each item to Optional")
+    var list: List[int32] = [1, 2]
+    inferred := [0, list..., 3]
+    inferred.append(4)
+    assert(inferred.len() == 5 && inferred[1] == 1 && inferred[4] == 4, "runtime lengths infer a list")
+    println("spread literals")
+}

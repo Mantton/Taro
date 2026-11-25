@@ -1,0 +1,46 @@
+import std::iter::{Iterable, Iterator}
+
+struct Box[T] { value: T }
+interface Read {
+    type Output
+    func read() -> Self::Output
+}
+conform Box[int32] to Read {
+    type Output = usize
+    func read() -> usize { 32 }
+}
+conform Box[int64] to Read {
+    type Output = bool
+    func read() -> bool { false }
+}
+extend Box[int32] {
+    func read() -> string { "inherent" }
+}
+
+func main() {
+    var total: int64 = 5000000000
+    for n in 0..5 { total += n }
+    var closed: usize = 0
+    for n in 1..=3 { closed += n }
+
+    explicit := () => {
+        var result: int64 = 7
+        iterator := Iterable::iter(2..4)
+        element := Iterator::next(iterator)
+        match element {
+            case .some(x) => { result += x }
+            case .none => {}
+        }
+        result
+    }
+    // Different records disagree on the associated type. A subsequent
+    // receiver annotation decides which one is proved.
+    specialized := () => {
+        box := Box { value: 0 }
+        result := Read::read(box)
+        var typed: Box[int64] = box
+        result || Read::read(typed)
+    }
+    var defaulted: usize = Read::read(Box { value: 0 })
+    println("${total} ${closed} ${explicit()} ${specialized()} ${defaulted}")
+}

@@ -1,0 +1,12 @@
+func sum[T: Numeric](_ values: [T]) -> T {
+    var total = T::zero()
+    for value in values {
+        total = total + value
+    }
+    return total
+}
+
+func main() {
+    var words: [string] = ["a", "b"]
+    _ := sum(words)
+}

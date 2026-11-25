@@ -1,0 +1,40 @@
+// The declared bound `Pair[T, int32]: B` applies to the receiver once its
+// literal is int32, and `B` declares `pick` as `A` does. The early binding
+// must not see only the record for `A` and call it: the call is rejected,
+// as the typed spelling `Pair[T, int32] { ... }.pick()` is.
+struct Pair[T, U] {
+    first: T
+    second: U
+}
+
+interface A {
+    func pick() -> usize
+}
+
+interface B {
+    func pick() -> usize
+}
+
+conform[X, Y] Pair[X, Y] to A {
+    func pick() -> usize {
+        1
+    }
+}
+
+conform Pair[string, int32] to B {
+    func pick() -> usize {
+        2
+    }
+}
+
+func literal[T](_ value: T) -> usize where Pair[T, int32]: B {
+    Pair { first: value, second: 0 }.pick() + 1
+}
+
+func typed[T](_ value: T) -> usize where Pair[T, int32]: B {
+    Pair[T, int32] { first: value, second: 0 }.pick() + 1
+}
+
+func main() {
+    println("${literal("x")} ${typed("x")}")
+}

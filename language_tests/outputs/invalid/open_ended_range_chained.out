@@ -1,0 +1,4 @@
+error: expected ';'
+ -> language_tests/source_files/invalid/open_ended_range_chained.tr:2:12
+	    _ = 1..2..3
+	            ^^

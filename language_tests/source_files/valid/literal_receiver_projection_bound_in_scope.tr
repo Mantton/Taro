@@ -1,0 +1,45 @@
+// The in-scope bound and the int64 record disagree on Self::Size. Lookup
+// waits for the receiver literal to default to int32, then the bound gives
+// the neighboring addend its uint8 type, just as with the typed receiver.
+struct Pair[T, U] {
+    first: T
+    second: U
+}
+
+interface Measured {
+    type Size
+    func size() -> Self::Size
+}
+
+conform[X] Pair[X, int64] to Measured {
+    type Size = usize
+
+    func size() -> usize {
+        8
+    }
+}
+
+conform Pair[string, int32] to Measured {
+    type Size = uint8
+
+    func size() -> uint8 {
+        4
+    }
+}
+
+func literal[T](_ value: T) where Pair[T, int32]: Measured[Size = uint8] {
+    size := Pair { first: value, second: 0 }.size() + 1
+    var fromBound: uint8 = size
+    println("${fromBound}")
+}
+
+func typed[T](_ value: T) where Pair[T, int32]: Measured[Size = uint8] {
+    size := Pair[T, int32] { first: value, second: 0 }.size() + 1
+    var fromBound: uint8 = size
+    println("${fromBound}")
+}
+
+func main() {
+    literal("x")
+    typed("x")
+}

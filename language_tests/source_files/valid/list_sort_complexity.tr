@@ -1,0 +1,32 @@
+// Reverse input exposes the old insertion sort's quadratic comparison count.
+// This bound is deterministic; wall-clock thresholds would be machine-dependent.
+import std::cmp::{Ord, Ordering, PartialOrd}
+import std::ops::PartialEq
+
+static var comparisons: usize = 0
+struct SortBudgetValue { value: int32 }
+conform SortBudgetValue to PartialEq {
+    func eq(_ other: Self) -> bool { self.value == other.value }
+}
+conform SortBudgetValue to PartialOrd {
+    func partialCmp(_ other: Self) -> Ordering? { .some(self.cmp(other)) }
+}
+conform SortBudgetValue to Ord {
+    func cmp(_ other: Self) -> Ordering {
+        comparisons += 1
+        self.value.cmp(other.value)
+    }
+}
+
+func main() {
+    values := List[SortBudgetValue]::new()
+    var value: int32 = 4096
+    while value > 0 { values.append(SortBudgetValue { value }); value -= 1 }
+    values.sort()
+    assert(comparisons <= 4096 * 12, "sort exceeded n log2 n comparison budget")
+    var index: usize = 0
+    while index < values.len() {
+        assert(values[index].value == (index as int32) + 1, "sort output")
+        index += 1
+    }
+}

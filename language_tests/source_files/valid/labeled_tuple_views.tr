@@ -1,0 +1,27 @@
+type Pair = (left: int32, right: int32)
+type Plain = (int32, int32)
+struct Stored[T] { value: T }
+func identity[T](_ value: T) -> T { value }
+func double(_ value: int32) -> int32 { value * 2 }
+func record(_ state: &int32, _ digit: int32) -> int32 {
+    *state = *state * 10 + digit
+    return digit
+}
+func main() {
+    assert(std::mem::sizeOf[Pair]() == std::mem::sizeOf[Plain](), "tuple size")
+    assert(std::mem::alignOf[Pair]() == std::mem::alignOf[Plain](), "tuple alignment")
+    var state = 0
+    var pair: Pair = (second: record(&state, 2), first: record(&state, 1))
+    assert(pair.left == 2 && pair.right == 1 && state == 21, "labels preserve positions and evaluation order")
+    saved := identity(pair)
+    assert(saved.left == 2 && saved.1 == 1, "generic identity preserves the caller's labels")
+    var partial: (int32, last: int32) = pair
+    leftBox := Stored { value: pair }
+    rightBox := Stored { value: partial }
+    assert(leftBox.value.right == 1 && rightBox.value.last == 1, "independent generic field labels")
+    nested := (item: partial)
+    assert(nested.item.last == 1 && nested.0.0 == 2, "sparse and singleton labels")
+    var handlers: (apply: (int32) -> int32, fallback: int32) = (double, 0)
+    assert(handlers.apply(3) == 6, "callable tuple field")
+    println("tuple views")
+}

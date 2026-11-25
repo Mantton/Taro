@@ -307,7 +307,9 @@ Unfinished background tasks are neither cancelled nor drained: their defers do
 not run, a task that never yields cannot hold the process open, and the process
 exits while other workers may still be running. The main thread does not run a
 worker in this mode; it waits for the root and returns to the entry shim, which
-writes the diagnostics report and exits with main's status. A main panic prints
+writes the diagnostics report and exits with main's status. A `main` returning
+`Result[(), E]` reports an `.err` inside the root task, after its defers, and
+its status is 1; the exit is otherwise the same. A main panic prints
 its original report and exits nonzero the same way. Retain and await a task, or
 synchronize with it, when its completion or cleanup is required. Resources that
 must be closed are closed explicitly before main returns.

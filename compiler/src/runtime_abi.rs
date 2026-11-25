@@ -109,10 +109,13 @@ pub enum RuntimeAbiFunction {
     Spawn,
     FromSpawnedChecked,
     SelectTasks,
+    SelectManyTasks,
     TaskTimeout,
     Blocking,
     TaskCompletionStatus,
     CancelTask,
+    TaskScopeToCurrent,
+    HoldNextSpawn,
 
     WaitReadable,
     WaitWritable,
@@ -156,10 +159,13 @@ impl RuntimeAbiFunction {
         Self::Spawn,
         Self::FromSpawnedChecked,
         Self::SelectTasks,
+        Self::SelectManyTasks,
         Self::TaskTimeout,
         Self::Blocking,
         Self::TaskCompletionStatus,
         Self::CancelTask,
+        Self::TaskScopeToCurrent,
+        Self::HoldNextSpawn,
         Self::WaitReadable,
         Self::WaitWritable,
         Self::ChannelWaitSend,
@@ -242,6 +248,11 @@ impl RuntimeAbiFunction {
                 &[T::MutU8Ptr, T::MutU8Ptr],
                 T::AsyncHandle,
             ),
+            Self::SelectManyTasks => spec(
+                "__rt__async_select_many",
+                &[T::ConstU8Ptr, T::Usize],
+                T::AsyncHandle,
+            ),
             Self::TaskTimeout => spec(
                 "__rt__async_task_timeout",
                 &[T::MutU8Ptr, T::U64, T::U32],
@@ -254,6 +265,10 @@ impl RuntimeAbiFunction {
             ),
             Self::TaskCompletionStatus => spec("__rt__task_status", &[T::MutU8Ptr], T::U8),
             Self::CancelTask => spec("__rt__task_cancel", &[T::MutU8Ptr], T::Void),
+            Self::TaskScopeToCurrent => {
+                spec("__rt__task_scope_to_current", &[T::MutU8Ptr], T::Void)
+            }
+            Self::HoldNextSpawn => spec("__rt__task_hold_next_spawn", &[], T::Void),
             Self::WaitReadable => spec("__rt__async_wait_readable", &[T::Usize], T::AsyncHandle),
             Self::WaitWritable => spec("__rt__async_wait_writable", &[T::Usize], T::AsyncHandle),
             Self::ChannelWaitSend => spec(
@@ -333,9 +348,12 @@ impl RuntimeAbiFunction {
             | F::CreateOwned
             | F::FromSpawnedChecked
             | F::SelectTasks
+            | F::SelectManyTasks
             | F::TaskTimeout
             | F::TaskCompletionStatus
             | F::CancelTask
+            | F::TaskScopeToCurrent
+            | F::HoldNextSpawn
             | F::WaitReadable
             | F::WaitWritable
             | F::ChannelWaitSend
@@ -404,9 +422,12 @@ impl RuntimeAbiFunction {
             // The result wait keeps the handle object rooted until it is destroyed.
             F::FromSpawnedChecked => E::CaptureAndReturn,
             F::SelectTasks
+            | F::SelectManyTasks
             | F::TaskTimeout
             | F::TaskCompletionStatus
             | F::CancelTask
+            | F::TaskScopeToCurrent
+            | F::HoldNextSpawn
             | F::WaitReadable
             | F::WaitWritable
             | F::Sleep
@@ -517,9 +538,10 @@ impl RuntimeSymbolAvailability {
 pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
     additional("__rt__bench_next_batch", "()->usize"),
     additional_callback(
-        "__rt__bench_run_case",
-        "(fn()->void,*const u8,usize,*const u8,usize,bool,*const u8,usize)->u8",
+        "__rt__bench_measure_case",
+        "(fn()->void,*const u8,usize,bool,*mut BenchmarkMeasurement)->u8",
     ),
+    additional("__rt__bench_release_samples", "(*mut f64,usize)->void"),
     additional("__rt__bench_set_bytes", "(usize)->void"),
     additional("__rt__black_box", "(*mut u8,usize)->void"),
     additional("__rt__install_stack_guard", "()->void"),
@@ -739,11 +761,6 @@ pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
     ),
     additional_unix_with_escape(
         "__rt__task_clear_wake",
-        "()->void",
-        RuntimeParamEscapeEffect::NoCapture,
-    ),
-    additional_with_escape(
-        "__rt__task_hold_next_spawn",
         "()->void",
         RuntimeParamEscapeEffect::NoCapture,
     ),
@@ -1066,6 +1083,7 @@ pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
     ),
     // std::runtime::collect runs a collection, so callers need a stack map.
     additional_callback("__rt__gc_collect", "()->void"),
+    additional("__rt__testing_allocation_count", "()->u64"),
     additional_with_escape(
         "__rt__gc_stats",
         "(*mut u8)->void",
@@ -1142,8 +1160,19 @@ pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
     additional("__rt__sync_rwlock_unlock_read", "(*mut u8)->i32"),
     additional("__rt__sync_rwlock_unlock_write", "(*mut u8)->i32"),
     additional_callback("__rt__test_call_fn", "(fn()->void)->bool"),
+    additional_callback("__rt__fuzz_run", "(*const u8,usize,fn(*const u8,usize)->void)->i32"),
     additional("__rt__test_panic_finish", "(u8,*const u8,usize)->void"),
     additional("__rt__test_panic_status", "(bool,bool,*const u8,usize)->u8"),
+    additional("__rt__test_prepare_result", "(*const u8)->void"),
+    additional_callback_with_param_escape(
+        "__rt__test_run_subtest",
+        "(string,fn(*mut u8)->void,*mut u8)->void",
+        &[
+            RuntimeParamEscapeEffect::NoCapture,
+            RuntimeParamEscapeEffect::NoCapture,
+            RuntimeParamEscapeEffect::NoCapture,
+        ],
+    ),
 ];
 
 const fn additional(symbol: &'static str, signature: &'static str) -> AdditionalRuntimeSymbol {
@@ -1467,7 +1496,8 @@ pub fn intrinsic_param_escape_effect(
         | "__intrinsic_channel_wait_recv"
         | "__intrinsic_mutex_lock"
         | "__intrinsic_rwlock_read"
-        | "__intrinsic_rwlock_write" => E::CaptureAndReturn,
+        | "__intrinsic_rwlock_write"
+        | "__intrinsic_async_generator_next" => E::CaptureAndReturn,
         "__intrinsic_task_group_spawn" if parameter == 1 => E::Capture,
 
         // Synchronous value/scalar operations and handle-only runtime shims do
@@ -1520,9 +1550,14 @@ pub fn intrinsic_param_escape_effect(
         | "__intrinsic_panic_payload_message"
         | "__intrinsic_panic_payload_rethrow" => E::NoCapture,
 
-        // Checked arithmetic and typed math names are a closed compiler-owned
-        // family. They operate only on scalar operands.
-        name if name.starts_with("__intrinsic_checked_") || is_typed_math_intrinsic_name(name) => {
+        // Checked, wrapping and overflow-flag arithmetic, bit-manipulation, and
+        // typed math names are a closed compiler-owned family. They operate only
+        // on scalar operands.
+        name if name.starts_with("__intrinsic_checked_")
+            || is_integer_arith_intrinsic_name(name)
+            || is_integer_bit_intrinsic_name(name)
+            || is_typed_math_intrinsic_name(name) =>
+        {
             E::NoCapture
         }
         _ => return None,
@@ -1551,6 +1586,31 @@ pub fn intrinsic_return_deref(symbol: &str, parameter: usize) -> Option<u8> {
         } else {
             0
         },
+    )
+}
+
+fn is_integer_arith_intrinsic_name(symbol: &str) -> bool {
+    matches!(
+        symbol,
+        "__intrinsic_wrapping_add"
+            | "__intrinsic_wrapping_sub"
+            | "__intrinsic_wrapping_mul"
+            | "__intrinsic_overflows_add"
+            | "__intrinsic_overflows_sub"
+            | "__intrinsic_overflows_mul"
+    )
+}
+
+fn is_integer_bit_intrinsic_name(symbol: &str) -> bool {
+    matches!(
+        symbol,
+        "__intrinsic_ctpop"
+            | "__intrinsic_ctlz"
+            | "__intrinsic_cttz"
+            | "__intrinsic_bswap"
+            | "__intrinsic_bitreverse"
+            | "__intrinsic_fshl"
+            | "__intrinsic_fshr"
     )
 }
 
@@ -2030,6 +2090,18 @@ mod tests {
         assert_eq!(
             intrinsic_param_escape_effect("__intrinsic_checked_add", 0),
             Some(RuntimeParamEscapeEffect::NoCapture)
+        );
+        for name in ["__intrinsic_wrapping_mul", "__intrinsic_overflows_sub"] {
+            for parameter in 0..2 {
+                assert_eq!(
+                    intrinsic_param_escape_effect(name, parameter),
+                    Some(RuntimeParamEscapeEffect::NoCapture)
+                );
+            }
+        }
+        assert_eq!(
+            intrinsic_param_escape_effect("__intrinsic_wrapping_div", 0),
+            None
         );
         assert_eq!(intrinsic_return_deref("__intrinsic_ptr_read", 0), Some(1));
         assert_eq!(

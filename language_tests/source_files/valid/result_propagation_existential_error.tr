@@ -1,0 +1,77 @@
+// Postfix `!` boxes a concrete error when the enclosing function returns an
+// existential error type, as returning the error directly would.
+struct ParseError {
+    offset: int32
+}
+
+conform ParseError to std::fmt::Display {
+    func display(_ into: &std::fmt::Formatter) {
+        into.writeString("parse error at ${self.offset}")
+    }
+}
+
+conform ParseError to std::error::Error {}
+
+func parse(_ fail: bool) -> Result[int32, ParseError] {
+    if fail {
+        return .err(ParseError { offset: 7 })
+    }
+    return .ok(40)
+}
+
+func readCount() -> Result[string, std::io::Error] {
+    return .err(std::io::Error::new(.notFound).withPath("counts.txt"))
+}
+
+func load(_ fail: bool) -> Result[int32, any std::error::Error] {
+    value := parse(fail)!
+    return .ok(value + 2)
+}
+
+func loadText() -> Result[string, any std::error::Error] {
+    text := readCount()!
+    return .ok(text)
+}
+
+func loadDisplay(_ fail: bool) -> Result[int32, any std::fmt::Display] {
+    value := parse(fail)!
+    return .ok(value)
+}
+
+func loadGeneric[E: std::error::Error](_ result: Result[int32, E]) -> Result[int32, any std::error::Error] {
+    value := result!
+    return .ok(value)
+}
+
+func loadAsync(_ fail: bool) async -> Result[int32, any std::error::Error] {
+    await std::testing::yieldNow()
+    value := parse(fail)!
+    return .ok(value)
+}
+
+func main() async {
+    match load(false) {
+        case .ok(value) => print("ok ${value}\n")
+        case .err(_) => print("unexpected\n")
+    }
+    match load(true) {
+        case .ok(_) => print("unexpected\n")
+        case .err(error) => print("err ${error}\n")
+    }
+    match loadText() {
+        case .ok(_) => print("unexpected\n")
+        case .err(error) => print("err ${error}\n")
+    }
+    match loadDisplay(true) {
+        case .ok(_) => print("unexpected\n")
+        case .err(error) => print("err ${error}\n")
+    }
+    match loadGeneric(Result[int32, ParseError]::err(ParseError { offset: 3 })) {
+        case .ok(_) => print("unexpected\n")
+        case .err(error) => print("err ${error}\n")
+    }
+    match await loadAsync(true) {
+        case .ok(_) => print("unexpected\n")
+        case .err(error) => print("err ${error}\n")
+    }
+}

@@ -1,0 +1,451 @@
+import std::cmp::{Ord, Ordering}
+import std::collections::{BTreeMap, BTreeSet, BitSet, Counter, Deque, Dictionary, List, Set}
+import std::hash::Hashable
+import std::mem::Span
+import std::optional::Optional
+import std::range::{ClosedRange, Range, RangeFrom, RangeFull, RangeTo, RangeToInclusive, Step}
+import std::result::Result
+
+/// Writes a programmer-facing representation of a value into a `Formatter`.
+///
+/// Debug text spells a value the way source code would: strings and runes are
+/// quoted and escaped, structs print their name and fields, enums their case
+/// and payload, and collections their elements in literal syntax. Listing
+/// `Debug` in a struct or enum's conformance list derives it. String
+/// interpolation prints a value's `Debug` text when its type has `Debug` but no
+/// `Display`.
+@lang("Debug")
+public interface Debug {
+    func debug(_ into: &Formatter)
+}
+
+/// Returns `value`'s `Debug` text.
+@lang("DebugString")
+public func debugString[T: Debug](_ value: T) -> string {
+    var into = Formatter::new()
+    value.debug(&into)
+    into.toString()
+}
+
+/// Shows a value through its `Debug` text where `Display` is expected. String
+/// interpolation wraps a value whose type has `Debug` but no `Display` in it.
+@lang("DebugDisplay")
+public struct DebugDisplay {
+    internal value: any Debug
+}
+
+conform DebugDisplay to Display {
+    public func display(_ into: &Formatter) {
+        self.value.debug(into)
+    }
+}
+
+conform DebugDisplay to Formattable {
+    public func format(_ into: &Formatter, _ spec: rune, _ state: &FormatState) {
+        if spec == 'v' || spec == '?' {
+            self.value.debug(into)
+            return
+        }
+        std::panic::panic("printf: invalid format specifier for debug argument")
+    }
+}
+
+// Derived `debug` bodies write their fixed text through this function.
+internal func __debug_write(_ into: &Formatter, _ text: string) {
+    into.writeString(text)
+}
+
+const BYTE_DIGIT_A: uint8 = 87
+
+func writeHexDigit(_ into: &Formatter, _ value: uint32) {
+    if value < 10 {
+        into.writeByte(BYTE_ZERO + (value as uint8))
+    } else {
+        into.writeByte(BYTE_DIGIT_A + (value as uint8))
+    }
+}
+
+/// Writes `value` as a literal would spell it inside `quote` delimiters.
+func writeEscapedRune(_ into: &Formatter, _ value: rune, _ quote: rune) {
+    if value == quote || value == '\\' {
+        into.writeRune('\\')
+        into.writeRune(value)
+        return
+    }
+    if value == '\n' {
+        into.writeString("\\n")
+        return
+    }
+    if value == '\t' {
+        into.writeString("\\t")
+        return
+    }
+    if value == '\r' {
+        into.writeString("\\r")
+        return
+    }
+    if value == '\0' {
+        into.writeString("\\0")
+        return
+    }
+    code := value as uint32
+    if code < 0x20_u32 || code == 0x7f_u32 {
+        into.writeString("\\x")
+        writeHexDigit(into, code >> 4)
+        writeHexDigit(into, code & 0xf_u32)
+        return
+    }
+    if code >= 0x80_u32 && code <= 0x9f_u32 {
+        into.writeString("\\u{")
+        writeHexDigit(into, code >> 4)
+        writeHexDigit(into, code & 0xf_u32)
+        into.writeRune('}')
+        return
+    }
+    into.writeRune(value)
+}
+
+conform string to Debug {
+    public func debug(_ into: &Formatter) {
+        into.writeRune('"')
+        // `${` opens an interpolation in a literal, so it is spelled `\${`.
+        var dollar = false
+        for value in self.characters() {
+            if dollar {
+                dollar = false
+                if value == '{' {
+                    into.writeRune('\\')
+                    into.writeRune('$')
+                    into.writeRune('{')
+                    continue
+                }
+                into.writeRune('$')
+            }
+            if value == '$' {
+                dollar = true
+                continue
+            }
+            writeEscapedRune(into, value, '"')
+        }
+        if dollar {
+            into.writeRune('$')
+        }
+        into.writeRune('"')
+    }
+}
+
+conform rune to Debug {
+    public func debug(_ into: &Formatter) {
+        into.writeRune('\'')
+        writeEscapedRune(into, self, '\'')
+        into.writeRune('\'')
+    }
+}
+
+conform bool to Debug {
+    public func debug(_ into: &Formatter) { self.display(into) }
+}
+
+conform int8 to Debug {
+    public func debug(_ into: &Formatter) { self.display(into) }
+}
+
+conform int16 to Debug {
+    public func debug(_ into: &Formatter) { self.display(into) }
+}
+
+conform int32 to Debug {
+    public func debug(_ into: &Formatter) { self.display(into) }
+}
+
+conform int64 to Debug {
+    public func debug(_ into: &Formatter) { self.display(into) }
+}
+
+conform isize to Debug {
+    public func debug(_ into: &Formatter) { self.display(into) }
+}
+
+conform uint8 to Debug {
+    public func debug(_ into: &Formatter) { self.display(into) }
+}
+
+conform uint16 to Debug {
+    public func debug(_ into: &Formatter) { self.display(into) }
+}
+
+conform uint32 to Debug {
+    public func debug(_ into: &Formatter) { self.display(into) }
+}
+
+conform uint64 to Debug {
+    public func debug(_ into: &Formatter) { self.display(into) }
+}
+
+conform usize to Debug {
+    public func debug(_ into: &Formatter) { self.display(into) }
+}
+
+conform float to Debug {
+    public func debug(_ into: &Formatter) { self.display(into) }
+}
+
+conform double to Debug {
+    public func debug(_ into: &Formatter) { self.display(into) }
+}
+
+conform Ordering to Debug {
+    public func debug(_ into: &Formatter) {
+        match self {
+            case .less => into.writeString("less")
+            case .equal => into.writeString("equal")
+            case .greater => into.writeString("greater")
+        }
+    }
+}
+
+conform[Wrapped: Debug] Optional[Wrapped] to Debug {
+    public func debug(_ into: &Formatter) {
+        match self {
+            case .some(value) => {
+                into.writeString("some(")
+                value.debug(into)
+                into.writeRune(')')
+            }
+            case .none => into.writeString("none")
+        }
+    }
+}
+
+conform[Value: Debug, Error: Debug] Result[Value, Error] to Debug {
+    public func debug(_ into: &Formatter) {
+        match self {
+            case .ok(value) => {
+                into.writeString("ok(")
+                value.debug(into)
+                into.writeRune(')')
+            }
+            case .err(error) => {
+                into.writeString("err(")
+                error.debug(into)
+                into.writeRune(')')
+            }
+        }
+    }
+}
+
+conform[Element: Debug] List[Element] to Debug {
+    public func debug(_ into: &Formatter) {
+        into.writeRune('[')
+        var index: usize = 0
+        count := self.len()
+        while index < count {
+            if index > 0 {
+                into.writeString(", ")
+            }
+            value := self.at(index)
+            value.debug(into)
+            index += 1
+        }
+        into.writeRune(']')
+    }
+}
+
+conform[Element: Debug, const Size: usize] [Element; Size] to Debug {
+    public func debug(_ into: &Formatter) {
+        into.writeRune('[')
+        var index: usize = 0
+        while index < Size {
+            if index > 0 {
+                into.writeString(", ")
+            }
+            (*self.at(index)).debug(into)
+            index += 1
+        }
+        into.writeRune(']')
+    }
+}
+
+conform[Element: Debug] Span[Element] to Debug {
+    public func debug(_ into: &Formatter) {
+        into.writeRune('[')
+        var index: usize = 0
+        count := self.len()
+        while index < count {
+            if index > 0 {
+                into.writeString(", ")
+            }
+            (*self.at(index)).debug(into)
+            index += 1
+        }
+        into.writeRune(']')
+    }
+}
+
+conform[Element: Debug] Deque[Element] to Debug {
+    public func debug(_ into: &Formatter) {
+        into.writeRune('[')
+        var first = true
+        for value in self {
+            if !first {
+                into.writeString(", ")
+            }
+            first = false
+            value.debug(into)
+        }
+        into.writeRune(']')
+    }
+}
+
+// Sets have no literal; braces are the conventional spelling.
+conform[Element: Hashable & Debug] Set[Element] to Debug {
+    public func debug(_ into: &Formatter) {
+        into.writeRune('{')
+        var first = true
+        for value in self {
+            if !first {
+                into.writeString(", ")
+            }
+            first = false
+            value.debug(into)
+        }
+        into.writeRune('}')
+    }
+}
+
+conform[Key: Hashable & Debug, Value: Debug] Dictionary[Key, Value] to Debug {
+    public func debug(_ into: &Formatter) {
+        if self.len() == 0 {
+            into.writeString("[:]")
+            return
+        }
+        into.writeRune('[')
+        var first = true
+        for (key, value) in self {
+            if !first {
+                into.writeString(", ")
+            }
+            first = false
+            key.debug(into)
+            into.writeString(": ")
+            value.debug(into)
+        }
+        into.writeRune(']')
+    }
+}
+
+conform[Key: Ord & Debug, Value: Debug] BTreeMap[Key, Value] to Debug {
+    public func debug(_ into: &Formatter) {
+        if self.len() == 0 {
+            into.writeString("[:]")
+            return
+        }
+        into.writeRune('[')
+        var first = true
+        for (key, value) in self {
+            if !first {
+                into.writeString(", ")
+            }
+            first = false
+            key.debug(into)
+            into.writeString(": ")
+            value.debug(into)
+        }
+        into.writeRune(']')
+    }
+}
+
+conform[Element: Ord & Debug] BTreeSet[Element] to Debug {
+    public func debug(_ into: &Formatter) {
+        into.writeRune('{')
+        var first = true
+        for value in self {
+            if !first {
+                into.writeString(", ")
+            }
+            first = false
+            value.debug(into)
+        }
+        into.writeRune('}')
+    }
+}
+
+conform BitSet to Debug {
+    public func debug(_ into: &Formatter) {
+        into.writeRune('{')
+        var first = true
+        for bit in self {
+            if !first {
+                into.writeString(", ")
+            }
+            first = false
+            bit.debug(into)
+        }
+        into.writeRune('}')
+    }
+}
+
+// A counter prints as the dictionary of its counts.
+conform[Key: Hashable & Debug] Counter[Key] to Debug {
+    public func debug(_ into: &Formatter) {
+        if self.len() == 0 {
+            into.writeString("[:]")
+            return
+        }
+        into.writeRune('[')
+        var first = true
+        for (key, count) in self {
+            if !first {
+                into.writeString(", ")
+            }
+            first = false
+            key.debug(into)
+            into.writeString(": ")
+            count.debug(into)
+        }
+        into.writeRune(']')
+    }
+}
+
+conform[Bound: Step & Debug] Range[Bound] to Debug {
+    public func debug(_ into: &Formatter) {
+        self.start.debug(into)
+        into.writeString("..")
+        self.end.debug(into)
+    }
+}
+
+conform[Bound: Step & Debug] ClosedRange[Bound] to Debug {
+    public func debug(_ into: &Formatter) {
+        self.start.debug(into)
+        into.writeString("..=")
+        self.end.debug(into)
+    }
+}
+
+conform[Bound: Step & Debug] RangeFrom[Bound] to Debug {
+    public func debug(_ into: &Formatter) {
+        self.start.debug(into)
+        into.writeString("..")
+    }
+}
+
+conform[Bound: Step & Debug] RangeTo[Bound] to Debug {
+    public func debug(_ into: &Formatter) {
+        into.writeString("..")
+        self.end.debug(into)
+    }
+}
+
+conform[Bound: Step & Debug] RangeToInclusive[Bound] to Debug {
+    public func debug(_ into: &Formatter) {
+        into.writeString("..=")
+        self.end.debug(into)
+    }
+}
+
+conform RangeFull to Debug {
+    public func debug(_ into: &Formatter) {
+        into.writeString("..")
+    }
+}

@@ -1,0 +1,33 @@
+// VET
+// Shadowing that vet does not report: no read of the outer binding after the
+// inner scope ends, a redeclaration in the same scope, conditional, loop and
+// match bindings, and a closure's own declarations.
+func quiet(_ maybe: Optional[int32], _ flag: bool) -> int32 {
+    value := 1
+    total := value
+    if flag {
+        value := 2
+        println("${value}")
+    }
+    var count = 1
+    var count = count + 1
+    if var maybe = maybe {
+        println("${maybe}")
+    }
+    match maybe {
+        case .some(total) => println("${total}")
+        case .none => {}
+    }
+    for count in 0..2 {
+        println("${count}")
+    }
+    run := () => {
+        total := 5
+        total
+    }
+    return count + total + run() + (maybe ?? 0)
+}
+
+func main() {
+    println("${quiet(.some(4), true)}")
+}

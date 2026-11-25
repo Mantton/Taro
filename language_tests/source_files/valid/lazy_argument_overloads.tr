@@ -1,0 +1,300 @@
+struct Counter { n: int32 }
+extend &Counter {
+    func step() -> int32 { self.n += 1; self.n }
+}
+
+interface Tag {
+    func tag() -> int32
+}
+
+struct Item { id: int32 }
+conform Item to Tag {
+    func tag() -> int32 { self.id }
+}
+
+// Free-function overloads: lazy first, eager second.
+func skipOrEval(_ value: @lazy int32) -> int32 { 1 }
+func skipOrEval(_ value: bool) -> int32 { if value { 2 } else { 0 } }
+
+// Reversed declaration order: eager first, lazy second.
+func skipOrEvalRev(_ value: bool) -> int32 { if value { 2 } else { 0 } }
+func skipOrEvalRev(_ value: @lazy int32) -> int32 { 1 }
+
+// Lazy invoked twice vs eager evaluated once, in both declaration orders.
+func twiceOrEval(_ value: @lazy int32) -> int32 { value() * 10 + value() }
+func twiceOrEval(_ value: bool) -> int32 { if value { 99 } else { 0 } }
+
+func twiceOrEvalRev(_ value: bool) -> int32 { if value { 99 } else { 0 } }
+func twiceOrEvalRev(_ value: @lazy int32) -> int32 { value() * 10 + value() }
+
+// Source order for eager arguments alongside lazy arguments.
+func ordered(_ first: int32, _ mid: @lazy int32, _ last: int32) -> int32 {
+    first * 100 + last * 10 + mid()
+}
+func ordered(_ first: int32, _ mid: bool, _ last: int32) -> int32 {
+    if mid { first * 10 + last } else { 0 }
+}
+
+func orderedSkip(_ first: int32, _ mid: @lazy int32, _ last: int32) -> int32 {
+    first * 10 + last
+}
+func orderedSkip(_ first: int32, _ mid: bool, _ last: int32) -> int32 {
+    if mid { first * 10 + last } else { 0 }
+}
+
+// Implicit conversions and overload ranking.
+func optOrBool(_ value: @lazy int32?) -> int32 {
+    match value() {
+        case .some(v) => v
+        case .none => -1
+    }
+}
+func optOrBool(_ value: bool) -> int32 { if value { 7 } else { 0 } }
+
+func exactBeatsOpt(_ value: @lazy int32) -> int32 { 10 }
+func exactBeatsOpt(_ value: int32?) -> int32 { 20 }
+
+func exactBeatsOptRev(_ value: int32?) -> int32 { 20 }
+func exactBeatsOptRev(_ value: @lazy int32) -> int32 { 10 }
+
+func boxedOrBool(_ value: @lazy any Tag) -> int32 { value().tag() }
+func boxedOrBool(_ value: bool) -> int32 { if value { 5 } else { 0 } }
+
+func genericFallback[T](_ first: T, _ second: @lazy T) -> T { second() }
+func genericFallback(_ first: bool, _ second: bool) -> bool { first && second }
+
+// Instance-method overloads in both declaration orders.
+struct Forward {}
+extend Forward {
+    func skip(_ value: @lazy int32) -> int32 { 1 }
+    func skip(_ value: bool) -> int32 { if value { 2 } else { 0 } }
+
+    func twice(_ value: @lazy int32) -> int32 { value() * 10 + value() }
+    func twice(_ value: bool) -> int32 { if value { 99 } else { 0 } }
+}
+
+struct Backward {}
+extend Backward {
+    func skip(_ value: bool) -> int32 { if value { 2 } else { 0 } }
+    func skip(_ value: @lazy int32) -> int32 { 1 }
+
+    func twice(_ value: bool) -> int32 { if value { 99 } else { 0 } }
+    func twice(_ value: @lazy int32) -> int32 { value() * 10 + value() }
+}
+
+// Static-method overloads.
+struct StaticDispatch {}
+extend StaticDispatch {
+    static func pick(_ value: @lazy int32) -> int32 { value() + value() }
+    static func pick(_ value: bool) -> int32 { if value { 3 } else { 0 } }
+}
+
+// Inherent lazy method vs interface eager method.
+interface BoolChoice {
+    func choose(_ value: bool) -> int32
+}
+struct Hybrid {}
+extend Hybrid {
+    func choose(_ value: @lazy int32) -> int32 { 11 }
+}
+conform Hybrid to BoolChoice {
+    func choose(_ value: bool) -> int32 { if value { 22 } else { 0 } }
+}
+
+// Instance-method overloads on a mutable reference receiver itself.
+extend &Counter {
+    func selfPick(_ value: @lazy int32) -> int32 { value() * 10 + value() }
+    func selfPick(_ value: bool) -> int32 { if value { 42 } else { 0 } }
+}
+
+func makeItem(_ counter: &Counter) -> Item {
+    Item { id: counter.step() }
+}
+
+// Return-scope preservation for lazy method and overloaded calls.
+struct ReturnGate {}
+extend ReturnGate {
+    func pick(_ value: @lazy int32) -> int32 { value() }
+    func takeOpt(_ value: @lazy int32?) -> int32? { value() }
+    func takeRes(_ value: @lazy Result[int32, string]) -> Result[int32, string] { value() }
+}
+
+func optOverload(_ value: @lazy int32?) -> int32? { value() }
+func optOverload(_ value: bool) -> int32? { .none }
+
+func resOverload(_ value: @lazy Result[int32, string]) -> Result[int32, string] { value() }
+func resOverload(_ value: bool) -> Result[int32, string] { .ok(0) }
+
+func failingResult() -> Result[int32, string] { .err("expected") }
+func failingBoolResult() -> Result[bool, string] { .err("outer") }
+func emptyOpt() -> int32? { .none }
+
+func returnScopeMethod(_ gate: ReturnGate, _ flag: bool) -> string {
+    n := gate.pick(if flag { return 41_i32 } else { 7_i32 })
+    "${n}"
+}
+
+func returnScopeOverloadLazy(_ flag: bool) -> string {
+    n := twiceOrEval(if flag { return 4_i32 } else { 7_i32 })
+    "${n}"
+}
+
+func returnScopeOverloadEager(_ flag: bool) -> string {
+    n := skipOrEval(if flag { return "early" } else { true })
+    "${n}"
+}
+
+func returnScopeOptionalWrap(_ gate: ReturnGate, _ flag: bool) -> string {
+    a := gate.takeOpt(if flag { return 41_i32 } else { Optional[int32]::some(7_i32) })
+    b := optOverload(if flag { return 42_i32 } else { Optional[int32]::some(8_i32) })
+    c := gate.takeOpt(if flag { return .some(43_i32) } else { Optional[int32]::some(9_i32) })
+    d := optOverload(if flag { return .some(44_i32) } else { Optional[int32]::some(10_i32) })
+    match (a, b, c, d) {
+        case (.some(x), .some(y), .some(z), .some(w)) => "${x},${y},${z},${w}"
+        case _ => "none"
+    }
+}
+
+func propagateMethod(_ gate: ReturnGate) -> string {
+    r := gate.takeRes(Result[int32, string]::ok(failingResult()!))
+    o := gate.takeOpt(Optional[int32]::some(emptyOpt()!))
+    match (r, o) {
+        case (.err(msg), .none) => msg
+        case _ => "wrong"
+    }
+}
+
+func propagateOverloadLazy() -> string {
+    r := resOverload(Result[int32, string]::ok(failingResult()!))
+    o := optOverload(Optional[int32]::some(emptyOpt()!))
+    match (r, o) {
+        case (.err(msg), .none) => msg
+        case _ => "wrong"
+    }
+}
+
+func propagateOverloadEager() -> Result[int32, string] {
+    .ok(skipOrEval(failingBoolResult()!))
+}
+
+// Native subscripts with lazy and overloaded indices.
+struct LazySubscript { last: int32 }
+extend &LazySubscript {
+    subscript(index: @lazy int32) -> int32 {
+        get { 42 }
+        set(value) { self.last = value }
+    }
+    subscript(flag: bool) -> int32 {
+        get { if flag { 77 } else { 0 } }
+    }
+}
+
+struct TwiceSubscript {}
+extend TwiceSubscript {
+    subscript(index: @lazy int32) -> int32 {
+        get { index() * 10 + index() }
+    }
+}
+
+func main() {
+    // 1. Free functions: lazy skipped, lazy twice, eager once (forward order).
+    var c1 = Counter { n: 0 }
+    var b1 = &c1
+    assert(skipOrEval(b1.step()) == 1 && c1.n == 0, "free lazy skips argument")
+    assert(skipOrEval(b1.step() == 1) == 2 && c1.n == 1, "free eager evaluates once")
+    assert(twiceOrEval(b1.step()) == 23 && c1.n == 3, "free lazy evaluates twice")
+    assert(twiceOrEval(b1.step() == 4) == 99 && c1.n == 4, "free eager evaluates once after twice")
+
+    // 2. Reversed declaration order preserves exact behavior.
+    var c2 = Counter { n: 0 }
+    var b2 = &c2
+    assert(skipOrEvalRev(b2.step()) == 1 && c2.n == 0, "reversed free lazy skips argument")
+    assert(skipOrEvalRev(b2.step() == 1) == 2 && c2.n == 1, "reversed free eager evaluates once")
+    assert(twiceOrEvalRev(b2.step()) == 23 && c2.n == 3, "reversed free lazy evaluates twice")
+    assert(twiceOrEvalRev(b2.step() == 4) == 99 && c2.n == 4, "reversed free eager evaluates once")
+
+    // 3. Instance methods in both declaration orders.
+    var c3 = Counter { n: 0 }
+    var b3 = &c3
+    fwd := Forward {}
+    assert(fwd.skip(b3.step()) == 1 && c3.n == 0, "method forward lazy skips")
+    assert(fwd.skip(b3.step() == 1) == 2 && c3.n == 1, "method forward eager once")
+    assert(fwd.twice(b3.step()) == 23 && c3.n == 3, "method forward lazy twice")
+    assert(fwd.twice(b3.step() == 4) == 99 && c3.n == 4, "method forward eager after twice")
+
+    var c4 = Counter { n: 0 }
+    var b4 = &c4
+    bwd := Backward {}
+    assert(bwd.skip(b4.step()) == 1 && c4.n == 0, "method backward lazy skips")
+    assert(bwd.skip(b4.step() == 1) == 2 && c4.n == 1, "method backward eager once")
+    assert(bwd.twice(b4.step()) == 23 && c4.n == 3, "method backward lazy twice")
+    assert(bwd.twice(b4.step() == 4) == 99 && c4.n == 4, "method backward eager after twice")
+
+    // 4. Instance method on &Counter using same counter in lazy argument.
+    var c5 = Counter { n: 0 }
+    var b5 = &c5
+    assert(b5.selfPick(b5.step()) == 12 && c5.n == 2, "self receiver with lazy twice")
+    assert(b5.selfPick(b5.step() == 3) == 42 && c5.n == 3, "self receiver with eager once")
+
+    // 5. Mixed eager + lazy source order.
+    var c6 = Counter { n: 0 }
+    var b6 = &c6
+    assert(ordered(b6.step(), b6.step(), b6.step()) == 123 && c6.n == 3, "eager args precede lazy forcing")
+    assert(ordered(b6.step(), b6.step() == 5, b6.step()) == 46 && c6.n == 6, "all eager args run left-to-right")
+    var c7 = Counter { n: 0 }
+    var b7 = &c7
+    assert(orderedSkip(b7.step(), b7.step(), b7.step()) == 12 && c7.n == 2, "skipped lazy arg leaves eager order intact")
+
+    // 6. Implicit conversions and ranking.
+    var c8 = Counter { n: 0 }
+    var b8 = &c8
+    assert(optOrBool(b8.step()) == 1 && c8.n == 1, "implicit optional wrap inside lazy overload")
+    assert(optOrBool(true) == 7 && c8.n == 1, "eager bool overload untouched")
+    assert(exactBeatsOpt(b8.step()) == 10 && c8.n == 1, "exact lazy beats optional eager and skips")
+    assert(exactBeatsOptRev(b8.step()) == 10 && c8.n == 1, "reversed exact lazy beats optional eager and skips")
+    assert(boxedOrBool(makeItem(b8)) == 2 && c8.n == 2, "implicit existential boxing inside lazy overload")
+    assert(boxedOrBool(true) == 5 && c8.n == 2, "eager bool overload alongside existential lazy")
+
+    // 7. Static methods, inherent-vs-interface methods, generic fallback, and nested/closure calls.
+    var c9 = Counter { n: 0 }
+    var b9 = &c9
+    assert(StaticDispatch::pick(b9.step()) == 3 && c9.n == 2, "static lazy twice")
+    assert(StaticDispatch::pick(b9.step() == 3) == 3 && c9.n == 3, "static eager once")
+    hybrid := Hybrid {}
+    assert(hybrid.choose(b9.step()) == 11 && c9.n == 3, "inherent lazy skips")
+    assert(hybrid.choose(b9.step() == 4) == 22 && c9.n == 4, "interface eager runs once")
+    assert(genericFallback(0_i32, b9.step()) == 5 && c9.n == 5, "generic lazy overload")
+    assert(genericFallback(true, b9.step() == 6) && c9.n == 6, "non-generic eager overload")
+    assert(skipOrEval(twiceOrEval(b9.step())) == 1 && c9.n == 6, "nested lazy overload skips inner call")
+    deferred := () => skipOrEval(b9.step())
+    assert(deferred() == 1 && c9.n == 6, "lazy overload inside closure skips evaluation")
+
+    // 8. Lazy closure return scope for single method, overloaded lazy, and overloaded eager calls.
+    assert(returnScopeMethod(ReturnGate {}, true) == "41", "single lazy method preserves closure return scope")
+    assert(returnScopeMethod(ReturnGate {}, false) == "7", "single lazy method evaluates else branch")
+    assert(returnScopeOverloadLazy(true) == "44", "overloaded lazy call preserves closure return scope")
+    assert(returnScopeOverloadLazy(false) == "77", "overloaded lazy call evaluates else branch")
+    assert(returnScopeOverloadEager(true) == "early", "overloaded eager call preserves enclosing return scope")
+    assert(returnScopeOverloadEager(false) == "2", "overloaded eager call evaluates else branch")
+    assert(returnScopeOptionalWrap(ReturnGate {}, true) == "41,42,43,44", "early returns keep implicit Optional wrap and shorthand")
+    assert(returnScopeOptionalWrap(ReturnGate {}, false) == "7,8,9,10", "else branches keep Optional values")
+    assert(propagateMethod(ReturnGate {}) == "expected", "postfix propagation uses lazy method return scope")
+    assert(propagateOverloadLazy() == "expected", "postfix propagation uses overloaded lazy return scope")
+    match propagateOverloadEager() {
+        case .err(msg) => assert(msg == "outer", "postfix propagation in eager overload uses enclosing return scope")
+        case .ok(_) => assert(false, "expected propagated error")
+    }
+
+    // 9. Lazy and overloaded native subscripts preserve side-effect behavior.
+    var c10 = Counter { n: 0 }
+    var b10 = &c10
+    var sub = LazySubscript { last: 0 }
+    assert(sub[b10.step()] == 42 && c10.n == 0, "lazy subscript getter skips unused index")
+    assert(sub[b10.step() == 1] == 77 && c10.n == 1, "eager subscript overload evaluates index once")
+    sub[b10.step()] = 9
+    assert(sub.last == 9 && c10.n == 1, "lazy subscript setter skips unused index")
+    twiceSub := TwiceSubscript {}
+    assert(twiceSub[b10.step()] == 23 && c10.n == 3, "lazy subscript getter can evaluate index twice")
+
+    println("lazy overloads")
+}

@@ -1,0 +1,4 @@
+error: no member named 'measure' found on type Boxed[int32]
+ -> language_tests/source_files/invalid/literal_receiver_requirement_same_type.tr:17:28
+	    n := Boxed { value: 0 }.measure() + 1
+	                            ^^^^^^^

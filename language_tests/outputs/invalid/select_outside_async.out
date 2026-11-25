@@ -1,0 +1,4 @@
+error: `select` can only be used inside an `async` function
+ -> language_tests/source_files/invalid/select_outside_async.tr:6:4
+	    select {
+	    ^^^^^^

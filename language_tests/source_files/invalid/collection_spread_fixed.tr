@@ -1,0 +1,4 @@
+func exact(_ values: List[int32]) -> [int32; 3] { [0, values...] }
+func ordinary(_ values: Span[int32]) {}
+func invalidCall(_ values: Span[int32]) { ordinary(values...) }
+func main() {}

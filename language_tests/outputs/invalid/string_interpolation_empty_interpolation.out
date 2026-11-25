@@ -1,0 +1,4 @@
+error: lexer error: string interpolation cannot be empty
+ -> language_tests/source_files/invalid/string_interpolation_empty_interpolation.tr:2:13
+	    var _ = "${}"
+	             ^^

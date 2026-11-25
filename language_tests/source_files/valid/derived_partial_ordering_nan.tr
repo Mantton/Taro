@@ -1,0 +1,37 @@
+// A struct with a double field can derive PartialOrd (but not Ord). A field
+// whose partialCmp is .none, such as a NaN, makes the whole result .none.
+struct Measurement: PartialEq, PartialOrd {
+    value: double
+    label: string
+}
+
+struct Reading: PartialEq, PartialOrd {
+    sensor: int32
+    measurement: Measurement
+}
+
+func describe(_ ordering: Optional[Ordering]) -> string {
+    match ordering {
+        case .some(.less) => "less"
+        case .some(.equal) => "equal"
+        case .some(.greater) => "greater"
+        case .none => "none"
+    }
+}
+
+func main() {
+    nan := 0.0 / 0.0
+    low := Measurement { value: 1.5, label: "b" }
+    high := Measurement { value: 2.5, label: "a" }
+    tie := Measurement { value: 1.5, label: "c" }
+    missing := Measurement { value: nan, label: "a" }
+    println("values: ${describe(low.partialCmp(high))} ${describe(high.partialCmp(low))} ${describe(low.partialCmp(tie))} ${describe(low.partialCmp(low))}")
+    println("nan: ${describe(missing.partialCmp(low))} ${describe(low.partialCmp(missing))} ${describe(missing.partialCmp(missing))}")
+    println("operators: ${low < high} ${missing < low} ${missing > low} ${missing <= missing} ${missing >= low}")
+
+    // A .none field stops the comparison before later fields.
+    first := Reading { sensor: 1, measurement: missing }
+    second := Reading { sensor: 1, measurement: low }
+    third := Reading { sensor: 2, measurement: missing }
+    println("nested: ${describe(first.partialCmp(second))} ${describe(first.partialCmp(third))} ${first < third}")
+}

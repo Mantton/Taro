@@ -1,0 +1,4 @@
+error: type 'Unweighted' does not conform to interface 'Weighted'
+ -> language_tests/source_files/invalid/some_parameter_constraints.tr:5:4
+	    weigh(Unweighted {})
+	    ^^^^^

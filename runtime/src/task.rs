@@ -21,6 +21,7 @@ thread_local! {
             inline_poll: std::cell::Cell::new(false),
             hold_next_spawn: std::cell::Cell::new(false),
             held_spawn: std::cell::Cell::new(None),
+            extra_held_spawns: std::cell::RefCell::new(Vec::new()),
         }
     };
 }
@@ -30,6 +31,7 @@ struct PolledTask {
     inline_poll: std::cell::Cell<bool>,
     hold_next_spawn: std::cell::Cell<bool>,
     held_spawn: std::cell::Cell<Option<crate::executor::TaskToken>>,
+    extra_held_spawns: std::cell::RefCell<Vec<crate::executor::TaskToken>>,
 }
 /// Keep the next task this poll spawns out of the queues, for a caller about to
 /// claim it with a wait that decides how it runs. Waking a peer for it would be
@@ -53,10 +55,38 @@ pub(crate) fn take_hold_next_spawn() -> bool {
     POLLED_TASK.with(|task| task.hold_next_spawn.replace(false))
 }
 pub(crate) fn set_held_spawn(token: crate::executor::TaskToken) {
-    POLLED_TASK.with(|task| task.held_spawn.set(Some(token)));
+    POLLED_TASK.with(|task| {
+        if task.held_spawn.get().is_none() {
+            task.held_spawn.set(Some(token));
+        } else {
+            task.extra_held_spawns.borrow_mut().push(token);
+        }
+    });
 }
 pub(crate) fn take_held_spawn() -> Option<crate::executor::TaskToken> {
-    POLLED_TASK.with(|task| task.held_spawn.take())
+    POLLED_TASK.with(|task| {
+        if let Some(extra) = task.extra_held_spawns.borrow_mut().pop() {
+            return Some(extra);
+        }
+        task.held_spawn.take()
+    })
+}
+pub(crate) fn claim_held_spawn(token: crate::executor::TaskToken) -> bool {
+    POLLED_TASK.with(|task| {
+        if task.held_spawn.get() == Some(token) {
+            task.held_spawn.set(None);
+            return true;
+        }
+        let mut extra = task.extra_held_spawns.borrow_mut();
+        if let Some(pos) = extra.iter().position(|&t| t == token) {
+            extra.remove(pos);
+            return true;
+        }
+        false
+    })
+}
+pub(crate) fn take_extra_held_spawns() -> Vec<crate::executor::TaskToken> {
+    POLLED_TASK.with(|task| std::mem::take(&mut *task.extra_held_spawns.borrow_mut()))
 }
 /// Clear anything a poll left behind, returning a task it never claimed.
 pub(crate) fn end_poll_holds() -> Option<crate::executor::TaskToken> {

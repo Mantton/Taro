@@ -1,0 +1,29 @@
+// `usize` conforms to two interfaces that both declare `pick`, one taking
+// int32 and one taking int64, so `pick(3)` on a `usize` is ambiguous. The
+// result of `(0..10).iter().count()` is known to be `usize` before the `3`
+// has a type, so the chain reports the same ambiguity as the two typed
+// spellings below it. The call used to wait for the range's own literal,
+// which let `3` default to int32 first and pick `Narrow`.
+interface Narrow {
+    func pick(_ n: int32) -> int32 {
+        32
+    }
+}
+
+interface Wide {
+    func pick(_ n: int64) -> int32 {
+        64
+    }
+}
+
+conform usize to Narrow {}
+conform usize to Wide {}
+
+func main() {
+    chained := (0..10).iter().count().pick(3)
+    var range: Range[int32] = 0..10
+    typedRange := range.iter().count().pick(3)
+    var n: usize = 10
+    typed := n.pick(3)
+    println("${chained} ${typedRange} ${typed}")
+}

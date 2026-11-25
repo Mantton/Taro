@@ -19,6 +19,7 @@ conform Bound to Ord {
 }
 conform Bound to Step {
     func stepForward() -> Self { Bound::new(self.number() + 1) }
+    func stepBackward() -> Self { Bound::new(self.number() - 1) }
 }
 
 func main() {
@@ -39,4 +40,16 @@ func main() {
     assert(singleton.next().isNone(), "singleton exhaustion")
     var descending = ClosedRange::new(Bound::new(3), Bound::new(1)).iter()
     assert(descending.next().isNone() && descending.next().isNone(), "descending closed range")
+
+    var backward = Range::new(Bound::new(1), Bound::new(3)).reversed()
+    last := backward.next().unwrap()
+    assert(last.number() == 2, "reversed exclusive range starts below end")
+    assert(backward.next().unwrap().number() == 1, "reversed exclusive range reaches start")
+    assert(backward.next().isNone() && backward.next().isNone(), "reversed exclusive exhaustion")
+    assert(last.number() == 2, "stepping back does not mutate previously yielded storage")
+
+    var closedBackward = ClosedRange::new(Bound::new(1), Bound::new(2)).reversed()
+    assert(closedBackward.next().unwrap().number() == 2, "reversed closed range starts at end")
+    assert(closedBackward.next().unwrap().number() == 1, "reversed closed range reaches start")
+    assert(closedBackward.next().isNone() && closedBackward.next().isNone(), "reversed closed exhaustion")
 }

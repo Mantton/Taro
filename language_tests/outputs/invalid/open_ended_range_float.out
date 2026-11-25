@@ -1,0 +1,4 @@
+error: type 'double' does not conform to interface 'Step'
+ -> language_tests/source_files/invalid/open_ended_range_float.tr:2:8
+	    _ = 0.0..
+	        ^^^^^

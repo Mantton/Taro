@@ -1,0 +1,3 @@
+func empty(_ n: int8) -> bool { n is 5..5 }
+func reversed(_ n: rune) -> bool { n is 'z'..='a' }
+func main() {}

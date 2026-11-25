@@ -19,3 +19,5 @@ public func makeNamed(_ value: string) -> some Named {
 public func preserveNamed[T: Named](_ value: T) -> some Named {
     value
 }
+
+public func readSome(_ value: some Named) -> string { value.name() }

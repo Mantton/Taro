@@ -1,0 +1,5 @@
+// Orderings are derived for structs and enums, not classes.
+final class Account: PartialEq, PartialOrd, Ord {
+    balance: int32
+}
+func main() {}

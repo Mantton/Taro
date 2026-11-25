@@ -1,0 +1,36 @@
+enum Day: RawValue[uint8] { case sunday = 8, monday = 1, tuesday, wednesday = 250 }
+enum Signed: RawValue[int8] { case zero, last = 127 }
+enum Wide: RawValue[uint64] { case highest = 18446744073709551615 }
+enum Dual: RawValue[uint8], RawValue[uint16] { case first = 5, last = 251 }
+enum Token[T]: RawValue[uint16] { case missing, known = 65000 }
+enum Empty: RawValue[int32] {}
+
+enum Manual { case data(int32) }
+conform Manual to RawValue[string] {
+    var rawValue: string { get { "manual" } }
+    static func from(rawValue value: string) -> Self? {
+        if value == "manual" { return .some(.data(42)) }
+        nil
+    }
+}
+enum Override: RawValue[uint8] { case first = 1, second = 2 }
+extend Override { var rawValue: uint8 { get { 77 } } }
+
+func read[R, T: RawValue[R]](_ value: T) -> R { value.rawValue }
+func from[R, T: RawValue[R]](_ raw: R) -> T? { T::from(rawValue: raw) }
+func main() {
+    assert(Day::monday.rawValue == 1 && Day::tuesday.rawValue == 2, "explicit and implicit values")
+    assert(Day::from(rawValue: 8).unwrap().rawValue == 8, "declaration order differs from raw order")
+    assert(Day::from(rawValue: 249).isNone() && Day::from(rawValue: 250).isSome(), "gap")
+    assert(Signed::from(rawValue: -1).isNone() && Signed::zero.rawValue == 0, "signed raw")
+    assert(Wide::from(rawValue: 18446744073709551615_u64).isSome(), "full-width raw")
+    assert(read[uint8, Dual](Dual::last) == 251, "narrow witness")
+    assert(read[uint16, Dual](from[uint16, Dual](5).unwrap()) == 5, "wide witness")
+    assert(Token[bool]::from(rawValue: 65000).unwrap().rawValue == 65000, "generic enum")
+    assert(Empty::from(rawValue: 0).isNone(), "empty enum")
+    var erased: any RawValue[uint8] = Day::wednesday
+    assert(erased.rawValue == 250, "erased getter")
+    assert(Manual::from(rawValue: "manual").unwrap().rawValue == "manual", "explicit witnesses")
+    assert(Override::from(rawValue: 2).unwrap().rawValue == 77, "explicit getter wins")
+    println("PASS")
+}

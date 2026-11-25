@@ -1,0 +1,26 @@
+interface Left { type Item; }
+interface Right { type Item; }
+struct Both {}
+conform Both to Left { type Item = int32; }
+conform Both to Right { type Item = string; }
+
+type Count = (Both as Left).Item
+type Label = (Both as Right).Item
+
+interface Refined: Left {}
+struct Child {}
+conform Child to Left { type Item = uint8; }
+conform Child to Refined {}
+type Tag = (Child as Refined).Item
+
+func identity[T: Left](_ model: T, _ value: (T as Left).Item) -> (T as Left).Item { value }
+func count[T: Left](_ model: T, _ item: (T as Left).Item) -> int32 where (T as Left).Item == int32 { item }
+
+func main() {
+    var number: Count = 7
+    var label: Label = "seven"
+    assert(identity(Both {}, number) == 7 && count(Both {}, number) == 7 && label == "seven", "qualified witnesses")
+    var tag: Tag = 3_u8
+    assert(tag == 3, "inherited associated type")
+    println("7 seven")
+}

@@ -1,0 +1,32 @@
+error: invalid @onUnsatisfied template: use {Self} for the type and {{ or }} for literal braces
+ -> language_tests/source_files/invalid/on_unsatisfied_attribute.tr:1:15
+	@onUnsatisfied("{Other} needs a ranking")
+	               ^^^^^^^^^^^^^^^^^^^^^^^^^
+error: invalid @onUnsatisfied template: use {Self} for the type and {{ or }} for literal braces
+ -> language_tests/source_files/invalid/on_unsatisfied_attribute.tr:3:15
+	@onUnsatisfied("{Self")
+	               ^^^^^^^
+error: invalid @onUnsatisfied template: use {Self} for the type and {{ or }} for literal braces
+ -> language_tests/source_files/invalid/on_unsatisfied_attribute.tr:5:15
+	@onUnsatisfied("dangling }")
+	               ^^^^^^^^^^^^
+error: @onUnsatisfied requires a nonempty message
+ -> language_tests/source_files/invalid/on_unsatisfied_attribute.tr:7:15
+	@onUnsatisfied("   ")
+	               ^^^^^
+error: @onUnsatisfied requires exactly one string literal
+ -> language_tests/source_files/invalid/on_unsatisfied_attribute.tr:9:0
+	@onUnsatisfied(flag)
+	^^^^^^^^^^^^^^^^^^^^
+error: @onUnsatisfied requires exactly one string literal
+ -> language_tests/source_files/invalid/on_unsatisfied_attribute.tr:11:0
+	@onUnsatisfied("one", "two")
+	^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+error: duplicate @onUnsatisfied on interface
+ -> language_tests/source_files/invalid/on_unsatisfied_attribute.tr:14:0
+	@onUnsatisfied("two")
+	^^^^^^^^^^^^^^^^^^^^^
+error: @onUnsatisfied is only allowed on interfaces
+ -> language_tests/source_files/invalid/on_unsatisfied_attribute.tr:16:0
+	@onUnsatisfied("incorrect target")
+	^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

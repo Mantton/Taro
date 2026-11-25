@@ -1,0 +1,25 @@
+// VET
+// A `:=` or `var` declaration that hides a local or parameter of the same
+// function, which is read after the declaration's scope ends, is reported
+// once at the inner name.
+func load(_ retries: int32, _ verbose: bool) -> int32 {
+    config := 1
+    if verbose {
+        config := 2
+        println("${config}")
+    }
+    for attempt in 0..retries {
+        var retries = attempt
+        retries += 1
+        println("${retries}")
+    }
+    {
+        { var config = 3; println("${config}") }
+    }
+    println("${config}")
+    return config + retries
+}
+
+func main() {
+    println("${load(1, true)}")
+}

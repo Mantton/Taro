@@ -1,0 +1,12 @@
+error: unsupported binary operator in constant expression
+ -> language_tests/source_files/invalid/enum_unit_constant_operations.tr:6:30
+	const CUSTOM_EQUALITY: bool = Choice::first == Choice::second
+	                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+error: initializer must be a constant expression
+ -> language_tests/source_files/invalid/enum_unit_constant_operations.tr:7:21
+	const CALL: Choice = Choice::payload(1)
+	                     ^^^^^^^^^^^^^^^^^^
+error: initializer must be a constant expression
+ -> language_tests/source_files/invalid/enum_unit_constant_operations.tr:8:25
+	const FUNCTION: Choice = Choice::payload
+	                         ^^^^^^^^^^^^^^^

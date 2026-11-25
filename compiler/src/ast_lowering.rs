@@ -1,3 +1,4 @@
+use crate::parse::escape;
 use crate::{
     ast::{self, Identifier},
     cfg::TargetInfo,
@@ -26,6 +27,14 @@ pub fn lower_package<'a, 'c>(
     Ok(hir::Package { root })
 }
 
+#[derive(Default, Clone, Copy)]
+enum LocationScope {
+    #[default]
+    Lexical,
+    DefaultArgument,
+    Caller([hir::NodeID; 3]),
+}
+
 pub struct Actor<'a, 'c> {
     pub context: GlobalContext<'c>,
     pub resolutions: &'a ResolutionOutput<'c>,
@@ -33,6 +42,7 @@ pub struct Actor<'a, 'c> {
     pub node_mapping: FxHashMap<ast::NodeID, hir::NodeID>,
     optional_unwrap_replacement: Option<OptionalUnwrapReplacement>,
     lowering_deferred_bracket: bool,
+    location_scope: LocationScope,
     target: TargetInfo,
 }
 
@@ -45,6 +55,7 @@ impl<'a, 'c> Actor<'a, 'c> {
             node_mapping: Default::default(),
             optional_unwrap_replacement: None,
             lowering_deferred_bracket: false,
+            location_scope: LocationScope::Lexical,
             target: crate::cfg_eval::target_info(context),
         }
     }
@@ -156,6 +167,12 @@ impl<'a, 'c> Actor<'a, 'c> {
     fn lower_declaration(&mut self, node: ast::Declaration) -> Vec<hir::Declaration> {
         // Check @cfg attributes - if any cfg condition fails, skip this declaration
         if !self.should_include_declaration(&node.attributes) {
+            // Resolution saw this declaration (a `@test` function outside
+            // `taro test`, say) but type checking will not, so its method
+            // calls cannot mark the interface imports they rely on.
+            crate::cfg_eval::note_removed(self.context, node.span, |collector| {
+                ast::AstVisitor::visit_declaration(collector, &node)
+            });
             return vec![];
         }
 
@@ -168,6 +185,7 @@ impl<'a, 'c> Actor<'a, 'c> {
             ..
         } = node;
 
+        let mut nested = Vec::new();
         let kind = match kind {
             ast::DeclarationKind::Interface(node) => {
                 hir::DeclarationKind::Interface(self.lower_interface(node))
@@ -183,8 +201,7 @@ impl<'a, 'c> Actor<'a, 'c> {
                 hir::DeclarationKind::TypeAlias(self.lower_alias(node))
             }
             ast::DeclarationKind::Function(node) => {
-                let span = node.signature.span;
-                hir::DeclarationKind::Function(self.lower_function(node, span))
+                hir::DeclarationKind::Function(self.lower_function(node, identifier.symbol))
             }
             ast::DeclarationKind::ExternBlock(node) => {
                 return node
@@ -208,16 +225,30 @@ impl<'a, 'c> Actor<'a, 'c> {
             ast::DeclarationKind::StaticVariable(node) => {
                 hir::DeclarationKind::StaticVariable(self.lower_static_variable(node))
             }
-            ast::DeclarationKind::Impl(node) => hir::DeclarationKind::Impl(self.lower_impl(node)),
+            ast::DeclarationKind::Impl(mut node) => {
+                let type_only = !node.nested_types.is_empty()
+                    && node.declarations.is_empty()
+                    && node.generics.type_parameters.is_none();
+                nested.extend(
+                    std::mem::take(&mut node.nested_types)
+                        .into_iter()
+                        .flat_map(|d| self.lower_declaration(d)),
+                );
+                if type_only {
+                    return nested;
+                }
+                hir::DeclarationKind::Impl(self.lower_impl(node))
+            }
         };
 
-        vec![hir::Declaration {
+        nested.push(hir::Declaration {
             id: self.definition_id(id),
             span,
             identifier,
             kind,
             attributes: self.lower_attributes(attributes),
-        }]
+        });
+        nested
     }
 
     /// Check if a declaration should be included based on @cfg attributes.
@@ -272,8 +303,7 @@ impl<'a, 'c> Actor<'a, 'c> {
                 if node.abi.is_none() {
                     node.abi = Some(abi);
                 }
-                let span = node.signature.span;
-                hir::DeclarationKind::Function(self.lower_function(node, span))
+                hir::DeclarationKind::Function(self.lower_function(node, identifier.symbol))
             }
             ast::ExternDeclarationKind::Type(_) => hir::DeclarationKind::OpaqueType,
         };
@@ -311,8 +341,7 @@ impl<'a, 'c> Actor<'a, 'c> {
                 hir::DeclarationKind::Import(self.lower_use_tree(node))
             }
             ast::FunctionDeclarationKind::Function(node) => {
-                let span = node.signature.span;
-                hir::DeclarationKind::Function(self.lower_function(node, span))
+                hir::DeclarationKind::Function(self.lower_function(node, identifier.symbol))
             }
             ast::FunctionDeclarationKind::Constant(node) => {
                 hir::DeclarationKind::Constant(self.lower_constant(node))
@@ -361,8 +390,7 @@ impl<'a, 'c> Actor<'a, 'c> {
                 hir::DeclarationKind::Export(self.lower_use_tree(node))
             }
             ast::NamespaceDeclarationKind::Function(node) => {
-                let span = node.signature.span;
-                hir::DeclarationKind::Function(self.lower_function(node, span))
+                hir::DeclarationKind::Function(self.lower_function(node, identifier.symbol))
             }
             ast::NamespaceDeclarationKind::StaticVariable(node) => {
                 hir::DeclarationKind::StaticVariable(self.lower_static_variable(node))
@@ -400,8 +428,7 @@ impl<'a, 'c> Actor<'a, 'c> {
         let kind = match kind {
             ast::AssociatedDeclarationKind::Initializer(initializer) => {
                 let function = initializer.function;
-                let span = function.signature.span;
-                let mut function = self.lower_function(function, span);
+                let mut function = self.lower_function(function, identifier.symbol);
                 function.initializer_kind = Some(hir::InitializerKind {
                     is_required: initializer.is_required,
                     is_convenience: initializer.is_convenience,
@@ -412,8 +439,9 @@ impl<'a, 'c> Actor<'a, 'c> {
                 hir::AssociatedDeclarationKind::Constant(self.lower_constant(node))
             }
             ast::AssociatedDeclarationKind::Function(node) => {
-                let span = node.signature.span;
-                hir::AssociatedDeclarationKind::Function(self.lower_function(node, span))
+                hir::AssociatedDeclarationKind::Function(
+                    self.lower_function(node, identifier.symbol),
+                )
             }
             ast::AssociatedDeclarationKind::AssociatedType(node) => {
                 hir::AssociatedDeclarationKind::Type(self.lower_alias(node))
@@ -466,6 +494,7 @@ impl Actor<'_, '_> {
             is_final: node.is_final,
         };
         let mut value = self.lower_struct(ast::Struct {
+            positional: false,
             generics: node.generics,
             fields: node.fields,
             conformances: node.conformances,
@@ -476,6 +505,7 @@ impl Actor<'_, '_> {
 
     fn lower_struct(&mut self, node: ast::Struct) -> hir::Struct {
         hir::Struct {
+            positional: node.positional,
             class_header: None,
             generics: self.lower_generics(node.generics),
             fields: node
@@ -720,19 +750,26 @@ impl<'a, 'c> Actor<'a, 'c> {
         }
     }
 
-    fn lower_function(&mut self, node: ast::Function, span: Span) -> hir::Function {
-        let abi = self.lower_abi(node.abi, span);
-        hir::Function {
+    fn lower_function(&mut self, node: ast::Function, name: Symbol) -> hir::Function {
+        if let Some(block) = &node.block {
+            self.context.dcx.register_function_span(block.span, name);
+        }
+        let enclosing_default = std::mem::take(&mut self.location_scope);
+        let abi = self.lower_abi(node.abi, node.signature.span);
+        let function = hir::Function {
             generics: self.lower_generics(node.generics),
             signature: self.lower_function_signature(node.signature),
             block: node.block.map(|n| self.lower_block(n)),
             is_unsafe: node.is_unsafe,
+            is_const: node.is_const,
             is_async: node.is_async,
             is_final: node.is_final,
             is_override: node.is_override,
             initializer_kind: None,
             abi,
-        }
+        };
+        self.location_scope = enclosing_default;
+        function
     }
 
     fn lower_abi(&mut self, abi: Option<Symbol>, span: Span) -> Option<hir::Abi> {
@@ -782,18 +819,40 @@ impl<'a, 'c> Actor<'a, 'c> {
             name,
             annotated_type,
             default_value,
+            is_lazy,
             is_variadic,
             span,
         } = node;
         let id = self.next_index();
         self.node_mapping.insert(node_id, id);
+        let attributes = self.lower_attributes(attributes);
+        let annotated_type = self.lower_type(annotated_type);
+        let enclosing_default =
+            std::mem::replace(&mut self.location_scope, LocationScope::DefaultArgument);
+        let default_value = default_value.map(|n| {
+            let expr = self.lower_expression(n);
+            if is_lazy {
+                let def = self
+                    .context
+                    .allocate_synthetic_id(self.context.package_index());
+                Box::new(hir::Expression::lazy_argument(self.next_index(), def, expr))
+            } else {
+                expr
+            }
+        });
+        let caller_bindings = match std::mem::replace(&mut self.location_scope, enclosing_default) {
+            LocationScope::Caller(bindings) => Some(bindings),
+            _ => None,
+        };
         hir::FunctionParameter {
             id,
-            attributes: self.lower_attributes(attributes),
+            attributes,
             label,
             name,
-            annotated_type: self.lower_type(annotated_type),
-            default_value: default_value.map(|n| self.lower_expression(n)),
+            annotated_type,
+            default_value,
+            caller_bindings,
+            is_lazy,
             is_variadic,
             span,
         }
@@ -805,6 +864,7 @@ impl Actor<'_, '_> {
         hir::Impl {
             generics: self.lower_generics(node.generics),
             interface: node.interface.map(|ty| self.lower_type(ty)),
+            delegate: node.delegate,
             target: self.lower_type(node.target),
             declarations: node
                 .declarations
@@ -847,6 +907,7 @@ impl Actor<'_, '_> {
 
     fn lower_type_parameter(&mut self, node: ast::TypeParameter) -> hir::TypeParameter {
         hir::TypeParameter {
+            is_anonymous: node.is_anonymous,
             id: self.definition_id(node.id),
             span: node.span,
             identifier: node.identifier,
@@ -953,9 +1014,9 @@ impl Actor<'_, '_> {
             ast::TypeKind::Pointer(ty, mt) => hir::TypeKind::Pointer(self.lower_type(ty), mt),
             ast::TypeKind::Reference(ty) => hir::TypeKind::Reference(self.lower_type(ty)),
             ast::TypeKind::Parenthesis(ty) => return self.lower_type(ty),
-            ast::TypeKind::Tuple(items) => {
+            ast::TypeKind::Tuple(items, labels) => {
                 let items = items.into_iter().map(|n| self.lower_type(n)).collect();
-                hir::TypeKind::Tuple(items)
+                hir::TypeKind::Tuple(items, labels)
             }
             ast::TypeKind::Array { size, element } => hir::TypeKind::Array {
                 size: self.lower_anon_const(size),
@@ -1004,17 +1065,26 @@ impl Actor<'_, '_> {
                     .collect(),
                 output: self.lower_type(output),
             },
-            ast::TypeKind::ImplicitSelf => {
-                let resolution = self.get_resolution(node.id);
+            ast::TypeKind::ImplicitSelf | ast::TypeKind::AnonymousParameter(..) => {
+                let (resolution, identifier) = match node.kind {
+                    ast::TypeKind::AnonymousParameter(id, name) => (
+                        hir::Resolution::Definition(
+                            self.definition_id(id),
+                            hir::DefinitionKind::TypeParameter,
+                        ),
+                        name,
+                    ),
+                    _ => (
+                        self.get_resolution(node.id),
+                        Identifier::new(self.context.intern_symbol("Self"), node.span),
+                    ),
+                };
                 let path = hir::Path {
                     span: node.span,
                     resolution: resolution.clone(),
                     segments: vec![hir::PathSegment {
                         id: self.next_index(),
-                        identifier: Identifier {
-                            symbol: self.context.intern_symbol("Self"),
-                            span: node.span,
-                        },
+                        identifier,
                         arguments: None,
                         span: node.span,
                         resolution,
@@ -1137,6 +1207,19 @@ impl Actor<'_, '_> {
                     .collect(),
                 span,
             ),
+            ast::PatternKind::At { binding, pattern } => hir::PatternKind::At {
+                binding: Box::new(self.lower_pattern(*binding)),
+                pattern: Box::new(self.lower_pattern(*pattern)),
+            },
+            ast::PatternKind::TypeTest { target, binding } => hir::PatternKind::TypeTest {
+                target: self.lower_type(target),
+                binding: binding.map(|p| Box::new(self.lower_pattern(*p))),
+            },
+            ast::PatternKind::Range { start, end, inclusive } => hir::PatternKind::Range {
+                start: self.lower_expression(start),
+                end: self.lower_expression(end),
+                inclusive,
+            },
             ast::PatternKind::Literal(expr) => {
                 let value = *expr.value;
                 let (kind, negative) = match value.kind {
@@ -1199,18 +1282,20 @@ impl Actor<'_, '_> {
             None => None,
         };
 
+        let id = self.next_index();
+        let mut lowered = Vec::with_capacity(statements.len());
+        for statement in statements {
+            self.lower_statement(statement, &mut lowered);
+        }
         hir::Block {
-            id: self.next_index(),
-            statements: statements
-                .into_iter()
-                .map(|n| self.lower_statement(n))
-                .collect(),
+            id,
+            statements: lowered,
             tail: tail_expr.map(|expr| self.lower_expression(expr)),
             span: node.span,
         }
     }
 
-    fn lower_statement(&mut self, node: ast::Statement) -> hir::Statement {
+    fn lower_statement(&mut self, node: ast::Statement, statements: &mut Vec<hir::Statement>) {
         let kind = match node.kind {
             ast::StatementKind::Declaration(node) => {
                 hir::StatementKind::Declaration(self.lower_function_declaration(node))
@@ -1220,6 +1305,18 @@ impl Actor<'_, '_> {
             }
             ast::StatementKind::Variable(local) => {
                 hir::StatementKind::Variable(self.lower_local(local))
+            }
+            ast::StatementKind::Using(local) => {
+                let local = self.lower_local(local);
+                let hir::PatternKind::Binding { name } = local.pattern.kind else {
+                    unreachable!("using requires a named binding")
+                };
+                let binding = local.pattern.id;
+                statements.push(self.mk_statement(hir::StatementKind::Variable(local), node.span));
+                self.lower_using_cleanup(name, binding)
+            }
+            ast::StatementKind::AsyncVariable(local) => {
+                hir::StatementKind::Variable(self.lower_async_local(local, node.span))
             }
             ast::StatementKind::Loop { label, block } => hir::StatementKind::Loop {
                 label,
@@ -1241,8 +1338,13 @@ impl Actor<'_, '_> {
                 */
                 let condition = self.lower_expression(condition);
                 let then_block = self.lower_block(block);
-                let break_expr =
-                    self.mk_expression(hir::ExpressionKind::Break { label: None }, node.span);
+                let break_expr = self.mk_expression(
+                    hir::ExpressionKind::Break {
+                        label: None,
+                        value: None,
+                    },
+                    node.span,
+                );
                 let break_statement =
                     self.mk_statement(hir::StatementKind::Expression(break_expr), node.span);
                 let else_block = self.mk_block(vec![break_statement], node.span);
@@ -1261,11 +1363,10 @@ impl Actor<'_, '_> {
                 let block = self.mk_block(vec![core_statement], node.span);
                 hir::StatementKind::Loop { label, block }
             }
-            ast::StatementKind::For(for_stmt) => {
-                let stmt_kind = self.lower_for_statement(for_stmt, node.span);
-                return self.mk_statement(stmt_kind, node.span);
+            ast::StatementKind::For(for_stmt) => self.lower_for_statement(for_stmt, node.span),
+            ast::StatementKind::Defer(kind, node) => {
+                hir::StatementKind::Defer(kind, self.lower_block(node))
             }
-            ast::StatementKind::Defer(node) => hir::StatementKind::Defer(self.lower_block(node)),
             ast::StatementKind::Guard {
                 condition,
                 else_block,
@@ -1273,12 +1374,61 @@ impl Actor<'_, '_> {
                 condition: self.lower_expression(condition),
                 else_block: self.lower_block(else_block),
             },
+            ast::StatementKind::ComptimeFor {
+                pattern,
+                target_type,
+                body,
+            } => hir::StatementKind::ComptimeFor {
+                pattern: self.lower_pattern(pattern),
+                target_type: self.lower_type(target_type),
+                body: self.lower_block(body),
+            },
+            ast::StatementKind::ComptimeIf {
+                condition,
+                then_block,
+                else_block,
+            } => hir::StatementKind::ComptimeIf {
+                condition: self.lower_expression(condition),
+                then_block: self.lower_block(then_block),
+                else_block: else_block.map(|b| self.lower_block(b)),
+            },
         };
-        hir::Statement {
+        statements.push(self.mk_statement(kind, node.span));
+    }
+
+    /// Register cleanup in the binding's lexical scope, after its initializer completes.
+    /// The resolved binding and qualified call survive local shadowing and inherent methods.
+    fn lower_using_cleanup(
+        &mut self,
+        name: Identifier,
+        binding: hir::NodeID,
+    ) -> hir::StatementKind {
+        let span = name.span;
+        let path = self.mk_single_segment_resolved_path(name, Resolution::LocalVariable(binding));
+        let receiver = self.mk_expression(hir::ExpressionKind::Path(path), span);
+        let close = self.mk_expression(
+            hir::ExpressionKind::MethodCall {
+                interface: Some(StdItem::Closeable),
+                receiver,
+                name: Identifier::new(self.context.intern_symbol("close"), span),
+                arguments: Vec::new(),
+            },
+            span,
+        );
+        let discard = hir::Local {
             id: self.next_index(),
-            kind,
-            span: node.span,
-        }
+            mutability: hir::Mutability::Mutable,
+            pattern: hir::Pattern {
+                id: self.next_index(),
+                kind: hir::PatternKind::Wildcard,
+                span,
+            },
+            ty: None,
+            initializer: Some(close),
+            is_async: false,
+        };
+        let statement = self.mk_statement(hir::StatementKind::Variable(discard), span);
+        hir::StatementKind::Defer(hir::DeferKind::Always, self.mk_block(vec![statement], span))
     }
 }
 
@@ -1382,6 +1532,7 @@ impl Actor<'_, '_> {
                 },
                 ty: None,
                 initializer: Some(collection),
+                is_async: false,
             };
             outer_statements
                 .push(self.mk_statement(hir::StatementKind::Variable(values_local), span));
@@ -1410,6 +1561,8 @@ impl Actor<'_, '_> {
             collection,
             span,
         );
+        self.context
+            .register_for_loop_iter_call(make_iterator_call.id, node.is_await);
 
         let iter_local = hir::Local {
             id: self.next_index(),
@@ -1417,6 +1570,7 @@ impl Actor<'_, '_> {
             pattern: iter_pattern,
             ty: None,
             initializer: Some(make_iterator_call),
+            is_async: false,
         };
 
         // 3. Create __for_iter.next() call
@@ -1455,6 +1609,7 @@ impl Actor<'_, '_> {
             } else {
                 next_call
             }),
+            is_async: false,
         };
 
         // 5. Lower the user's pattern from the for loop
@@ -1525,7 +1680,13 @@ impl Actor<'_, '_> {
         };
 
         // Arm 2: case Optional.none => break
-        let break_expr = self.mk_expression(hir::ExpressionKind::Break { label: None }, span);
+        let break_expr = self.mk_expression(
+            hir::ExpressionKind::Break {
+                label: None,
+                value: None,
+            },
+            span,
+        );
         let break_stmt = self.mk_statement(hir::StatementKind::Expression(break_expr), span);
         let break_block = self.mk_block(vec![break_stmt], span);
         let none_arm = hir::MatchArm {
@@ -1561,10 +1722,37 @@ impl Actor<'_, '_> {
             block: loop_block,
         };
 
-        // 11. Create outer block: { var __for_iter = ...; loop { ... } }
+        // 11. Create outer block: { var __for_iter = ...; defer { Iterator::close(__for_iter) }; loop { ... } }
         let iter_stmt = self.mk_statement(hir::StatementKind::Variable(iter_local), span);
+        outer_statements.push(iter_stmt);
+        {
+            let close_iter_path = self.mk_single_segment_resolved_path(
+                iter_ident,
+                Resolution::LocalVariable(iter_pattern_id),
+            );
+            let close_iter_expr =
+                self.mk_expression(hir::ExpressionKind::Path(close_iter_path), span);
+            let close_method_name = if node.is_await {
+                "close"
+            } else {
+                "closeIterator"
+            };
+            let close_call = self.lower_language_method_call(
+                iterator_std_item,
+                iterator_interface_name,
+                close_method_name,
+                close_iter_expr,
+                span,
+            );
+            let close_stmt = self.mk_statement(hir::StatementKind::Expression(close_call), span);
+            let defer_block = self.mk_block(vec![close_stmt], span);
+            outer_statements.push(self.mk_statement(
+                hir::StatementKind::Defer(hir::DeferKind::Always, defer_block),
+                span,
+            ));
+        }
         let loop_stmt = self.mk_statement(loop_stmt_kind, span);
-        outer_statements.extend([iter_stmt, loop_stmt]);
+        outer_statements.push(loop_stmt);
         let outer_block = self.mk_block(outer_statements, span);
 
         hir::StatementKind::Expression(
@@ -1696,6 +1884,9 @@ impl Actor<'_, '_> {
                 let index = self.lower_expression_arguments(index);
                 self.index_expression(target, index)
             }
+            ast::ExpressionKind::Spread(source) => {
+                hir::ExpressionKind::Spread(self.lower_expression(source))
+            }
             ast::ExpressionKind::Array(nodes) => hir::ExpressionKind::Array(
                 nodes
                     .into_iter()
@@ -1706,11 +1897,12 @@ impl Actor<'_, '_> {
                 value: self.lower_expression(value),
                 count: self.lower_anon_const(count),
             },
-            ast::ExpressionKind::Tuple(nodes) => hir::ExpressionKind::Tuple(
+            ast::ExpressionKind::Tuple(nodes, labels) => hir::ExpressionKind::Tuple(
                 nodes
                     .into_iter()
                     .map(|expr| self.lower_expression(expr))
                     .collect(),
+                labels,
             ),
             ast::ExpressionKind::If(node) => {
                 hir::ExpressionKind::If(self.lower_if_expression(node))
@@ -1718,10 +1910,31 @@ impl Actor<'_, '_> {
             ast::ExpressionKind::Match(node) => {
                 hir::ExpressionKind::Match(self.lower_match_expression(node))
             }
+            ast::ExpressionKind::Select(node) => {
+                hir::ExpressionKind::Select(self.lower_select_expression(node))
+            }
+            ast::ExpressionKind::Loop { label, block } => hir::ExpressionKind::Loop {
+                label,
+                block: self.lower_block(block),
+            },
             ast::ExpressionKind::Return { value } => hir::ExpressionKind::Return {
                 value: value.map(|expr| self.lower_expression(expr)),
             },
-            ast::ExpressionKind::Break { label } => hir::ExpressionKind::Break { label },
+            ast::ExpressionKind::Break { label, value } => {
+                if let Some(&resolved_label) =
+                    self.resolutions.break_label_resolutions.get(&node.id)
+                {
+                    hir::ExpressionKind::Break {
+                        label: Some(resolved_label),
+                        value: None,
+                    }
+                } else {
+                    hir::ExpressionKind::Break {
+                        label: if value.is_some() { None } else { label },
+                        value: value.map(|expr| self.lower_expression(expr)),
+                    }
+                }
+            }
             ast::ExpressionKind::Continue { label } => hir::ExpressionKind::Continue { label },
             ast::ExpressionKind::Call(node, args) => self.lower_call(node, args),
             ast::ExpressionKind::Reference(node) => {
@@ -1758,8 +1971,12 @@ impl Actor<'_, '_> {
                 self.lower_expression(rhs),
             ),
             ast::ExpressionKind::Assign(lhs, rhs) => {
-                hir::ExpressionKind::Assign(self.lower_expression(lhs), self.lower_expression(rhs))
+                hir::ExpressionKind::Assign(self.lower_assignee(lhs), self.lower_expression(rhs))
             }
+            ast::ExpressionKind::AssignOptional(lhs, rhs) => hir::ExpressionKind::AssignOptional(
+                self.lower_expression(lhs),
+                self.lower_expression(rhs),
+            ),
             ast::ExpressionKind::Parenthesis(node) => {
                 return self.lower_expression(node);
             }
@@ -1775,7 +1992,7 @@ impl Actor<'_, '_> {
             ast::ExpressionKind::Pipe(lhs, rhs) => {
                 return self.lower_pipe_expression(lhs, rhs, node.span);
             }
-            ast::ExpressionKind::PatternBinding(node) => {
+            ast::ExpressionKind::PatternBinding(node) | ast::ExpressionKind::PatternIs(node) => {
                 let source = hir::MatchSource::user(hir::MatchKind::Match);
                 hir::ExpressionKind::PatternBinding(
                     self.lower_pattern_binding_condition(node, source),
@@ -1818,23 +2035,34 @@ impl Actor<'_, '_> {
                 hir::ExpressionKind::UnsafeBlock(self.lower_block(block))
             }
             ast::ExpressionKind::Range(lhs, rhs, inclusive) => {
-                // `1..10`
-                let foundational = if inclusive {
-                    StdItem::ClosedRange
-                } else {
-                    StdItem::Range
+                // `a..b`, `a..=b`, `a..`, `..b`, `..=b`, `..`
+                let (foundational, bounds) = match (lhs, rhs, inclusive) {
+                    (Some(lhs), Some(rhs), false) => (StdItem::Range, vec![lhs, rhs]),
+                    (Some(lhs), Some(rhs), true) => (StdItem::ClosedRange, vec![lhs, rhs]),
+                    (Some(lhs), None, false) => (StdItem::RangeFrom, vec![lhs]),
+                    (None, Some(rhs), false) => (StdItem::RangeTo, vec![rhs]),
+                    (None, Some(rhs), true) => (StdItem::RangeToInclusive, vec![rhs]),
+                    (None, None, false) => (StdItem::RangeFull, vec![]),
+                    _ => {
+                        self.context.dcx().emit_error(
+                            "inclusive range requires an upper bound".into(),
+                            Some(node.span),
+                        );
+                        return self.mk_expression(hir::ExpressionKind::Malformed, node.span);
+                    }
                 };
 
-                let lhs = self.lower_expression(lhs);
-                let rhs = self.lower_expression(rhs);
                 let factory = self.mk_foundation_factory(foundational, node.span);
 
-                let arguments = vec![lhs, rhs]
+                let arguments = bounds
                     .into_iter()
-                    .map(|node| hir::ExpressionArgument {
-                        label: None,
-                        span: node.span,
-                        expression: node,
+                    .map(|bound| {
+                        let expression = self.lower_expression(bound);
+                        hir::ExpressionArgument {
+                            label: None,
+                            span: expression.span,
+                            expression,
+                        }
                     })
                     .collect();
 
@@ -1893,6 +2121,7 @@ impl Actor<'_, '_> {
                     pattern,
                     ty: Some(dictionary_local_ty),
                     initializer: Some(initializer),
+                    is_async: false,
                 };
 
                 // Use the pattern ID for local variable resolution (not the Local's ID)
@@ -1935,6 +2164,7 @@ impl Actor<'_, '_> {
 
                     let call = self.mk_expression(
                         hir::ExpressionKind::MethodCall {
+                            interface: None,
                             receiver: target,
                             name: insert_ident,
                             arguments,
@@ -2019,13 +2249,49 @@ impl Actor<'_, '_> {
                 let base = struct_literal.base.map(|base| self.lower_expression(base));
                 hir::ExpressionKind::StructLiteral(hir::StructLiteral { path, fields, base })
             }
+            ast::ExpressionKind::Embed { path, bytes } => {
+                match self.context.read_embedded(node.span.file, &path, bytes) {
+                    Ok(literal) => hir::ExpressionKind::Literal(literal),
+                    Err(message) => {
+                        self.context.dcx.emit_error(message, Some(node.span));
+                        hir::ExpressionKind::Malformed
+                    }
+                }
+            }
+            ast::ExpressionKind::SourceLocation(location) => {
+                if matches!(self.location_scope, LocationScope::DefaultArgument) {
+                    self.location_scope =
+                        LocationScope::Caller(std::array::from_fn(|_| self.next_index()));
+                }
+                match self.location_scope {
+                    LocationScope::Caller(bindings) => {
+                        let name = Identifier::new(
+                            self.context.intern_symbol(location.parameter_name()),
+                            node.span,
+                        );
+                        hir::ExpressionKind::Path(self.mk_single_segment_resolved_path(
+                            name,
+                            Resolution::LocalVariable(bindings[location as usize]),
+                        ))
+                    }
+                    _ => hir::ExpressionKind::Literal(
+                        self.context.source_location(location, node.span),
+                    ),
+                }
+            }
             ast::ExpressionKind::CfgCheck(cfg_expr) => {
                 // Evaluate the cfg expression at compile time
                 let result = self.evaluate_cfg_expr(&cfg_expr);
                 hir::ExpressionKind::Literal(hir::Literal::Bool(result))
             }
+            ast::ExpressionKind::TypeName(ty) => {
+                hir::ExpressionKind::TypeName(self.lower_type(ty))
+            }
             ast::ExpressionKind::Await(expr) => {
                 hir::ExpressionKind::Await(self.lower_expression(expr))
+            }
+            ast::ExpressionKind::Yield(expr) => {
+                hir::ExpressionKind::Yield(self.lower_expression(expr))
             }
         };
 
@@ -2273,10 +2539,19 @@ impl Actor<'_, '_> {
         args: Vec<ast::ExpressionArgument>,
     ) -> Vec<hir::ExpressionArgument> {
         args.into_iter()
-            .map(|arg| hir::ExpressionArgument {
-                label: arg.label,
-                expression: self.lower_expression(arg.expression),
-                span: arg.span,
+            .map(|arg| {
+                let expression = self.lower_expression(arg.expression);
+                if arg.interpolated {
+                    self.context.mark_interpolation_argument(expression.id);
+                }
+                if arg.is_trailing_closure {
+                    self.context.mark_trailing_closure_argument(expression.id);
+                }
+                hir::ExpressionArgument {
+                    label: arg.label,
+                    expression,
+                    span: arg.span,
+                }
             })
             .collect()
     }
@@ -2306,7 +2581,11 @@ impl Actor<'_, '_> {
                 let pattern = hir::Pattern {
                     id,
                     span: param.span,
-                    kind: hir::PatternKind::Binding { name: param.name },
+                    kind: if param.name.symbol.as_str() == "_" {
+                        hir::PatternKind::Wildcard
+                    } else {
+                        hir::PatternKind::Binding { name: param.name }
+                    },
                 };
 
                 hir::ClosureParam {
@@ -2333,6 +2612,7 @@ impl Actor<'_, '_> {
             params,
             return_ty,
             is_async: closure.is_async,
+            implicit_await: false,
             body,
             snapshot_captures: false,
             span,
@@ -2525,6 +2805,7 @@ impl Actor<'_, '_> {
             };
 
             hir::ExpressionKind::MethodCall {
+                interface: None,
                 receiver: target,
                 name,
                 arguments: args,
@@ -2535,6 +2816,25 @@ impl Actor<'_, '_> {
                 arguments: args,
             }
         }
+    }
+
+    /// Only assignees (`_ = value` and tuple leaves) interpret `_` as a
+    /// discard. Other wildcard expressions retain their ordinary
+    /// pipe-placeholder validation.
+    fn lower_assignee(&mut self, node: Box<ast::Expression>) -> Box<hir::Expression> {
+        let kind = match node.kind {
+            ast::ExpressionKind::Tuple(items, labels) => hir::ExpressionKind::Tuple(
+                items
+                    .into_iter()
+                    .map(|item| self.lower_assignee(item))
+                    .collect(),
+                labels,
+            ),
+            ast::ExpressionKind::Parenthesis(inner) => return self.lower_assignee(inner),
+            ast::ExpressionKind::Wildcard => hir::ExpressionKind::Discard,
+            _ => return self.lower_expression(node),
+        };
+        self.mk_expression(kind, node.span)
     }
 
     fn lower_pipe_expression(
@@ -2563,6 +2863,8 @@ impl Actor<'_, '_> {
                     label: None,
                     expression: lhs,
                     span: lhs_span,
+                    interpolated: false,
+                    is_trailing_closure: false,
                 },
             );
         }
@@ -2600,6 +2902,7 @@ impl Actor<'_, '_> {
     fn lower_field_definition(&mut self, node: ast::FieldDefinition) -> hir::FieldDefinition {
         hir::FieldDefinition {
             def_id: self.definition_id(node.id),
+            attributes: self.lower_attributes(node.attributes),
             default_value: node.default_value.map(|expr| self.lower_expression(expr)),
             mutability: node.mutability,
             label: node.label,
@@ -2704,6 +3007,43 @@ impl Actor<'_, '_> {
         }
     }
 
+    fn lower_select_expression(&mut self, node: ast::SelectExpression) -> hir::SelectExpression {
+        let arms = node
+            .arms
+            .into_iter()
+            .map(|arm| {
+                let op_body = self.lower_expression(arm.operation);
+                let op_span = op_body.span;
+                let def_id = self
+                    .context
+                    .allocate_synthetic_id(self.context.package_index());
+                let operation = self.mk_expression(
+                    hir::ExpressionKind::Closure(hir::ClosureExpr {
+                        def_id,
+                        params: Vec::new(),
+                        return_ty: None,
+                        is_async: true,
+                        implicit_await: true,
+                        body: op_body,
+                        snapshot_captures: false,
+                        span: op_span,
+                    }),
+                    op_span,
+                );
+                hir::SelectArm {
+                    pattern: self.lower_pattern(arm.pattern),
+                    operation,
+                    body: self.lower_expression(arm.body),
+                    span: arm.span,
+                }
+            })
+            .collect();
+        hir::SelectExpression {
+            arms,
+            kw_span: node.kw_span,
+        }
+    }
+
     fn lower_local(&mut self, node: ast::Local) -> hir::Local {
         let id = self.next_index();
         self.node_mapping.insert(node.id, id);
@@ -2714,6 +3054,45 @@ impl Actor<'_, '_> {
             pattern: self.lower_pattern(node.pattern),
             ty: node.ty.map(|n| self.lower_type(n)),
             initializer: node.initializer.map(|n| self.lower_expression(n)),
+            is_async: false,
+        }
+    }
+
+    fn lower_async_local(&mut self, node: ast::Local, span: Span) -> hir::Local {
+        let id = self.next_index();
+        self.node_mapping.insert(node.id, id);
+
+        let pattern = self.lower_pattern(node.pattern);
+        let ty = node.ty.map(|n| self.lower_type(n));
+        let body = self.lower_expression(
+            node.initializer
+                .expect("parser guarantees async var has an initializer"),
+        );
+        let init_span = body.span;
+        let def_id = self
+            .context
+            .allocate_synthetic_id(self.context.package_index());
+        let closure = self.mk_expression(
+            hir::ExpressionKind::Closure(hir::ClosureExpr {
+                def_id,
+                params: Vec::new(),
+                return_ty: None,
+                is_async: true,
+                implicit_await: true,
+                body,
+                snapshot_captures: false,
+                span: init_span,
+            }),
+            span,
+        );
+
+        hir::Local {
+            id,
+            mutability: hir::Mutability::Immutable,
+            pattern,
+            ty,
+            initializer: Some(closure),
+            is_async: true,
         }
     }
 
@@ -3021,26 +3400,46 @@ impl Actor<'_, '_> {
                 }
                 None
             }
-            ast::ExpressionKind::Specialize { target, .. }
-            | ast::ExpressionKind::Parenthesis(target) => {
+            ast::ExpressionKind::Index { target, index } => self
+                .find_outer_optional_unwrap(target, skip_id)
+                .or_else(|| {
+                    index
+                        .iter()
+                        .find_map(|arg| self.find_outer_optional_unwrap(&arg.expression, skip_id))
+                }),
+            ast::ExpressionKind::Specialize { target, index, .. } => self
+                .find_outer_optional_unwrap(target, skip_id)
+                .or_else(|| {
+                    index.as_deref().and_then(|args| {
+                        args.iter()
+                            .find_map(|arg| self.find_outer_optional_unwrap(&arg.expression, skip_id))
+                    })
+                }),
+            ast::ExpressionKind::Parenthesis(target) => {
                 self.find_outer_optional_unwrap(target, skip_id)
             }
             ast::ExpressionKind::Binary(_, lhs, rhs)
             | ast::ExpressionKind::Assign(lhs, rhs)
-            | ast::ExpressionKind::AssignOp(_, lhs, rhs) => self
+            | ast::ExpressionKind::AssignOp(_, lhs, rhs)
+            | ast::ExpressionKind::AssignOptional(lhs, rhs) => self
                 .find_outer_optional_unwrap(lhs, skip_id)
                 .or_else(|| self.find_outer_optional_unwrap(rhs, skip_id)),
             ast::ExpressionKind::Unary(_, rhs)
+            | ast::ExpressionKind::Spread(rhs)
             | ast::ExpressionKind::Reference(rhs)
             | ast::ExpressionKind::Dereference(rhs)
             | ast::ExpressionKind::Propagate(rhs) => self.find_outer_optional_unwrap(rhs, skip_id),
-            ast::ExpressionKind::Range(lhs, rhs, _) => self
-                .find_outer_optional_unwrap(lhs, skip_id)
-                .or_else(|| self.find_outer_optional_unwrap(rhs, skip_id)),
+            ast::ExpressionKind::Range(lhs, rhs, _) => lhs
+                .as_deref()
+                .and_then(|e| self.find_outer_optional_unwrap(e, skip_id))
+                .or_else(|| {
+                    rhs.as_deref()
+                        .and_then(|e| self.find_outer_optional_unwrap(e, skip_id))
+                }),
             ast::ExpressionKind::Array(items) => items
                 .iter()
                 .find_map(|item| self.find_outer_optional_unwrap(item, skip_id)),
-            ast::ExpressionKind::Tuple(items) => items
+            ast::ExpressionKind::Tuple(items, _) => items
                 .iter()
                 .find_map(|item| self.find_outer_optional_unwrap(item, skip_id)),
             ast::ExpressionKind::If(node) => self
@@ -3088,11 +3487,7 @@ fn convert_ast_literal(
                 .map_err(|err| format!("malformed rune, {:?}", err))?;
             Ok(hir::Literal::Rune(c))
         }
-        ast::Literal::String { value } => {
-            let value = escape::unescape_str(&value)
-                .map_err(|err| format!("malformed string, {:?}", err))?;
-            Ok(hir::Literal::String(gcx.intern_symbol(&value)))
-        }
+        ast::Literal::String { value } => Ok(hir::Literal::String(gcx.intern_symbol(&value))),
         ast::Literal::Integer {
             value,
             base,
@@ -3133,167 +3528,6 @@ fn negate_literal(literal: &mut hir::Literal) -> bool {
         _ => return false,
     }
     true
-}
-
-mod escape {
-    /// Errors in rune and string literal contents.
-    #[derive(Debug, PartialEq, Eq)]
-    pub enum EscapeError {
-        /// Expected 1 char, but 0 were found.
-        ZeroChars,
-        /// Expected 1 char, but more than 1 were found.
-        MoreThanOneChar,
-
-        /// Escaped '\' character without continuation.
-        LoneSlash,
-        /// Invalid escape character (e.g. '\z').
-        InvalidEscape,
-        /// Raw '\r' encountered.
-        BareCarriageReturn,
-        /// Unescaped character that was expected to be escaped (e.g. raw '\t').
-        EscapeOnlyChar,
-
-        /// Numeric character escape is too short (e.g. '\x1').
-        TooShortHexEscape,
-        /// Invalid character in numeric escape (e.g. '\xz')
-        InvalidCharInHexEscape,
-        /// Character code in numeric escape is non-ascii (e.g. '\xFF').
-        OutOfRangeHexEscape,
-
-        /// '\u' not followed by '{'.
-        NoBraceInUnicodeEscape,
-        /// Non-hexadecimal value in '\u{..}'.
-        InvalidCharInUnicodeEscape,
-        /// '\u{}'
-        EmptyUnicodeEscape,
-        /// No closing brace in '\u{..}', e.g. '\u{12'.
-        UnclosedUnicodeEscape,
-        /// '\u{_12}'
-        LeadingUnderscoreUnicodeEscape,
-        /// More than 6 characters in '\u{..}', e.g. '\u{10FFFF_FF}'
-        OverlongUnicodeEscape,
-        /// Invalid in-bound unicode character code, e.g. '\u{DFFF}'.
-        LoneSurrogateUnicodeEscape,
-        /// Out of bounds unicode character code, e.g. '\u{FFFFFF}'.
-        OutOfRangeUnicodeEscape,
-    }
-
-    /// Takes a contents of a char literal (without quotes), and returns an
-    /// unescaped char or an error.
-    pub fn unescape_char(src: &str) -> Result<char, EscapeError> {
-        let mut chars = src.chars();
-        let c = chars.next().ok_or(EscapeError::ZeroChars)?;
-        let result = match c {
-            '\\' => scan_escape(&mut chars),
-            '\n' | '\t' | '\'' => Err(EscapeError::EscapeOnlyChar),
-            '\r' => Err(EscapeError::BareCarriageReturn),
-            _ => Ok(c),
-        }?;
-        if chars.next().is_some() {
-            return Err(EscapeError::MoreThanOneChar);
-        }
-        Ok(result)
-    }
-
-    /// Takes a contents of a string literal (without quotes), and returns the
-    /// unescaped string or an error.
-    pub fn unescape_str(src: &str) -> Result<String, EscapeError> {
-        let mut out = String::with_capacity(src.len());
-        let mut chars = src.chars();
-        while let Some(c) = chars.next() {
-            let c = match c {
-                '\\' => scan_escape(&mut chars)?,
-                '\r' => return Err(EscapeError::BareCarriageReturn),
-                _ => c,
-            };
-            out.push(c);
-        }
-        Ok(out)
-    }
-
-    fn scan_escape(chars: &mut std::str::Chars<'_>) -> Result<char, EscapeError> {
-        // Previous character was '\\', unescape what follows.
-        let res: char = match chars.next().ok_or(EscapeError::LoneSlash)? {
-            '"' => '"',
-            'n' => '\n',
-            'r' => '\r',
-            't' => '\t',
-            '\\' => '\\',
-            '\'' => '\'',
-            '0' => '\0',
-            'x' => {
-                // Parse hexadecimal character code.
-
-                let hi = chars.next().ok_or(EscapeError::TooShortHexEscape)?;
-                let hi = hi.to_digit(16).ok_or(EscapeError::InvalidCharInHexEscape)?;
-
-                let lo = chars.next().ok_or(EscapeError::TooShortHexEscape)?;
-                let lo = lo.to_digit(16).ok_or(EscapeError::InvalidCharInHexEscape)?;
-
-                let value = (hi * 16 + lo) as u8;
-
-                return if !value.is_ascii() {
-                    Err(EscapeError::OutOfRangeHexEscape)
-                } else {
-                    Ok(char::from(value))
-                };
-            }
-            'u' => return scan_unicode(chars),
-            _ => return Err(EscapeError::InvalidEscape),
-        };
-        Ok(res)
-    }
-
-    fn scan_unicode(chars: &mut std::str::Chars<'_>) -> Result<char, EscapeError> {
-        // We've parsed '\u', now we have to parse '{..}'.
-
-        if chars.next() != Some('{') {
-            return Err(EscapeError::NoBraceInUnicodeEscape);
-        }
-
-        // First character must be a hexadecimal digit.
-        let mut n_digits = 1;
-        let mut value: u32 = match chars.next().ok_or(EscapeError::UnclosedUnicodeEscape)? {
-            '_' => return Err(EscapeError::LeadingUnderscoreUnicodeEscape),
-            '}' => return Err(EscapeError::EmptyUnicodeEscape),
-            c => c
-                .to_digit(16)
-                .ok_or(EscapeError::InvalidCharInUnicodeEscape)?,
-        };
-
-        // First character is valid, now parse the rest of the number
-        // and closing brace.
-        loop {
-            match chars.next() {
-                None => return Err(EscapeError::UnclosedUnicodeEscape),
-                Some('_') => continue,
-                Some('}') => {
-                    if n_digits > 6 {
-                        return Err(EscapeError::OverlongUnicodeEscape);
-                    }
-
-                    break std::char::from_u32(value).ok_or({
-                        if value > 0x10FFFF {
-                            EscapeError::OutOfRangeUnicodeEscape
-                        } else {
-                            EscapeError::LoneSurrogateUnicodeEscape
-                        }
-                    });
-                }
-                Some(c) => {
-                    let digit: u32 = c
-                        .to_digit(16)
-                        .ok_or(EscapeError::InvalidCharInUnicodeEscape)?;
-                    n_digits += 1;
-                    if n_digits > 6 {
-                        // Stop updating value since we're sure that it's incorrect already.
-                        continue;
-                    }
-                    value = value * 16 + digit;
-                }
-            };
-        }
-    }
 }
 
 #[cfg(test)]

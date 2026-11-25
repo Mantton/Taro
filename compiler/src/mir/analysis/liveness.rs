@@ -236,6 +236,9 @@ pub(crate) fn transfer_terminator(
             }
             use_operand(value, live);
         }
+        TerminatorKind::GeneratorYield { value, .. } => {
+            use_operand(value, live);
+        }
         TerminatorKind::Return => {
             live.insert(return_local);
         }
@@ -504,6 +507,11 @@ fn terminator_initialization_edges(
             if let Some(failed) = no_result {
                 edges.push((*failed, initialized));
             }
+            (suspended, edges)
+        }
+        TerminatorKind::GeneratorYield { resume, cancel, .. } => {
+            let suspended = initialized.clone();
+            let edges = vec![(*resume, initialized.clone()), (*cancel, initialized)];
             (suspended, edges)
         }
         TerminatorKind::Return

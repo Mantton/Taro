@@ -27,6 +27,7 @@ impl<'ctx> Gcx<'ctx> {
     ) -> DefinitionID {
         let parent_count = GenericsBuilder::identity_for_item(self, context).len();
         let parameter = GenericParameterDefinition {
+            is_anonymous: false,
             id: self.allocate_synthetic_id(self.package_index()),
             name: self.intern_symbol("OpenedSelf"),
             index: parent_count,
@@ -106,19 +107,15 @@ impl<'ctx> Gcx<'ctx> {
         let span = self.definition_ident(method).span;
         for (index, provider) in defaults {
             let default_id = self.allocate_synthetic_id(self.package_index());
-            let output =
-                instantiate_signature_with_args(self, self.get_signature(provider), arguments)
-                    .output;
             let default_signature =
                 self.store
                     .arenas
                     .function_signatures
-                    .alloc(LabeledFunctionSignature {
-                        inputs: vec![],
-                        output,
-                        is_variadic: false,
-                        abi: None,
-                    });
+                    .alloc(instantiate_signature_with_args(
+                        self,
+                        self.get_signature(provider),
+                        arguments,
+                    ));
             self.register_synthetic_definition(
                 default_id,
                 SyntheticDefinition {

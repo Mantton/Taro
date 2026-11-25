@@ -47,6 +47,7 @@ pub(crate) fn minimal_body<'ctx>(gcx: Gcx<'ctx>) -> Body<'ctx> {
         return_local,
         phase: MirPhase::Built,
         is_async: false,
+        generator_element_ty: None,
     }
 }
 

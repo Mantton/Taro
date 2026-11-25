@@ -1,0 +1,6 @@
+[package]
+name = "github.com/example/nested-types-app"
+kind = "executable"
+
+[require]
+"github.com/example/nested-types-dep" = { path = "../dep", alias = "dep" }

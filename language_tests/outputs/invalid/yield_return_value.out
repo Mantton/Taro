@@ -1,0 +1,4 @@
+error: generator functions cannot `return` a value; use `yield` to produce elements and bare `return` to finish
+ -> language_tests/source_files/invalid/yield_return_value.tr:3:4
+	    return 2
+	    ^^^^^^^^

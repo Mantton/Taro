@@ -1,0 +1,53 @@
+// Binding `prime` early leaves `Boxed[{integer}]: A` pending. That must not
+// make `A` the only interface a later lookup on the same receiver sees:
+// Boxed[int32] also conforms to `B`, which declares `pick` too, so `b.pick()`
+// is ambiguous, as it is when the receiver's type is written out.
+struct Boxed[T] {
+    value: T
+}
+
+interface A {
+    func prime() -> usize
+    func pick() -> usize
+}
+
+interface B {
+    func pick() -> usize
+}
+
+conform Boxed[int32] to A {
+    func prime() -> usize {
+        1
+    }
+    func pick() -> usize {
+        10
+    }
+}
+
+conform Boxed[int32] to B {
+    func pick() -> usize {
+        20
+    }
+}
+
+func literal() -> usize {
+    compute := () => {
+        var b = Boxed { value: 0 }
+        p := b.prime()
+        return p + b.pick()
+    }
+    return compute()
+}
+
+func typed() -> usize {
+    compute := () => {
+        var b: Boxed[int32] = Boxed { value: 0 }
+        p := b.prime()
+        return p + b.pick()
+    }
+    return compute()
+}
+
+func main() {
+    println("${literal()} ${typed()}")
+}

@@ -1,0 +1,98 @@
+// A method call on a receiver whose type still waits for its own literal
+// default (`Box { v: 0 }`, `0..100`) is resolved only after that default.
+// Its argument literals must still take the parameter's type instead of
+// defaulting to int32 together with the receiver.
+struct Box[T] {
+    v: T
+}
+
+interface Takes {
+    func takeIt(_ n: usize) -> usize {
+        n
+    }
+
+    func both(_ a: usize, _ b: uint8) -> usize {
+        a + b as usize
+    }
+
+    func half(_ x: float) -> float {
+        x / 2.0
+    }
+
+    func sizeOfArgument[V](_ x: V) -> usize {
+        std::mem::sizeOf[V]()
+    }
+
+    func echo[V](_ x: V) -> V {
+        printf("echo argument size %d\n", std::mem::sizeOf[V]())
+        x
+    }
+
+    func pick(_ n: int32) -> int32 {
+        32
+    }
+}
+
+interface TakesWide {
+    func pick(_ n: int64) -> int32 {
+        64
+    }
+}
+
+conform[T] Box[T] to Takes {}
+conform[T] Box[T] to TakesWide {}
+
+extend[T] Box[T] {
+    func inherent(_ n: usize) -> usize {
+        n
+    }
+}
+
+func sizeOfValue[V](_ x: V) -> usize {
+    std::mem::sizeOf[V]()
+}
+
+func main() {
+    // The reported form: inherent, typed receiver, and interface default.
+    printf(
+        "%d %d %d\n",
+        Box { v: 0 }.inherent(3),
+        Box[int32] { v: 0 }.takeIt(3),
+        Box { v: 0 }.takeIt(3),
+    )
+
+    // Only usize holds this literal; int32 would reject it.
+    printf("%d\n", Box { v: 0 }.takeIt(5_000_000_000))
+
+    // Float receiver, and a float argument literal.
+    printf("%d %v\n", Box { v: 1.5 }.takeIt(4), Box { v: 0 }.half(5.0) as double)
+
+    // Two literal arguments of different types.
+    printf("%d\n", Box { v: 0 }.both(3, 250))
+
+    // Nested deferred calls.
+    printf("%d\n", Box { v: 0 }.takeIt(Box { v: 0.5 }.takeIt(7)))
+
+    // Range receivers through iterator adapters.
+    var total: int32 = 0
+    for value in (0..100).iter().skip(97) {
+        total += value
+    }
+    printf("%d\n", total)
+    for value in (0..10).reversed().take(2) {
+        printf("%d ", value)
+    }
+    for value in (0..=10).iter().stepBy(5) {
+        printf("%d ", value)
+    }
+    printf("\n")
+
+    // Defaults that must not change: the receiver literals, literals that
+    // only meet a generic parameter, a generic result consumed by a cast,
+    // and an overloaded requirement (int32 and int64 candidates).
+    printf("%d %d\n", sizeOfValue(Box { v: 0 }), sizeOfValue(Box { v: 0.5 }))
+    printf("%d %d\n", Box { v: 0 }.sizeOfArgument(3), Box { v: 0 }.sizeOfArgument(2.5))
+    printf("%d\n", sizeOfValue(Box { v: 0 }.echo(7)))
+    printf("%d\n", Box { v: 0 }.echo(5) as int64)
+    printf("%d\n", Box { v: 0 }.pick(3))
+}

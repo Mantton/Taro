@@ -1,4 +1,0 @@
-error: lexer error: f-string contains an unmatched '}' (use '}}' for a literal brace)
- -> language_tests/source_files/invalid/fstring_unmatched_brace.tr:2:12
-	    var _ = f"value=}"
-	            ^^^^^^^^

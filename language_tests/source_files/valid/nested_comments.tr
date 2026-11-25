@@ -7,7 +7,7 @@ func main() {
     value := 40 /* outer /* inner */ tail */ + 2
     /* " /* Delimiters count even inside apparent quotes. */ " */
     assert(value == 42, "nested comments between tokens")
-    formatted := f"{value /* outer /* inner */ tail */}"
+    formatted := "${value /* outer /* inner */ tail */}"
     assert(formatted == "42", "nested comments inside interpolation")
     print("PASS: nested comments\n")
 }

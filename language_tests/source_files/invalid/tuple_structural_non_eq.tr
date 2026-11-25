@@ -1,0 +1,7 @@
+struct Opaque { x: int32 }
+
+func main() {
+    a := (Opaque { x: 1 }, 2)
+    b := (Opaque { x: 1 }, 2)
+    _ = a == b
+}

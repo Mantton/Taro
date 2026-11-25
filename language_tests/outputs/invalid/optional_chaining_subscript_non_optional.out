@@ -1,0 +1,4 @@
+error: optional unwrap requires an Optional value, found 'List[int32]'
+ -> language_tests/source_files/invalid/optional_chaining_subscript_non_optional.tr:3:8
+	    _ = items?.[0]
+	        ^^^^^

@@ -1,0 +1,4 @@
+// A Result entry point must use `()` as its success type.
+func main() -> Result[int32, string] {
+    return .ok(0)
+}

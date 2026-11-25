@@ -1,0 +1,28 @@
+struct Limits {}
+extend Limits { const MIN: int8 = -8; const MAX: int8 = 8; }
+enum Sample { case number(int8); case marker }
+type Small = int8
+
+func inside(_ sample: &Sample) -> bool { sample is .number(Limits::MIN..Limits::MAX) }
+func unicodeHalf(_ c: rune) -> int32 {
+    match c {
+        case '\u{0}'..='\u{D7FF}' => 1
+        case '\u{E000}'..='\u{10FFFF}' => 2
+    }
+}
+func next(_ calls: &int32) -> Small { *calls += 1; return -1 }
+func main() {
+    var s: Sample = .number(-8)
+    assert(inside(&s), "reference and nested lower boundary")
+    s = .number(8)
+    assert(!inside(&s), "exclusive upper boundary")
+    var calls: int32 = 0
+    assert(next(&calls) is -4..=0 && calls == 1, "one scrutinee evaluation")
+    assert(unicodeHalf('\u{D7FF}') == 1 && unicodeHalf('\u{E000}') == 2, "surrogates excluded")
+    var values: List[int64] = [5000000000_i64, 1_i64]
+    selected := values.filter(x => x is 4999999999..=5000000000)
+    assert(selected.len() == 1, "contextual int64 predicate")
+    if case Limits::MIN..=Limits::MAX = next(&calls) {} else { panic("if case") }
+    assert(calls == 2, "one conditional lookup")
+    println("structure")
+}

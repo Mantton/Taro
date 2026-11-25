@@ -1,0 +1,4 @@
+error: type 'Pair[Plain]' does not conform to interface 'Debug'
+ -> language_tests/source_files/invalid/derived_debug_generic_instantiation.tr:7:17
+	    var broken = debugString(Pair[Plain] { first: Plain { value: 1 }, second: Plain { value: 2 } })
+	                 ^^^^^^^^^^^

@@ -152,9 +152,11 @@ pub(in crate::thir::synthesize) fn synthesize_class<'ctx>(
     let decoded_fields: Vec<_> = fields
         .iter()
         .filter(|field| {
-            field.default_provider.is_none() || field.mutability == crate::hir::Mutability::Mutable
+            !field.coding_skip
+                && (field.default_provider.is_none()
+                    || field.mutability == crate::hir::Mutability::Mutable)
         })
-        .map(|field| (field.name, field.ty))
+        .map(|field| (field.coding_key.unwrap_or(field.name), field.ty))
         .collect();
     let decoded = decoder.decode_fields(codec, &decoded_fields, &mut statements);
     let mut decoded = decoded.into_iter();
@@ -181,13 +183,21 @@ pub(in crate::thir::synthesize) fn synthesize_class<'ctx>(
     }
     let prefix = values.len();
     for (index, (field, default)) in fields.iter().zip(defaults).enumerate() {
-        let expression =
-            if field.mutability == crate::hir::Mutability::Immutable && default.is_some() {
-                let (local, ty) = default.unwrap();
+        let expression = if field.coding_skip {
+            if let Some((local, ty)) = default {
                 decoder.read(local, ty)
             } else {
-                decoded.next().expect("decoded stored field").expression
-            };
+                let value = decoder.skipped_field_value(field, class_args);
+                let (statement, local) = decoder.bind(value, false);
+                statements.push(statement);
+                decoder.read(local, field.ty)
+            }
+        } else if field.mutability == crate::hir::Mutability::Immutable && default.is_some() {
+            let (local, ty) = default.unwrap();
+            decoder.read(local, ty)
+        } else {
+            decoded.next().expect("decoded stored field").expression
+        };
         values.push(FieldExpression {
             index: FieldIndex::from_usize(prefix + index),
             expression,

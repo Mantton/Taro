@@ -1,0 +1,6 @@
+interface Marker {}
+struct Bad {}
+struct Box[T] { value: T }
+extend[T: Marker] Box[T] { const COUNT: usize = 4; }
+struct Storage { bytes: [uint8; Box[Bad]::COUNT] }
+func main() {}

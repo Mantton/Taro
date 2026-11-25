@@ -1,0 +1,4 @@
+error: type 'Bad' does not conform to interface 'Marker'
+ -> language_tests/source_files/invalid/inherent_constant_bound.tr:5:32
+	struct Storage { bytes: [uint8; Box[Bad]::COUNT] }
+	                                ^^^^^^^^^^^^^^^

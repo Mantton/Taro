@@ -33,15 +33,16 @@ pub fn run(
     require_executable: bool,
     emit: BuildEmit,
     lto: Lto,
+    explain_allocations: bool,
 ) -> Result<Option<std::path::PathBuf>, ReportedError> {
     if let Err(message) = validate_build_modes(emit, lto) {
         eprintln!("error: {message}");
         return Err(ReportedError);
     }
     if arguments.is_single_file() {
-        run_single_file(arguments, emit, lto)
+        run_single_file(arguments, emit, lto, explain_allocations)
     } else {
-        run_package(arguments, require_executable, emit, lto)
+        run_package(arguments, require_executable, emit, lto, explain_allocations)
     }
 }
 
@@ -58,6 +59,7 @@ fn run_single_file(
     arguments: CommonCompileArgs,
     emit: BuildEmit,
     lto: Lto,
+    explain_allocations: bool,
 ) -> Result<Option<std::path::PathBuf>, ReportedError> {
     let mut compile_options = arguments.compile_mode_options();
     compile_options.codegen.artifact = emit.module_artifact_kind(lto);
@@ -96,7 +98,7 @@ fn run_single_file(
         .unwrap_or_else(|| default_script_bitcode_output(&cwd, file_stem));
 
     // Create target directory based on file path hash
-    let target_root = script_target_dir(&file_path, profile_dir);
+    let target_root = script_target_dir(&file_path, &profile_dir);
     std::fs::create_dir_all(&target_root).map_err(|e| {
         eprintln!(
             "error: failed to create target directory '{}': {}",
@@ -161,6 +163,7 @@ fn run_single_file(
         harness_mode: HarnessMode::None,
         std_mode: StdMode::FullStd,
         is_std_provider: false,
+        lint_warnings: true,
     });
 
     let mut compiler = Compiler::new(&icx, config);
@@ -177,6 +180,7 @@ fn run_single_file(
                 ReportedError
             })?;
 
+    compiler.context.begin_allocation_report(explain_allocations);
     let reused = if incremental_enabled {
         match metadata::try_load_package_metadata(
             compiler.context,
@@ -215,7 +219,7 @@ fn run_single_file(
         false
     };
 
-    if reused {
+    let result = if reused {
         match emit {
             BuildEmit::Link => link_emitted_modules(compiler.context, lto, incremental_enabled),
             BuildEmit::LlvmBitcode => {
@@ -252,7 +256,9 @@ fn run_single_file(
         } else {
             Ok(output)
         }
-    }
+    };
+    compiler.context.print_allocation_report();
+    result
 }
 
 fn run_package(
@@ -260,6 +266,7 @@ fn run_package(
     require_executable: bool,
     emit: BuildEmit,
     lto: Lto,
+    explain_allocations: bool,
 ) -> Result<Option<std::path::PathBuf>, ReportedError> {
     let mut compile_options = arguments.compile_mode_options();
     compile_options.codegen.artifact = emit.module_artifact_kind(lto);
@@ -415,9 +422,7 @@ fn run_package(
             is_script: false,
             profile: compile_options.profile,
             codegen: compile_options.codegen,
-            // std intentionally relies on wrapping arithmetic (e.g. SipHash)
-            // and always compiles without overflow checks, like attached std.
-            overflow_checks: compile_options.overflow_checks && !is_std_package,
+            overflow_checks: compile_options.overflow_checks,
             debug: DebugOptions {
                 dump_mir: arguments.dump_mir,
                 dump_llvm: arguments.dump_llvm,
@@ -431,6 +436,7 @@ fn run_package(
                 StdMode::FullStd
             },
             is_std_provider: is_std_package,
+            lint_warnings: is_root,
         });
 
         let fingerprint_input =
@@ -452,6 +458,7 @@ fn run_package(
         } else {
             ReuseMode::CodegenDependency
         };
+        compiler.context.begin_allocation_report(explain_allocations);
         let can_attempt_reuse = incremental_enabled;
         let reused = if can_attempt_reuse {
             match metadata::try_load_package_metadata(
@@ -562,9 +569,10 @@ fn run_package(
             exe_path
         };
 
+        compiler.context.print_allocation_report();
         package_fingerprints.insert(
             config.identifier.to_string(),
-            fingerprint_input.package_fingerprint,
+            compiler.context.fingerprint_with_embedded_inputs(fingerprint_input.package_fingerprint),
         );
 
         if exe_path.is_some() {
@@ -865,12 +873,24 @@ pub fn run_test_mode(arguments: TestArgs) -> Result<Option<std::path::PathBuf>, 
         arguments.normalized_test_filter(),
         arguments.normalized_test_tags(),
     );
+    let coverage = arguments.coverage;
     let arguments = arguments.common;
 
     if arguments.is_single_file() {
-        run_single_file_harness(arguments, HarnessBuild::Test(&selection))
+        run_single_file_harness(arguments, HarnessBuild::Test(&selection, coverage))
     } else {
-        run_package_harness(arguments, HarnessBuild::Test(&selection))
+        run_package_harness(arguments, HarnessBuild::Test(&selection, coverage))
+    }
+}
+
+pub fn run_fuzz_mode(
+    arguments: CommonCompileArgs,
+    target_name: &str,
+) -> Result<Option<std::path::PathBuf>, ReportedError> {
+    if arguments.is_single_file() {
+        run_single_file_harness(arguments, HarnessBuild::Fuzz(target_name))
+    } else {
+        run_package_harness(arguments, HarnessBuild::Fuzz(target_name))
     }
 }
 
@@ -890,22 +910,40 @@ pub fn run_bench_mode(
 
 #[derive(Clone, Copy)]
 enum HarnessBuild<'a> {
-    Test(&'a TestSelection),
+    Test(&'a TestSelection, bool),
     Bench(&'a BenchmarkSelection),
+    Fuzz(&'a str),
 }
 
 impl HarnessBuild<'_> {
     const fn mode(self) -> HarnessMode {
         match self {
-            Self::Test(_) => HarnessMode::Test,
+            Self::Test(_, _) => HarnessMode::Test,
             Self::Bench(_) => HarnessMode::Bench,
+            Self::Fuzz(_) => HarnessMode::Fuzz,
+        }
+    }
+
+    const fn coverage(self) -> bool {
+        match self {
+            Self::Test(_, coverage) => coverage,
+            Self::Bench(_) | Self::Fuzz(_) => false,
+        }
+    }
+
+    const fn profile_suffix(self) -> &'static str {
+        match self {
+            Self::Test(_, true) => "-coverage",
+            Self::Fuzz(_) => "-fuzz",
+            Self::Test(_, false) | Self::Bench(_) => "",
         }
     }
 
     const fn plural_label(self) -> &'static str {
         match self {
-            Self::Test(_) => "tests",
+            Self::Test(_, _) => "tests",
             Self::Bench(_) => "benchmarks",
+            Self::Fuzz(_) => "fuzz target",
         }
     }
 
@@ -916,7 +954,7 @@ impl HarnessBuild<'_> {
         package_fingerprints: &FxHashMap<String, String>,
     ) -> Result<metadata::PackageFingerprintInput, String> {
         match self {
-            Self::Test(selection) => {
+            Self::Test(selection, _) => {
                 incremental::compute_package_fingerprint_input_with_test_selection(
                     context,
                     config,
@@ -929,13 +967,20 @@ impl HarnessBuild<'_> {
                 config,
                 package_fingerprints,
             ),
+            Self::Fuzz(target) => incremental::compute_package_fingerprint_input_with_fuzz_target(
+                context,
+                config,
+                package_fingerprints,
+                target,
+            ),
         }
     }
 
     fn compile(self, compiler: &mut Compiler<'_>) -> Result<Option<PathBuf>, ReportedError> {
         match self {
-            Self::Test(selection) => compiler.test(selection),
+            Self::Test(selection, _) => compiler.test(selection),
             Self::Bench(selection) => compiler.bench(selection),
+            Self::Fuzz(target) => compiler.fuzz(target),
         }
     }
 }
@@ -945,7 +990,12 @@ fn run_single_file_harness(
     harness: HarnessBuild<'_>,
 ) -> Result<Option<std::path::PathBuf>, ReportedError> {
     let compile_options = arguments.compile_mode_options();
-    let profile_dir = profile_dir_name(compile_options.profile);
+    let coverage = harness.coverage();
+    let profile_dir = format!(
+        "{}{}",
+        profile_dir_name(compile_options.profile),
+        harness.profile_suffix()
+    );
     let cwd = std::env::current_dir().map_err(|e| {
         eprintln!("error: failed to get current directory: {}", e);
         ReportedError
@@ -973,7 +1023,7 @@ fn run_single_file_harness(
             ReportedError
         })?;
 
-    let target_root = script_target_dir(&file_path, profile_dir);
+    let target_root = script_target_dir(&file_path, &profile_dir);
     std::fs::create_dir_all(&target_root).map_err(|e| {
         eprintln!(
             "error: failed to create target directory '{}': {}",
@@ -1008,6 +1058,8 @@ fn run_single_file_harness(
     let mut dependencies = FxHashMap::default();
     dependencies.insert("std".into(), "std".into());
 
+    let mut root_codegen = compile_options.codegen;
+    root_codegen.coverage = coverage;
     let config = icx.store.arenas.configs.alloc(Config {
         name: file_stem.into(),
         identifier: format!("script-{}", file_stem).into(),
@@ -1019,7 +1071,7 @@ fn run_single_file_harness(
         no_std_prelude: false,
         is_script: true,
         profile: compile_options.profile,
-        codegen: compile_options.codegen,
+        codegen: root_codegen,
         overflow_checks: compile_options.overflow_checks,
         debug: DebugOptions {
             dump_mir: arguments.dump_mir,
@@ -1030,6 +1082,7 @@ fn run_single_file_harness(
         harness_mode: harness.mode(),
         std_mode: StdMode::FullStd,
         is_std_provider: false,
+        lint_warnings: true,
     });
 
     let mut compiler = Compiler::new(&icx, config);
@@ -1121,7 +1174,12 @@ fn run_package_harness(
     harness: HarnessBuild<'_>,
 ) -> Result<Option<std::path::PathBuf>, ReportedError> {
     let compile_options = arguments.compile_mode_options();
-    let profile_dir = profile_dir_name(compile_options.profile);
+    let coverage = harness.coverage();
+    let profile_dir = format!(
+        "{}{}",
+        profile_dir_name(compile_options.profile),
+        harness.profile_suffix()
+    );
     let cwd = std::env::current_dir().map_err(|e| {
         eprintln!("error: failed to get current directory: {}", e);
         ReportedError
@@ -1257,6 +1315,9 @@ fn run_package_harness(
             package.kind
         };
 
+        let mut pkg_codegen = compile_options.codegen;
+        pkg_codegen.coverage = is_root && coverage;
+
         let config = icx.store.arenas.configs.alloc(Config {
             name,
             identifier,
@@ -1268,10 +1329,8 @@ fn run_package_harness(
             no_std_prelude: package.no_std_prelude,
             is_script: false,
             profile: compile_options.profile,
-            codegen: compile_options.codegen,
-            // std intentionally relies on wrapping arithmetic (e.g. SipHash)
-            // and always compiles without overflow checks, like attached std.
-            overflow_checks: compile_options.overflow_checks && !is_std_package,
+            codegen: pkg_codegen,
+            overflow_checks: compile_options.overflow_checks,
             debug: DebugOptions {
                 dump_mir: arguments.dump_mir,
                 dump_llvm: arguments.dump_llvm,
@@ -1285,6 +1344,7 @@ fn run_package_harness(
                 StdMode::FullStd
             },
             is_std_provider: is_std_package,
+            lint_warnings: is_root,
         });
 
         let fingerprint_input = if is_root {
@@ -1412,7 +1472,7 @@ fn run_package_harness(
 
         package_fingerprints.insert(
             config.identifier.to_string(),
-            fingerprint_input.package_fingerprint,
+            compiler.context.fingerprint_with_embedded_inputs(fingerprint_input.package_fingerprint),
         );
 
         if exe_path.is_some() {

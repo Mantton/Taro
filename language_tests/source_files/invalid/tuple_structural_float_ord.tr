@@ -1,0 +1,6 @@
+import std::collections::PriorityQueue
+
+func main() {
+    var pq = PriorityQueue[(double, int32)]::new()
+    pq.push((1.0, 2))
+}

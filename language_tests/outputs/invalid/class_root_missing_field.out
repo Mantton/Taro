@@ -1,3 +1,7 @@
+warning: unused variable 'document'; prefix it with '_' if this is intended
+ -> language_tests/source_files/invalid/class_root_missing_field.tr:3:18
+	func main() { var document: Document = Document() }
+	                  ^^^^^^^^
 error: constructor can complete with uninitialized fields
  -> language_tests/source_files/invalid/class_root_missing_field.tr:2:22
 	extend Document { init() { self.revision = 1 } }

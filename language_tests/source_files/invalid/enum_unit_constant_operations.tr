@@ -1,0 +1,9 @@
+enum Choice { case first, second, payload(int32) }
+conform Choice to PartialEq {
+    func eq(_ other: Choice) -> bool { true }
+}
+
+const CUSTOM_EQUALITY: bool = Choice::first == Choice::second
+const CALL: Choice = Choice::payload(1)
+const FUNCTION: Choice = Choice::payload
+func main() {}

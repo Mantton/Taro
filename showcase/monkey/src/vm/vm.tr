@@ -6,7 +6,6 @@ import monkey::object::{
     HashKey,
     Closure,
     CompiledFunction,
-    Builtin,
     BuiltinError,
     builtinAt,
     callBuiltin,

@@ -1,0 +1,7 @@
+func classify(_ n: uint8) -> bool {
+    match n {
+        case 0..42 => true
+        case 43..=255 => false
+    }
+}
+func main() {}

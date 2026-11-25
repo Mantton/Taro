@@ -1,0 +1,247 @@
+import std::testing::{assertEqual, assertFalse, assertTrue}
+
+@test
+func testUint8AsciiClassificationBoundaries() {
+    // Control & NUL / DEL boundaries
+    assertTrue((0x00_u8).isAscii(), "0x00 isAscii")
+    assertTrue((0x00_u8).isAsciiControl(), "0x00 control")
+    assertFalse((0x00_u8).isAsciiGraphic(), "0x00 not graphic")
+    assertTrue((0x1F_u8).isAsciiControl(), "0x1F control")
+    assertFalse((0x20_u8).isAsciiControl(), "space not control")
+    assertTrue((0x7F_u8).isAscii(), "0x7F isAscii")
+    assertTrue((0x7F_u8).isAsciiControl(), "0x7F control")
+    assertFalse((0x7F_u8).isAsciiGraphic(), "0x7F not graphic")
+    assertFalse((0x80_u8).isAscii(), "0x80 not ASCII")
+    assertFalse((0x80_u8).isAsciiControl(), "0x80 not ASCII control")
+    assertFalse((0xFF_u8).isAscii(), "0xFF not ASCII")
+
+    // Digit boundaries: '/', '0', '9', ':'
+    slash := '/' as uint8
+    zero := '0' as uint8
+    nine := '9' as uint8
+    colon := ':' as uint8
+    assertFalse(slash.isAsciiDigit(), "/ not digit")
+    assertTrue(slash.isAsciiPunctuation(), "/ punct")
+    assertTrue(zero.isAsciiDigit(), "0 digit")
+    assertTrue(zero.isAsciiHexDigit(), "0 hex")
+    assertTrue(zero.isAsciiAlphanumeric(), "0 alnum")
+    assertTrue(nine.isAsciiDigit(), "9 digit")
+    assertFalse(colon.isAsciiDigit(), ": not digit")
+    assertTrue(colon.isAsciiPunctuation(), ": punct")
+
+    // Uppercase boundaries: '@', 'A', 'F', 'G', 'Z', '['
+    at := '@' as uint8
+    capA := 'A' as uint8
+    capF := 'F' as uint8
+    capG := 'G' as uint8
+    capZ := 'Z' as uint8
+    lbrack := '[' as uint8
+    assertFalse(at.isAsciiAlphabetic(), "@ not alpha")
+    assertTrue(at.isAsciiPunctuation(), "@ punct")
+    assertTrue(capA.isAsciiUppercase(), "A upper")
+    assertTrue(capA.isAsciiAlphabetic(), "A alpha")
+    assertTrue(capA.isAsciiHexDigit(), "A hex")
+    assertTrue(capF.isAsciiHexDigit(), "F hex")
+    assertFalse(capG.isAsciiHexDigit(), "G not hex")
+    assertTrue(capZ.isAsciiUppercase(), "Z upper")
+    assertFalse(lbrack.isAsciiAlphabetic(), "[ not alpha")
+    assertTrue(lbrack.isAsciiPunctuation(), "[ punct")
+
+    // Lowercase boundaries: '`', 'a', 'f', 'g', 'z', '{', '~'
+    backtick := '`' as uint8
+    lowA := 'a' as uint8
+    lowF := 'f' as uint8
+    lowG := 'g' as uint8
+    lowZ := 'z' as uint8
+    lbrace := '{' as uint8
+    tilde := '~' as uint8
+    assertFalse(backtick.isAsciiLowercase(), "` not lower")
+    assertTrue(backtick.isAsciiPunctuation(), "` punct")
+    assertTrue(lowA.isAsciiLowercase(), "a lower")
+    assertTrue(lowA.isAsciiHexDigit(), "a hex")
+    assertTrue(lowF.isAsciiHexDigit(), "f hex")
+    assertFalse(lowG.isAsciiHexDigit(), "g not hex")
+    assertTrue(lowZ.isAsciiLowercase(), "z lower")
+    assertFalse(lbrace.isAsciiAlphabetic(), "{ not alpha")
+    assertTrue(lbrace.isAsciiPunctuation(), "{ punct")
+    assertTrue(tilde.isAsciiPunctuation(), "~ punct")
+    assertTrue(tilde.isAsciiGraphic(), "~ graphic")
+
+    // Whitespace
+    assertTrue((' ' as uint8).isAsciiWhitespace(), "space ws")
+    assertFalse((' ' as uint8).isAsciiGraphic(), "space not graphic")
+    assertTrue(('\t' as uint8).isAsciiWhitespace(), "tab ws")
+    assertTrue(('\n' as uint8).isAsciiWhitespace(), "lf ws")
+    assertTrue((0x0C_u8).isAsciiWhitespace(), "ff ws")
+    assertTrue(('\r' as uint8).isAsciiWhitespace(), "cr ws")
+    assertFalse((0x0B_u8).isAsciiWhitespace(), "vt not ASCII whitespace")
+
+    // Case mapping & case-insensitive equality
+    assertEqual(capA.toAsciiLowercase(), lowA, "A -> a")
+    assertEqual(capZ.toAsciiLowercase(), lowZ, "Z -> z")
+    assertEqual(lowA.toAsciiLowercase(), lowA, "a -> a")
+    assertEqual(lowA.toAsciiUppercase(), capA, "a -> A")
+    assertEqual(lowZ.toAsciiUppercase(), capZ, "z -> Z")
+    assertEqual(nine.toAsciiUppercase(), nine, "9 unchanged")
+    assertEqual((0xC0_u8).toAsciiLowercase(), 0xC0_u8, "non-ASCII unchanged")
+    assertTrue(capA.eqIgnoreAsciiCase(lowA), "A ~= a")
+    assertTrue(lowZ.eqIgnoreAsciiCase(capZ), "z ~= Z")
+    assertFalse(capA.eqIgnoreAsciiCase('b' as uint8), "A !~= b")
+}
+
+@test
+func testRuneAsciiAndUnicodeWhitespace() {
+    assertTrue('7'.isAscii(), "'7' ascii")
+    assertTrue('7'.isAsciiDigit(), "'7' digit")
+    assertTrue('7'.isAsciiAlphanumeric(), "'7' alnum")
+    assertTrue('Q'.isAsciiUppercase(), "'Q' upper")
+    assertEqual('Q'.toAsciiLowercase(), 'q', "'Q' -> 'q'")
+    assertEqual('q'.toAsciiUppercase(), 'Q', "'q' -> 'Q'")
+    assertTrue('Q'.eqIgnoreAsciiCase('q'), "'Q' ~= 'q'")
+    assertFalse('Q'.eqIgnoreAsciiCase('r'), "'Q' !~= 'r'")
+
+    assertTrue('!'.isAsciiPunctuation(), "'!' punct")
+    assertTrue('!'.isAsciiGraphic(), "'!' graphic")
+    assertTrue('\0'.isAsciiControl(), "NUL control")
+    assertTrue('\x7F'.isAsciiControl(), "DEL control")
+    assertFalse(' '.isAsciiGraphic(), "space not graphic")
+    assertTrue(' '.isAsciiWhitespace(), "space ascii ws")
+    assertTrue('\t'.isAsciiWhitespace(), "tab ascii ws")
+    assertTrue('\n'.isAsciiWhitespace(), "nl ascii ws")
+    assertTrue('\r'.isAsciiWhitespace(), "cr ascii ws")
+
+    // Non-ASCII runes
+    assertFalse('é'.isAscii(), "'é' not ascii")
+    assertFalse('é'.isAsciiAlphabetic(), "'é' not ascii alpha")
+    assertEqual('é'.toAsciiLowercase(), 'é', "'é' unchanged")
+    assertEqual('é'.toAsciiUppercase(), 'é', "'é' unchanged")
+    assertFalse('🚀'.isAscii(), "emoji not ascii")
+    assertFalse('🚀'.isWhitespace(), "emoji not whitespace")
+
+    // Unicode whitespace
+    assertTrue(' '.isWhitespace(), "space ws")
+    assertTrue('\t'.isWhitespace(), "tab ws")
+    assertTrue('\n'.isWhitespace(), "lf ws")
+    assertTrue('\r'.isWhitespace(), "cr ws")
+    assertTrue('　'.isWhitespace(), "ideographic space U+3000 ws")
+    assertFalse('　'.isAsciiWhitespace(), "U+3000 not ASCII ws")
+    match std::rune::fromU32(0x00A0_u32) {
+        case .some(nbsp) => assertTrue(nbsp.isWhitespace(), "NBSP ws")
+        case .none => std::testing::fail("NBSP valid")
+    }
+    match std::rune::fromU32(0x2003_u32) {
+        case .some(emSpace) => assertTrue(emSpace.isWhitespace(), "EM SPACE ws")
+        case .none => std::testing::fail("EM SPACE valid")
+    }
+    match std::rune::fromU32(0x2028_u32) {
+        case .some(ls) => assertTrue(ls.isWhitespace(), "LINE SEPARATOR ws")
+        case .none => std::testing::fail("LINE SEPARATOR valid")
+    }
+    assertFalse('A'.isWhitespace(), "'A' not ws")
+}
+
+@test
+func testRuneToDigitAndFromDigit() {
+    // Base 2
+    assertEqual('0'.toDigit(2), .some(0_u32), "bin 0")
+    assertEqual('1'.toDigit(2), .some(1_u32), "bin 1")
+    assertEqual('2'.toDigit(2), .none, "bin 2 invalid")
+    assertEqual(rune::fromDigit(0, 2), .some('0'), "fromDigit 0 bin")
+    assertEqual(rune::fromDigit(1, 2), .some('1'), "fromDigit 1 bin")
+    assertEqual(rune::fromDigit(2, 2), .none, "fromDigit 2 bin")
+
+    // Base 10
+    assertEqual('7'.toDigit(10), .some(7_u32), "dec 7")
+    assertEqual('a'.toDigit(10), .none, "dec a invalid")
+    assertEqual(rune::fromDigit(9, 10), .some('9'), "fromDigit 9 dec")
+    assertEqual(rune::fromDigit(10, 10), .none, "fromDigit 10 dec")
+
+    // Base 16
+    assertEqual('a'.toDigit(16), .some(10_u32), "hex a")
+    assertEqual('F'.toDigit(16), .some(15_u32), "hex F")
+    assertEqual('g'.toDigit(16), .none, "hex g invalid")
+    assertEqual(rune::fromDigit(10, 16), .some('a'), "fromDigit 10 hex")
+    assertEqual(rune::fromDigit(15, 16), .some('f'), "fromDigit 15 hex")
+    assertEqual(rune::fromDigit(16, 16), .none, "fromDigit 16 hex")
+
+    // Base 36 round-trip across all 36 digits
+    var d: uint32 = 0
+    while d < 36_u32 {
+        match rune::fromDigit(d, 36) {
+            case .some(ch) => {
+                assertEqual(ch.toDigit(36), .some(d), "base36 lowercase roundtrip")
+                assertEqual(ch.toAsciiUppercase().toDigit(36), .some(d), "base36 uppercase roundtrip")
+            }
+            case .none => std::testing::fail("base36 fromDigit should succeed")
+        }
+        d += 1
+    }
+    assertEqual(rune::fromDigit(36, 36), .none, "base36 36 out of range")
+    assertEqual('é'.toDigit(36), .none, "non-ASCII digit")
+}
+
+@test
+func testRuneLenUtf8AndEncodeUtf8() {
+    var buf: [uint8; 4] = [0_u8; 4]
+
+    // 1-byte scalar: 'A' (0x41)
+    assertEqual('A'.lenUtf8(), 1 as usize, "1-byte lenUtf8")
+    n1 := 'A'.encodeUtf8(buf.asSpan())
+    assertEqual(n1, 1 as usize, "1-byte encoded len")
+    assertEqual(buf[0], 0x41_u8, "1-byte value")
+
+    // 2-byte scalar: 'é' (U+00E9 -> 0xC3 0xA9)
+    assertEqual('é'.lenUtf8(), 2 as usize, "2-byte lenUtf8")
+    n2 := 'é'.encodeUtf8(buf.asSpan())
+    assertEqual(n2, 2 as usize, "2-byte encoded len")
+    assertEqual(buf[0], 0xC3_u8, "2-byte b0")
+    assertEqual(buf[1], 0xA9_u8, "2-byte b1")
+
+    // 3-byte scalar: '　' (U+3000 -> 0xE3 0x80 0x80)
+    assertEqual('　'.lenUtf8(), 3 as usize, "3-byte lenUtf8")
+    n3 := '　'.encodeUtf8(buf.asSpan())
+    assertEqual(n3, 3 as usize, "3-byte encoded len")
+    assertEqual(buf[0], 0xE3_u8, "3-byte b0")
+    assertEqual(buf[1], 0x80_u8, "3-byte b1")
+    assertEqual(buf[2], 0x80_u8, "3-byte b2")
+
+    // 4-byte scalar: '🚀' (U+1F680 -> 0xF0 0x9F 0x9A 0x80)
+    assertEqual('🚀'.lenUtf8(), 4 as usize, "4-byte lenUtf8")
+    n4 := '🚀'.encodeUtf8(buf.asSpan())
+    assertEqual(n4, 4 as usize, "4-byte encoded len")
+    assertEqual(buf[0], 0xF0_u8, "4-byte b0")
+    assertEqual(buf[1], 0x9F_u8, "4-byte b1")
+    assertEqual(buf[2], 0x9A_u8, "4-byte b2")
+    assertEqual(buf[3], 0x80_u8, "4-byte b3")
+}
+
+@test
+@expectPanic
+func testToDigitRadixTooLowPanics() {
+    _ = '0'.toDigit(1)
+}
+
+@test
+@expectPanic
+func testToDigitRadixTooHighPanics() {
+    _ = '0'.toDigit(37)
+}
+
+@test
+@expectPanic
+func testFromDigitRadixTooLowPanics() {
+    _ = rune::fromDigit(0, 0)
+}
+
+@test
+@expectPanic
+func testFromDigitRadixTooHighPanics() {
+    _ = rune::fromDigit(0, 37)
+}
+
+@test
+@expectPanic
+func testEncodeUtf8SmallBufferPanics() {
+    var small: [uint8; 2] = [0_u8; 2]
+    _ = '🚀'.encodeUtf8(small.asSpan())
+}

@@ -1,0 +1,6 @@
+error: lexer error: multiline string line does not match closing delimiter indentation
+ -> language_tests/source_files/invalid/string_syntax_multiline_indentation_later_line.tr:6:0
+      bad
+^^^^^^^^^
+        """
+           ^

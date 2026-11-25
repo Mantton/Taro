@@ -1,0 +1,8 @@
+error: format specifier 'x' expects an integer or custom Formattable argument, found 'string'
+ -> language_tests/source_files/invalid/interpolation_format_incompatible_type.tr:4:15
+	    println("${name:x} ${mask:e}")
+	               ^^^^
+error: format specifier 'e' expects a floating-point or custom Formattable argument, found 'int32'
+ -> language_tests/source_files/invalid/interpolation_format_incompatible_type.tr:4:25
+	    println("${name:x} ${mask:e}")
+	                         ^^^^

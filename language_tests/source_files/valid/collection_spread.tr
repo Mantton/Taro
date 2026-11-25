@@ -1,0 +1,22 @@
+func sum(_ parts: int32...) -> int32 {
+    var result: int32 = 0
+    for part in parts { result += part }
+    result
+}
+
+func forward(_ parts: int32...) -> int32 { sum(parts...) }
+func countArgs[T](_ items: T...) -> usize { items.len() }
+func checkArray(_ value: [int32; 4]) -> int32 { sum(value...) }
+
+func main() {
+    var fixed: [int32; 2] = [1, 2]
+    var list: List[int32] = [4, 5]
+    expanded := [0, fixed..., 3]
+    dynamic := [0, list..., 6]
+    dynamic.append(7)
+    assert(checkArray(expanded) == 6, "fixed spreads preserve the static length")
+    assert(countArgs(list) == 1 && countArgs(list...) == 2, "only explicit spread expands")
+    assert(sum(1, fixed..., 3, list..., 6) == 22, "mixed contributions")
+    assert(forward() == 0 && forward(list...) == 9, "forward an empty or borrowed pack")
+    println("${sum(dynamic...)}")
+}

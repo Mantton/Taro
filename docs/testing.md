@@ -55,8 +55,94 @@ equivalent separators. Tags on a namespace are inherited by its tests.
 Repeated tags use OR semantics, while combining a filter with tags uses AND
 semantics. Selecting no tests is successful.
 
-The standard library provides `assertEqual`, `assertTrue`, `assertFalse`, and
-`fail` under `std::testing`.
+The standard library provides `assertEqual`, `assertTrue`, `assertFalse`,
+`fail`, `allocations`, and `subtest` under `std::testing`.
+
+Use `std::testing::subtest(name, body)` to give table-driven cases individual
+names and results inside an `@test` function. A panic inside a subtest is
+caught and reported under that child's name without preventing sibling subtests
+from running, while still failing the enclosing test and process:
+
+```taro
+@test
+func queueCases() {
+    std::testing::subtest("empty queue", () => {
+        std::testing::assertTrue(true, "empty queue behaves as expected")
+    })
+}
+```
+
+## Documentation Tests (`--doc`)
+
+Pass `--doc` to `taro test` to extract, compile, and execute fenced `taro`
+code blocks from `///` doc comments in `.tr` files and from `.md` documents:
+
+```bash
+taro test std --doc
+taro test docs/guide/syntax/lexical.md --doc
+```
+
+- Fences tagged ```` ```taro ```` are compiled and executed; snippets without
+  `func main()` are automatically wrapped in `func main() { ... }` while
+  preserving leading `import` declarations.
+- Fences tagged ```` ```taro,ignore ```` are reported as ignored and skipped;
+  ```` ```taro,no_run ```` compiles without executing.
+- Compiler and runtime failures remap file paths and line numbers back to the
+  authored `.tr` or `.md` source location.
+- Running `taro test` without `--doc` runs the normal `@test` suite unchanged.
+
+## Source Coverage (`--coverage`)
+
+Pass `--coverage` to `taro test` to instrument user functions in the package
+with LLVM source-based coverage (`@llvm.instrprof.increment` and LLVM Coverage
+Mapping v6), execute the tests, merge profile counters via `llvm-profdata`, and
+print a per-file report via `llvm-cov`:
+
+```bash
+taro test std --coverage
+taro test path/to/file.tr --coverage
+```
+
+- Instrumented artifacts are built in a separate `<profile>-coverage` directory
+  with a distinct incremental cache fingerprint, so alternating ordinary and
+  coverage test runs never cross-contaminate cached objects.
+- Compiler-generated shims, harnesses, and synthetic definitions are excluded
+  from coverage attribution.
+- The merged `.profdata` file is saved under the build's `coverage/` directory
+  for line-by-line inspection with `llvm-cov show`.
+- Override tool locations with `TARO_LLVM_PROFDATA` and `TARO_LLVM_COV` when
+  LLVM tools are outside `PATH` or `xcrun`.
+
+## Fuzz Targets (`--fuzz`)
+
+Mark a synchronous, non-generic function that accepts a single
+`std::mem::Span[uint8]` parameter and returns unit with `@fuzz`, then invoke it
+through `taro test --fuzz <target>`:
+
+```taro
+@fuzz
+func parserNeverPanics(_ data: std::mem::Span[uint8]) {
+    text := std::string::stringFromBytes(data)
+    var _ = std::convert::parse[int64](text)
+}
+```
+
+```bash
+taro test std --fuzz fuzzParseInt64NeverPanics --fuzz-runs 500 --fuzz-seed 42
+```
+
+- Normal `taro test` runs discover `@test` functions only and never execute
+  `@fuzz` campaigns.
+- `--fuzz-seed <u64>` makes input generation deterministic; `--fuzz-runs <n>`
+  bounds the number of iterations (default `1000`); `--fuzz-max-len <bytes>`
+  caps input size (default `4096`).
+- When a fuzz target panics, the exact failing bytes are saved under the
+  ignored `target/<profile>-fuzz/fuzz-artifacts/` directory and printed with a
+  ready-to-run `--fuzz-replay <file>` command:
+
+```bash
+taro test path/to/pkg --fuzz parserNeverPanics --fuzz-replay target/debug-fuzz/fuzz-artifacts/crash-...bin
+```
 
 ## Repository Test Suites
 
@@ -123,6 +209,7 @@ fail the test, and supplemental output assertions apply to every execution mode.
 | `// BENCH` | Run a bounded benchmark smoke test in the selected codegen profile |
 | `// BENCH_RELEASE` | Run the benchmark smoke test with its release/O2 default |
 | `// OVERFLOW_CHECKS` | Enable checked arithmetic in every codegen profile |
+| `// RUN_TWICE` | Run the command twice with one cache directory and check only the second run, which must reuse the cache (`Reusing`) |
 | `// NO_INCREMENTAL` | Force a cold compile for fixtures observing compile-time diagnostics, which metadata cache hits do not replay |
 | `// TARGET: <triple>` | Cross-compile for the target triple |
 | `// PACKAGE: <fixture>` | Run `language_tests/package_fixtures/<fixture>/app` |
@@ -145,7 +232,7 @@ decoded predictably.
 
 func main() {
     var input = std::io::stdin()
-    match std::io::readToString(&input) {
+    match std::io::readToString(input) {
         case .ok(text) => print(text)
         case .err(_) => std::testing::fail("stdin read failed")
     }
@@ -160,7 +247,9 @@ When fixing a compiler regression, add the narrowest language or Rust test that
 fails before the fix and passes afterward.
 
 `./dist/bin/taro vet path --std-path std` checks for accidental copies of
-`@NoCopy` values without running a program. It always rechecks the requested
+`@NoCopy` values and for shadowing that hides a later read (see
+[Local Bindings](guide/syntax/declarations.md#local-bindings)) without running a
+program. It always rechecks the requested
 root package, including after a metadata cache hit; dependencies can reuse
 metadata. Normal checking does not enable these warnings. The language runner's
 `// VET` directive selects this analysis-only command for positive and negative

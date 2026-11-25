@@ -1,0 +1,19 @@
+struct Box[T] { field: T }
+
+func main() {
+    calculate := () => {
+        var n = 0
+        read := () => n
+        var big: int64 = 5000000000
+        n += big
+        read()
+    }
+    fields := () => {
+        var box = Box { field: 1 }
+        read := () => box.field
+        var wide: usize = 5
+        box.field += wide
+        read()
+    }
+    println("${calculate()} ${fields()}")
+}

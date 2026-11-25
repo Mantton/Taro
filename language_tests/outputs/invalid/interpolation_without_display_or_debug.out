@@ -1,0 +1,28 @@
+error: cannot interpolate a value of type 'T': it conforms to neither 'Display' nor 'Debug'; add a 'Debug' bound to 'T'
+ -> language_tests/source_files/invalid/interpolation_without_display_or_debug.tr:6:40
+	func show[T](_ value: T) -> string { "${value}" }
+	                                        ^^^^^
+error: cannot interpolate a value of type 'Node': it conforms to neither 'Display' nor 'Debug'; implement 'Debug' for 'Node' in a conformance
+ -> language_tests/source_files/invalid/interpolation_without_display_or_debug.tr:7:41
+	func render(_ node: Node) -> string { "${node}" }
+	                                         ^^^^
+error: cannot interpolate a value of type 'any Named': it conforms to neither 'Display' nor 'Debug'
+ -> language_tests/source_files/invalid/interpolation_without_display_or_debug.tr:8:52
+	func renderNamed(_ named: any Named) -> string { "${named}" }
+	                                                    ^^^^^
+error: cannot interpolate a value of type 'Plain': it conforms to neither 'Display' nor 'Debug'; add 'Debug' to the conformance list of 'Plain'
+ -> language_tests/source_files/invalid/interpolation_without_display_or_debug.tr:11:15
+	    println("${plain}")
+	               ^^^^^
+error: cannot interpolate a value of type 'Plain': it conforms to neither 'Display' nor 'Debug'; add 'Debug' to the conformance list of 'Plain'
+ -> language_tests/source_files/invalid/interpolation_without_display_or_debug.tr:12:17
+	    println("a ${plain} b ${1}")
+	                 ^^^^^
+error: cannot interpolate a value of type 'Box[Plain]': it conforms to neither 'Display' nor 'Debug'; 'Box' is 'Debug' only when its generic arguments are
+ -> language_tests/source_files/invalid/interpolation_without_display_or_debug.tr:13:15
+	    println("${Box { value: plain }}")
+	               ^^^^^^^^^^^^^^^^^^^^
+error: cannot interpolate a value of type '(Plain, int32)': it conforms to neither 'Display' nor 'Debug'
+ -> language_tests/source_files/invalid/interpolation_without_display_or_debug.tr:14:15
+	    println("${(plain, 1)}")
+	               ^^^^^^^^^^

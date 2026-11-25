@@ -12,6 +12,87 @@ use crate::{
 };
 use rustc_hash::FxHashMap;
 
+/// A declaration header may ask for a handwritten decoder before the normal
+/// lifecycle pass registers constructors. Retain signatures only, in source order.
+pub(crate) struct InitializerHeader {
+    extension: DefinitionID,
+    id: DefinitionID,
+    target: hir::Type,
+    function: hir::Function,
+}
+
+pub(crate) fn register_decoder_headers(
+    gcx: GlobalContext<'_>,
+    owner: DefinitionID,
+    extension: DefinitionID,
+    node: &hir::Impl,
+) {
+    for member in &node.declarations {
+        let hir::AssociatedDeclarationKind::Initializer(function) = &member.kind else {
+            continue;
+        };
+        let [input] = function.signature.prototype.inputs.as_slice() else {
+            continue;
+        };
+        if !input
+            .label
+            .is_some_and(|label| gcx.symbol_eq(label.identifier.symbol, "from"))
+            || gcx.generics_of(member.id).parameters.len() != 1
+        {
+            continue;
+        }
+        let header = InitializerHeader {
+            extension,
+            id: member.id,
+            target: (*node.target).clone(),
+            function: hir::Function {
+                block: None,
+                ..function.clone()
+            },
+        };
+        gcx.store
+            .decoder_headers
+            .borrow_mut()
+            .entry(owner)
+            .or_default()
+            .push(header);
+    }
+}
+
+pub(crate) fn find_decoder_header<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    owner: DefinitionID,
+    matches: impl Fn(DefinitionID, &LabeledFunctionSignature<'ctx>) -> bool,
+) -> Option<DefinitionID> {
+    let headers = gcx.store.decoder_headers.borrow_mut().remove(&owner)?;
+    let actor = Actor::new(gcx);
+    let result = headers.iter().find_map(|header| {
+        if gcx.get_impl_target_ty(header.extension).is_none() {
+            super::super::impls::target::cache_target(gcx, header.extension, &header.target);
+        }
+        if let Some(signature) = gcx.try_get_signature(header.id) {
+            return matches(header.id, signature).then_some(header.id);
+        }
+        if !gcx.with_type_database(header.id.package(), |db| {
+            db.def_to_constraints.contains_key(&header.id)
+        }) {
+            super::constraints::collect_header_constraints(
+                gcx,
+                header.id,
+                &header.function.generics,
+            );
+        }
+        let context = hir::FunctionContext::Initializer(hir::AssocContext::Impl(header.extension));
+        let signature = actor.build_signature(header.id, &header.function, context, false);
+        matches(header.id, &signature).then_some(header.id)
+    });
+    gcx.store
+        .decoder_headers
+        .borrow_mut()
+        .insert(owner, headers);
+    result
+}
+
 pub fn run(package: &hir::Package, context: GlobalContext) -> CompileResult<()> {
     Actor::run(package, context)
 }
@@ -56,7 +137,7 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
         fn_ctx: hir::FunctionContext,
     ) -> Self::Result {
         let gcx = self.context;
-        let signature = self.build_signature(id, node, fn_ctx);
+        let signature = self.build_signature(id, node, fn_ctx, true);
         let base = Ty::from_labeled_signature(gcx, &signature);
         let crate::sema::models::TyKind::FnPointer { inputs, output, .. } = base.kind() else {
             unreachable!()
@@ -84,17 +165,57 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
 }
 
 impl<'ctx> Actor<'ctx> {
+    /// The declaration spells the result type. Inside the body the parameter
+    /// has the canonical boxed callable type, including across package imports.
+    fn lazy_parameter_type(&self, result: Ty<'ctx>, span: crate::span::Span) -> Ty<'ctx> {
+        use crate::sema::models::{GenericArgument, InterfaceReference, TyKind};
+        let gcx = self.context;
+        let Some(id) = gcx.std_item_def(StdItem::Fn) else {
+            gcx.dcx().emit_error(
+                "lazy parameters require the standard library Fn interface".into(),
+                Some(span),
+            );
+            return Ty::error(gcx);
+        };
+        let arguments = gcx.store.interners.intern_generic_args(vec![
+            GenericArgument::Type(gcx.types.existential_self),
+            GenericArgument::Type(gcx.types.void),
+            GenericArgument::Type(result),
+        ]);
+        let interfaces = gcx
+            .store
+            .arenas
+            .global
+            .alloc_slice_clone(&[InterfaceReference {
+                id,
+                arguments,
+                bindings: &[],
+            }]);
+        Ty::new(TyKind::BoxedExistential { interfaces }, gcx)
+    }
+
     fn build_signature(
         &self,
         id: DefinitionID,
         node: &hir::Function,
         fn_ctx: hir::FunctionContext,
+        register_defaults: bool,
     ) -> LabeledFunctionSignature<'ctx> {
         let ctx = DefTyLoweringCtx::new(id, self.context);
         let mut inputs: Vec<LabeledFunctionParameter> = Vec::new();
 
         for (idx, param) in node.signature.prototype.inputs.iter().enumerate() {
             let mut ty = ctx.lowerer().lower_type(&param.annotated_type);
+
+            if param.is_lazy {
+                ty = self.lazy_parameter_type(ty, param.span);
+                if param.is_variadic {
+                    self.context.dcx().emit_error(
+                        "a lazy parameter cannot be variadic".into(),
+                        Some(param.span),
+                    );
+                }
+            }
 
             // Handle variadic parameters
             if param.is_variadic {
@@ -119,66 +240,74 @@ impl<'ctx> Actor<'ctx> {
                 }
             }
 
-            let default_provider = if let Some(default_expr) = &param.default_value {
-                // Variadic parameters cannot have default values
-                if param.is_variadic {
-                    self.context.dcx().emit_error(
-                        "variadic parameters cannot have default values".into(),
-                        Some(param.span),
-                    );
-                }
+            let default_provider =
+                if register_defaults && let Some(default_expr) = &param.default_value {
+                    // Variadic parameters cannot have default values
+                    if param.is_variadic {
+                        self.context.dcx().emit_error(
+                            "variadic parameters cannot have default values".into(),
+                            Some(param.span),
+                        );
+                    }
 
-                // Allocate a synthetic ID for the provider function
-                let provider_id = self
-                    .context
-                    .allocate_synthetic_id(self.context.package_index());
-
-                // Register the default expression for lowering later
-                // SAFETY: The HIR node is allocated in the arena and lives for 'ctx.
-                // The visitor signature doesn't express this, so we transmute.
-                let default_expr: &'ctx hir::Expression =
-                    unsafe { std::mem::transmute(&**default_expr) };
-                self.context
-                    .register_default_value_expr(provider_id, default_expr);
-
-                // Create and register signature for the provider.
-                // Defaults cannot reference parameters, so providers take no inputs.
-                let generics = self.context.generics_of(id);
-                let provider_sig = LabeledFunctionSignature {
-                    inputs: vec![],
-                    output: ty,
-                    is_variadic: false,
-                    abi: None,
-                };
-                let provider_sig = self
-                    .context
-                    .store
-                    .arenas
-                    .function_signatures
-                    .alloc(provider_sig);
-
-                let fn_name = self.context.definition_ident(id).symbol;
-                let fn_name_text = self.context.symbol_text(fn_name);
-                let def = crate::sema::models::SyntheticDefinition {
-                    kind: crate::sema::models::SyntheticDefinitionKind::Ordinary,
-                    name: self
+                    // Allocate a synthetic ID for the provider function
+                    let provider_id = self
                         .context
-                        .intern_symbol(&format!("{}$default_arg{}", fn_name_text, idx)),
-                    generics,
-                    signature: provider_sig,
-                    span: param.span,
-                };
-                self.context.register_synthetic_definition(provider_id, def);
+                        .allocate_synthetic_id(self.context.package_index());
 
-                Some(provider_id)
-            } else {
-                None
-            };
+                    // Register the default expression for lowering later
+                    // SAFETY: The HIR node is allocated in the arena and lives for 'ctx.
+                    // The visitor signature doesn't express this, so we transmute.
+                    let default_expr: &'ctx hir::Expression =
+                        unsafe { std::mem::transmute(&**default_expr) };
+                    self.context.register_default_value_expr(
+                        provider_id,
+                        default_expr,
+                        param.caller_bindings,
+                    );
+
+                    // Create and register signature for the provider.
+                    // A location-sensitive default receives the omitted argument's call site.
+                    let generics = self.context.generics_of(id);
+                    let provider_sig = LabeledFunctionSignature {
+                        inputs: param
+                            .caller_bindings
+                            .map(|_| self.context.caller_parameters().to_vec())
+                            .unwrap_or_default(),
+                        output: ty,
+                        is_variadic: false,
+                        abi: None,
+                    };
+                    let provider_sig = self
+                        .context
+                        .store
+                        .arenas
+                        .function_signatures
+                        .alloc(provider_sig);
+
+                    let fn_name = self.context.definition_ident(id).symbol;
+                    let fn_name_text = self.context.symbol_text(fn_name);
+                    let def = crate::sema::models::SyntheticDefinition {
+                        kind: crate::sema::models::SyntheticDefinitionKind::Ordinary,
+                        name: self
+                            .context
+                            .intern_symbol(&format!("{}$default_arg{}", fn_name_text, idx)),
+                        generics,
+                        signature: provider_sig,
+                        span: param.span,
+                    };
+                    self.context.register_synthetic_definition(provider_id, def);
+
+                    Some(provider_id)
+                } else {
+                    None
+                };
 
             inputs.push(LabeledFunctionParameter {
                 label: param.label.map(|n| n.identifier.symbol),
                 name: param.name.symbol,
                 ty,
+                is_lazy: param.is_lazy,
                 default_provider,
             });
         }

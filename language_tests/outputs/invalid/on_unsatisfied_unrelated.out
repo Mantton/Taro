@@ -1,0 +1,4 @@
+error: interface 'Source' cannot be used as a type; use `any Source`
+ -> language_tests/source_files/invalid/on_unsatisfied_unrelated.tr:3:22
+	func accept(_ source: Source) {}
+	                      ^^^^^^

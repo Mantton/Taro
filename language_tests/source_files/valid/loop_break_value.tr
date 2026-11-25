@@ -1,0 +1,150 @@
+struct Socket {
+    port: int64,
+}
+
+func tryConnect(_ attempt: int64) -> Socket? {
+    if attempt >= 3 {
+        return .some(Socket { port: 8080 + attempt })
+    }
+    return .none
+}
+
+func connectWithRetry() -> Socket {
+    var attempt: int64 = 0
+    connection := loop {
+        attempt += 1
+        if var socket = tryConnect(attempt) {
+            break socket
+        }
+    }
+    return connection
+}
+
+func twoCompatibleBreakPaths(_ flag: bool) -> int64 {
+    var i: int64 = 0
+    var result: int64 = loop {
+        i += 1
+        if flag && i == 2 {
+            break 100
+        }
+        if !flag && i == 3 {
+            break 200
+        }
+    }
+    return result
+}
+
+func tailReturnLoop(_ flag: bool) -> string {
+    loop {
+        if flag {
+            break "alpha"
+        }
+        break "beta"
+    }
+}
+
+func breakWithEarlyFunctionReturn(_ items: [int64; 4], _ abortAt: int64) -> int64 {
+    var idx: usize = 0
+    found := loop {
+        if idx >= items.len() {
+            return -1
+        }
+        v := items[idx]
+        idx += 1
+        if v == abortAt {
+            return -2
+        }
+        if v > 10 {
+            break v
+        }
+    }
+    return found * 10
+}
+
+func innerLoopsIndependent() -> int64 {
+    var outerSum: int64 = 0
+    var round: int64 = 0
+    finalVal := loop {
+        round += 1
+
+        // Inner loop with valueless break does not affect outer loop's value type.
+        var k: int64 = 0
+        loop {
+            k += 1
+            if k == 3 {
+                break
+            }
+        }
+        outerSum += k
+
+        // Inner loop with its own value break of a different type (string).
+        tag := loop {
+            if round == 2 {
+                break "stop"
+            }
+            break "go"
+        }
+
+        if tag == "stop" {
+            break outerSum + 100
+        }
+    }
+    return finalVal
+}
+
+func labelCollidesWithLocal() -> int64 {
+    var target: int64 = 99
+    var steps: int64 = 0
+
+    // Bare `break target` resolves to the visible `target` loop label, not the local `target`.
+    target: loop {
+        steps += 1
+        loop {
+            if steps == 2 {
+                break target
+            }
+            break
+        }
+    }
+
+    // Parenthesized `break (target)` breaks with the local's value.
+    val := target: loop {
+        if steps == 2 {
+            break (target)
+        }
+        break 0
+    }
+
+    return steps * 1000 + val
+}
+
+func breakWithDeferOrder() -> int64 {
+    var log: int64 = 0
+    value := loop {
+        var current: int64 = 42
+        defer {
+            log = current + 1
+        }
+        break current
+    }
+    return value * 100 + log
+}
+
+func main() {
+    conn := connectWithRetry()
+    assert(conn.port == 8083)
+
+    assert(twoCompatibleBreakPaths(true) == 100)
+    assert(twoCompatibleBreakPaths(false) == 200)
+
+    assert(tailReturnLoop(true) == "alpha")
+    assert(tailReturnLoop(false) == "beta")
+
+    assert(breakWithEarlyFunctionReturn([1, 2, 15, 4], 99) == 150)
+    assert(breakWithEarlyFunctionReturn([1, 2, 3, 4], 99) == -1)
+    assert(breakWithEarlyFunctionReturn([1, 5, 15, 4], 5) == -2)
+
+    assert(innerLoopsIndependent() == 106)
+    assert(labelCollidesWithLocal() == 2099)
+    assert(breakWithDeferOrder() == 4243)
+}

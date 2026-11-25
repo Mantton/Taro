@@ -41,6 +41,9 @@ valid/existential_metadata_constraints.tr
 valid/callable_existentials.tr
 valid/callable_existentials_async.tr
 valid/callable_existentials_cross_package.tr
+valid/generic_initializer_closure_box.tr
+valid/generic_contextual_callable_box.tr
+valid/generic_existential_callable_forward.tr
 valid/existentials.tr
 valid/optional_npo_layout.tr
 valid/repr_layouts.tr

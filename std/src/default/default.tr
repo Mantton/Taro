@@ -1,3 +1,8 @@
+/// Types with a default value.
+///
+/// Listing `Default` on a struct derives `default()`: each field takes its
+/// declared default expression, or else its type's own default.
+@lang("Default")
 public interface Default {
     static func default() -> Self
 }

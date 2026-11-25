@@ -1,0 +1,4 @@
+error: `yield` is only allowed in a generator function returning `some Iterator[Element = T]`
+ -> language_tests/source_files/invalid/yield_outside_generator.tr:2:4
+	    yield 1
+	    ^^^^^^^

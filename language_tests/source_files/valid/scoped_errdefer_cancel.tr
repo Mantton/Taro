@@ -1,0 +1,21 @@
+func resumed(_ fail: bool) async -> Result[int32, string] {
+    errdefer println("resumed error")
+    await std::task::yieldNow()
+    if fail { return .err("error payload") }
+    return .ok(7)
+}
+func main() async {
+    var _ = await resumed(false)
+    var _ = await resumed(true)
+    var (started, running) = std::sync::bounded[int32](1).unwrap()
+    task := std::task::spawn(() async => {
+        errdefer println("error")
+        defer println("cancelled")
+        started.trySend(1).unwrap()
+        await std::task::sleep(std::time::Duration::fromSeconds(60_u64))
+    })
+    var _ = await running.recv()
+    task.cancel()
+    var _ = await task.result()
+    println("joined")
+}

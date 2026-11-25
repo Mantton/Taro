@@ -1,6 +1,5 @@
 import monkey::compiler::Compiler
 import monkey::lexer::Lexer
-import monkey::object::Object
 import monkey::parser::Parser
 import monkey::vm::VM
 

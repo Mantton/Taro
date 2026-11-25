@@ -1,0 +1,1 @@
+public func bounds[T](_ a: T, _ b: T) -> (low: T, high: T) { (a, b) }

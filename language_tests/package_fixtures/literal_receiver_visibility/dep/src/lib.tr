@@ -1,0 +1,47 @@
+public struct Boxed[T] {
+    public value: T
+}
+
+// `Base` supplies `size` for both widths, but only the int64 box also
+// conforms to `Child`, the one interface the app imports.
+public interface Base {
+    func size() -> usize
+}
+
+public interface Child: Base {}
+
+conform Boxed[int32] to Base {
+    func size() -> usize {
+        4
+    }
+}
+
+conform Boxed[int64] to Base {
+    func size() -> usize {
+        8
+    }
+}
+
+conform Boxed[int64] to Child {}
+
+// The same shape through a parameterised super-interface: `Heavy` reaches
+// `weight` through `Measured[int32]`.
+public interface Measured[U] {
+    func weight() -> usize
+}
+
+public interface Heavy: Measured[int32] {}
+
+conform Boxed[int32] to Measured[int32] {
+    func weight() -> usize {
+        4
+    }
+}
+
+conform Boxed[int64] to Measured[int32] {
+    func weight() -> usize {
+        8
+    }
+}
+
+conform Boxed[int64] to Heavy {}

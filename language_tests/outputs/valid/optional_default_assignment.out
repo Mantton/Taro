@@ -1,0 +1,12 @@
+local: 1 calls=1
+optional value: true calls=2
+optional value: 5 calls=3
+fields: default 3 calls=3
+nested: through reference calls=3
+class: fresh trace=pp calls=3
+class field: direct
+list: 10 2 trace=ab calls=3
+array: filled kept
+dictionary: 1 2 calls=3
+await: loaded page
+propagate: 7 -1

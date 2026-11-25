@@ -1,0 +1,4 @@
+func main() {
+    var items: List[int32]? = .some([1, 2, 3])
+    items?.[0] = 5
+}

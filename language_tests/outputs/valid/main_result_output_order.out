@@ -1,0 +1,5 @@
+step 1
+diagnostic on stderr
+step 2
+deferred cleanup
+error: step two failed

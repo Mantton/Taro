@@ -1,0 +1,22 @@
+interface Origin {
+    func origin(name: string = #function) -> string { name }
+}
+class Root: Origin { line: int32 }
+extend Root { init(line: int32 = #line) { assert(#function == "init", "initializer name"); self.line = line } }
+final class Child: Root {}
+interface Step {
+    func step(line: int32 = #line) async -> Self
+    func read() -> int32
+}
+struct Value { n: int32 }
+conform Value to Step {
+    func step(line: int32 = #line) async -> Self { Value { n: line } }
+    func read() -> int32 { self.n }
+}
+func main() async {
+    var child = Child()
+    println(child.origin())
+    var erased: any Step = Value { n: 0 }
+    var next: any Step = await erased.step()
+    println("${child.line} ${next.read()}")
+}

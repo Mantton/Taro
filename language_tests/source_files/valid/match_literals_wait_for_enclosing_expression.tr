@@ -1,0 +1,135 @@
+// A match may need a lookup result to check its patterns, while its
+// payload, arm results, and sibling literals can still take their types
+// from the enclosing expression.
+interface Kind {
+    func kind() -> string
+}
+
+conform int32 to Kind {
+    func kind() -> string { "int32" }
+}
+
+conform int64 to Kind {
+    func kind() -> string { "int64" }
+}
+
+conform usize to Kind {
+    func kind() -> string { "usize" }
+}
+
+struct Counter {
+    count: usize
+}
+
+struct Box[T] { v: T }
+
+interface Reader[U] {
+    func maybe() -> usize? { .some(6) }
+}
+
+conform Box[int32] to Reader[bool] {}
+
+func countAsync() async -> usize { 6 }
+
+func main() async {
+    var n: usize = 1
+    flag := true
+
+    // An operand beside a match whose arms are typed.
+    a := 1 + match flag {
+        case true => n
+        case false => n
+    }
+
+    // Nested matches beside the operand, with a literal arm in each.
+    b := 2 * match flag {
+        case true => match !flag {
+            case true => 0
+            case false => n + 2
+        }
+        case false => 4
+    }
+    println("${a.kind()} ${a} ${b.kind()} ${b}")
+
+    // `??` beside a declared type, as an operand and with a typed fallback.
+    var wide: int64 = (5..10).iter().next() ?? 0
+    var empty: int64 = (5..5).iter().next() ?? 7
+    c := ((5..10).iter().next() ?? 0) + n
+    d := 1 + ((5..10).iter().next() ?? n)
+    println("${wide.kind()} ${wide} ${empty} ${c.kind()} ${c} ${d.kind()} ${d}")
+
+    // Payload bindings, a guard, a literal pattern, a block arm, a closure
+    // and a tuple scrutinee; the declared type supplies the scrutinee's
+    // literal in each.
+    var guarded: int64 = match (5..10).iter().next() {
+        case .some(v) if v > 6 => v * 2
+        case .some(v) => v
+        case .none => 0
+    }
+    var literal: int64 = match (5..10).iter().next() {
+        case .some(5) => 50
+        case .some(v) => v
+        case .none => 0
+    }
+    var block: int64 = match (5..10).iter().next() {
+        case .some(v) => {
+            doubled := v * 2
+            doubled
+        }
+        case .none => 0
+    }
+    var called: int64 = match (5..10).iter().next() {
+        case .some(v) => {
+            step := (x: int64) => x + 1
+            step(v)
+        }
+        case .none => 0
+    }
+    var tuple: int64 = match (3, flag) {
+        case (x, true) => x
+        case (_, false) => 0
+    }
+    println("${guarded.kind()} ${guarded} ${literal} ${block} ${called} ${tuple.kind()} ${tuple}")
+
+    // Optional chaining inside `??`, beside an operand.
+    var maybe: Counter? = Counter { count: 4 }
+    e := 1 + (maybe?.count ?? 0)
+    println("${e.kind()} ${e}")
+
+    // The scrutinee's producer is a pending lookup from an earlier local.
+    // Default its receiver while leaving the outer operand and local open.
+    read := () => {
+        var other = 5
+        o := Box { v: 0 }.maybe()
+        n := 1 + match o {
+            case .some(x) => x
+            case .none => 2
+        }
+        var wide: int64 = other
+        println("${wide.kind()} ${wide} ${n.kind()} ${n}")
+    }
+    read()
+
+    // A later async arm still supplies the preceding literal's type.
+    awaited := match !flag {
+        case true => 1
+        case _ => await countAsync()
+    }
+    println("${awaited.kind()} ${awaited}")
+
+    // Unchanged: literals that nothing else types still take their default,
+    // and a loop's element still meets a compound assignment.
+    f := match flag {
+        case true => 1
+        case false => 2
+    }
+    g := (0..3).iter().next() ?? 9
+    var sum = 0
+    for x in 0..4 {
+        sum += match x {
+            case 0 => 10
+            case _ => x
+        }
+    }
+    println("${f.kind()} ${f} ${g.kind()} ${g} ${sum.kind()} ${sum}")
+}

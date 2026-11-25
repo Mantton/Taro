@@ -1,0 +1,4 @@
+error: use of uninitialized value 'x'
+ -> language_tests/source_files/invalid/scoped_errdefer_unwind_initialization.tr:4:24
+	    errdefer println("${x}")
+	                        ^

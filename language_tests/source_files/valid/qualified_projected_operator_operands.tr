@@ -1,0 +1,61 @@
+// The in-scope bound and the int64 record disagree on Self::Size. Lookup
+// waits for the receiver literal to default to int32, then the bound gives
+// the neighboring addend its uint8 type, just as with the typed receiver.
+struct Pair[T, U] {
+    first: T
+    second: U
+}
+
+interface Measured {
+    type Size
+    func size() -> Self::Size
+}
+
+conform[X] Pair[X, int64] to Measured {
+    type Size = usize
+
+    func size() -> usize {
+        8
+    }
+}
+
+conform Pair[string, int32] to Measured {
+    type Size = uint8
+
+    func size() -> uint8 {
+        4
+    }
+}
+
+func literal[T](_ value: T) where Pair[T, int32]: Measured[Size = uint8] {
+    size := Measured::size(Pair { first: value, second: 0 }) + 1
+    reverse := 1 + Measured::size(Pair { first: value, second: 0 })
+    accumulate := () => {
+        var total = 1
+        total += Measured::size(Pair { first: value, second: 0 })
+        total
+    }
+    // The operator can also use a width supplied later within its closure.
+    wide := () => {
+        box := Pair { first: value, second: 0 }
+        result := Measured::size(box) + 1
+        var _typedBox: Pair[T, int64] = box
+        result
+    }
+    var a: uint8 = size
+    var b: uint8 = reverse
+    var c: uint8 = accumulate()
+    var d: usize = wide()
+    println("${a} ${b} ${c} ${d}")
+}
+
+func typed[T](_ value: T) where Pair[T, int32]: Measured[Size = uint8] {
+    size := Measured::size(Pair[T, int32] { first: value, second: 0 }) + 1
+    var fromBound: uint8 = size
+    println("${fromBound}")
+}
+
+func main() {
+    literal("x")
+    typed("x")
+}

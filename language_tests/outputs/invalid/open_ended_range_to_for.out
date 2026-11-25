@@ -1,0 +1,7 @@
+error: type 'RangeTo[int32]' does not conform to interface 'Iterable'
+ -> language_tests/source_files/invalid/open_ended_range_to_for.tr:2:4
+    for x in ..5 {
+    ^^^^^^^^^^^^^^
+        _ = x
+    }
+     ^

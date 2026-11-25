@@ -1,0 +1,177 @@
+// TAR-51: `async var` starts a child task at the declaration and binds its
+// lifetime to the enclosing lexical scope.
+// ENV: TARO_WORKERS=4
+// EXPECT_STDERR_COUNT: 2 task panic: async var child panic
+import std::sync::{Receiver, Sender}
+import std::task::TaskGroup
+
+func gatedChild(
+    _ started: Sender[int32],
+    _ release: Receiver[int32],
+    _ value: int32,
+) async -> int32 {
+    started.trySend(value).unwrap()
+    var _ = await release.recv()
+    return value
+}
+
+func suspendedChild(
+    _ started: Sender[int32],
+    _ cleaned: Sender[int32],
+    _ never: Receiver[int32],
+    _ tag: int32,
+) async -> int32 {
+    defer { cleaned.trySend(tag).unwrap() }
+    started.trySend(tag).unwrap()
+    var _ = await never.recv()
+    return tag
+}
+
+func readyChild(_ value: int32) async -> int32 {
+    await std::task::yieldNow()
+    return value
+}
+
+func failingOp() -> Result[int32, string] {
+    return .err("boom")
+}
+
+func earlyReturnCase(
+    _ startedTx: Sender[int32],
+    _ startedRx: Receiver[int32],
+    _ cleaned: Sender[int32],
+    _ never: Receiver[int32],
+) async -> int32 {
+    async var fast = readyChild(10_i32)
+    async var _slow = suspendedChild(startedTx, cleaned, never, 1_i32)
+    var _ = await startedRx.recv()
+    return await fast
+}
+
+func propagatedErrorCase(
+    _ startedTx: Sender[int32],
+    _ startedRx: Receiver[int32],
+    _ cleaned: Sender[int32],
+    _ never: Receiver[int32],
+) async -> Result[int32, string] {
+    async var slow = suspendedChild(startedTx, cleaned, never, 2_i32)
+    var _ = await startedRx.recv()
+    value := failingOp()!
+    return .ok(value + (await slow))
+}
+
+func panickingChild() async -> int32 {
+    await std::task::yieldNow()
+    panic("async var child panic")
+}
+
+func drainedCount(_ events: Receiver[int32]) -> int32 {
+    var count = 0_i32
+    while true {
+        match events.tryRecv() {
+            case .ok(.some(_)) => count += 1_i32
+            case _ => return count
+        }
+    }
+    return count
+}
+
+func main() async {
+    // 1. Both children start before either is awaited; matches TaskGroup control.
+    var (startedTx, startedRx) = std::sync::bounded[int32](4).unwrap()
+    var (releaseTx, releaseRx) = std::sync::bounded[int32](4).unwrap()
+    var (neverTx, neverRx) = std::sync::bounded[int32](1).unwrap()
+    var (cleanedTx, cleanedRx) = std::sync::unbounded[int32]()
+
+    {
+        async var a = gatedChild(startedTx, releaseRx, 17_i32)
+        async var b = gatedChild(startedTx, releaseRx, 25_i32)
+
+        first := (await startedRx.recv()).unwrap()
+        second := (await startedRx.recv()).unwrap()
+        assert(first + second == 42_i32, "both children started before either was awaited")
+
+        releaseTx.trySend(1_i32).unwrap()
+        releaseTx.trySend(1_i32).unwrap()
+
+        total := (await a) + (await b)
+        assert(total == 42_i32, "explicit await yields both child results")
+
+        // TaskGroup control producing the same result.
+        control := await TaskGroup[int32]::scope((group: &TaskGroup[int32]) async => {
+            group.spawn(() async => { 17_i32 })
+            group.spawn(() async => { 25_i32 })
+            var sum = 0_i32
+            for await v in group {
+                sum += v
+            }
+            sum
+        })
+        assert(total == control, "async var matches TaskGroup control")
+    }
+
+    // 2. Normal block exit without awaiting cancels and drains child before leaving scope.
+    {
+        async var _unawaited = suspendedChild(startedTx, cleanedTx, neverRx, 99_i32)
+        var _ = await startedRx.recv()
+    }
+    assert(drainedCount(cleanedRx) == 1_i32, "normal block exit drained unawaited child")
+
+    // 3. Early return cancels and drains unawaited child before returning to caller.
+    earlyValue := await earlyReturnCase(startedTx, startedRx, cleanedTx, neverRx)
+    assert(earlyValue == 10_i32, "early return preserved returned value")
+    assert(drainedCount(cleanedRx) == 1_i32, "early return drained unawaited child")
+
+    // 4. Propagated error via `!` cancels and drains unawaited child before returning `.err`.
+    propResult := await propagatedErrorCase(startedTx, startedRx, cleanedTx, neverRx)
+    match propResult {
+        case .err(msg) => assert(msg == "boom", "propagated error preserved message")
+        case .ok(_) => panic("expected propagated error")
+    }
+    assert(drainedCount(cleanedRx) == 1_i32, "propagated error drained unawaited child")
+
+    // 5. Loop break drains unawaited child before leaving the loop.
+    loop {
+        async var _loopChild = suspendedChild(startedTx, cleanedTx, neverRx, 55_i32)
+        var _ = await startedRx.recv()
+        break
+    }
+    assert(drainedCount(cleanedRx) == 1_i32, "loop break drained unawaited child")
+
+    // 6. Parent cancellation while suspended cancels and drains child before publishing.
+    var cancelledDrained = 0_i32
+    var round = 0_i32
+    while round < 20_i32 {
+        parent := std::task::spawn(() async => {
+            async var child = suspendedChild(startedTx, cleanedTx, neverRx, round)
+            var _ = await child
+        })
+        var _ = await startedRx.recv()
+        parent.cancel()
+        match await parent.result() {
+            case .err(.cancelled) => {}
+            case _ => panic("expected parent task cancellation")
+        }
+        if drainedCount(cleanedRx) == 1_i32 {
+            cancelledDrained += 1_i32
+        }
+        round += 1_i32
+    }
+    assert(cancelledDrained == 20_i32, "parent cancellation drained suspended child every round")
+
+    // 7. Typed sync RHS and child panic propagation.
+    async var typed: int32 = 21_i32 + 21_i32
+    assert(await typed == 42_i32, "typed async var with sync RHS")
+
+    panickingParent := std::task::spawn(() async => {
+        async var boom = panickingChild()
+        var _ = await boom
+    })
+    match await panickingParent.result() {
+        case .err(.panicked(p)) => assert(p.message() == "async var child panic", "child panic rethrown")
+        case _ => panic("expected child panic to propagate")
+    }
+
+    // Keep sender alive until the end so `neverRx` never observes channel closure.
+    var _ = neverTx
+}

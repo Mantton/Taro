@@ -1,0 +1,8 @@
+func using(_ value: int32) -> int32 { value }
+
+func example() {
+    using first = acquire()
+    using(first)
+    using := 1
+    using = 2
+}

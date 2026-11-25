@@ -1,0 +1,8 @@
+interface Reset { func reset(); }
+struct Pretender {}
+extend Pretender {
+    func reset() {}
+}
+struct Counter { value: Pretender }
+conform Counter to Reset by self.value {}
+func main() {}

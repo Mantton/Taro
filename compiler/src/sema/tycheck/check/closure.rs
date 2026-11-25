@@ -14,11 +14,18 @@ impl<'ctx> Checker<'ctx> {
             || closure_body_has_await(&closure.body)
             || self.is_forced_async_closure_expr(expression.id)
             || expectation.is_some_and(|ty| {
-                crate::sema::tycheck::utils::callable::existential_callable(
-                    gcx,
-                    cs.infer_cx.resolve_vars_if_possible(ty),
-                )
-                .is_some_and(|callable| callable.is_async())
+                let resolved = cs.infer_cx.resolve_vars_if_possible(ty);
+                matches!(
+                    resolved.kind(),
+                    TyKind::FnPointer {
+                        effects: crate::sema::models::FunctionPointerEffects {
+                            kind: ClosureKind::AsyncFn,
+                            ..
+                        },
+                        ..
+                    }
+                ) || crate::sema::tycheck::utils::callable::existential_callable(gcx, resolved)
+                    .is_some_and(|callable| callable.is_async())
             });
 
         // GC closures capture by reference even when they escape: escape
@@ -97,14 +104,20 @@ impl<'ctx> Checker<'ctx> {
         // Type check the closure body under the closure's own return context so
         // explicit `return expr` participates in the same output inference as a
         // tail expression.
-        let (return_ty, body_ty) = self.with_return_ty(Some(expected_return), || {
+        let (return_ty, body_ty) = self.without_deferred_return_scope(|| {
+            self.with_return_ty(Some(expected_return), || {
             let prev_async_depth = self.async_depth.get();
+            let prev_closure_depth = self.closure_depth.get();
+            self.closure_depth.set(prev_closure_depth + 1);
             let prev_await_scope = self.await_scope.replace(None);
+            let prev_loop_depth = self.loop_depth.replace(0);
+            let prev_loop_stack = std::mem::take(&mut *self.loop_stack.borrow_mut());
+            let prev_generator_element_ty = self.generator_element_ty.replace(None);
             if effective_async {
                 self.async_depth.set(prev_async_depth + 1);
             }
 
-            let body_ty = match &closure.body.kind {
+            let synth_body = |cs: &mut Cs<'ctx>| match &closure.body.kind {
                 hir::ExpressionKind::Block(block) | hir::ExpressionKind::UnsafeBlock(block) => {
                     for statement in &block.statements {
                         self.check_statement(statement, Some(cs));
@@ -168,41 +181,67 @@ impl<'ctx> Checker<'ctx> {
                     actual_return
                 }
             };
+            let body_ty = if closure.implicit_await {
+                self.with_implicit_await_scope(closure.body.id, closure.body.span, || synth_body(cs))
+            } else {
+                synth_body(cs)
+            };
 
             if effective_async {
                 self.async_depth.set(prev_async_depth);
             }
+            self.closure_depth.set(prev_closure_depth);
 
             self.await_scope.set(prev_await_scope);
+            self.loop_depth.set(prev_loop_depth);
+            *self.loop_stack.borrow_mut() = prev_loop_stack;
+            self.generator_element_ty.set(prev_generator_element_ty);
             (expected_return, body_ty)
+            })
         });
         cs.record_expr_ty(closure.body.id, body_ty);
 
-        // Resolve what we can so we don't cache infer vars in closure signatures.
-        cs.solve_intermediate();
-        let adjustments = cs.resolved_adjustments();
-        let expr_tys = cs
-            .resolved_expr_types()
-            .into_iter()
-            .map(|(id, ty)| (id, cs.structurally_resolve(ty)))
-            .collect();
-        let field_indices = cs.resolved_field_indices();
+        // Learn the signature and capture paths that are already known.
+        // Captured literals can still take their width from the enclosing
+        // expression. Its final solve also finalizes the closure metadata.
+        cs.without_fallbacks(|cs| cs.solve_intermediate());
         let return_ty = cs.infer_cx.resolve_vars_if_possible(return_ty);
         let param_tys: Vec<_> = param_tys
             .into_iter()
             .map(|ty| cs.infer_cx.resolve_vars_if_possible(ty))
             .collect();
 
+        self.build_closure_metadata(
+            closure,
+            &param_ids,
+            &param_tys,
+            return_ty,
+            effective_async,
+            owns_captures,
+            cs,
+        )
+    }
+
+    fn build_closure_metadata(
+        &self,
+        closure: &hir::ClosureExpr,
+        param_ids: &rustc_hash::FxHashSet<NodeID>,
+        param_tys: &[Ty<'ctx>],
+        return_ty: Ty<'ctx>,
+        effective_async: bool,
+        owns_captures: bool,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        let gcx = self.gcx();
+
         // Perform capture analysis - collect free variables from the closure body
         let mut collector = CaptureCollector {
-            param_ids: &param_ids,
+            param_ids,
             local_decls: rustc_hash::FxHashSet::default(),
             order: Vec::new(),
             info: rustc_hash::FxHashMap::default(),
             checker: self,
-            adjustments: &adjustments,
-            expr_tys: &expr_tys,
-            field_indices: &field_indices,
+            cs,
         };
         collector.collect_expr(&closure.body);
 
@@ -245,16 +284,19 @@ impl<'ctx> Checker<'ctx> {
             ClosureKind::Fn
         };
 
+        if !captures.is_empty() {
+            cs.capturing_closures.push(closure.def_id);
+        }
         gcx.cache_closure_captures(
             closure.def_id,
             crate::sema::models::ClosureCaptures {
-                captures: captures.clone(),
+                captures,
                 kind: closure_kind,
             },
         );
 
         // Create the closure type (with user-visible parameter types only)
-        let inputs = gcx.store.interners.intern_ty_list(param_tys.clone());
+        let inputs = gcx.store.interners.intern_ty_list(param_tys.to_vec());
         let captured_generics = GenericsBuilder::identity_for_item(gcx, self.current_def);
 
         // A closure has no generic parameters of its own, but its body and any
@@ -303,6 +345,7 @@ impl<'ctx> Checker<'ctx> {
             label: None,
             name: gcx.intern_symbol("self"),
             ty: self_ty,
+            is_lazy: false,
             default_provider: None,
         }];
 
@@ -321,6 +364,7 @@ impl<'ctx> Checker<'ctx> {
                         label: None,
                         name,
                         ty,
+                        is_lazy: false,
                         default_provider: None,
                     }
                 }),
@@ -337,6 +381,183 @@ impl<'ctx> Checker<'ctx> {
         );
 
         closure_ty
+    }
+
+    /// Materialize zero-argument closures for call arguments whose `@lazy`
+    /// parameter was chosen by overload resolution. Checking candidates never
+    /// creates closures or evaluates arguments; only the committed selection
+    /// records targets here, and only those selected HIR subtrees are cloned.
+    pub(super) fn finalize_lazy_arguments(
+        &self,
+        cs: &mut Cs<'ctx>,
+        root_expr: Option<&hir::Expression>,
+    ) {
+        let targets = cs.take_lazy_argument_targets();
+        if targets.is_empty() {
+            return;
+        }
+        let wanted: rustc_hash::FxHashSet<NodeID> = targets.iter().map(|(id, _)| *id).collect();
+        let mut expressions = rustc_hash::FxHashMap::default();
+        if let Some(root) = root_expr {
+            self.collect_expressions_by_id(root, &wanted, &mut expressions);
+        }
+        let gcx = self.gcx();
+        let empty_params = rustc_hash::FxHashSet::default();
+        for (body_id, param_ty) in targets {
+            if self.results.borrow().lazy_arguments.contains_key(&body_id) {
+                continue;
+            }
+            let Some(body) = expressions.remove(&body_id) else {
+                debug_assert!(
+                    false,
+                    "missing HIR expression for selected lazy argument {body_id:?}"
+                );
+                continue;
+            };
+            let param_ty = cs.infer_cx.resolve_vars_or_error(param_ty);
+            if param_ty.is_error() {
+                continue;
+            }
+            let Some(result_ty) = crate::sema::models::lazy_parameter_result_ty(gcx, param_ty)
+            else {
+                continue;
+            };
+            if result_ty.is_error() {
+                continue;
+            }
+            let TyKind::BoxedExistential { interfaces } = param_ty.kind() else {
+                continue;
+            };
+            if let Some(span) = self.find_async_call_in_lazy_body(&body, cs) {
+                gcx.dcx().emit_error(
+                    "async calls require an enclosing `await` expression".into(),
+                    Some(span),
+                );
+                continue;
+            }
+            let wrapper = hir::Expression::lazy_argument(
+                self.method_value_node(),
+                gcx.allocate_synthetic_id(self.current_def.package()),
+                Box::new(body),
+            );
+            let hir::ExpressionKind::Closure(closure) = &wrapper.kind else {
+                unreachable!("lazy argument wrapper must be a closure");
+            };
+            let closure_ty = self.build_closure_metadata(
+                closure,
+                &empty_params,
+                &[],
+                result_ty,
+                false,
+                false,
+                cs,
+            );
+            cs.record_expr_ty(wrapper.id, closure_ty);
+            cs.record_adjustments(
+                wrapper.id,
+                vec![Adjustment::BoxExistential {
+                    from: closure_ty,
+                    interfaces,
+                }],
+            );
+            self.results
+                .borrow_mut()
+                .lazy_arguments
+                .insert(body_id, wrapper);
+        }
+    }
+
+    fn collect_expressions_by_id(
+        &self,
+        root: &hir::Expression,
+        wanted: &rustc_hash::FxHashSet<NodeID>,
+        found: &mut rustc_hash::FxHashMap<NodeID, hir::Expression>,
+    ) {
+        struct ExprFinder<'a, 'ctx> {
+            checker: &'a Checker<'ctx>,
+            wanted: &'a rustc_hash::FxHashSet<NodeID>,
+            found: &'a mut rustc_hash::FxHashMap<NodeID, hir::Expression>,
+        }
+        impl hir::HirVisitor for ExprFinder<'_, '_> {
+            fn visit_declaration(&mut self, _: &hir::Declaration) {}
+
+            fn visit_expression(&mut self, node: &hir::Expression) {
+                if self.found.len() == self.wanted.len() {
+                    return;
+                }
+                if self.wanted.contains(&node.id) {
+                    self.found.entry(node.id).or_insert_with(|| node.clone());
+                }
+                if matches!(node.kind, hir::ExpressionKind::MemberBrackets { .. })
+                    && let Some(selected) = self
+                        .checker
+                        .results
+                        .borrow()
+                        .selected_brackets
+                        .get(&node.id)
+                        .cloned()
+                {
+                    self.visit_expression(&selected);
+                }
+                if matches!(node.kind, hir::ExpressionKind::Call { .. })
+                    && let Some(selected) = self
+                        .checker
+                        .results
+                        .borrow()
+                        .elaborated_calls
+                        .get(&node.id)
+                        .cloned()
+                {
+                    self.visit_expression(&selected);
+                }
+                hir::walk_expression(self, node);
+            }
+        }
+        let mut finder = ExprFinder {
+            checker: self,
+            wanted,
+            found,
+        };
+        finder.visit_expression(root);
+    }
+
+    fn find_async_call_in_lazy_body(
+        &self,
+        expr: &hir::Expression,
+        cs: &Cs<'ctx>,
+    ) -> Option<Span> {
+        struct AsyncCallFinder<'a, 'ctx> {
+            checker: &'a Checker<'ctx>,
+            cs: &'a Cs<'ctx>,
+            found: Option<Span>,
+        }
+        impl hir::HirVisitor for AsyncCallFinder<'_, '_> {
+            fn visit_expression(&mut self, node: &hir::Expression) {
+                if self.found.is_some() {
+                    return;
+                }
+                match &node.kind {
+                    hir::ExpressionKind::Closure(_) => {}
+                    hir::ExpressionKind::Call { .. } | hir::ExpressionKind::MethodCall { .. } => {
+                        if self.checker.resolved_async_call_status(node.id, Some(self.cs))
+                            == Some(true)
+                        {
+                            self.found = Some(node.span);
+                            return;
+                        }
+                        hir::walk_expression(self, node);
+                    }
+                    _ => hir::walk_expression(self, node),
+                }
+            }
+        }
+        let mut finder = AsyncCallFinder {
+            checker: self,
+            cs,
+            found: None,
+        };
+        finder.visit_expression(expr);
+        finder.found
     }
     pub(super) fn extract_closure_expected_inputs(
         &self,
@@ -381,6 +602,32 @@ impl<'ctx> Checker<'ctx> {
                     .and_then(|callable| callable.signature(self.gcx()))
                     .map(|(_, output)| output)
             }
+        }
+    }
+
+    /// A nested closure can capture a literal before the enclosing match
+    /// determines its width. Resolve the entire captured place in the system
+    /// that created it, before MIR reads the environment and its field path.
+    pub(super) fn finalize_closure_captures(&self, cs: &Cs<'ctx>) {
+        let gcx = self.gcx();
+        for &closure in &cs.capturing_closures {
+            let mut captures = gcx.get_closure_captures(closure).expect("checked closure");
+            for capture in &mut captures.captures {
+                capture.root_ty = cs.infer_cx.resolve_vars_or_error(capture.root_ty);
+                capture.ty = cs.infer_cx.resolve_vars_or_error(capture.ty);
+                if capture
+                    .projection
+                    .iter()
+                    .any(|field| field.ty.has_inference_variables())
+                {
+                    let mut path = capture.projection.to_vec();
+                    for field in &mut path {
+                        field.ty = cs.infer_cx.resolve_vars_or_error(field.ty);
+                    }
+                    capture.projection = gcx.store.arenas.global.alloc_slice_copy(&path);
+                }
+            }
+            gcx.cache_closure_captures(closure, captures);
         }
     }
 
@@ -458,6 +705,12 @@ impl<'ctx> Checker<'ctx> {
             gcx.cache_type(closure_def_id, Ty::from_labeled_signature(gcx, signature));
         }
         gcx.cache_signature(closure_def_id, new_sig);
+        // An async body's own output is cached apart from its signature at
+        // synthesis, possibly still holding inference variables. MIR builds
+        // the body's return slot from that cache, so it must be final too.
+        if gcx.definition_is_async(closure_def_id) {
+            gcx.cache_async_body_output(closure_def_id, output);
+        }
     }
 }
 
@@ -474,14 +727,14 @@ struct CaptureInfo<'ctx> {
 
 /// Only awaits executed by this closure affect its callable capability. A
 /// nested closure's suspension does not make its enclosing closure async.
-fn closure_body_has_await(expr: &hir::Expression) -> bool {
+pub(super) fn closure_body_has_await(expr: &hir::Expression) -> bool {
     struct AwaitFinder {
         found: bool,
     }
     impl hir::HirVisitor for AwaitFinder {
         fn visit_expression(&mut self, node: &hir::Expression) {
             match &node.kind {
-                hir::ExpressionKind::Await(_) => self.found = true,
+                hir::ExpressionKind::Await(_) | hir::ExpressionKind::Select(_) => self.found = true,
                 hir::ExpressionKind::Closure(_) => {}
                 _ => hir::walk_expression(self, node),
             }
@@ -528,12 +781,8 @@ struct CaptureCollector<'a, 'ctx> {
     info: rustc_hash::FxHashMap<CapturePlace, CaptureInfo<'ctx>>,
     /// Reference to the checker for accessing local bindings
     checker: &'a Checker<'ctx>,
-    /// Adjustments recorded during type checking
-    adjustments: &'a rustc_hash::FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
-    /// Fully resolved expression types used to distinguish copying a projected
-    /// field from moving it out of the captured aggregate.
-    expr_tys: &'a rustc_hash::FxHashMap<NodeID, Ty<'ctx>>,
-    field_indices: &'a rustc_hash::FxHashMap<NodeID, usize>,
+    /// Field types can still be inferred by the enclosing expression.
+    cs: &'a Cs<'ctx>,
 }
 
 impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
@@ -599,10 +848,7 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
             hir::ExpressionKind::Member { target, .. }
             | hir::ExpressionKind::TupleAccess(target, _) => {
                 let gcx = self.checker.gcx();
-                let target_ty = crate::sema::tycheck::utils::normalize_aliases(
-                    gcx,
-                    *self.expr_tys.get(&target.id)?,
-                );
+                let target_ty = self.cs.structurally_resolve(self.cs.expr_ty(target.id)?);
                 // Object fields are behind identity, not inline capture
                 // storage. Capture the handle (or an enclosing struct field
                 // containing it), and access current object state at invocation.
@@ -619,14 +865,16 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                             },
                             _
                         )
-                ) || self.adjustments.get(&target.id).is_some_and(|adjustments| {
-                    adjustments
-                        .iter()
-                        .any(|adjustment| matches!(adjustment, Adjustment::Dereference))
-                }) {
+                ) || self
+                    .cs
+                    .node_adjustments(target.id)
+                    .iter()
+                    .any(|adjustment| matches!(adjustment, Adjustment::Dereference))
+                {
                     return None;
                 }
-                let field = crate::thir::FieldIndex::from_usize(*self.field_indices.get(&expr.id)?);
+                let field =
+                    crate::thir::FieldIndex::from_usize(*self.cs.field_indices.get(&expr.id)?);
                 let (root, name, mut projection) = self.stored_projection(target)?;
                 if let Some(class) = gcx.class_for_payload(target_ty) {
                     // Lifecycle self is private inline storage. Keep capture
@@ -648,7 +896,7 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                     }
                     return Some((root, name, projection));
                 }
-                let capture_ty = *self.expr_tys.get(&expr.id)?;
+                let capture_ty = self.cs.structurally_resolve(self.cs.expr_ty(expr.id)?);
                 projection.push(crate::sema::models::CaptureProjection {
                     field,
                     ty: capture_ty,
@@ -730,7 +978,7 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
             hir::StatementKind::Loop { block, .. } => {
                 self.collect_block(block);
             }
-            hir::StatementKind::Defer(block) => {
+            hir::StatementKind::Defer(_, block) => {
                 self.collect_block(block);
             }
             hir::StatementKind::Guard {
@@ -739,6 +987,20 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
             } => {
                 self.collect_expr(condition);
                 self.collect_block(else_block);
+            }
+            hir::StatementKind::ComptimeFor { .. } | hir::StatementKind::ComptimeIf { .. } => {
+                let expansions = self
+                    .checker
+                    .results
+                    .borrow()
+                    .comptime_expansions
+                    .get(&stmt.id)
+                    .cloned();
+                if let Some(blocks) = expansions {
+                    for block in &blocks {
+                        self.collect_block(block);
+                    }
+                }
             }
         }
     }
@@ -749,7 +1011,7 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                 .checker
                 .results
                 .borrow()
-                .elaborated_method_calls
+                .elaborated_calls
                 .get(&expr.id)
                 .cloned();
             if let Some(selected) = selected {
@@ -773,7 +1035,10 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                     self.collect_expr(&selected);
                 }
             }
-            hir::ExpressionKind::Literal(_) | hir::ExpressionKind::Malformed => {}
+            hir::ExpressionKind::Literal(_)
+            | hir::ExpressionKind::TypeName(_)
+            | hir::ExpressionKind::Discard
+            | hir::ExpressionKind::Malformed => {}
             hir::ExpressionKind::Closure(closure) => {
                 // For nested closures, propagate their captures to our capture list.
                 // The nested closure has already been type-checked (during body synthesis),
@@ -817,7 +1082,7 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                 }
             }
             hir::ExpressionKind::InferredMember { .. } => {}
-            hir::ExpressionKind::Array(items) | hir::ExpressionKind::Tuple(items) => {
+            hir::ExpressionKind::Array(items) | hir::ExpressionKind::Tuple(items, _) => {
                 for item in items {
                     self.collect_expr(item);
                 }
@@ -836,7 +1101,7 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                 self.collect_expr(&expr.value);
                 for arm in &expr.arms {
                     let mut arm_bindings = Vec::new();
-                    self.collect_pattern_binding_ids(&arm.pattern, &mut arm_bindings);
+                    arm.pattern.for_each_binding(&mut |id, _| arm_bindings.push(id));
                     for binding_id in &arm_bindings {
                         self.local_decls.insert(*binding_id);
                     }
@@ -849,12 +1114,35 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                     }
                 }
             }
+            hir::ExpressionKind::Select(expr) => {
+                for arm in &expr.arms {
+                    self.collect_expr(&arm.operation);
+                    let mut arm_bindings = Vec::new();
+                    arm.pattern
+                        .for_each_binding(&mut |id, _| arm_bindings.push(id));
+                    for binding_id in &arm_bindings {
+                        self.local_decls.insert(*binding_id);
+                    }
+                    self.collect_expr(&arm.body);
+                    for binding_id in arm_bindings {
+                        self.local_decls.remove(&binding_id);
+                    }
+                }
+            }
+            hir::ExpressionKind::Loop { block, .. } => {
+                self.collect_block(block);
+            }
             hir::ExpressionKind::Return { value } => {
                 if let Some(value) = value.as_deref() {
                     self.collect_expr(value);
                 }
             }
-            hir::ExpressionKind::Break { .. } | hir::ExpressionKind::Continue { .. } => {}
+            hir::ExpressionKind::Break { value, .. } => {
+                if let Some(value) = value.as_deref() {
+                    self.collect_expr(value);
+                }
+            }
+            hir::ExpressionKind::Continue { .. } => {}
             hir::ExpressionKind::Call { callee, arguments } => {
                 self.collect_expr(callee);
                 for arg in arguments {
@@ -874,12 +1162,15 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
             hir::ExpressionKind::Reference(value) => {
                 self.collect_expr(value);
             }
-            hir::ExpressionKind::Dereference(value) => self.collect_expr(value),
+            hir::ExpressionKind::Dereference(value) | hir::ExpressionKind::Spread(value) => {
+                self.collect_expr(value)
+            }
             hir::ExpressionKind::Binary(_, lhs, rhs) => {
                 self.collect_expr(lhs);
                 self.collect_expr(rhs);
             }
-            hir::ExpressionKind::AssignOp(_, lhs, rhs) => {
+            hir::ExpressionKind::AssignOp(_, lhs, rhs)
+            | hir::ExpressionKind::AssignOptional(lhs, rhs) => {
                 self.collect_expr(lhs);
                 self.collect_expr(rhs);
             }
@@ -899,6 +1190,9 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
             }
             hir::ExpressionKind::PatternBinding(binding) => {
                 self.collect_expr(&binding.expression);
+                // The condition introduces these locals inside this closure.
+                // Only a nested closure may capture their values.
+                self.collect_pattern_bindings(&binding.pattern);
             }
             hir::ExpressionKind::Block(block) | hir::ExpressionKind::UnsafeBlock(block) => {
                 self.collect_block(block);
@@ -911,45 +1205,17 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                     self.collect_expr(base);
                 }
             }
-            hir::ExpressionKind::Await(value) => {
+            hir::ExpressionKind::Await(value) | hir::ExpressionKind::Yield(value) => {
                 self.collect_expr(value);
             }
         }
     }
 
     fn collect_pattern_bindings(&mut self, pattern: &hir::Pattern) {
-        let mut binding_ids = Vec::new();
-        self.collect_pattern_binding_ids(pattern, &mut binding_ids);
-        for binding_id in binding_ids {
-            self.local_decls.insert(binding_id);
-        }
+        pattern.for_each_binding(&mut |id, _| { self.local_decls.insert(id); });
     }
 
-    fn collect_pattern_binding_ids(&self, pattern: &hir::Pattern, binding_ids: &mut Vec<NodeID>) {
-        match &pattern.kind {
-            hir::PatternKind::Binding { .. } => binding_ids.push(pattern.id),
-            hir::PatternKind::Tuple(patterns, _) | hir::PatternKind::Or(patterns, _) => {
-                for pattern in patterns {
-                    self.collect_pattern_binding_ids(pattern, binding_ids);
-                }
-            }
 
-            hir::PatternKind::PathTuple { fields, .. } => {
-                for pattern in fields {
-                    self.collect_pattern_binding_ids(pattern, binding_ids);
-                }
-            }
-            hir::PatternKind::PathNamed { fields, .. } => {
-                for field in fields {
-                    self.collect_pattern_binding_ids(&field.pattern, binding_ids);
-                }
-            }
-            hir::PatternKind::Wildcard
-            | hir::PatternKind::Rest
-            | hir::PatternKind::Member(_)
-            | hir::PatternKind::Literal { .. } => {}
-        }
-    }
 }
 
 fn closure_self_ty<'ctx>(_gcx: Gcx<'ctx>, closure_ty: Ty<'ctx>, _kind: ClosureKind) -> Ty<'ctx> {
@@ -961,6 +1227,23 @@ fn closure_self_ty<'ctx>(_gcx: Gcx<'ctx>, closure_ty: Ty<'ctx>, _kind: ClosureKi
 #[cfg(test)]
 mod context_tests {
     use crate::test_support::{analyze_script_diagnostics, analyze_script_mir_diagnostics};
+
+    /// Checking a closure solves the enclosing statement's constraints so far.
+    /// That solve defaults only the closure's own literals: the `1` beside it
+    /// takes `usize` from `same` once `apply`'s result is known, and the
+    /// closure's own `2` still takes its default.
+    #[test]
+    fn checking_a_closure_defaults_only_its_own_literals() {
+        for source in [
+            "func same[T](_ a: T, _ b: T) -> T { b }\nfunc apply[T, U](_ v: T, _ f: (T) -> U) -> U { f(v) }\nfunc main() { var n: usize = 2; x := same(1, apply(n, (v) => v)); var y: usize = x }",
+            "func apply[T, U](_ v: T, _ f: (T) -> U) -> U { f(v) }\nfunc main() { var n: usize = 2; x := 1 + apply(n, (v) => v); var y: usize = x }",
+            "func apply[T, U](_ v: T, _ f: (T) -> U) -> U { f(v) }\nfunc main() { var n: usize = 2; x := [1, apply(n, (v) => v)]; var y: [usize; 2] = x }",
+            "func apply[T, U](_ v: T, _ f: (T) -> U) -> U { f(v) }\nfunc main() { var n: usize = 2; x := apply(n, (v) => 2); var y: int32 = x }",
+        ] {
+            let errors = analyze_script_diagnostics(source);
+            assert!(errors.is_empty(), "{source}\n{errors:#?}");
+        }
+    }
 
     #[test]
     fn invoking_a_captured_callable_uses_its_receiver_mode() {
@@ -1035,6 +1318,41 @@ mod precise_capture_tests {
     fn nested_inferred_capture_paths_are_fully_resolved_before_publication() {
         crate::test_support::check_script(
             "struct Wrapper[T] { value: T }\nfunc main() { build := () => { wrapper := Wrapper { value: 7 }; read := () => wrapper.value; read() }; var result: int32 = build() }",
+            |_, gcx| {
+                gcx.with_session_type_database(|database| {
+                    let mut projected = 0;
+                    for captures in database.closure_captures.values() {
+                        for capture in &captures.captures {
+                            if capture.projection.is_empty() {
+                                continue;
+                            }
+                            projected += 1;
+                            assert!(
+                                !capture.root_ty.contains_inference(),
+                                "{:?}",
+                                capture.root_ty
+                            );
+                            assert!(!capture.ty.contains_inference(), "{:?}", capture.ty);
+                            assert!(
+                                capture
+                                    .projection
+                                    .iter()
+                                    .all(|field| !field.ty.contains_inference())
+                            );
+                        }
+                    }
+                    assert_eq!(projected, 1);
+                });
+            },
+        );
+    }
+
+    #[test]
+    fn inferred_capture_paths_inside_match_arms_are_fully_resolved() {
+        // The arm's result literal is held for the other arms; the closure
+        // in it still publishes resolved capture types.
+        crate::test_support::check_script(
+            "struct Wrapper[T] { value: T }\nfunc main() {\n    k := 1\n    out := match k {\n        case 1 => {\n            wrapper := Wrapper { value: 7 }\n            read := () => wrapper.value\n            read()\n        }\n        case _ => 0\n    }\n    var result: int32 = out\n}",
             |_, gcx| {
                 gcx.with_session_type_database(|database| {
                     let mut projected = 0;

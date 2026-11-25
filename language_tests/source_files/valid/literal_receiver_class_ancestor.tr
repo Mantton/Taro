@@ -1,0 +1,87 @@
+// A class receiver that still holds an untyped literal (`Derived(0)`, a
+// Derived[{integer}]) finds the interfaces of its ancestor `Base`, whose type
+// is already known, exactly as the typed spelling `Derived[int32]` does:
+// through a plain interface, through one with an argument besides Self,
+// past an inherent overload of the wrong arity (from a local), and from a
+// temporary.
+class Base {
+    stamp: int32
+}
+
+extend Base {
+    public init() {
+        self.stamp = 1
+    }
+}
+
+class Derived[T]: Base {
+    value: T
+}
+
+extend[T] Derived[T] {
+    public init(_ value: T) {
+        super.init()
+        self.value = value
+    }
+}
+
+interface Reader {
+    func read() -> usize
+}
+
+conform Base to Reader {
+    func read() -> usize {
+        7
+    }
+}
+
+extend[T] Derived[T] {
+    func read(_ flag: bool) -> usize {
+        1
+    }
+}
+
+interface Metric[U] {
+    func size() -> usize
+}
+
+conform Base to Metric[bool] {
+    func size() -> usize {
+        7
+    }
+}
+
+interface Plain {
+    func weight() -> usize
+}
+
+conform Base to Plain {
+    func weight() -> usize {
+        3
+    }
+}
+
+func main() {
+    literalRead := () => {
+        var d = Derived(0)
+        return d.read()
+    }
+    typedRead := () => {
+        var d: Derived[int32] = Derived(0)
+        return d.read()
+    }
+    literalSize := () => {
+        var d = Derived(0)
+        return d.size() + 1
+    }
+    typedSize := () => {
+        var d: Derived[int32] = Derived(0)
+        return d.size() + 1
+    }
+    literalWeight := () => {
+        var d = Derived(0)
+        return d.weight() + 1
+    }
+    println("${literalRead()} ${typedRead()} ${literalSize()} ${typedSize()} ${literalWeight()}")
+    println("${Derived(0).size() + 1} ${Derived(0).weight() + 1} ${Derived[int32](0).size() + 1}")
+}

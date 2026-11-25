@@ -1,0 +1,4 @@
+error: cannot derive 'Default' for 'Session': field 'handle' has no default value and its type 'Handle' does not conform to 'Default'
+ -> language_tests/source_files/invalid/derived_default_field_without_default.tr:3:16
+	struct Session: Default {
+	                ^^^^^^^

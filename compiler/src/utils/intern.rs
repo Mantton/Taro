@@ -108,23 +108,44 @@ where
 ///
 /// Values of this type must only be created from compiler interners that
 /// guarantee uniqueness by content.
-#[derive(Debug, Clone, Copy)]
-pub struct List<'a, T>(&'a [T]);
+#[derive(Clone, Copy)]
+pub struct List<'a, T>(Option<&'a Vec<T>>, Option<&'a Vec<T>>);
+
+impl<T: Debug> Debug for List<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("List")
+            .field(&self.0.map_or(&[][..], Vec::as_slice))
+            .finish()
+    }
+}
 
 impl<'a, T> List<'a, T> {
     #[inline]
-    pub(crate) fn from_interned_slice(slice: &'a [T]) -> Self {
-        List(slice)
+    pub(crate) fn from_interned_vec(items: &'a Vec<T>) -> Self {
+        List((!items.is_empty()).then_some(items), None)
+    }
+
+    /// Use-site spellings share the interned list's positional identity.
+    pub(crate) fn with_presentation(self, items: &'a Vec<T>) -> Self {
+        List(self.0, Some(items))
+    }
+
+    pub(crate) fn has_presentation(&self) -> bool {
+        self.1.is_some()
+    }
+
+    pub(crate) fn canonical(self) -> Self {
+        List(self.0, None)
     }
 
     #[inline]
     pub const fn empty() -> Self {
-        List(&[])
+        List(None, None)
     }
 
     #[inline]
-    pub fn as_slice(self) -> &'a [T] {
-        self.0
+    pub fn as_slice(&self) -> &'a [T] {
+        self.1.or(self.0).map_or(&[], Vec::as_slice)
     }
 }
 
@@ -133,18 +154,14 @@ impl<'a, T> Deref for List<'a, T> {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        self.0
+        self.as_slice()
     }
 }
 
 impl<'a, T> PartialEq for List<'a, T> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        if self.0.is_empty() && other.0.is_empty() {
-            return true;
-        }
-
-        self.0.len() == other.0.len() && ptr::eq(self.0.as_ptr(), other.0.as_ptr())
+        self.0.map(ptr::from_ref) == other.0.map(ptr::from_ref)
     }
 }
 
@@ -153,10 +170,7 @@ impl<'a, T> Eq for List<'a, T> {}
 impl<'a, T> Hash for List<'a, T> {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.len().hash(state);
-        if !self.0.is_empty() {
-            self.0.as_ptr().hash(state);
-        }
+        self.0.map(ptr::from_ref).hash(state);
     }
 }
 
@@ -173,7 +187,7 @@ impl<'a, T> IntoIterator for List<'a, T> {
 
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
-        self.0.iter()
+        self.as_slice().iter()
     }
 }
 

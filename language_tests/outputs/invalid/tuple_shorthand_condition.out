@@ -1,0 +1,4 @@
+error: conditional bindings use `var` or `case` with `=`, not `:=`
+ -> language_tests/source_files/invalid/tuple_shorthand_condition.tr:3:14
+	    if (a, b) := p {
+	              ^^

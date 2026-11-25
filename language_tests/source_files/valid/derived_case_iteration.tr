@@ -1,0 +1,43 @@
+enum Weekday: CaseIterable, RawValue[uint8] { case monday = 90, tuesday = 2, friday = 7 }
+enum Marker[T]: CaseIterable { case first, second }
+enum Empty: CaseIterable {}
+enum Custom: CaseIterable { case first, second }
+extend Custom {
+    var name: string { get { "custom" } }
+}
+enum Manual { case payload(string) }
+conform Manual to CaseIterable {
+    var name: string { get { match self { case .payload(text) => text; } } }
+    static func caseAt(_ index: usize) -> Self? {
+        if index == 0 { return .some(.payload("manual")) }
+        return .none
+    }
+}
+
+func names[T: CaseIterable](_ value: T) -> string {
+    var names = ""
+    for item in T::ALL_CASES { names = names + item.name }
+    names
+}
+
+func main() {
+    assert(names(Weekday::tuesday) == "mondaytuesdayfriday", "case declaration order")
+    assert(names(Marker[bool]::second) == "firstsecond", "generic enum")
+    var direct = ""
+    for item in Weekday::ALL_CASES { direct = direct + item.name }
+    assert(direct == "mondaytuesdayfriday", "concrete iteration")
+    var first = Weekday::ALL_CASES.iter()
+    var second = Weekday::ALL_CASES.iter()
+    assert(first.next().unwrap().rawValue == 90, "first independent cursor")
+    assert(first.next().unwrap().rawValue == 2, "numeric order is independent")
+    assert(second.next().unwrap().name == "monday", "second independent cursor")
+    assert(first.next().unwrap().rawValue == 7, "last case")
+    assert(first.next().isNone() && first.next().isNone(), "cursor stays exhausted")
+    assert(Empty::ALL_CASES.iter().next().isNone(), "empty enum")
+    assert(Custom::caseAt(1).unwrap().name == "custom", "explicit getter with derived index")
+    assert(names(Manual::payload("x")) == "manual", "handwritten payload enumeration")
+    assert(Weekday::caseAt(3).isNone(), "out of range")
+    var erased: any CaseIterable = Weekday::friday
+    assert(erased.name == "friday", "boxed name")
+    println("PASS")
+}

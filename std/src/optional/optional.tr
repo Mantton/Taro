@@ -1,7 +1,9 @@
 import std::panic::panic
 import std::marker::Clone
-import std::ops::Fn
+import std::ops::{Fn, PartialEq}
 import std::default::Default
+import std::hash::{Hashable, Hasher}
+import std::cmp::{Ord, Ordering, PartialOrd}
 
 /// An optional value that may or may not contain a wrapped value.
 ///
@@ -213,5 +215,49 @@ extend[Wrapped] &Optional[Wrapped] {
         previous := *self
         *self = .none
         previous
+    }
+}
+
+conform[Wrapped: PartialEq] Optional[Wrapped] to PartialEq {
+    public func eq(_ other: Optional[Wrapped]) -> bool {
+        match (self, other) {
+            case (.none, .none) => true
+            case (.some(a), .some(b)) => a == b
+            case _ => false
+        }
+    }
+}
+
+conform[Wrapped: Hashable] Optional[Wrapped] to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
+        match self {
+            case .none => 0_u8.hash(into: hasher)
+            case .some(value) => {
+                1_u8.hash(into: hasher)
+                value.hash(into: hasher)
+            }
+        }
+    }
+}
+
+conform[Wrapped: PartialOrd] Optional[Wrapped] to PartialOrd {
+    public func partialCmp(_ other: Optional[Wrapped]) -> Optional[Ordering] {
+        match (self, other) {
+            case (.none, .none) => .some(.equal)
+            case (.none, .some(_)) => .some(.less)
+            case (.some(_), .none) => .some(.greater)
+            case (.some(a), .some(b)) => a.partialCmp(b)
+        }
+    }
+}
+
+conform[Wrapped: Ord] Optional[Wrapped] to Ord {
+    public func cmp(_ other: Optional[Wrapped]) -> Ordering {
+        match (self, other) {
+            case (.none, .none) => .equal
+            case (.none, .some(_)) => .less
+            case (.some(_), .none) => .greater
+            case (.some(a), .some(b)) => a.cmp(b)
+        }
     }
 }

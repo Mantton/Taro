@@ -1,0 +1,4 @@
+error: disallowed local binding pattern
+ -> language_tests/source_files/invalid/tuple_shorthand_single_paren.tr:2:4
+	    (x) := 1
+	    ^^^

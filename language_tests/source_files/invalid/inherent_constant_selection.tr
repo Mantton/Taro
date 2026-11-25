@@ -1,0 +1,11 @@
+struct Box[T] { value: T }
+extend[T] Box[T] { const OVERLAP: int32 = 0; }
+extend Box[int64] {
+    const OVERLAP: int32 = 64
+    const WIDE: bool = true
+    private const HIDDEN: bool = true
+}
+func ambiguous() -> int32 { Box[int64]::OVERLAP }
+func missing() -> bool { Box[bool]::WIDE }
+func hidden() -> bool { Box[int64]::HIDDEN }
+func main() {}

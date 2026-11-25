@@ -42,6 +42,32 @@ const TEST_PANIC_PASSED: u8 = 0;
 const TEST_PANIC_UNEXPECTED: u8 = 1;
 const TEST_PANIC_MISSING: u8 = 2;
 const TEST_PANIC_MESSAGE_MISMATCH: u8 = 3;
+const TEST_PANIC_SUBTEST_FAILED: u8 = 4;
+
+#[derive(Default)]
+struct SubtestFrame {
+    total: usize,
+    failed: usize,
+    printed_children_newline: bool,
+}
+
+#[derive(Default)]
+struct SubtestSession {
+    active: bool,
+    root: SubtestFrame,
+    thread_frames: Option<std::collections::HashMap<std::thread::ThreadId, Vec<SubtestFrame>>>,
+}
+
+static SUBTEST_SESSION: std::sync::Mutex<SubtestSession> =
+    std::sync::Mutex::new(SubtestSession {
+        active: false,
+        root: SubtestFrame {
+            total: 0,
+            failed: 0,
+            printed_children_newline: false,
+        },
+        thread_frames: None,
+    });
 #[cfg(all(unix, any(target_arch = "x86_64", target_arch = "aarch64")))]
 const TARO_EXCEPTION_CLASS: u64 = u64::from_be_bytes(*b"TAROPAN!");
 
@@ -891,7 +917,7 @@ pub extern "C" fn __rt__test_panic_status(
             unsafe { std::slice::from_raw_parts(expected_message_ptr, expected_message_len) };
         String::from_utf8_lossy(bytes).into_owned()
     };
-    PANIC_REPORT.with(|slot| {
+    let base_status = PANIC_REPORT.with(|slot| {
         let report = slot.borrow();
         classify_test_panic(
             panicked,
@@ -899,7 +925,183 @@ pub extern "C" fn __rt__test_panic_status(
             &expected_message,
             report.as_ref().map(|report| report.message.as_str()),
         )
-    })
+    });
+    if base_status == TEST_PANIC_PASSED {
+        let subtest_failed = {
+            let session = SUBTEST_SESSION.lock().unwrap_or_else(|e| e.into_inner());
+            session.active && session.root.failed > 0
+        };
+        if subtest_failed {
+            return TEST_PANIC_SUBTEST_FAILED;
+        }
+    }
+    base_status
+}
+
+/// If the current test ran any subtests (which printed child lines after the
+/// parent's initial prefix), re-print the parent prefix on a fresh line so its
+/// final status (`ok` / `FAILED (...)`) is readable.
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__test_prepare_result(prefix_ptr: *const std::ffi::c_char) {
+    let needs_prefix = {
+        let session = SUBTEST_SESSION.lock().unwrap_or_else(|e| e.into_inner());
+        session.active && session.root.printed_children_newline
+    };
+    if !needs_prefix || prefix_ptr.is_null() {
+        return;
+    }
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    unsafe {
+        libc::fflush(std::ptr::null_mut());
+        let cstr = std::ffi::CStr::from_ptr(prefix_ptr);
+        let mut stdout = std::io::stdout().lock();
+        let _ = stdout.write_all(cstr.to_bytes());
+        let _ = stdout.flush();
+    }
+}
+
+/// Run a named child test case inside an `@test` function.
+///
+/// Catches panics from `callback(context)` so sibling subtests still run,
+/// prints indented status lines, and records failures on the enclosing frame.
+/// Nested subtest frames are tracked per OS thread so concurrent workers never
+/// interleave or corrupt each other's frame stack.
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__test_run_subtest(
+    name: RtString,
+    callback: extern "C-unwind" fn(*mut u8),
+    context: *mut u8,
+) {
+    let name_text = if name.ptr.is_null() || name.len == 0 {
+        String::from("<unnamed>")
+    } else {
+        let bytes = unsafe { std::slice::from_raw_parts(name.ptr, name.len) };
+        String::from_utf8_lossy(bytes).into_owned()
+    };
+
+    let tid = std::thread::current().id();
+    let depth = {
+        let mut session = SUBTEST_SESSION.lock().unwrap_or_else(|e| e.into_inner());
+        let SubtestSession {
+            active,
+            root,
+            thread_frames,
+        } = &mut *session;
+        let map = thread_frames.get_or_insert_with(std::collections::HashMap::new);
+        let stack = map.entry(tid).or_default();
+        let depth = 1 + stack.len();
+        let parent = if let Some(top) = stack.last_mut() {
+            Some(top)
+        } else if *active {
+            Some(root)
+        } else {
+            None
+        };
+        if let Some(parent) = parent {
+            if !parent.printed_children_newline {
+                unsafe {
+                    libc::fflush(std::ptr::null_mut());
+                }
+                let mut stdout = std::io::stdout().lock();
+                let _ = writeln!(stdout);
+                let _ = stdout.flush();
+                parent.printed_children_newline = true;
+            }
+            parent.total += 1;
+        }
+        let indent = "  ".repeat(depth);
+        {
+            let mut stdout = std::io::stdout().lock();
+            let _ = write!(stdout, "{indent}subtest {name_text} ... ");
+            let _ = stdout.flush();
+        }
+        stack.push(SubtestFrame::default());
+        depth
+    };
+
+    let prev_harness = in_test_harness();
+    set_test_harness_active(true);
+    install_taro_panic_hook();
+    PANIC_ACTIVE.with(|f| f.set(false));
+    PANIC_REPORT.with(|slot| {
+        slot.borrow_mut().take();
+    });
+
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        callback(context);
+    }))
+    .is_err();
+
+    set_test_harness_active(prev_harness);
+
+    let (outside_harness, child_failed) = {
+        let mut session = SUBTEST_SESSION.lock().unwrap_or_else(|e| e.into_inner());
+        let SubtestSession {
+            active,
+            root,
+            thread_frames,
+        } = &mut *session;
+        let (frame, stack_now_empty) = if let Some(map) = thread_frames.as_mut() {
+            let popped = map
+                .get_mut(&tid)
+                .and_then(|stack| stack.pop())
+                .unwrap_or_default();
+            let empty = map.get(&tid).is_none_or(|stack| stack.is_empty());
+            if empty {
+                map.remove(&tid);
+            }
+            (popped, empty)
+        } else {
+            (SubtestFrame::default(), true)
+        };
+        let child_failed = panicked || frame.failed > 0;
+        let indent = "  ".repeat(depth);
+        {
+            let mut stdout = std::io::stdout().lock();
+            if frame.printed_children_newline {
+                let _ = write!(stdout, "{indent}subtest {name_text} ... ");
+            }
+            if !child_failed {
+                let _ = writeln!(stdout, "ok");
+            } else if panicked {
+                let _ = writeln!(stdout, "FAILED (panicked)");
+            } else {
+                let _ = writeln!(
+                    stdout,
+                    "FAILED ({} of {} subtests failed)",
+                    frame.failed, frame.total
+                );
+            }
+            let _ = stdout.flush();
+        }
+        if panicked {
+            unsafe {
+                libc::fflush(std::ptr::null_mut());
+            }
+            write_report("subtest panicked without a recorded message");
+            PANIC_ACTIVE.with(|f| f.set(false));
+            PANIC_REPORT.with(|slot| {
+                slot.borrow_mut().take();
+            });
+        }
+        if child_failed {
+            if let Some(parent) = thread_frames
+                .as_mut()
+                .and_then(|map| map.get_mut(&tid))
+                .and_then(|stack| stack.last_mut())
+            {
+                parent.failed += 1;
+            } else if *active {
+                root.failed += 1;
+            }
+        }
+        (!*active && stack_now_empty, child_failed)
+    };
+
+    if outside_harness && child_failed {
+        rethrow_panic_message(format!("subtest '{name_text}' failed"));
+    }
 }
 
 /// Emit actionable details for a failed test panic classification, then reset
@@ -942,6 +1144,12 @@ pub extern "C" fn __rt__test_panic_finish(
     PANIC_REPORT.with(|slot| {
         slot.borrow_mut().take();
     });
+    let mut session = SUBTEST_SESSION.lock().unwrap_or_else(|e| e.into_inner());
+    session.active = false;
+    session.root = SubtestFrame::default();
+    if let Some(map) = session.thread_frames.as_mut() {
+        map.clear();
+    }
 }
 
 /// Report and clear a panic caught by a non-test language harness.
@@ -970,6 +1178,18 @@ fn install_taro_panic_hook() {
     });
 }
 
+pub(crate) fn catch_harness_panic(action: impl FnOnce()) -> bool {
+    set_test_harness_active(true);
+    install_taro_panic_hook();
+    PANIC_ACTIVE.with(|f| f.set(false));
+    PANIC_REPORT.with(|slot| {
+        slot.borrow_mut().take();
+    });
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(action)).is_err();
+    set_test_harness_active(false);
+    panicked
+}
+
 /// Call a `void()` Taro function and return whether it panicked.
 ///
 /// Sets `IN_TEST_HARNESS` for the duration of the call so that
@@ -979,6 +1199,14 @@ fn install_taro_panic_hook() {
 /// Returns `true` if the function panicked, `false` if it returned normally.
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt__test_call_fn(fn_ptr: extern "C-unwind" fn()) -> bool {
+    {
+        let mut session = SUBTEST_SESSION.lock().unwrap_or_else(|e| e.into_inner());
+        session.active = true;
+        session.root = SubtestFrame::default();
+        if let Some(map) = session.thread_frames.as_mut() {
+            map.clear();
+        }
+    }
     set_test_harness_active(true);
     install_taro_panic_hook();
 
@@ -1488,5 +1716,83 @@ mod tests {
         );
         assert_eq!(parse_backtrace_policy(Some("full")), BacktracePolicy::Full);
         assert_eq!(parse_backtrace_policy(Some("FuLl")), BacktracePolicy::Full);
+    }
+
+    #[test]
+    fn concurrent_subtests_isolate_per_thread_frame_stacks() {
+        use super::*;
+        use std::sync::{Arc, Barrier};
+
+        extern "C-unwind" fn inner_fail(ctx: *mut u8) {
+            let barrier = unsafe { &*(ctx as *const Barrier) };
+            barrier.wait();
+            rethrow_panic_message("concurrent subtest inner panic".to_string());
+        }
+
+        extern "C-unwind" fn inner_ok(ctx: *mut u8) {
+            let barrier = unsafe { &*(ctx as *const Barrier) };
+            barrier.wait();
+        }
+
+        extern "C-unwind" fn outer_failing(ctx: *mut u8) {
+            let name = b"inner-fail";
+            let rt_name = RtString {
+                ptr: name.as_ptr(),
+                len: name.len(),
+            };
+            __rt__test_run_subtest(rt_name, inner_fail, ctx);
+        }
+
+        extern "C-unwind" fn outer_passing(ctx: *mut u8) {
+            let name = b"inner-ok";
+            let rt_name = RtString {
+                ptr: name.as_ptr(),
+                len: name.len(),
+            };
+            __rt__test_run_subtest(rt_name, inner_ok, ctx);
+        }
+
+        extern "C-unwind" fn root_test() {
+            let barrier = Arc::new(Barrier::new(2));
+            let b1 = Arc::clone(&barrier);
+            let b2 = Arc::clone(&barrier);
+            let h1 = std::thread::spawn(move || {
+                let name = b"worker-pass";
+                let rt_name = RtString {
+                    ptr: name.as_ptr(),
+                    len: name.len(),
+                };
+                __rt__test_run_subtest(rt_name, outer_passing, Arc::as_ptr(&b1) as *mut u8);
+            });
+            let h2 = std::thread::spawn(move || {
+                let name = b"worker-fail";
+                let rt_name = RtString {
+                    ptr: name.as_ptr(),
+                    len: name.len(),
+                };
+                __rt__test_run_subtest(rt_name, outer_failing, Arc::as_ptr(&b2) as *mut u8);
+            });
+            h1.join().expect("passing worker thread should not panic");
+            h2.join().expect("failing worker thread should catch panic inside subtest");
+        }
+
+        let panicked = __rt__test_call_fn(root_test);
+        assert!(!panicked, "root test itself should not panic");
+
+        let (root_total, root_failed, leaked_threads) = {
+            let session = SUBTEST_SESSION.lock().unwrap_or_else(|e| e.into_inner());
+            let leaked = session
+                .thread_frames
+                .as_ref()
+                .map_or(0, |map| map.len());
+            (session.root.total, session.root.failed, leaked)
+        };
+        assert_eq!(root_total, 2, "both top-level worker subtests should register on root");
+        assert_eq!(root_failed, 1, "only the failing worker subtest should fail root");
+        assert_eq!(leaked_threads, 0, "per-thread subtest stacks must drain cleanly");
+
+        let status = __rt__test_panic_status(false, false, std::ptr::null(), 0);
+        assert_eq!(status, TEST_PANIC_SUBTEST_FAILED);
+        __rt__test_panic_finish(status, std::ptr::null(), 0);
     }
 }

@@ -1,0 +1,40 @@
+// The final arm constrains a value after the nested closure has captured it.
+func whole(_ flag: int32) -> usize {
+    choose := () => {
+        value := 2
+        var wide: usize = 5000000000
+        match flag {
+            case 0 => value
+            case 1 => {
+                capture := () => value
+                capture()
+            }
+            case _ => wide
+        }
+    }
+    return choose()
+}
+
+struct Cell[T] { value: T }
+struct Pair[T, U] { tag: T, cell: Cell[U] }
+
+func projected[T](_ tag: T, _ flag: int32) -> usize {
+    choose := () => {
+        pair := Pair { tag: tag, cell: Cell { value: 3 } }
+        var wide: usize = 5000000000
+        match flag {
+            case 0 => pair.cell.value
+            case 1 => {
+                capture := () => pair.cell.value
+                capture()
+            }
+            case _ => wide
+        }
+    }
+    return choose()
+}
+
+func main() {
+    println("${whole(0)} ${whole(1)} ${whole(2)}")
+    println("${projected(true, 0)} ${projected(false, 1)} ${projected(9_i32, 2)}")
+}

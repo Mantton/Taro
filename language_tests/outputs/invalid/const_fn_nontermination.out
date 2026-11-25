@@ -1,0 +1,8 @@
+warning: unreachable expression
+ -> language_tests/source_files/invalid/const_fn_nontermination.tr:6:4
+	    return x
+	    ^^^^^^^^
+error: constant evaluation exceeded the step limit of 500000 steps (possible infinite loop)
+ -> language_tests/source_files/invalid/const_fn_nontermination.tr:9:21
+	const VALUE: int32 = forever()
+	                     ^^^^^^^^^

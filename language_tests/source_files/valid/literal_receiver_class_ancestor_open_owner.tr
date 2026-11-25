@@ -1,0 +1,59 @@
+// Both Base and Derived[int64] supply interfaces named by this call.
+// Once the open receiver defaults to Derived[int32], only Reader.read on
+// Base applies. The temporary, the expression with an operator, and the
+// closure's local therefore agree with the annotated local. The int64
+// spelling sees the complete pair of interfaces and is covered by
+// literal_receiver_class_ancestor_open_owner_int64.
+class Base {
+    stamp: int32
+}
+
+extend Base {
+    public init() {
+        self.stamp = 1
+    }
+}
+
+class Derived[T]: Base {
+    value: T
+}
+
+extend[T] Derived[T] {
+    public init(_ value: T) {
+        super.init()
+        self.value = value
+    }
+}
+interface Reader {
+    func read() -> usize
+}
+
+conform Base to Reader {
+    func read() -> usize {
+        7
+    }
+}
+
+interface Other {
+    func read() -> usize
+}
+
+conform Derived[int64] to Other {
+    func read() -> usize {
+        9
+    }
+}
+
+func main() {
+    n := Derived(0).read()
+    m := Derived(0).read() + 1
+    local := () => {
+        var d = Derived(0)
+        return d.read()
+    }
+    typed := () => {
+        var d: Derived[int32] = Derived(0)
+        return d.read()
+    }
+    println("${n} ${m} ${local()} ${typed()}")
+}

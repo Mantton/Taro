@@ -1,7 +1,7 @@
 import monkey::lexer::Lexer
 import monkey::parser::Parser
-import monkey::eval::{Evaluator, EvalError}
-import monkey::object::{Object, Environment}
+import monkey::eval::Evaluator
+import monkey::object::Environment
 
 /// Evaluates a source and renders the result, or the first failure.
 func eval(_ source: string) -> string {

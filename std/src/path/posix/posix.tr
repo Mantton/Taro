@@ -1,4 +1,3 @@
-import std::optional::Optional
 import std::string::{stringLen, stringData}
 import std::string::Builder
 import std::collections::List

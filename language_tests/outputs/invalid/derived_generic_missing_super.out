@@ -1,0 +1,8 @@
+error: interface 'Hashable' requires type 'MissingSuper[T]' to conform to 'PartialEq[MissingSuper[T]]'
+ -> language_tests/source_files/invalid/derived_generic_missing_super.tr:4:24
+	struct MissingSuper[T]: Hashable { value: T }
+	                        ^^^^^^^^
+info: add 'PartialEq' to the conformance list of 'MissingSuper', or implement it in a conformance
+ -> language_tests/source_files/invalid/derived_generic_missing_super.tr:4:24
+	struct MissingSuper[T]: Hashable { value: T }
+	                        ^^^^^^^^

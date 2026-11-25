@@ -1,0 +1,4 @@
+error: `#fields(...)` requires a struct or class type, found `int32`
+ -> language_tests/source_files/invalid/comptime_fields_invalid_type.tr:2:26
+	    #for field in #fields(int32) {
+	                          ^^^^^

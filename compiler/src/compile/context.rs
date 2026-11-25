@@ -15,7 +15,7 @@ use crate::{
             GenericArgument, GenericArguments, GenericParameter, Generics, GoalResult, IntTy,
             InterfaceDefinition, InterfaceGoal, InterfaceReference, InterfaceRequirements,
             LabeledFunctionSignature, SelectionMode, SelectionResult, StructDefinition,
-            StructField, Ty, TyKind, TyList, UIntTy,
+            StructField, Ty, TyKind, TyList, TypeData, UIntTy,
         },
         resolve::models::{
             DefinitionKind, PrimaryType, ResolutionOutput, ScopeData, ScopeEntryData, TypeHead,
@@ -24,7 +24,7 @@ use crate::{
     },
     specialize::Instance,
     thir::VariantIndex,
-    utils::intern::{Interned, InternedInSet, InternedSet, List},
+    utils::intern::{InternedInSet, InternedSet, List},
 };
 use bumpalo::Bump;
 use ecow::EcoString;
@@ -39,6 +39,13 @@ pub(crate) enum ConstEvaluationState {
     Evaluating,
     Evaluated(crate::sema::models::ConstValue),
     Failed,
+}
+
+pub(crate) struct ConstantMemberUse<'ctx> {
+    pub owner: DefinitionID,
+    pub expression: &'ctx hir::Expression,
+    pub expected: Option<Ty<'ctx>>,
+    pub header_witness: Option<DefinitionID>,
 }
 
 #[derive(Clone, Copy)]
@@ -61,6 +68,80 @@ impl<'arena> GlobalContext<'arena> {
         config: &'arena Config,
     ) -> GlobalContext<'arena> {
         GlobalContext { context, config }
+    }
+
+    pub fn caller_parameters(self) -> [crate::sema::models::LabeledFunctionParameter<'arena>; 3] {
+        use crate::{ast::SourceLocation, sema::models::LabeledFunctionParameter};
+        SourceLocation::ALL.map(|location| LabeledFunctionParameter {
+            is_lazy: false,
+            label: None,
+            name: self.intern_symbol(location.parameter_name()),
+            ty: match location {
+                SourceLocation::Line => self.types.int32,
+                _ => self.types.string,
+            },
+            default_provider: None,
+        })
+    }
+
+    pub fn byte_array_type(self, size: usize) -> Ty<'arena> {
+        Ty::new(
+            TyKind::Array {
+                element: self.types.uint8,
+                len: Const {
+                    ty: self.types.uint,
+                    kind: crate::sema::models::ConstKind::Value(
+                        crate::sema::models::ConstValue::Integer(size as i128),
+                    ),
+                },
+            },
+            self,
+        )
+    }
+
+    pub fn source_location(
+        self,
+        location: crate::ast::SourceLocation,
+        span: crate::span::Span,
+    ) -> crate::hir::Literal {
+        use crate::{ast::SourceLocation, hir::Literal};
+        match location {
+            SourceLocation::File => {
+                let path = self.dcx.file_path(span.file);
+                let relative = path.as_deref().and_then(|path| {
+                    if !self.config.is_script {
+                        if let Some(relative) =
+                            path.strip_prefix(&self.config.src).ok().or_else(|| {
+                                self.config
+                                    .src
+                                    .canonicalize()
+                                    .ok()
+                                    .and_then(|root| path.strip_prefix(root).ok())
+                            })
+                        {
+                            return Some(relative);
+                        }
+                    }
+                    path.file_name().map(std::path::Path::new)
+                });
+                Literal::String(
+                    self.intern_symbol(
+                        &relative
+                            .unwrap_or(std::path::Path::new("<unknown>"))
+                            .to_string_lossy(),
+                    ),
+                )
+            }
+            SourceLocation::Line => Literal::Integer {
+                value: span.start.line as i128 + 1,
+                suffix: Some(crate::parse::IntegerTypeSuffix::I32),
+            },
+            SourceLocation::Function => Literal::String(
+                self.dcx
+                    .enclosing_function(span)
+                    .unwrap_or_else(|| self.intern_symbol("<module>")),
+            ),
+        }
     }
 
     pub fn package_index(self) -> PackageIndex {
@@ -112,24 +193,77 @@ impl<'arena> GlobalContext<'arena> {
         database.def_to_const.insert(id, value);
     }
 
-    pub(crate) fn register_const_value_expression(
+    pub(crate) fn register_const_definition(self, id: DefinitionID, node: &hir::Constant) {
+        if self.definition_kind(id) == DefinitionKind::AssociatedConstant
+            && let Some(owner) = self.definition_parent(id)
+        {
+            self.store
+                .constant_header_names
+                .borrow_mut()
+                .entry(node.identifier.symbol)
+                .or_default()
+                .push((owner, id));
+        }
+        self.store
+            .const_definitions
+            .borrow_mut()
+            .insert(id, self.store.arenas.global.alloc(node.clone()));
+        self.store.const_eval_states.borrow_mut().remove(&id);
+    }
+
+    pub(crate) fn register_const_fn_definition(
         self,
         id: DefinitionID,
-        expression: &hir::Expression,
+        node: &hir::Function,
+        fn_ctx: hir::FunctionContext,
     ) {
-        let expression: &'arena hir::Expression =
-            self.store.arenas.global.alloc(expression.clone());
         self.store
-            .const_value_exprs
+            .const_fn_definitions
             .borrow_mut()
-            .insert(id, expression);
-        self.store.const_eval_states.borrow_mut().remove(&id);
+            .insert(id, (self.store.arenas.global.alloc(node.clone()), fn_ctx));
+    }
+
+    pub(crate) fn const_fn_definition(
+        self,
+        id: DefinitionID,
+    ) -> Option<(&'arena hir::Function, hir::FunctionContext)> {
+        self.store.const_fn_definitions.borrow().get(&id).copied()
+    }
+
+    pub(crate) fn register_for_loop_iter_call(self, call_id: hir::NodeID, is_await: bool) {
+        self.store
+            .for_loop_iter_calls
+            .borrow_mut()
+            .insert(call_id, is_await);
+    }
+
+    pub(crate) fn for_loop_iter_call_is_await(self, call_id: hir::NodeID) -> Option<bool> {
+        self.store
+            .for_loop_iter_calls
+            .borrow()
+            .get(&call_id)
+            .copied()
     }
 
     pub(crate) fn clear_const_evaluation_cache(self) {
         let package = self.package_index();
+        self.store.constant_header_names.borrow_mut().clear();
+        self.store.pending_conformances.borrow_mut().clear();
+        self.store.pending_class_bases.borrow_mut().clear();
+        self.store.collecting_constant_headers.set(true);
+        self.store.header_fields.take();
+        self.store.decoder_headers.take();
+        self.store.constant_member_uses.borrow_mut().clear();
         self.store
-            .const_value_exprs
+            .constant_extension_targets
+            .borrow_mut()
+            .retain(|id, _| id.package() != package);
+        self.store
+            .const_definitions
+            .borrow_mut()
+            .retain(|id, _| id.package() != package);
+        self.store
+            .const_fn_definitions
             .borrow_mut()
             .retain(|id, _| id.package() != package);
         self.store
@@ -145,11 +279,19 @@ impl<'arena> GlobalContext<'arena> {
         });
     }
 
-    pub(crate) fn const_value_expression(
-        self,
-        id: DefinitionID,
-    ) -> Option<&'arena hir::Expression> {
-        self.store.const_value_exprs.borrow().get(&id).copied()
+    /// Locally declared constant identities are available before method
+    /// signatures, including signatures that use these constants as lengths.
+    pub(crate) fn named_constant_headers(self, name: Symbol) -> Vec<(DefinitionID, DefinitionID)> {
+        self.store
+            .constant_header_names
+            .borrow()
+            .get(&name)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn const_definition(self, id: DefinitionID) -> Option<&'arena hir::Constant> {
+        self.store.const_definitions.borrow().get(&id).copied()
     }
 
     pub(crate) fn const_evaluation_state(self, id: DefinitionID) -> Option<ConstEvaluationState> {
@@ -257,11 +399,21 @@ impl<'arena> GlobalContext<'arena> {
     }
 
     pub fn cache_signature(self, id: DefinitionID, sig: LabeledFunctionSignature<'arena>) {
-        let mut cache = self.context.store.type_databases.borrow_mut();
-        let package_index = id.package();
-        let database = cache.entry(package_index).or_insert_with(Default::default);
-        let alloc = self.context.store.arenas.function_signatures.alloc(sig);
-        database.def_to_fn_sig.insert(id, alloc);
+        let has_lazy = sig.inputs.iter().any(|p| p.is_lazy);
+        {
+            let mut cache = self.context.store.type_databases.borrow_mut();
+            let package_index = id.package();
+            let database = cache.entry(package_index).or_insert_with(Default::default);
+            let alloc = self.context.store.arenas.function_signatures.alloc(sig);
+            database.def_to_fn_sig.insert(id, alloc);
+        }
+        if has_lazy {
+            self.invalidate_lazy_callable_names();
+        }
+    }
+
+    pub fn invalidate_lazy_callable_names(self) {
+        self.context.store.lazy_callable_names.borrow_mut().take();
     }
 
     pub fn cache_async_body_output(self, id: DefinitionID, ty: Ty<'arena>) {
@@ -497,6 +649,62 @@ impl<'arena> GlobalContext<'arena> {
         });
     }
 
+    pub fn cache_definition_const(self, id: DefinitionID, is_const: bool) {
+        self.with_type_database(id.package(), |db| {
+            if is_const {
+                db.def_to_const_fn.insert(id);
+            } else {
+                db.def_to_const_fn.remove(&id);
+            }
+        });
+    }
+
+    pub fn definition_is_const(self, id: DefinitionID) -> bool {
+        self.with_type_database(id.package(), |db| db.def_to_const_fn.contains(&id))
+    }
+
+    /// Record that `node` is a `${...}` value of an interpolated string.
+    pub fn mark_interpolation_argument(self, node: hir::NodeID) {
+        self.context
+            .store
+            .interpolation_arguments
+            .borrow_mut()
+            .entry(self.package_index())
+            .or_default()
+            .insert(node);
+    }
+
+    /// Whether `node`, in the package being compiled, is a `${...}` value.
+    pub fn is_interpolation_argument(self, node: hir::NodeID) -> bool {
+        self.context
+            .store
+            .interpolation_arguments
+            .borrow()
+            .get(&self.package_index())
+            .is_some_and(|nodes| nodes.contains(&node))
+    }
+
+    /// Record that `node` was supplied as a trailing closure argument.
+    pub fn mark_trailing_closure_argument(self, node: hir::NodeID) {
+        self.context
+            .store
+            .trailing_closure_arguments
+            .borrow_mut()
+            .entry(self.package_index())
+            .or_default()
+            .insert(node);
+    }
+
+    /// Whether `node`, in the package being compiled, was supplied as a trailing closure.
+    pub fn is_trailing_closure_argument(self, node: hir::NodeID) -> bool {
+        self.context
+            .store
+            .trailing_closure_arguments
+            .borrow()
+            .get(&self.package_index())
+            .is_some_and(|nodes| nodes.contains(&node))
+    }
+
     pub fn allocate_synthetic_id(self, package: PackageIndex) -> DefinitionID {
         let store = &self.context.store;
         let id = store.next_synthetic_id.get();
@@ -529,11 +737,52 @@ impl<'arena> GlobalContext<'arena> {
             }
         }
         self.store.next_synthetic_id.set(next);
+        let has_lazy = def.signature.inputs.iter().any(|p| p.is_lazy);
         self.context
             .store
             .synthetic_definitions
             .borrow_mut()
             .insert(id, def);
+        if has_lazy {
+            self.invalidate_lazy_callable_names();
+        }
+    }
+
+    /// True if any declared, imported, or synthetic callable named `name`
+    /// has a `@lazy` parameter. Cached across the session so eager calls skip
+    /// lazy-argument candidate tracking in O(1).
+    pub fn has_lazy_callable_named(self, name: Symbol) -> bool {
+        if self.store.lazy_callable_names.borrow().is_none() {
+            let mut names = FxHashSet::default();
+            let ids: Vec<DefinitionID> = self
+                .store
+                .type_databases
+                .borrow()
+                .values()
+                .flat_map(|db| {
+                    db.def_to_fn_sig
+                        .iter()
+                        .filter(|(_, sig)| sig.inputs.iter().any(|p| p.is_lazy))
+                        .map(|(id, _)| *id)
+                })
+                .collect();
+            for id in ids {
+                if let Some(ident) = self.try_definition_ident(id) {
+                    names.insert(ident.symbol);
+                }
+            }
+            for def in self.store.synthetic_definitions.borrow().values() {
+                if def.signature.inputs.iter().any(|p| p.is_lazy) {
+                    names.insert(def.name);
+                }
+            }
+            *self.store.lazy_callable_names.borrow_mut() = Some(names);
+        }
+        self.store
+            .lazy_callable_names
+            .borrow()
+            .as_ref()
+            .is_some_and(|names| !names.is_empty() && names.contains(&name))
     }
 
     /// Full concrete layout is required before emitting these helper bodies.
@@ -571,6 +820,14 @@ impl<'arena> GlobalContext<'arena> {
             .is_some_and(|definition| definition.kind.is_builtin_clone())
     }
 
+    pub fn is_tuple_conformance(self, id: DefinitionID) -> bool {
+        self.store
+            .synthetic_definitions
+            .borrow()
+            .get(&id)
+            .is_some_and(|definition| definition.kind.is_tuple_conformance())
+    }
+
     pub fn is_primitive_operator(self, id: DefinitionID) -> bool {
         self.store
             .synthetic_definitions
@@ -579,12 +836,51 @@ impl<'arena> GlobalContext<'arena> {
             .is_some_and(|definition| definition.kind.is_primitive_operator())
     }
 
-    pub fn register_default_value_expr(self, id: DefinitionID, expr: &'arena hir::Expression) {
+    pub fn register_default_value_expr(
+        self,
+        id: DefinitionID,
+        expr: &'arena hir::Expression,
+        caller_bindings: Option<[hir::NodeID; 3]>,
+    ) {
         self.context
             .store
             .default_value_exprs
             .borrow_mut()
-            .insert(id, expr);
+            .insert(id, (expr, caller_bindings));
+    }
+
+    pub fn register_sync_generator(self, id: DefinitionID, element_ty: Ty<'arena>) {
+        self.context
+            .store
+            .sync_generators
+            .borrow_mut()
+            .insert(id, element_ty);
+    }
+
+    pub fn sync_generator_element_ty(self, id: DefinitionID) -> Option<Ty<'arena>> {
+        self.context.store.sync_generators.borrow().get(&id).copied()
+    }
+
+    pub fn register_async_generator(self, id: DefinitionID, element_ty: Ty<'arena>) {
+        self.context
+            .store
+            .async_generators
+            .borrow_mut()
+            .insert(id, element_ty);
+    }
+
+    pub fn async_generator_element_ty(self, id: DefinitionID) -> Option<Ty<'arena>> {
+        self.context
+            .store
+            .async_generators
+            .borrow()
+            .get(&id)
+            .copied()
+    }
+
+    pub fn generator_element_ty(self, id: DefinitionID) -> Option<Ty<'arena>> {
+        self.sync_generator_element_ty(id)
+            .or_else(|| self.async_generator_element_ty(id))
     }
 
     pub fn queue_synthetic_mir_body(self, id: DefinitionID, body: Body<'arena>) {
@@ -1020,6 +1316,8 @@ impl<'arena> GlobalContext<'arena> {
             mir::function_pointer_call::build_body(self, instance)?
         } else if self.is_primitive_operator(instance.def_id()) {
             mir::primitive_operators::build_body(self, instance)?
+        } else if self.is_tuple_conformance(instance.def_id()) {
+            mir::tuple_conformances::build_body(self, instance)?
         } else {
             self.get_mir_body(instance.def_id()).clone()
         };
@@ -1458,7 +1756,10 @@ impl<'arena> GlobalContext<'arena> {
             Some(crate::sema::models::SyntheticDefinitionKind::ErasedDefault { .. }) => {
                 return self.generics_of(id).parent;
             }
-            Some(crate::sema::models::SyntheticDefinitionKind::AdoptedClassDefault { .. }) => {
+            Some(
+                crate::sema::models::SyntheticDefinitionKind::AdoptedClassDefault { .. }
+                | crate::sema::models::SyntheticDefinitionKind::DelegatedMethod { .. },
+            ) => {
                 return self.generics_of(id).parent;
             }
             Some(crate::sema::models::SyntheticDefinitionKind::AdoptedClassDefaultArgument {
@@ -1521,9 +1822,29 @@ impl<'arena> GlobalContext<'arena> {
         }
     }
 
+    /// Source-level nominal ownership excludes implementation details such as
+    /// the synthetic payload struct of a class. Imported scopes retain these IDs.
+    pub fn nested_type_owner(self, id: DefinitionID) -> Option<DefinitionID> {
+        let output = self.try_resolution_output(id.package())?;
+        if !matches!(
+            output.definition_to_kind.get(&id),
+            Some(DefinitionKind::Struct | DefinitionKind::Enum | DefinitionKind::Interface)
+        ) {
+            return None;
+        }
+        let owner = *output.definition_to_parent.get(&id)?;
+        matches!(
+            output.definition_to_kind.get(&owner),
+            Some(DefinitionKind::Struct | DefinitionKind::Enum)
+        )
+        .then_some(owner)
+    }
+
     pub fn is_definition_visible(self, target: DefinitionID, from: DefinitionID) -> bool {
-        let visibility = self.definition_visibility(target);
-        self.is_visibility_allowed(visibility, from)
+        self.is_visibility_allowed(self.definition_visibility(target), from)
+            && self
+                .nested_type_owner(target)
+                .is_none_or(|owner| self.is_definition_visible(owner, from))
     }
 
     fn is_within_definition(self, mut current: DefinitionID, owner: DefinitionID) -> bool {
@@ -1767,6 +2088,8 @@ impl<'arena> CompilerContext<'arena> {
 pub struct CompilerStore<'arena> {
     pub arenas: &'arena CompilerArenas<'arena>,
     pub interners: CompilerInterners<'arena>,
+    pub(crate) allocation_report: RefCell<Option<super::allocation_report::AllocationReport>>,
+    pub(crate) embedded_inputs: RefCell<FxHashMap<PackageIndex, super::assets::AssetInputs>>,
     pub resolution_outputs: RefCell<FxHashMap<PackageIndex, &'arena ResolutionOutput<'arena>>>,
     pub package_mapping: RefCell<FxHashMap<EcoString, PackageIndex>>,
     pub package_idents: RefCell<FxHashMap<PackageIndex, EcoString>>,
@@ -1806,6 +2129,20 @@ pub struct CompilerStore<'arena> {
     /// package. Imported facts let the final module close generic dispatch.
     pub class_dispatch_types: RefCell<FxHashMap<PackageIndex, FxHashSet<Ty<'arena>>>>,
     pub class_super_calls: RefCell<FxHashMap<PackageIndex, FxHashSet<crate::span::Span>>>,
+    /// HIR nodes that are `${...}` values of an interpolated string, per package.
+    pub interpolation_arguments: RefCell<FxHashMap<PackageIndex, FxHashSet<hir::NodeID>>>,
+    pub trailing_closure_arguments: RefCell<FxHashMap<PackageIndex, FxHashSet<hir::NodeID>>>,
+    /// Resolver facts for the advisory lints, per package; only packages
+    /// compiled with `Config::lint_warnings` record any.
+    pub lint_facts: RefCell<FxHashMap<PackageIndex, crate::sema::resolve::models::LintFacts>>,
+    /// Interfaces whose methods a member lookup found only because the
+    /// interface was visible in the caller's scope (an imported interface
+    /// makes its methods callable). An over-approximation: a candidate may
+    /// be found and then not chosen.
+    pub trait_visibility_uses: RefCell<FxHashSet<DefinitionID>>,
+    /// `DiagCtx::warning_count` when each package started compiling, so the
+    /// package's own warnings can be stored with its metadata.
+    pub warning_marks: RefCell<FxHashMap<PackageIndex, usize>>,
     pub class_dispatch_calls: RefCell<FxHashMap<PackageIndex, FxHashSet<Instance<'arena>>>>,
     /// Stored concrete types and generic openings observed in package code.
     /// Imported facts close concrete dispatch in the eventual executable.
@@ -1826,12 +2163,40 @@ pub struct CompilerStore<'arena> {
     pub next_synthetic_id: std::cell::Cell<u32>,
 
     // Default value expressions (mapped by provider ID)
-    pub default_value_exprs: RefCell<FxHashMap<DefinitionID, &'arena hir::Expression>>,
+    pub default_value_exprs:
+        RefCell<FxHashMap<DefinitionID, (&'arena hir::Expression, Option<[hir::NodeID; 3]>)>>,
+
+    /// Synchronous generator functions mapped to their yielded element type.
+    pub sync_generators: RefCell<FxHashMap<DefinitionID, Ty<'arena>>>,
+    /// Asynchronous generator functions mapped to their yielded element type.
+    pub async_generators: RefCell<FxHashMap<DefinitionID, Ty<'arena>>>,
 
     // Source constant expressions and their session-local lazy evaluation state.
-    const_value_exprs: RefCell<FxHashMap<DefinitionID, &'arena hir::Expression>>,
+    constant_header_names: RefCell<FxHashMap<Symbol, Vec<(DefinitionID, DefinitionID)>>>,
+    pub(crate) pending_conformances: RefCell<
+        FxHashMap<
+            DefinitionID,
+            (
+                TypeHead,
+                crate::sema::tycheck::ConformanceHeader,
+                hir::Generics,
+            ),
+        >,
+    >,
+    pub(crate) pending_class_bases: RefCell<FxHashMap<DefinitionID, hir::Conformances>>,
+    pub(crate) decoder_headers:
+        RefCell<FxHashMap<DefinitionID, Vec<crate::sema::tycheck::InitializerHeader>>>,
+    pub(crate) header_fields: RefCell<crate::sema::tycheck::HeaderFields<'arena>>,
+    pub(crate) collecting_constant_headers: std::cell::Cell<bool>,
+    pub(crate) constant_member_uses: RefCell<FxHashMap<hir::NodeID, ConstantMemberUse<'arena>>>,
+    pub(crate) constant_extension_targets: RefCell<FxHashMap<DefinitionID, &'arena hir::Type>>,
+    const_definitions: RefCell<FxHashMap<DefinitionID, &'arena hir::Constant>>,
+    const_fn_definitions:
+        RefCell<FxHashMap<DefinitionID, (&'arena hir::Function, hir::FunctionContext)>>,
+    for_loop_iter_calls: RefCell<FxHashMap<hir::NodeID, bool>>,
     const_eval_states: RefCell<FxHashMap<DefinitionID, ConstEvaluationState>>,
     const_eval_stack: RefCell<Vec<DefinitionID>>,
+    lazy_callable_names: RefCell<Option<FxHashSet<Symbol>>>,
 }
 
 impl<'arena> CompilerStore<'arena> {
@@ -1848,6 +2213,8 @@ impl<'arena> CompilerStore<'arena> {
             interners: CompilerInterners::new(arenas),
             package_mapping: Default::default(),
             package_idents: Default::default(),
+            allocation_report: Default::default(),
+            embedded_inputs: Default::default(),
             resolution_outputs: Default::default(),
             type_databases: Default::default(),
             inline_mir_packages: Default::default(),
@@ -1871,6 +2238,11 @@ impl<'arena> CompilerStore<'arena> {
             erased_opening_types: Default::default(),
             erased_opening_calls: Default::default(),
             class_super_calls: Default::default(),
+            interpolation_arguments: Default::default(),
+            trailing_closure_arguments: Default::default(),
+            lint_facts: Default::default(),
+            trait_visibility_uses: Default::default(),
+            warning_marks: Default::default(),
             compiled_instances: Default::default(),
             target_layout,
             std_provider_index: std::cell::Cell::new(None),
@@ -1878,9 +2250,22 @@ impl<'arena> CompilerStore<'arena> {
             synthetic_definitions: Default::default(),
             next_synthetic_id: std::cell::Cell::new(0),
             default_value_exprs: Default::default(),
-            const_value_exprs: Default::default(),
+            sync_generators: Default::default(),
+            async_generators: Default::default(),
+            constant_header_names: Default::default(),
+            pending_conformances: Default::default(),
+            collecting_constant_headers: Default::default(),
+            header_fields: Default::default(),
+            decoder_headers: Default::default(),
+            pending_class_bases: Default::default(),
+            constant_member_uses: Default::default(),
+            constant_extension_targets: Default::default(),
+            const_definitions: Default::default(),
+            const_fn_definitions: Default::default(),
+            for_loop_iter_calls: Default::default(),
             const_eval_states: Default::default(),
             const_eval_stack: Default::default(),
+            lazy_callable_names: Default::default(),
         })
     }
 
@@ -1908,7 +2293,7 @@ impl<'arena> CompilerStore<'arena> {
 }
 pub struct CompilerInterners<'arena> {
     arenas: &'arena CompilerArenas<'arena>,
-    types: InternedSet<'arena, TyKind<'arena>>,
+    types: RefCell<FxHashMap<TyKind<'arena>, Ty<'arena>>>,
     type_lists: InternedSet<'arena, Vec<Ty<'arena>>>,
     generic_arguments: InternedSet<'arena, Vec<GenericArgument<'arena>>>,
 }
@@ -1916,25 +2301,112 @@ impl<'arena> CompilerInterners<'arena> {
     pub fn new(arenas: &'arena CompilerArenas<'arena>) -> CompilerInterners<'arena> {
         CompilerInterners {
             arenas,
-            types: InternedSet::new(),
+            types: Default::default(),
             type_lists: InternedSet::new(),
             generic_arguments: InternedSet::new(),
         }
     }
 
-    pub fn intern_ty(&self, k: TyKind<'arena>) -> Ty<'arena> {
-        let ptr = self
-            .types
-            .intern(k, |k| {
-                let k = self.arenas.types.alloc(k);
-                return InternedInSet(k);
-            })
-            .0;
+    /// Only the canonical kind enters the interner. A nested label view belongs
+    /// to this use site even when another signature has the same structural type.
+    fn canonical_kind(&self, kind: TyKind<'arena>) -> Option<TyKind<'arena>> {
+        use TyKind::*;
+        Some(match kind {
+            Reference(ty) if ty.has_presentation() => Reference(ty.canonical()),
+            Pointer(ty, m) if ty.has_presentation() => Pointer(ty.canonical(), m),
+            Array { element, len } if element.has_presentation() || len.ty.has_presentation() => {
+                Array {
+                    element: element.canonical(),
+                    len: Const {
+                        ty: len.ty.canonical(),
+                        ..len
+                    },
+                }
+            }
+            Tuple(items) if items.has_presentation() => Tuple(items.canonical()),
+            Adt(def, args) if args.has_presentation() => Adt(def, args.canonical()),
+            Alias { kind, def_id, args } if args.has_presentation() => Alias {
+                kind,
+                def_id,
+                args: args.canonical(),
+            },
+            FnPointer {
+                inputs,
+                output,
+                effects,
+            } if inputs.has_presentation() || output.has_presentation() => FnPointer {
+                inputs: inputs.canonical(),
+                output: output.canonical(),
+                effects,
+            },
+            Closure {
+                closure_def_id,
+                kind,
+                captured_generics,
+                inputs,
+                output,
+            } if inputs.has_presentation()
+                || output.has_presentation()
+                || captured_generics.has_presentation() =>
+            {
+                Closure {
+                    closure_def_id,
+                    kind,
+                    captured_generics: captured_generics.canonical(),
+                    inputs: inputs.canonical(),
+                    output: output.canonical(),
+                }
+            }
+            BoxedExistential { interfaces }
+                if interfaces.iter().any(|iface| {
+                    iface.arguments.has_presentation()
+                        || iface.bindings.iter().any(|b| b.ty.has_presentation())
+                }) =>
+            {
+                let interfaces =
+                    self.arenas
+                        .global
+                        .alloc_slice_fill_iter(interfaces.iter().map(|iface| {
+                            let bindings = self.arenas.global.alloc_slice_fill_iter(
+                                iface.bindings.iter().map(|b| {
+                                    crate::sema::models::AssociatedTypeBinding {
+                                        ty: b.ty.canonical(),
+                                        ..*b
+                                    }
+                                }),
+                            );
+                            InterfaceReference {
+                                arguments: iface.arguments.canonical(),
+                                bindings,
+                                ..*iface
+                            }
+                        }));
+                BoxedExistential { interfaces }
+            }
+            _ => return None,
+        })
+    }
 
-        Ty::with_kind(Interned::new_unchecked(ptr))
+    pub fn intern_ty(&self, k: TyKind<'arena>) -> Ty<'arena> {
+        if let Some(canonical) = self.canonical_kind(k) {
+            return self
+                .intern_ty(canonical)
+                .presented(k, &[], &self.arenas.global);
+        }
+        *self.types.borrow_mut().entry(k).or_insert_with(|| {
+            Ty::from_data(self.arenas.types.alloc(TypeData {
+                kind: k,
+                canonical: None,
+                labels: &[],
+            }))
+        })
     }
 
     pub fn intern_ty_list(&self, items: Vec<Ty<'arena>>) -> TyList<'arena> {
+        if items.iter().any(|ty| ty.has_presentation()) {
+            let canonical = self.intern_ty_list(items.iter().map(|ty| ty.canonical()).collect());
+            return canonical.with_presentation(self.arenas.type_lists.alloc(items));
+        }
         let ik = self
             .type_lists
             .intern(items, |k| {
@@ -1943,13 +2415,18 @@ impl<'arena> CompilerInterners<'arena> {
             })
             .0;
 
-        List::from_interned_slice(ik)
+        List::from_interned_vec(ik)
     }
 
     pub fn intern_generic_args(
         &self,
         items: Vec<GenericArgument<'arena>>,
     ) -> GenericArguments<'arena> {
+        if items.iter().any(|arg| arg.has_presentation()) {
+            let canonical =
+                self.intern_generic_args(items.iter().map(|arg| arg.canonical()).collect());
+            return canonical.with_presentation(self.arenas.generic_arguments.alloc(items));
+        }
         let ik = self
             .generic_arguments
             .intern(items, |k| {
@@ -1957,13 +2434,16 @@ impl<'arena> CompilerInterners<'arena> {
                 return InternedInSet(k);
             })
             .0;
-        List::from_interned_slice(ik)
+        List::from_interned_vec(ik)
     }
 
     pub fn intern_generic_args_slice(
         &self,
         items: &[GenericArgument<'arena>],
     ) -> GenericArguments<'arena> {
+        if items.iter().any(|arg| arg.has_presentation()) {
+            return self.intern_generic_args(items.to_vec());
+        }
         let list = self
             .generic_arguments
             .intern_ref(items, || {
@@ -1973,7 +2453,7 @@ impl<'arena> CompilerInterners<'arena> {
             })
             .0;
 
-        List::from_interned_slice(list)
+        List::from_interned_vec(list)
     }
 }
 
@@ -1983,7 +2463,7 @@ pub struct CompilerArenas<'arena> {
     pub scope_entries: typed_arena::Arena<ScopeEntryData<'arena>>,
     pub usage_entries: typed_arena::Arena<UsageEntryData<'arena>>,
     pub resolution_outputs: typed_arena::Arena<ResolutionOutput<'arena>>,
-    pub types: typed_arena::Arena<TyKind<'arena>>,
+    pub(crate) types: typed_arena::Arena<TypeData<'arena>>,
     pub type_lists: typed_arena::Arena<Vec<Ty<'arena>>>,
     pub function_signatures: typed_arena::Arena<LabeledFunctionSignature<'arena>>,
     pub struct_definitions: typed_arena::Arena<StructDefinition<'arena>>,
@@ -2132,6 +2612,7 @@ pub struct TypeDatabase<'arena> {
     pub generic_const_defaults: FxHashMap<DefinitionID, Const<'arena>>,
     pub def_to_attributes: FxHashMap<DefinitionID, &'arena hir::AttributeList>,
     pub def_to_unsafe: FxHashSet<DefinitionID>,
+    pub def_to_const_fn: FxHashSet<DefinitionID>,
     pub def_to_iface_def: FxHashMap<DefinitionID, &'arena InterfaceDefinition<'arena>>,
     pub interface_to_supers: FxHashMap<DefinitionID, FxHashSet<DefinitionID>>,
     pub conformance_records: FxHashMap<ConformanceRecordId, ConformanceRecord<'arena>>,
@@ -2331,6 +2812,7 @@ pub struct MemberSet {
 pub struct TypeMemberIndex {
     // Inherent methods from `extend Type`.
     pub inherent_static: FxHashMap<Symbol, MemberSet>,
+    pub inherent_constants: FxHashMap<Symbol, Vec<DefinitionID>>,
     pub inherent_instance: FxHashMap<Symbol, MemberSet>,
 
     // Interface methods from `conform Type to Interface`.
@@ -2390,6 +2872,18 @@ impl<'arena> GlobalContext<'arena> {
                     .and_then(|existing| existing.syn_id);
             }
             db.synthetic_methods.insert((type_head, method_id), info);
+
+            // Derived enum members remain interface requirements. For RawValue,
+            // their raw type comes from the selected conformance.
+            if matches!(
+                info.kind,
+                crate::sema::models::SyntheticMethodKind::EnumRawValue
+                    | crate::sema::models::SyntheticMethodKind::EnumFromRawValue
+                    | crate::sema::models::SyntheticMethodKind::EnumCaseName
+                    | crate::sema::models::SyntheticMethodKind::EnumCaseAt
+            ) {
+                return;
+            }
 
             // Also register as a member so lookup finds it
             let members = db.type_head_to_members.entry(type_head).or_default();

@@ -1,3 +1,11 @@
+warning: unused variable 'seen'; prefix it with '_' if this is intended
+ -> language_tests/source_files/invalid/value_init_read_before_init.tr:2:26
+	extend Counter { init() { seen := self.first; self.first = 1; self.second = 2 } }
+	                          ^^^^
+warning: unused variable 'counter'; prefix it with '_' if this is intended
+ -> language_tests/source_files/invalid/value_init_read_before_init.tr:3:14
+	func main() { counter := Counter() }
+	              ^^^^^^^
 error: use of uninitialized value 'self'
  -> language_tests/source_files/invalid/value_init_read_before_init.tr:2:34
 	extend Counter { init() { seen := self.first; self.first = 1; self.second = 2 } }

@@ -1,0 +1,3 @@
+enum Envelope: CaseIterable { case value(int32) }
+struct Record: CaseIterable {}
+func main() {}

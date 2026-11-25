@@ -1,0 +1,4 @@
+error: disallowed wildcard expression
+ -> language_tests/source_files/invalid/syntax_sugar_discard_compound.tr:2:14
+	func main() { _ += 1; }
+	              ^

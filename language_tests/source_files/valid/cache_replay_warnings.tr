@@ -1,0 +1,21 @@
+// RUN_TWICE
+// A cache hit repeats the warnings the package reported when it compiled:
+// the second run reuses the metadata and still prints each warning once.
+// EXPECT_STDERR_CONTAINS: Reusing
+// EXPECT_STDERR_NOT_CONTAINS: Compiling
+// EXPECT_STDERR_COUNT: 1 warning: unused import 'PI'
+// EXPECT_STDERR_COUNT: 1 warning: unused variable 'spare'
+// EXPECT_STDERR_COUNT: 1 warning: this line continues the expression
+// EXPECT_STDERR_CONTAINS: cache_replay_warnings.tr:11:18
+// EXPECT_STDERR_CONTAINS: cache_replay_warnings.tr:18:8
+import std::math::PI
+
+func main() {
+    spare := 1
+    var numbers: [int32] = [4, 5]
+    values := [
+        numbers
+        [0]
+    ]
+    println("${values}")
+}

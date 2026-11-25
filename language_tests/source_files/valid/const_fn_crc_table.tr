@@ -1,0 +1,86 @@
+import std::testing::assertEqual
+
+const func crcEntry(_ byte: uint32) -> uint32 {
+    var c: uint32 = byte
+    var k: int32 = 0
+    while k < 8 {
+        if (c & 1) != 0 {
+            c = 0xEDB88320 ^ (c >> 1)
+        } else {
+            c = c >> 1
+        }
+        k += 1
+    }
+    return c
+}
+
+const func crcTable() -> [uint32; 256] {
+    var table: [uint32; 256] = [0; 256]
+    var i: usize = 0
+    while i < 256 {
+        table[i] = crcEntry(i as uint32)
+        i += 1
+    }
+    return table
+}
+
+const CRC_TABLE: [uint32; 256] = crcTable()
+
+// Nested permitted const calls and indexing into a compile-time array constant.
+const func crcStep(_ crc: uint32, _ byte: uint8) -> uint32 {
+    idx := ((crc ^ (byte as uint32)) & 0xFF) as usize
+    return CRC_TABLE[idx] ^ (crc >> 8)
+}
+
+const func crc32CheckDigits() -> uint32 {
+    // Standard IEEE 802.3 CRC-32 check vector for ASCII "123456789" -> 0xCBF43926
+    var crc: uint32 = 0xFFFFFFFF
+    var b: uint8 = 49 // '1'
+    while b <= 57 {   // '9'
+        crc = crcStep(crc, b)
+        b += 1
+    }
+    return crc ^ 0xFFFFFFFF
+}
+
+const CRC_CHECK: uint32 = crc32CheckDigits()
+const CRC_ENTRY_42: uint32 = CRC_TABLE[42]
+
+// Independent runtime implementation for comparison.
+func runtimeCrcTable() -> [uint32; 256] {
+    var table: [uint32; 256] = [0; 256]
+    var i: usize = 0
+    while i < 256 {
+        var c: uint32 = i as uint32
+        var k: int32 = 0
+        while k < 8 {
+            if (c & 1) != 0 {
+                c = 0xEDB88320 ^ (c >> 1)
+            } else {
+                c = c >> 1
+            }
+            k += 1
+        }
+        table[i] = c
+        i += 1
+    }
+    return table
+}
+
+func main() {
+    runtimeTable := runtimeCrcTable()
+    sameFnAtRuntime := crcTable()
+
+    var i: usize = 0
+    while i < 256 {
+        assertEqual(CRC_TABLE[i], runtimeTable[i], "compile-time CRC table matches runtime oracle")
+        assertEqual(CRC_TABLE[i], sameFnAtRuntime[i], "compile-time CRC table matches const fn at runtime")
+        i += 1
+    }
+
+    assertEqual(CRC_TABLE[0], 0x00000000 as uint32, "CRC_TABLE[0]")
+    assertEqual(CRC_TABLE[1], 0x77073096 as uint32, "CRC_TABLE[1]")
+    assertEqual(CRC_TABLE[255], 0x2D02EF8D as uint32, "CRC_TABLE[255]")
+    assertEqual(CRC_ENTRY_42, runtimeTable[42], "compile-time indexed CRC entry")
+    assertEqual(CRC_CHECK, 0xCBF43926 as uint32, "compile-time IEEE 802.3 CRC-32 check value")
+}

@@ -1,0 +1,85 @@
+import std::collections::{Counter, Deque, List, Set}
+
+func holds[C: std::ops::Contains[E], E](_ container: C, _ element: E) -> bool {
+    element in container
+}
+
+@test
+func testRangeContainsHalfOpenBounds() {
+    range := -3_i32..2_i32
+    std::testing::assertTrue(-3_i32 in range, "start is included")
+    std::testing::assertTrue(1_i32 in range, "last value is included")
+    std::testing::assertFalse(2_i32 in range, "end is excluded")
+    std::testing::assertFalse(-4_i32 in range, "below start")
+    std::testing::assertTrue(range.contains(&0_i32), "method form")
+}
+
+@test
+func testRangeContainsNothingWhenEmptyOrReversed() {
+    for value in [-1_i32, 0, 1, 5] {
+        std::testing::assertFalse(value in 0_i32..0_i32, "empty")
+        std::testing::assertFalse(value in 5_i32..-1_i32, "reversed")
+        std::testing::assertFalse(value in 1_i32..=0_i32, "reversed closed")
+    }
+    std::testing::assertTrue(0_i32 in 0_i32..=0_i32, "single-value closed range")
+}
+
+@test
+func testClosedRangeContainsTypeLimits() {
+    std::testing::assertTrue(127_i8 in -128_i8..=127_i8, "int8 maximum")
+    std::testing::assertTrue(-128_i8 in -128_i8..=127_i8, "int8 minimum")
+    std::testing::assertFalse(127_i8 in -128_i8..127_i8, "half-open excludes maximum")
+    std::testing::assertTrue(255_u8 in 0_u8..=255_u8, "uint8 maximum")
+    std::testing::assertTrue(0_u8 in 0_u8..=255_u8, "uint8 minimum")
+    max := ~(0 as usize)
+    std::testing::assertTrue(max in max - 1..=max, "usize maximum")
+    std::testing::assertFalse(max in max - 1..max, "usize half-open maximum")
+}
+
+@test
+func testNotInNegatesContains() {
+    std::testing::assertTrue(5_i32 !in 0_i32..5_i32, "end")
+    std::testing::assertFalse(4_i32 !in 0_i32..5_i32, "inside")
+}
+
+@test
+func testCollectionsContainElements() {
+    var list = List[string]::new()
+    list.append("a")
+    std::testing::assertTrue("a" in list, "list")
+    std::testing::assertFalse("b" in list, "list missing")
+    var array: [int32; 3] = [4, 5, 6]
+    std::testing::assertTrue(5_i32 in array, "array")
+    std::testing::assertTrue(6_i32 in array.asSpan(), "span")
+    std::testing::assertFalse(7_i32 in array.asSpan(), "span missing")
+    var set = Set[int32]::new()
+    set.insert(1)
+    std::testing::assertTrue(1_i32 in set, "set")
+    var dictionary: [string: int32] = [:]
+    dictionary["k"] = 0
+    std::testing::assertTrue("k" in dictionary, "dictionary key")
+    std::testing::assertFalse("v" in dictionary, "dictionary missing key")
+    var counter = Counter[string]::new()
+    counter.increment("x")
+    std::testing::assertTrue("x" in counter, "counter")
+    var deque = Deque[int32]::new()
+    deque.pushBack(9)
+    std::testing::assertTrue(9_i32 in deque, "deque")
+}
+
+@test
+func testStringContainsRunesAndSubstrings() {
+    std::testing::assertTrue('é' in "café", "multi-byte rune")
+    std::testing::assertFalse('e' in "café", "different rune")
+    std::testing::assertTrue("fé" in "café", "substring")
+    std::testing::assertTrue("" in "café", "empty substring")
+    std::testing::assertFalse('a' in "", "empty string")
+}
+
+@test
+func testGenericContainsBound() {
+    std::testing::assertTrue(holds(0_i32..3_i32, 2_i32), "range")
+    std::testing::assertTrue(holds("taro", 'r'), "string rune")
+    std::testing::assertTrue(holds("taro", "ar"), "string substring")
+    std::testing::assertFalse(holds([1_i32, 2], 3_i32), "array")
+}

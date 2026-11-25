@@ -1,0 +1,9 @@
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: panic: configuration is corrupt
+// EXPECT_STDERR_NOT_CONTAINS: error:
+// A panic in a Result `main` behaves exactly as in a unit `main`.
+func main() -> Result[(), string] {
+    print("start\n")
+    defer { print("deferred\n") }
+    panic("configuration is corrupt")
+}

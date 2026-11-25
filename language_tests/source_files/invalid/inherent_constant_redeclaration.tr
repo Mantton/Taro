@@ -1,0 +1,8 @@
+struct Box[T] { value: T }
+extend[A] Box[A] { const ID: int32 = 1; }
+extend[B] Box[B] { const ID: int32 = 2; }
+extend Box[uint8] { const SIZE: int32 = 1; }
+extend Box[uint8] {
+    static func SIZE() -> int32 { 2 }
+}
+func main() {}

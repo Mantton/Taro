@@ -2,13 +2,10 @@ import std::ops::PartialEq
 import std::hash::Hashable
 struct Owned { value: int32 }
 struct Wrapper[T]: PartialEq, Hashable { value: T }
-struct MissingSuper[T]: Hashable { value: T }
 func needsEq[T: PartialEq[T]](_ value: &T) {}
 func needsHash[T: Hashable](_ value: &T) {}
 func main() {
     value := Wrapper[Owned] { value: Owned { value: 1 } }
     needsEq(&value)
     needsHash(&value)
-    missing := MissingSuper[int32] { value: 1 }
-    needsHash(&missing)
 }

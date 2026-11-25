@@ -1,0 +1,109 @@
+// `a in b` calls `b.contains(&a)` through `Contains[Element]`; `a !in b`
+// negates it. Each std container conforms, as can user types.
+
+struct Grid { width: int32; height: int32 }
+
+struct Cell { column: int32; row: int32 }
+
+conform Grid to Contains[Cell] {
+    func contains(_ cell: &Cell) -> bool {
+        cell.column in 0..self.width && cell.row in 0..self.height
+    }
+}
+
+struct Word { text: string }
+
+conform Word to Contains[rune] {
+    func contains(_ letter: &rune) -> bool { *letter in self.text }
+}
+
+func countMatches[C: Contains[int32]](_ container: C, _ values: [int32; 4]) -> int32 {
+    var count: int32 = 0
+    for value in values where value in container { count += 1 }
+    count
+}
+
+static var TRACE: string = ""
+
+func traced[T](_ label: string, _ value: T) -> T {
+    TRACE = TRACE + label
+    value
+}
+
+func main() {
+    // Ranges, including literal bounds that take the element's type.
+    var small: int8 = -3
+    println("range: ${small in -5..0} ${small in 0..5} ${small !in -3..-3}")
+    var big: int64 = 9
+    println("closed: ${big in 0..=9} ${big in 0..9} ${big !in 10..=20}")
+
+    // List, array, Span and literal containers.
+    var list = List[int32]::new()
+    list.append(4)
+    list.append(8)
+    println("list: ${4 in list} ${5 in list} ${5 !in list}")
+    var array: [string; 3] = ["a", "b", "c"]
+    println("array: ${"b" in array} ${"z" in array}")
+    span := list.asSpan()
+    println("span: ${8 in span} ${9 in span}")
+    var code: uint16 = 204
+    println("literal: ${code in [200, 204]} ${code !in [200, 204]}")
+
+    // Set, Dictionary keys, Counter keys and Deque.
+    var seen = Set[string]::new()
+    for word in ["to", "be", "or", "not", "to", "be"] {
+        if word !in seen { seen.insert(word) }
+    }
+    println("set: ${seen.len()} ${"or" in seen} ${"and" in seen}")
+    var ages: [string: int32] = [:]
+    ages["ada"] = 36
+    println("dictionary: ${"ada" in ages} ${"bob" in ages}")
+    var counts = Counter[rune]::new()
+    for letter in "hello".characters() { counts.increment(letter) }
+    println("counter: ${'l' in counts} ${'z' in counts}")
+    var queue = Deque[int32]::new()
+    queue.pushBack(3)
+    println("deque: ${3 in queue} ${4 in queue}")
+
+    // Strings test both runes and substrings.
+    text := "banana"
+    println("string: ${'n' in text} ${'z' in text} ${"nan" in text} ${"nab" !in text}")
+
+    // Precedence: arithmetic and ranges bind tighter; `&&`, `==` and `!` looser.
+    var n: int32 = 3
+    var x: int32 = 2
+    println("precedence: ${x + 1 in 0..n} ${x + 1 in 0..=n} ${!(x in 0..n)} ${x in 0..n && x !in 0..1} ${x in 0..n == true}")
+
+    // `!` directly before `in` is the operator; `value! in` propagates first.
+    var maybe: int32? = 2
+    println("bang: ${x!in 0..1} ${x !in 0..1} ${probe(maybe) ?? false}")
+    inside := false
+    index := 1
+    println("names: ${!inside} ${index}")
+
+    // A newline before `!in` continues the expression.
+    continued := x
+        !in [7, 8]
+    println("continued: ${continued}")
+
+    // `for ... in` and `where ... in` keep working.
+    for item in (1 in [1, 2]) ? [10, 20, 30] : [0, 0, 0] where item !in [20] {
+        print("${item} ")
+    }
+    println("")
+
+    // User conformances and generic bounds.
+    grid := Grid { width: 3, height: 2 }
+    println("grid: ${Cell { column: 2, row: 1 } in grid} ${Cell { column: 3, row: 0 } in grid}")
+    word := Word { text: "taro" }
+    println("word: ${'r' in word} ${'x' in word}")
+    println("generic: ${countMatches(0..3, [0, 1, 5, 2])} ${countMatches(Set[int32]::new(), [0, 1, 2, 3])}")
+
+    // The element is evaluated before the container, each once.
+    found := traced("e", 2) in traced("c", [1, 2])
+    println("order: ${found} ${TRACE}")
+}
+
+func probe(_ value: int32?) -> bool? {
+    value! in 0..5
+}

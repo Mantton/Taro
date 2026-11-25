@@ -26,16 +26,16 @@ unsafe func tokenStringWord(_ bytes: *const uint8) -> uint64 {
 // https://github.com/serde-rs/json/blob/v1.0.154/src/read.rs
 // Subtraction may mark later lanes after a real match, but the first marked
 // lane is exact. Explicit little-endian loads keep that lane in input order.
-// std arithmetic wraps, including when subtraction borrows out of the word.
+// Modular subtraction uses explicit wrappingSub so debug overflow checks never trap.
 @inline
 func tokenStringSpecials(_ word: uint64) -> uint64 {
     ones := 0x0101010101010101_u64
     high := 0x8080808080808080_u64
-    controls := (word - 0x2020202020202020_u64) & ~word
+    controls := word.wrappingSub(0x2020202020202020_u64) & ~word
     quotes := word ^ 0x2222222222222222_u64
-    quoteMatches := (quotes - ones) & ~quotes
+    quoteMatches := quotes.wrappingSub(ones) & ~quotes
     slashes := word ^ 0x5c5c5c5c5c5c5c5c_u64
-    slashMatches := (slashes - ones) & ~slashes
+    slashMatches := slashes.wrappingSub(ones) & ~slashes
     return (controls | quoteMatches | slashMatches | word) & high
 }
 

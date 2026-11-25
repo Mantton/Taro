@@ -1,0 +1,14 @@
+enum Event { case idle; case amount(int32); }
+func main() {
+    var events: List[Event] = [.idle, .amount(7)]
+    expected := 8_i32
+    selected := events.filter((item: Event) => {
+        if case .amount(n) = item {
+            incremented := () => n + 1
+            return incremented() == expected
+        }
+        return false
+    })
+    assert(selected.len() == 1, "matched one")
+    println("one")
+}

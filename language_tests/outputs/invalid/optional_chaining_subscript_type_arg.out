@@ -1,0 +1,4 @@
+error: primitive types cannot be used as values
+ -> language_tests/source_files/invalid/optional_chaining_subscript_type_arg.tr:3:16
+	    _ = items?.[int32]
+	                ^^^^^

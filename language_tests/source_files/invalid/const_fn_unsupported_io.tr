@@ -1,0 +1,8 @@
+const func badIo() -> int32 {
+    print("hello")
+    return 1
+}
+
+const VALUE: int32 = badIo()
+
+func main() {}

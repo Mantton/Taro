@@ -1,0 +1,15 @@
+struct Choice {}
+extend Choice {
+    func instance(_ value: @lazy int32 = 7) -> int32 { value() }
+    static func choose(_ value: @lazy int32) -> int32 { value() + value() }
+}
+func pick(eager value: int32) -> int32 { value }
+func pick(later value: @lazy int32) -> int32 { value() }
+func main() {
+    choice := Choice {}
+    assert(choice.instance() == 7, "omitted lazy argument")
+    assert(choice.instance(3) == 3, "instance argument")
+    assert(Choice::choose(4) == 8, "static argument")
+    assert(pick(later: 5) == 5 && pick(eager: 6) == 6, "label selects evaluation mode")
+    println("lazy methods")
+}

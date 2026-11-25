@@ -1,0 +1,5 @@
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: diagnostic number 1
+static var messages: int32 = 0
+func diagnostic() -> string { messages += 1; "diagnostic number ${messages}" }
+func main() { assert(false, diagnostic()) }

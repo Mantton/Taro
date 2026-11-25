@@ -1,0 +1,43 @@
+// `Self::Wrapped` has one generic record, `Boxed[T]: Wrap` with
+// `Wrapped = Cell[T]`, so `Boxed { value: 0 }.wrap()` is `Cell[{integer}]`
+// before the literal has a type. The next call is then typed, and a declared
+// type for the result gives the literal its type, as with the receiver's
+// type written out.
+struct Boxed[T] {
+    value: T
+}
+
+struct Cell[T] {
+    value: T
+}
+
+interface Wrap {
+    type Wrapped
+    func wrap() -> Self::Wrapped
+}
+
+interface Counted {
+    func count() -> usize
+}
+
+conform[T] Cell[T] to Counted {
+    func count() -> usize {
+        1
+    }
+}
+
+conform[T] Boxed[T] to Wrap {
+    type Wrapped = Cell[T]
+
+    func wrap() -> Cell[T] {
+        Cell { value: self.value }
+    }
+}
+
+func main() {
+    count := Boxed { value: 0 }.wrap().count() + 1
+    typedCount := Boxed[int32] { value: 0 }.wrap().count() + 1
+    var cell: Cell[int64] = Boxed { value: 0 }.wrap()
+    var typedCell: Cell[int64] = Boxed[int64] { value: 0 }.wrap()
+    println("${count} ${typedCount} ${cell.value + 5000000000} ${typedCell.value + 5000000000}")
+}

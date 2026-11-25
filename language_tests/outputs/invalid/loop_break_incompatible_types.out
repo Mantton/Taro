@@ -1,0 +1,4 @@
+error: expected int64, found string
+ -> language_tests/source_files/invalid/loop_break_incompatible_types.tr:6:14
+	        break "two"
+	              ^^^^^

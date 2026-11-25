@@ -42,6 +42,28 @@ impl<'ctx> Actor<'ctx> {
         }
     }
 
+    /// `@discardableResult` belongs on a function or method. Its return type
+    /// is checked once signatures exist (`sema::validate::unused_result`).
+    fn validate_discardable_result_usage(&self, attributes: &hir::AttributeList, function: bool) {
+        for attribute in attributes {
+            if attribute.as_known(self.context) != Some(hir::KnownAttribute::DiscardableResult) {
+                continue;
+            }
+            if !function {
+                self.context.dcx().emit_error(
+                    "@discardableResult is only allowed on functions and methods".into(),
+                    Some(attribute.span),
+                );
+            }
+            if attribute.args.is_some() {
+                self.context.dcx().emit_error(
+                    "@discardableResult does not take arguments".into(),
+                    Some(attribute.span),
+                );
+            }
+        }
+    }
+
     fn validate_repr_usage(
         &self,
         attributes: &hir::AttributeList,
@@ -63,6 +85,11 @@ impl<'ctx> Actor<'ctx> {
 
 impl<'ctx> HirVisitor for Actor<'ctx> {
     fn visit_declaration(&mut self, node: &hir::Declaration) -> Self::Result {
+        crate::sema::bound_diagnostic::validate(
+            self.context,
+            &node.attributes,
+            matches!(node.kind, hir::DeclarationKind::Interface(_)),
+        );
         self.validate_no_copy_usage(
             &node.attributes,
             matches!(
@@ -74,6 +101,11 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
             &node.attributes,
             matches!(node.kind, hir::DeclarationKind::Struct(_)),
         );
+        self.validate_discardable_result_usage(
+            &node.attributes,
+            matches!(node.kind, hir::DeclarationKind::Function(_)),
+        );
+        crate::sema::validate::deprecated::validate_attributes(self.context, &node.attributes);
         self.cache_attributes(node.id, &node.attributes);
         hir::walk_declaration(self, node)
     }
@@ -83,8 +115,14 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
         node: &hir::AssociatedDeclaration,
         context: hir::AssocContext,
     ) -> Self::Result {
+        crate::sema::bound_diagnostic::validate(self.context, &node.attributes, false);
         self.validate_no_copy_usage(&node.attributes, false);
         self.validate_repr_usage(&node.attributes, false);
+        self.validate_discardable_result_usage(
+            &node.attributes,
+            matches!(node.kind, hir::AssociatedDeclarationKind::Function(_)),
+        );
+        crate::sema::validate::deprecated::validate_attributes(self.context, &node.attributes);
         self.cache_attributes(node.id, &node.attributes);
         hir::walk_assoc_declaration(self, node, context)
     }
@@ -96,6 +134,7 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
         context: hir::FunctionContext,
     ) -> Self::Result {
         self.context.cache_definition_unsafe(id, node.is_unsafe);
+        self.context.cache_definition_const(id, node.is_const);
         hir::walk_function(self, id, node, context)
     }
 }

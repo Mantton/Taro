@@ -8,16 +8,16 @@ const SIP_V3_INIT: uint64 = 0x7465646279746573
 
 @inline
 func sipRound(_ v0: &uint64, _ v1: &uint64, _ v2: &uint64, _ v3: &uint64) {
-    *v0 += *v1
-    *v2 += *v3
+    *v0 = (*v0).wrappingAdd(*v1)
+    *v2 = (*v2).wrappingAdd(*v3)
     *v1 = (*v1 << 13) | (*v1 >> 51)
     *v1 ^= *v0
     *v3 = (*v3 << 16) | (*v3 >> 48)
     *v3 ^= *v2
     *v0 = (*v0 << 32) | (*v0 >> 32)
 
-    *v2 += *v1
-    *v0 += *v3
+    *v2 = (*v2).wrappingAdd(*v1)
+    *v0 = (*v0).wrappingAdd(*v3)
     *v1 = (*v1 << 17) | (*v1 >> 47)
     *v1 ^= *v2
     *v3 = (*v3 << 21) | (*v3 >> 43)
@@ -69,7 +69,7 @@ unsafe func loadLeTail(_ bytes: *const uint8, _ count: usize) -> uint64 {
 
 /// Streaming SipHash-1-3 with a 128-bit key and a 64-bit result.
 /// One compression round per word and three finalization rounds; finish leaves
-/// the stream unchanged. Integer arithmetic in std is modular, as SipHash needs.
+/// the stream unchanged. Modular round addition uses explicit wrappingAdd.
 /// Algorithm: https://github.com/veorq/SipHash (cROUNDS=1, dROUNDS=3).
 public struct SipHasher13 {
     length: usize

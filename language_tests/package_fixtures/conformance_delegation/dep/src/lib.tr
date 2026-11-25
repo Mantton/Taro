@@ -1,0 +1,9 @@
+public interface Scale {
+    func adjust(by value: int32) -> int32
+}
+public struct Factor { public value: int32 }
+conform Factor to Scale {
+    public func adjust(by value: int32) -> int32 { self.value * value }
+}
+public struct Remote { public factor: Factor }
+conform Remote to Scale by self.factor {}

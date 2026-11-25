@@ -1,0 +1,122 @@
+// An early-bound call on a receiver with an open literal inside generic
+// code. The enclosing declaration's own type parameter reaches the call
+// through the receiver (`Pair[T, {integer}]`); it is an ordinary rigid type
+// there, so the call is typed as it is with the receiver's type written out.
+// A bound in scope that may supply the associated type keeps the call
+// waiting for the literal's type.
+struct Pair[T, U] {
+    first: T
+    second: U
+}
+
+interface Size {
+    func size() -> usize
+}
+
+conform[X, Y] Pair[X, Y] to Size {
+    func size() -> usize {
+        4
+    }
+}
+
+interface Flip {
+    type Out
+    func flip() -> Self::Out
+    func same() -> Self
+}
+
+conform[X, Y] Pair[X, Y] to Flip {
+    type Out = Pair[Y, X]
+    func flip() -> Pair[Y, X] {
+        Pair { first: self.second, second: self.first }
+    }
+    func same() -> Self {
+        self
+    }
+}
+
+interface Swap {
+    type Out
+    func swap() -> Self::Out
+}
+
+conform[X] Pair[X, int64] to Swap {
+    type Out = X
+    func swap() -> X {
+        self.first
+    }
+}
+
+conform Pair[string, int32] to Swap {
+    type Out = uint8
+    func swap() -> uint8 {
+        8
+    }
+}
+
+func sized[T](_ value: T) -> usize {
+    Pair { first: value, second: 0 }.size() + 1
+}
+
+func sizedTyped[T](_ value: T) -> usize {
+    Pair[T, int32] { first: value, second: 0 }.size() + 1
+}
+
+func flipped[T](_ value: T) -> Pair[int64, T] {
+    Pair { first: value, second: 0 }.flip()
+}
+
+func flippedTyped[T](_ value: T) -> Pair[int64, T] {
+    Pair[T, int64] { first: value, second: 0 }.flip()
+}
+
+func kept[T](_ value: T) -> Pair[T, int64] {
+    Pair { first: value, second: 0 }.same()
+}
+
+func keptTyped[T](_ value: T) -> Pair[T, int64] {
+    Pair[T, int64] { first: value, second: 0 }.same()
+}
+
+struct Holder[T] {
+    value: T
+}
+
+extend[T] Holder[T] {
+    func sized() -> usize {
+        Pair { first: self.value, second: 0 }.size() + 1
+    }
+
+    func flipped() -> Pair[int64, T] {
+        Pair { first: self.value, second: 0 }.flip()
+    }
+
+    func sizedTyped() -> usize {
+        Pair[T, int32] { first: self.value, second: 0 }.size() + 1
+    }
+
+    func flippedTyped() -> Pair[int64, T] {
+        Pair[T, int64] { first: self.value, second: 0 }.flip()
+    }
+}
+
+// Without the bound, the `Pair[X, int64]` record would publish `Out = T`.
+// The bound may supply `Pair[T, int32]: Swap` once the literal is typed, so
+// the call waits and its result is the bound's `uint8`.
+func bounded[T](_ value: T) -> uint8 where Pair[T, int32]: Swap[Out = uint8] {
+    Pair { first: value, second: 0 }.swap()
+}
+
+func boundedTyped[T](_ value: T) -> uint8 where Pair[T, int32]: Swap[Out = uint8] {
+    Pair[T, int32] { first: value, second: 0 }.swap()
+}
+
+func main() {
+    var wide: int64 = 5000000000
+    holder := Holder { value: "x" }
+    println("${sized("x")} ${flipped("x").first + wide} ${kept("x").second + wide}")
+    println("${sizedTyped("x")} ${flippedTyped("x").first + wide} ${keptTyped("x").second + wide}")
+    println("${holder.sized()} ${holder.flipped().first + wide}")
+    println("${holder.sizedTyped()} ${holder.flippedTyped().first + wide}")
+    println("${bounded("x")} ${boundedTyped("x")}")
+}

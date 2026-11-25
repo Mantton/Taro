@@ -5,6 +5,7 @@ pub mod target;
 
 pub mod class_adoptions;
 pub mod classes;
+pub(super) mod delegation;
 pub mod initializers;
 
 #[cfg(test)]

@@ -1,0 +1,23 @@
+func main() {
+    name := "Ada"
+    a := "${name} $HOME $$ {name} \${literal}"
+    b := #"C:\notes\$#{name} ${literal}"#
+    c := ##"${literal} $#{literal} $##{name} "# inside"##
+    d := "${lookup("}")} ${"nested ${name}"}"
+    e := """
+        Hello, ${name}
+        """
+    f := #"""
+        literal ${name}
+        inserted $#{name}
+        """#
+    g := """
+        sum=${
+            1 + 2
+        }
+        """
+    h := #####"${literal} $#{literal} $#####{name}"#####
+    i := "${Point { x: 1 }.x} ${name /* outer /* } */ tail */}"
+    j := ""
+    k := #""#
+}

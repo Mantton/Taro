@@ -1,3 +1,5 @@
+import std::panic::panic
+
 public const E: double = 2.718281828459045
 public const PI: double = 3.141592653589793
 public const TAU: double = 6.283185307179586
@@ -16,12 +18,202 @@ public func max[T: std::cmp::Ord](_ a: T, _ b: T) -> T {
     return b
 }
 
-public func abs(_ x: float) -> float {
+/// Restricts `value` to the inclusive range `[low, high]`. Panics if `low > high`.
+public func clamp[T: std::cmp::Ord](_ value: T, _ low: T, _ high: T) -> T {
+    return value.clamp(low, high)
+}
+
+/// Returns the absolute value of `x` for any `SignedNumeric` type (signed integers, `float`, `double`).
+public func abs[T: std::ops::SignedNumeric](_ x: T) -> T {
     return x.abs()
 }
 
-public func abs(_ x: double) -> double {
-    return x.abs()
+/// Integer types supporting exact greatest-common-divisor and least-common-multiple routines.
+public interface Integral {
+    /// Returns the non-negative greatest common divisor of `self` and `other`.
+    func gcd(_ other: Self) -> Self
+    /// Returns the non-negative least common multiple of `self` and `other`.
+    func lcm(_ other: Self) -> Self
+}
+
+func gcdUint32(_ a: uint32, _ b: uint32) -> uint32 {
+    var x = a
+    var y = b
+    while y != 0 {
+        t := x % y
+        x = y
+        y = t
+    }
+    x
+}
+
+func gcdUint64(_ a: uint64, _ b: uint64) -> uint64 {
+    var x = a
+    var y = b
+    while y != 0 {
+        t := x % y
+        x = y
+        y = t
+    }
+    x
+}
+
+func gcdUsize(_ a: usize, _ b: usize) -> usize {
+    var x = a
+    var y = b
+    while y != 0 {
+        t := x % y
+        x = y
+        y = t
+    }
+    x
+}
+
+conform uint32 to Integral {
+    public func gcd(_ other: uint32) -> uint32 {
+        gcdUint32(self, other)
+    }
+
+    public func lcm(_ other: uint32) -> uint32 {
+        if self == 0 || other == 0 {
+            return 0
+        }
+        g := gcdUint32(self, other)
+        match (self / g).checkedMul(other) {
+            case .some(v) => v
+            case .none => panic("lcm result overflows uint32")
+        }
+    }
+}
+
+conform uint64 to Integral {
+    public func gcd(_ other: uint64) -> uint64 {
+        gcdUint64(self, other)
+    }
+
+    public func lcm(_ other: uint64) -> uint64 {
+        if self == 0 || other == 0 {
+            return 0
+        }
+        g := gcdUint64(self, other)
+        match (self / g).checkedMul(other) {
+            case .some(v) => v
+            case .none => panic("lcm result overflows uint64")
+        }
+    }
+}
+
+conform usize to Integral {
+    public func gcd(_ other: usize) -> usize {
+        gcdUsize(self, other)
+    }
+
+    public func lcm(_ other: usize) -> usize {
+        if self == 0 || other == 0 {
+            return 0
+        }
+        g := gcdUsize(self, other)
+        match (self / g).checkedMul(other) {
+            case .some(v) => v
+            case .none => panic("lcm result overflows usize")
+        }
+    }
+}
+
+conform int32 to Integral {
+    public func gcd(_ other: int32) -> int32 {
+        g := gcdUint32(self.unsignedAbs(), other.unsignedAbs())
+        if g > (int32::MAX as uint32) {
+            panic("gcd result overflows int32")
+        }
+        g as int32
+    }
+
+    public func lcm(_ other: int32) -> int32 {
+        if self == 0 || other == 0 {
+            return 0
+        }
+        ua := self.unsignedAbs()
+        ub := other.unsignedAbs()
+        g := gcdUint32(ua, ub)
+        match (ua / g).checkedMul(ub) {
+            case .some(v) => {
+                if v > (int32::MAX as uint32) {
+                    panic("lcm result overflows int32")
+                }
+                v as int32
+            }
+            case .none => panic("lcm result overflows int32")
+        }
+    }
+}
+
+conform int64 to Integral {
+    public func gcd(_ other: int64) -> int64 {
+        g := gcdUint64(self.unsignedAbs(), other.unsignedAbs())
+        if g > (int64::MAX as uint64) {
+            panic("gcd result overflows int64")
+        }
+        g as int64
+    }
+
+    public func lcm(_ other: int64) -> int64 {
+        if self == 0 || other == 0 {
+            return 0
+        }
+        ua := self.unsignedAbs()
+        ub := other.unsignedAbs()
+        g := gcdUint64(ua, ub)
+        match (ua / g).checkedMul(ub) {
+            case .some(v) => {
+                if v > (int64::MAX as uint64) {
+                    panic("lcm result overflows int64")
+                }
+                v as int64
+            }
+            case .none => panic("lcm result overflows int64")
+        }
+    }
+}
+
+conform isize to Integral {
+    public func gcd(_ other: isize) -> isize {
+        g := gcdUsize(self.unsignedAbs(), other.unsignedAbs())
+        if g > (isize::MAX as usize) {
+            panic("gcd result overflows isize")
+        }
+        g as isize
+    }
+
+    public func lcm(_ other: isize) -> isize {
+        if self == 0 || other == 0 {
+            return 0
+        }
+        ua := self.unsignedAbs()
+        ub := other.unsignedAbs()
+        g := gcdUsize(ua, ub)
+        match (ua / g).checkedMul(ub) {
+            case .some(v) => {
+                if v > (isize::MAX as usize) {
+                    panic("lcm result overflows isize")
+                }
+                v as isize
+            }
+            case .none => panic("lcm result overflows isize")
+        }
+    }
+}
+
+/// Returns the non-negative greatest common divisor of `a` and `b` (`gcd(0, 0) == 0`).
+/// Panics for signed inputs only when the exact result exceeds `T::MAX`.
+public func gcd[T: Integral](_ a: T, _ b: T) -> T {
+    return a.gcd(b)
+}
+
+/// Returns the non-negative least common multiple of `a` and `b` (`0` if either is `0`).
+/// Panics on overflow.
+public func lcm[T: Integral](_ a: T, _ b: T) -> T {
+    return a.lcm(b)
 }
 
 public func sqrt(_ x: float) -> float {

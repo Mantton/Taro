@@ -1,0 +1,8 @@
+import std::collections::Set
+
+struct Opaque { x: int32 }
+
+func main() {
+    var s = Set[(Opaque, int32)]::new()
+    s.insert((Opaque { x: 1 }, 2))
+}

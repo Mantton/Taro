@@ -5,7 +5,7 @@ use crate::{
         models::{
             BindingError, DefinitionKind, ExpressionResolutionState, LexicalScope,
             LexicalScopeBinding, LexicalScopeSource, PathResult, Resolution, ResolutionError,
-            ResolutionSource, ResolutionState, Scope, ScopeNamespace,
+            ResolutionSource, ResolutionState, Scope, ScopeKind, ScopeNamespace,
         },
         resolver::Resolver,
     },
@@ -61,6 +61,10 @@ pub fn resolve_package(package: &ast::Package, resolver: &mut Resolver) -> Compi
         resolver,
         scopes: vec![],
         type_source_override: None,
+        next_scope_id: 0,
+        owner: 0,
+        next_owner: 0,
+        active_loop_labels: Vec::new(),
     };
     ast::walk_package(&mut actor, package);
     resolver.context.dcx.ok()
@@ -70,6 +74,14 @@ struct Actor<'r, 'a> {
     resolver: &'r mut Resolver<'a>,
     scopes: Vec<LexicalScope<'a>>,
     type_source_override: Option<ResolutionSource>,
+    /// Identity for the next lexical scope; see `LexicalScope::id`.
+    next_scope_id: u32,
+    /// The function or closure whose body is being resolved, so the
+    /// shadowing check only relates bindings of the same body.
+    owner: u32,
+    next_owner: u32,
+    /// Active loop labels visible in the current function/closure body.
+    active_loop_labels: Vec<Option<Symbol>>,
 }
 
 impl<'r, 'a> Actor<'r, 'a> {
@@ -92,11 +104,35 @@ impl<'r, 'a> Actor<'r, 'a> {
         self.with_built_scope(LexicalScope::new(source), work)
     }
 
-    fn with_built_scope<T>(
+    fn with_owner<T>(&mut self, work: impl FnOnce(&mut Self) -> T) -> T {
+        self.next_owner += 1;
+        let previous = std::mem::replace(&mut self.owner, self.next_owner);
+        let previous_labels = std::mem::take(&mut self.active_loop_labels);
+        let result = work(self);
+        self.active_loop_labels = previous_labels;
+        self.owner = previous;
+        result
+    }
+
+    fn with_loop_label<T>(
         &mut self,
-        scope: LexicalScope<'a>,
+        label: Option<ast::Label>,
         work: impl FnOnce(&mut Self) -> T,
     ) -> T {
+        self.active_loop_labels
+            .push(label.map(|l| l.identifier.symbol));
+        let result = work(self);
+        self.active_loop_labels.pop();
+        result
+    }
+
+    fn with_built_scope<T>(
+        &mut self,
+        mut scope: LexicalScope<'a>,
+        work: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        self.next_scope_id += 1;
+        scope.id = self.next_scope_id;
         self.scopes.push(scope);
         let result = work(self);
         self.scopes.pop();
@@ -143,6 +179,11 @@ impl<'r, 'a> Actor<'r, 'a> {
 
         let mut scope = LexicalScope::new(LexicalScopeSource::Plain);
         for param in &type_parameters.parameters {
+            // Anonymous inputs refer directly to their parameter definition.
+            // Even escaped user identifiers cannot capture that definition.
+            if param.is_anonymous {
+                continue;
+            }
             let def_id = self.resolver.definition_id(param.id);
             let def_kind = self.resolver.definition_kind(def_id);
             let name = param.identifier.symbol;
@@ -242,10 +283,14 @@ impl<'r, 'a> ast::AstVisitor for Actor<'r, 'a> {
         _: ast::FunctionContext,
     ) -> Self::Result {
         if let Some(body) = &f.block {
-            self.with_scope_source(LexicalScopeSource::Plain, |this| {
-                this.visit_generics(&f.generics);
-                this.resolve_function_signature(&f.signature);
-                this.with_scope_source(LexicalScopeSource::Plain, |this| this.visit_block(body));
+            self.with_owner(|this| {
+                this.with_scope_source(LexicalScopeSource::Plain, |this| {
+                    this.visit_generics(&f.generics);
+                    this.resolve_function_signature(&f.signature);
+                    this.with_scope_source(LexicalScopeSource::Plain, |this| {
+                        this.visit_block(body)
+                    });
+                })
             })
         } else {
             self.visit_generics(&f.generics);
@@ -261,6 +306,17 @@ impl<'r, 'a> ast::AstVisitor for Actor<'r, 'a> {
                     .take()
                     .unwrap_or(ResolutionSource::Type);
                 self.resolve_path_with_source(node.id, path, source);
+            }
+            ast::TypeKind::QualifiedAccess {
+                target, interface, ..
+            } => {
+                // In (T as I).Item only T is an ordinary type. The right
+                // operand names the interface providing the associated type.
+                self.visit_type(target);
+                self.with_type_source(ResolutionSource::Interface, |this| {
+                    this.visit_type(interface);
+                });
+                return;
             }
             ast::TypeKind::BoxedExistential { interfaces }
             | ast::TypeKind::ImplTrait { interfaces } => {
@@ -336,6 +392,10 @@ impl<'r, 'a> ast::AstVisitor for Actor<'r, 'a> {
 
     fn visit_match_arm(&mut self, node: &ast::MatchArm) -> Self::Result {
         self.resolve_match_arm(node)
+    }
+
+    fn visit_select_arm(&mut self, node: &ast::SelectArm) -> Self::Result {
+        self.resolve_select_arm(node)
     }
 
     fn visit_generic_bound(&mut self, node: &ast::GenericBound) -> Self::Result {
@@ -530,12 +590,30 @@ impl<'r, 'a> Actor<'r, 'a> {
         match &node.kind {
             ast::StatementKind::For(for_node) => {
                 self.visit_expression(&for_node.iterator);
+                self.with_loop_label(for_node.label, |this| {
+                    this.with_scope_source(LexicalScopeSource::Plain, |this| {
+                        this.resolve_top_level_pattern(&for_node.pattern, PatternSource::ForLoop);
+                        if let Some(clause) = &for_node.clause {
+                            this.visit_expression(clause);
+                        }
+                        this.visit_block(&for_node.block);
+                    });
+                });
+            }
+            ast::StatementKind::ComptimeFor {
+                pattern,
+                target_type,
+                body,
+            } => {
+                self.visit_type(target_type);
                 self.with_scope_source(LexicalScopeSource::Plain, |this| {
-                    this.resolve_top_level_pattern(&for_node.pattern, PatternSource::ForLoop);
-                    if let Some(clause) = &for_node.clause {
-                        this.visit_expression(clause);
-                    }
-                    this.visit_block(&for_node.block);
+                    this.resolve_top_level_pattern(pattern, PatternSource::ForLoop);
+                    this.visit_block(body);
+                });
+            }
+            ast::StatementKind::Loop { label, block } => {
+                self.with_loop_label(*label, |this| {
+                    this.visit_block(block);
                 });
             }
             ast::StatementKind::Guard {
@@ -548,11 +626,15 @@ impl<'r, 'a> Actor<'r, 'a> {
             }
 
             ast::StatementKind::While {
-                condition, block, ..
+                label,
+                condition,
+                block,
             } => {
-                self.with_scope_source(LexicalScopeSource::Plain, |this| {
-                    this.visit_expression(condition);
-                    this.visit_block(block)
+                self.with_loop_label(*label, |this| {
+                    this.with_scope_source(LexicalScopeSource::Plain, |this| {
+                        this.visit_expression(condition);
+                        this.visit_block(block)
+                    });
                 });
             }
             _ => ast::walk_statement(self, node),
@@ -744,6 +826,7 @@ impl<'r, 'a> Actor<'r, 'a> {
                 }
             }
             ast::ExpressionKind::PatternBinding(binding_node)
+            | ast::ExpressionKind::PatternIs(binding_node)
             | ast::ExpressionKind::OptionalPatternBinding(binding_node) => {
                 self.visit_expression(&binding_node.expression);
                 self.resolve_top_level_pattern(
@@ -758,13 +841,63 @@ impl<'r, 'a> Actor<'r, 'a> {
                 ast::walk_expression(self, node);
             }
             ast::ExpressionKind::Closure(closure) => {
+                if closure.has_implicit_it {
+                    let it_ident = Identifier {
+                        symbol: self.resolver.context.intern_symbol("it"),
+                        span: closure.signature.span,
+                    };
+                    if self
+                        .resolver
+                        .resolve_in_lexical_scopes(&it_ident, ScopeNamespace::Value, &self.scopes)
+                        .is_ok()
+                    {
+                        self.resolver.dcx().emit_warning(
+                            "implicit 'it' parameter shadows an outer 'it' binding; name the parameter explicitly (e.g. 'x => ...')".into(),
+                            Some(closure.signature.span),
+                        );
+                    }
+                }
                 // Resolve closure in a new lexical scope
-                self.with_scope_source(LexicalScopeSource::Plain, |this| {
-                    // Resolve signature (registers parameters in current scope)
-                    this.resolve_function_signature(&closure.signature);
-                    // Resolve the body expression in the same scope
-                    this.visit_expression(&closure.body);
+                self.with_owner(|this| {
+                    this.with_scope_source(LexicalScopeSource::Plain, |this| {
+                        // Resolve signature (registers parameters in current scope)
+                        this.resolve_function_signature(&closure.signature);
+                        // Resolve the body expression in the same scope
+                        this.visit_expression(&closure.body);
+                    })
                 });
+            }
+            ast::ExpressionKind::Loop { label, block } => {
+                self.with_loop_label(*label, |this| {
+                    this.visit_block(block);
+                });
+            }
+            ast::ExpressionKind::Break { label, value } => {
+                // For bare `break name`, a visible in-scope loop label wins
+                // over any local or outer value binding with the same name.
+                if let (Some(ident), Some(_)) = (label, value) {
+                    if self
+                        .active_loop_labels
+                        .iter()
+                        .rev()
+                        .any(|entry| *entry == Some(ident.symbol))
+                    {
+                        self.resolver
+                            .break_label_resolutions
+                            .insert(node.id, *ident);
+                        return;
+                    }
+                }
+                if let Some(value) = value {
+                    self.visit_expression(value);
+                }
+            }
+            ast::ExpressionKind::Assign(target, _) => {
+                if let Some(lint) = &self.resolver.lint {
+                    let mut lint = lint.borrow_mut();
+                    note_assign_targets(&mut lint, target);
+                }
+                ast::walk_expression(self, node)
             }
             _ => ast::walk_expression(self, node),
         }
@@ -827,6 +960,14 @@ impl<'r, 'a> Actor<'r, 'a> {
                             file: node.span.file,
                         },
                     });
+                }
+                if let ResolvedEntity::Resolved(base) = &entity
+                    && let Some(nested) = self.nested_type_member(base, name)
+                {
+                    if matches!(target.kind, ast::ExpressionKind::Specialize { .. }) {
+                        return Err(ResolutionError::NestedTypeOnSpecializedOwner(target.span));
+                    }
+                    return Ok(ResolvedEntity::Resolved(nested));
                 }
                 self.resolve_member_access(entity, name, ScopeNamespace::Value)
             }
@@ -901,7 +1042,7 @@ impl<'r, 'a> Actor<'r, 'a> {
         for &ns in &[preferred, fallback] {
             let result = self
                 .resolver
-                .resolve_path_in_scopes(&path, ns, &self.scopes);
+                .resolve_path_in_scopes(&path, ns, None, &self.scopes);
 
             match result {
                 PathResult::Scope(scope) => {
@@ -931,6 +1072,41 @@ impl<'r, 'a> Actor<'r, 'a> {
         };
 
         return Ok(entity);
+    }
+
+    fn nested_type_member(&self, base: &Resolution, name: &Identifier) -> Option<Resolution> {
+        let scope = match *base {
+            Resolution::Definition(id, DefinitionKind::Struct | DefinitionKind::Enum) => {
+                self.resolver.nested_scope(id)?
+            }
+            Resolution::SelfTypeAlias(id)
+                if self.resolver.definition_kind(id) == DefinitionKind::Impl =>
+            {
+                self.scopes
+                    .iter()
+                    .rev()
+                    .find_map(|lexical| match lexical.source {
+                        LexicalScopeSource::Scoped(scope)
+                            if matches!(
+                                scope.kind,
+                                ScopeKind::Definition(
+                                    _,
+                                    DefinitionKind::Struct | DefinitionKind::Enum
+                                )
+                            ) =>
+                        {
+                            Some(scope)
+                        }
+                        _ => None,
+                    })?
+            }
+            Resolution::SelfTypeAlias(id) => self.resolver.nested_scope(id)?,
+            _ => return None,
+        };
+        self.resolver
+            .resolve_in_scope(name, scope, ScopeNamespace::Type)
+            .ok()
+            .map(|h| h.resolution())
     }
 
     fn resolve_member_access(
@@ -1108,6 +1284,11 @@ impl<'r, 'a> Actor<'r, 'a> {
                 self.visit_expression(e)
             }
 
+            // Ignored closure parameters occupy an ABI slot but bind no name.
+            if param.name.symbol.as_str() == "_" {
+                continue;
+            }
+
             let pat = ast::Pattern {
                 id: param.id,
                 span: param.span,
@@ -1130,6 +1311,14 @@ impl<'r, 'a> Actor<'r, 'a> {
             if let Some(guard) = &node.guard {
                 this.visit_expression(guard)
             }
+            this.visit_expression(&node.body)
+        })
+    }
+
+    fn resolve_select_arm(&mut self, node: &ast::SelectArm) {
+        self.visit_expression(&node.operation);
+        self.with_scope_source(LexicalScopeSource::Plain, |this| {
+            this.resolve_top_level_pattern(&node.pattern, PatternSource::Variable);
             this.visit_expression(&node.body)
         })
     }
@@ -1172,6 +1361,11 @@ impl<'r, 'a> Actor<'r, 'a> {
     ) {
         pat.walk(&mut |pat| {
             match &pat.kind {
+                ast::PatternKind::TypeTest { target, .. } => { self.visit_type(target); }
+                ast::PatternKind::Range { start, end, .. } => {
+                    self.visit_expression(start);
+                    self.visit_expression(end);
+                }
                 ast::PatternKind::Literal(..)
                 | ast::PatternKind::Wildcard
                 | ast::PatternKind::Tuple(..) => {}
@@ -1268,6 +1462,19 @@ impl<'r, 'a> Actor<'r, 'a> {
             // reuse variant def
             res
         } else {
+            if let Some(lint) = &self.resolver.lint {
+                let mut lint = lint.borrow_mut();
+                match source {
+                    // Parameters are exempt from the unused-variable lint.
+                    PatternSource::FunctionParameter => lint.note_parameter(id, *ident, self.owner),
+                    // Only a declaration can be a mistaken assignment;
+                    // conditional, loop and match bindings shadow on purpose.
+                    PatternSource::Variable => {
+                        lint.note_declaration(id, *ident, self.owner, &self.scopes)
+                    }
+                    _ => lint.note_local(id, *ident, self.owner),
+                }
+            }
             Resolution::LocalVariable(id)
         };
 
@@ -1317,6 +1524,7 @@ impl<'r, 'a> Actor<'r, 'a> {
                 ast::PatternKind::Or(sub_patterns, _) => {
                     let res = self.compute_and_check_or_match_pattern_binding_map(sub_patterns);
                     map.extend(res);
+                    return false; // Recursive binding maps already cover the alternatives.
                 }
                 _ => {}
             }
@@ -1381,6 +1589,18 @@ impl<'r, 'a> Actor<'r, 'a> {
 impl<'r, 'a> Actor<'r, 'a> {
     fn resolve_impl(&mut self, id: ast::NodeID, node: &ast::Impl) {
         let def_id = self.resolver.definition_id(id);
+        if let Some(first) = node.nested_types.first() {
+            let owner = self
+                .resolver
+                .nested_type_parent(self.resolver.definition_id(first.id));
+            let scope = self.resolver.get_definition_scope(owner);
+            self.with_scope(scope, |this| {
+                for nested in &node.nested_types {
+                    this.visit_declaration(nested);
+                }
+            });
+        }
+        let owner_scope_index = self.scopes.len();
         self.with_scope_source(LexicalScopeSource::Plain, |this| {
             this.with_generics_scope(&node.generics, |this| {
                 let self_res = Resolution::SelfTypeAlias(def_id);
@@ -1396,6 +1616,17 @@ impl<'r, 'a> Actor<'r, 'a> {
                         this.visit_type(&node.target);
                     });
                     this.visit_generics(&node.generics);
+                    let scope = match this.resolver.resolutions.get(&node.target.id) {
+                        Some(ResolutionState::Complete(Resolution::Definition(
+                            owner,
+                            DefinitionKind::Struct | DefinitionKind::Enum,
+                        ))) => this.resolver.nested_scope(*owner),
+                        _ => None,
+                    };
+                    if let Some(scope) = scope {
+                        // Explicit extension and method generics shadow a sibling type.
+                        this.scopes[owner_scope_index].source = LexicalScopeSource::Scoped(scope);
+                    }
                     for declaration in &node.declarations {
                         this.visit_assoc_declaration(declaration, AssocContext::Impl(id));
                     }
@@ -1407,9 +1638,11 @@ impl<'r, 'a> Actor<'r, 'a> {
 
 impl<'r, 'a> Actor<'r, 'a> {
     fn resolve_path_with_source(&mut self, id: NodeID, path: &Path, source: ResolutionSource) {
-        let result =
-            self.resolver
-                .resolve_path_in_scopes(&path.segments, source.namespace(), &self.scopes);
+        let fallback = matches!(source, ResolutionSource::MatchPatternTupleStruct)
+            .then_some(ScopeNamespace::Type);
+        let result = self.resolver.resolve_path_in_scopes(
+            &path.segments, source.namespace(), fallback, &self.scopes,
+        );
 
         let resolution = match result {
             PathResult::Scope(scope) => {
@@ -1464,6 +1697,21 @@ impl<'r, 'a> Actor<'r, 'a> {
 impl<'r, 'a> Actor<'r, 'a> {
     fn report_error(&self, e: ResolutionError) {
         self.resolver.dcx().emit(e.diag(self.resolver.context));
+    }
+}
+
+/// Identifiers assigned by `=`, including inside a tuple target, are writes
+/// rather than reads of the local they name.
+fn note_assign_targets(lint: &mut super::lint::LintState, target: &ast::Expression) {
+    match &target.kind {
+        ast::ExpressionKind::Identifier(_) => lint.note_assign_target(target.id),
+        ast::ExpressionKind::Tuple(elements, _) => {
+            for element in elements {
+                note_assign_targets(lint, element);
+            }
+        }
+        ast::ExpressionKind::Parenthesis(inner) => note_assign_targets(lint, inner),
+        _ => {}
     }
 }
 

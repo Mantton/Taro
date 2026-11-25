@@ -1,0 +1,12 @@
+error: 'in' cannot be used with 'int32' and 'Point': 'Point' does not conform to 'Contains[int32]'
+ -> language_tests/source_files/invalid/membership_without_conformance.tr:6:8
+	    _ = value in point
+	        ^^^^^^^^^^^^^^
+error: '!in' cannot be used with 'string' and '[int32; 2]': '[int32; 2]' does not conform to 'Contains[string]'
+ -> language_tests/source_files/invalid/membership_without_conformance.tr:7:8
+	    _ = "a" !in [1, 2]
+	        ^^^^^^^^^^^^^^
+error: 'in' cannot be used with 'int32' and 'Optional[int32]': 'Optional[int32]' does not conform to 'Contains[int32]'
+ -> language_tests/source_files/invalid/membership_without_conformance.tr:9:8
+	    _ = 1 in maybe
+	        ^^^^^^^^^^

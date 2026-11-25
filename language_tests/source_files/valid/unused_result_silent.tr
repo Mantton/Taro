@@ -1,0 +1,65 @@
+// Handled, propagated, discarded and @discardableResult values do not warn.
+// EXPECT_STDERR_NOT_CONTAINS: unused 'Result
+// EXPECT_STDERR_COUNT: 0 warning: unused
+type Outcome = Result[int32, string]
+
+static var calls: int32 = 0
+func fails(_ value: int32) -> Result[int32, string] { calls += 1; .ok(value) }
+func later() async -> Result[int32, string] { calls += 1; .ok(2) }
+func maybe() -> int32? { calls += 1; .some(1) }
+
+@discardableResult
+func log(_ line: string) -> Outcome { calls += 1; .ok(1) }
+
+@discardableResult
+func logLater() async -> Result[(), string] { calls += 1; .ok(()) }
+
+interface Logger {
+    @discardableResult
+    func record(_ line: string) -> Result[(), string]
+}
+struct Console {}
+extend Console {
+    @discardableResult
+    func flush() -> Result[(), string] { calls += 1; .ok(()) }
+}
+conform Console to Logger {
+    func record(_ line: string) -> Result[(), string] { calls += 1; .ok(()) }
+}
+func viaBound[L: Logger](_ logger: L) { logger.record("bound") }
+func viaExistential(_ logger: any Logger) { logger.record("existential") }
+
+func propagate() -> Result[int32, string] {
+    fails(1)!
+    value := fails(2)!
+    return fails(value)
+}
+
+func tail() -> Result[int32, string] {
+    fails(3)
+}
+
+func main() async {
+    _ = fails(4)
+    (_) = fails(5)
+    var _ = fails(6)
+    _ := fails(7)
+    _ = await later()
+    match fails(8) {
+        case .ok(_) => {}
+        case .err(_) => {}
+    }
+    if fails(9).isOk() {}
+    block := { fails(10) }
+    _ = block
+    _ = propagate()
+    _ = tail()
+    maybe()
+    log("started")
+    await logLater()
+    Console {}.flush()
+    Console {}.record("concrete")
+    viaBound(Console {})
+    viaExistential(Console {})
+    print("calls: ${calls}\n")
+}

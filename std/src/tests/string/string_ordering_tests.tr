@@ -1,0 +1,45 @@
+import std::cmp::{Ord, PartialOrd}
+import std::collections::PriorityQueue
+
+@test
+func testStringOrderingIsBytewiseLexicographic() {
+    std::testing::assertTrue("" < "a", "empty string sorts first")
+    std::testing::assertTrue("".cmp("").isEqual(), "empty strings are equal")
+    std::testing::assertTrue("app" < "apple", "a proper prefix sorts first")
+    std::testing::assertTrue("apple" > "app", "a longer string with the prefix sorts last")
+    std::testing::assertTrue("apple" < "apply", "first differing byte decides")
+    std::testing::assertTrue("Zebra" < "apple", "uppercase ASCII precedes lowercase")
+    std::testing::assertTrue("pear".cmp("pear").isEqual(), "equal strings")
+    std::testing::assertTrue("pear" <= "pear" && "pear" >= "pear", "non-strict comparisons")
+    // Bytewise UTF-8 order is Unicode scalar order: U+00E9 < U+4E2D < U+1F600.
+    std::testing::assertTrue("z" < "é", "ASCII precedes two-byte scalars")
+    std::testing::assertTrue("é" < "中", "two-byte precedes three-byte scalars")
+    std::testing::assertTrue("中" < "😀", "three-byte precedes four-byte scalars")
+    // Long equal prefixes take the word-at-a-time path.
+    std::testing::assertTrue("abcdefghijklmnopqrstuvwx" < "abcdefghijklmnopqrstuvwy", "difference after full words")
+    std::testing::assertTrue("abcdefghijklmnop" < "abcdefghijklmnopq", "prefix after full words")
+    std::testing::assertTrue("abcdefgh0bcdefgh" > "abcdefgh!bcdefgh", "difference at a word boundary")
+    match "b".partialCmp("a") {
+        case .some(ordering) => std::testing::assertTrue(ordering.isGreater(), "partial order agrees")
+        case .none => std::testing::fail("strings are totally ordered")
+    }
+}
+
+@test
+func testStringListsSortAndSearch() {
+    var names: [string] = ["pear", "apple", "fig", "", "apple", "Apple", "é"]
+    names.sort()
+    std::testing::assertEqual(names, ["", "Apple", "apple", "apple", "fig", "pear", "é"], "Ord sort")
+    std::testing::assertEqual(names.binarySearch("fig").unwrap(), 4 as usize, "binary search")
+    descending := names.sorted(by: (a, b) => a > b)
+    std::testing::assertEqual(descending[0], "é", "comparator sort uses string operators")
+}
+
+@test
+func testStringPriorityQueue() {
+    queue := PriorityQueue[string]::new()
+    for name in ["delta", "alpha", "charlie", "bravo"] { queue.push(name) }
+    var order: [string] = []
+    while !queue.isEmpty() { order.append(queue.pop().unwrap()) }
+    std::testing::assertEqual(order, ["alpha", "bravo", "charlie", "delta"], "min queue of strings")
+}

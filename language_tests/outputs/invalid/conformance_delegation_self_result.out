@@ -1,0 +1,4 @@
+error: implement 'duplicate' explicitly: forwarding changes a Self-dependent parameter or return type
+ -> language_tests/source_files/invalid/conformance_delegation_self_result.tr:7:37
+	conform Wrapper to Duplicate by self.value {}
+	                                     ^^^^^

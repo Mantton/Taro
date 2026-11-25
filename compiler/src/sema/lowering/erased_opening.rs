@@ -375,18 +375,22 @@ impl<'ctx> Gcx<'ctx> {
         let target = identity[parameter]
             .ty()
             .expect("opened default type parameter");
+        let provider_signature = self.get_signature(provider);
+        let mut inputs = vec![LabeledFunctionParameter {
+            label: None,
+            name: self.intern_symbol("source"),
+            ty: Ty::new(TyKind::Reference(target), self),
+            is_lazy: false,
+            default_provider: None,
+        }];
+        inputs.extend_from_slice(&provider_signature.inputs);
         let signature = self
             .store
             .arenas
             .function_signatures
             .alloc(LabeledFunctionSignature {
-                inputs: vec![LabeledFunctionParameter {
-                    label: None,
-                    name: self.intern_symbol("source"),
-                    ty: Ty::new(TyKind::Reference(target), self),
-                    default_provider: None,
-                }],
-                output: self.get_signature(provider).output,
+                inputs,
+                output: provider_signature.output,
                 is_variadic: false,
                 abi: None,
             });

@@ -1,0 +1,11 @@
+func runtimeOnly(_ x: int32) -> int32 {
+    return x + 1
+}
+
+const func bad(_ x: int32) -> int32 {
+    return runtimeOnly(x)
+}
+
+const VALUE: int32 = bad(5)
+
+func main() {}

@@ -246,6 +246,25 @@ impl<'ctx> Checker<'ctx> {
             }
         }
 
+        match crate::sema::tycheck::utils::members::associated_constant(
+            gcx,
+            base_ty,
+            name.symbol,
+            self.current_def,
+            self.infer_ctx().as_ref(),
+            span,
+        ) {
+            Ok(Some(id)) => {
+                return hir::Resolution::Definition(id, DefinitionKind::AssociatedConstant);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                if emit_errors {
+                    gcx.dcx().emit_error(error.format(gcx), Some(span));
+                }
+                return hir::Resolution::Error;
+            }
+        }
         let candidates = crate::sema::tycheck::utils::members::static_candidates(
             self.gcx(),
             base_ty,
@@ -302,6 +321,23 @@ impl<'ctx> Checker<'ctx> {
         emit_errors: bool,
     ) -> hir::Resolution {
         let gcx = self.gcx();
+        match crate::sema::tycheck::utils::members::interface_constant(
+            gcx,
+            base_ty,
+            name.symbol,
+            self.current_def,
+        ) {
+            Ok(Some((id, _))) => {
+                return hir::Resolution::Definition(id, DefinitionKind::AssociatedConstant);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                if emit_errors {
+                    gcx.dcx().emit_error(error.format(gcx), Some(span));
+                }
+                return hir::Resolution::Error;
+            }
+        }
         let candidates = self.collect_bounded_static_member_candidates(base_ty, name.symbol);
 
         if candidates.is_empty() {
@@ -497,6 +533,25 @@ impl<'ctx> Checker<'ctx> {
             return None;
         };
 
+        if gcx.definition_kind(def_id) == DefinitionKind::AssociatedConstant
+            && let Some(owner) = static_owner
+        {
+            if has_explicit {
+                gcx.dcx().emit_error(
+                    "associated constants do not accept generic arguments".into(),
+                    Some(args_span),
+                );
+            }
+            return crate::sema::tycheck::utils::members::constant_arguments(
+                &cs.infer_cx,
+                def_id,
+                owner,
+                self.current_def,
+                segment.span,
+            )
+            .map_err(|error| gcx.dcx().emit_error(error.format(gcx), Some(args_span)))
+            .ok();
+        }
         let base_args = if let Some(owner) = static_owner
             && let Some((target, ancestor)) =
                 crate::sema::tycheck::utils::members::static_target(gcx, owner, def_id)
@@ -531,7 +586,7 @@ impl<'ctx> Checker<'ctx> {
         }
 
         let explicit_count = positional_args.len();
-        let own_total = generics.total_count();
+        let own_total = generics.explicit_parameter_count();
         let own_defaults = generics.default_count();
         let own_has_self = generics.has_self && generics.parent_count == 0;
         let def_kind = gcx.definition_kind(def_id);

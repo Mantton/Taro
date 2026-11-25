@@ -1,0 +1,64 @@
+// Covers passing assertions without messages, single evaluation, short-circuiting,
+// non-Debug operands, lazy messages, debugAssert in release, and user-defined assert.
+import std::ops::PartialEq
+
+struct Opaque {
+    id: int32
+}
+
+conform Opaque to PartialEq {
+    func eq(_ other: Opaque) -> bool {
+        self.id == other.id
+    }
+}
+
+static var leftCalls: int32 = 0
+static var rightCalls: int32 = 0
+static var msgCalls: int32 = 0
+static var userAssertCalls: int32 = 0
+
+func leftVal(_ x: int32) -> int32 {
+    leftCalls += 1
+    x
+}
+
+func rightVal(_ x: int32) -> int32 {
+    rightCalls += 1
+    x
+}
+
+func rightBool(_ b: bool) -> bool {
+    rightCalls += 1
+    b
+}
+
+func lazyMsg() -> string {
+    msgCalls += 1
+    "should not run"
+}
+
+// A user function named `assert` in local scope must NOT be intercepted.
+func assert(_ ok: bool) {
+    userAssertCalls += 1
+    if !ok {
+        println("user-assert-false")
+    }
+}
+
+func main() {
+    std::assert(leftVal(5) == rightVal(5))
+    std::assert(leftVal(2) < rightVal(9), lazyMsg())
+    std::assert(true || rightBool(false))
+    std::assert(true && rightBool(true))
+    std::assert(!false)
+    std::assert(2 in [1, 2, 3])
+    std::assert(Opaque { id: 7 } == Opaque { id: 7 })
+
+    if !#cfg(profile("debug")) {
+        std::debugAssert(leftVal(1) == rightVal(2))
+        std::debugAssert(false, lazyMsg())
+    }
+
+    assert(false)
+    println("left=${leftCalls} right=${rightCalls} msg=${msgCalls} user=${userAssertCalls}")
+}

@@ -1,0 +1,8 @@
+error: '??=' cannot assign 'string' to a 'Optional[int32]' target: expected 'int32' or 'Optional[int32]'
+ -> language_tests/source_files/invalid/optional_default_assignment_value_type.tr:3:4
+	    count ??= "one"
+	    ^^^^^^^^^^^^^^^
+error: '??=' cannot assign 'Optional[int32]' to a 'Optional[string]' target: expected 'string' or 'Optional[string]'
+ -> language_tests/source_files/invalid/optional_default_assignment_value_type.tr:5:4
+	    label ??= count
+	    ^^^^^^^^^^^^^^^

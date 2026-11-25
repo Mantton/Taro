@@ -1,0 +1,4 @@
+error: `else` must follow an `if` block or a `guard` condition
+ -> language_tests/source_files/invalid/asi_stray_else.tr:6:4
+	    else {
+	    ^^^^

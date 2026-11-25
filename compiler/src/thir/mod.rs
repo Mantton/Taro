@@ -12,6 +12,7 @@ use index_vec::IndexVec;
 use rustc_hash::FxHashMap;
 
 pub mod match_tree;
+pub(crate) mod main_result;
 pub mod package;
 pub mod passes;
 pub mod pattern;
@@ -95,10 +96,20 @@ pub enum ExprKind<'a> {
     Return {
         value: Option<ExprId>,
     },
-    /// `break`
-    Break,
-    /// `continue`
-    Continue,
+    /// `loop { ... }` expression
+    Loop {
+        label: Option<Symbol>,
+        body: BlockId,
+    },
+    /// `break` / `break label` / `break value`
+    Break {
+        label: Option<Symbol>,
+        value: Option<ExprId>,
+    },
+    /// `continue` / `continue label`
+    Continue {
+        label: Option<Symbol>,
+    },
     Assign {
         target: ExprId,
         value: ExprId,
@@ -238,6 +249,28 @@ pub enum ExprKind<'a> {
         /// The future expression being awaited
         future: ExprId,
     },
+    /// `yield value` — suspend a generator and produce a value
+    Yield {
+        value: ExprId,
+    },
+    /// Await a scoped `async var` binding, yielding its completed value `T`
+    /// (or rethrowing its panic).
+    AwaitAsyncVar {
+        local: NodeID,
+    },
+    /// Multi-arm typed `select { case pat = await op => body }`.
+    Select {
+        arms: Vec<SelectArm<'a>>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct SelectArm<'a> {
+    pub pattern: Pattern<'a>,
+    pub value_ty: Ty<'a>,
+    pub closure: ExprId,
+    pub body: ExprId,
+    pub span: Span,
 }
 
 /// A captured variable in a closure
@@ -256,11 +289,13 @@ pub struct ClosureCapture {
 #[derive(Debug, Clone)]
 pub struct Constant<'a> {
     pub ty: Ty<'a>,
-    pub value: ConstantKind,
+    pub value: ConstantKind<'a>,
 }
 
 #[derive(Debug, Clone)]
-pub enum ConstantKind {
+pub enum ConstantKind<'ctx> {
+    Bytes(crate::span::InternedBytes),
+    ConstArray(crate::sema::models::InternedConstArray),
     Bool(bool),
     Rune(char),
     String(crate::span::Symbol),
@@ -268,6 +303,7 @@ pub enum ConstantKind {
     Float(f64),
     Unit,
     ConstParam(GenericParameter),
+    InterfaceConstant(DefinitionID, GenericArguments<'ctx>),
 }
 
 #[derive(Debug, Clone)]
@@ -279,18 +315,32 @@ pub enum StmtKind<'a> {
         ty: Ty<'a>,
         mutable: bool,
     },
+    /// `async var name [: Type] = expr` — starts a scoped child task whose
+    /// lifetime is bounded by the enclosing lexical scope.
+    AsyncLet {
+        local: NodeID,
+        name: Symbol,
+        ty: Ty<'a>,
+        closure: ExprId,
+    },
     Return {
         value: Option<ExprId>,
     },
-    Break,
-    Continue,
-    Defer(BlockId),
+    Break {
+        label: Option<Symbol>,
+        value: Option<ExprId>,
+    },
+    Continue {
+        label: Option<Symbol>,
+    },
+    Defer(crate::hir::DeferKind, BlockId),
     /// Successful bindings live in the enclosing lexical scope.
     Guard {
         condition: ExprId,
         else_block: BlockId,
     },
     Loop {
+        label: Option<Symbol>,
         block: BlockId,
     },
     Expr(ExprId),
@@ -335,6 +385,9 @@ pub struct Pattern<'ctx> {
 
 #[derive(Debug, Clone)]
 pub enum PatternKind<'ctx> {
+    At { binding: Box<Pattern<'ctx>>, pattern: Box<Pattern<'ctx>> },
+    TypeTest { target: Ty<'ctx>, binding: Option<Box<Pattern<'ctx>>> },
+    Range(std::ops::RangeInclusive<i128>),
     Wild,
     Binding {
         name: Symbol,

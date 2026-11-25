@@ -54,3 +54,19 @@ public interface Rem[Rhs=Self] {
 public interface RemAssign[Rhs=Self] {
     func remAssign(_ rhs: Rhs)
 }
+
+/// A numeric type with additive and multiplicative identity values (`zero`, `one`)
+/// and closed arithmetic operations (`+`, `-`, `*`, `/`, `%`).
+public interface Numeric: Add[Self, Output = Self], Sub[Self, Output = Self], Mul[Self, Output = Self], Div[Self, Output = Self], Rem[Self, Output = Self], PartialEq[Self] {
+    /// Returns the additive identity (`0`).
+    static func zero() -> Self
+
+    /// Returns the multiplicative identity (`1`).
+    static func one() -> Self
+}
+
+/// A signed numeric type supporting unary negation and absolute value in addition to `Numeric`.
+public interface SignedNumeric: Numeric, Neg[Output = Self] {
+    /// Returns the absolute value of `self`.
+    func abs() -> Self
+}

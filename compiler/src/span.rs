@@ -38,7 +38,7 @@ impl Span {
     }
 }
 
-#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Position {
     /// 0-based line number.
     pub line: usize,
@@ -82,7 +82,7 @@ impl Symbol {
     }
 }
 
-pub use interner::{interned_symbol_count, reset_session};
+pub use interner::{InternedBytes, interned_symbol_count, reset_session};
 
 impl fmt::Debug for Symbol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

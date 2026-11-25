@@ -1,0 +1,8 @@
+error: Duplicate Symbol State
+ -> language_tests/source_files/invalid/duplicate_nominal_location.tr:2:7
+	struct State(int32)
+	       ^^^^^
+info: 'State' is defined here.
+ -> language_tests/source_files/invalid/duplicate_nominal_location.tr:1:5
+	enum State { case ready }
+	     ^^^^^

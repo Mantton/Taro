@@ -1,0 +1,27 @@
+interface Codec[R] {
+    var raw: R { get }
+    func read() -> R
+    static func from(_ value: R) -> Self
+}
+struct Byte { value: uint8 }
+conform Byte to Codec[uint8] {
+    var raw: uint8 { get { self.value } }
+    func read() -> uint8 { self.value }
+    static func from(_ value: uint8) -> Self { Self { value: value } }
+}
+interface ByteCodec: Codec[uint8] {}
+conform Byte to ByteCodec {}
+func throughInherited[T: ByteCodec](_ v: T) -> T { T::from(v.raw) }
+func throughProperty[T: Codec[uint8]](_ value: T) -> T { T::from(value.raw) }
+func throughMethod[T: Codec[uint8]](_ value: T) -> T { T::from(value.read()) }
+func throughCapture[T: Codec[uint8]](_ value: T) -> T { T::from((value.read)()) }
+func erased(_ value: any Codec[uint8]) -> uint8 { value.raw }
+func throughLocal[T: Codec[uint8]](_ value: T) -> T {
+    raw := value.raw
+    T::from(raw)
+}
+func main() {
+    value := Byte { value: 241 }
+    println("${throughProperty(value).raw} ${throughMethod(value).raw} ${throughLocal(value).raw} ${throughInherited(value).raw}")
+    println("${throughCapture(value).raw} ${erased(value)}")
+}

@@ -1,0 +1,10 @@
+enum Left[T] { case first }
+enum Right { case first }
+const WRONG_ENUM: Left[int32] = Right::first
+const WRONG_WIDTH: Left[int32] = Left[uint8]::first
+interface Broken {
+    const COUNT: int32 = true
+    const WRONG_DEFAULT: Left[Self] = Right::first
+}
+const IMPLICIT_WRAP: Right? = Right::first
+func main() {}

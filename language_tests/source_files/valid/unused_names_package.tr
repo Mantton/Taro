@@ -1,0 +1,12 @@
+// PACKAGE: unused_names
+// RUN_TWICE
+// Only the app's own unused names and joined lines warn. An import that only
+// makes an interface's methods callable is used. The second run reuses both
+// packages and repeats only the app's warnings.
+// EXPECT_STDERR_COUNT: 2 warning: unused
+// EXPECT_STDERR_CONTAINS: unused import 'Unused'
+// EXPECT_STDERR_CONTAINS: app/src/main.tr:2:22
+// EXPECT_STDERR_CONTAINS: unused variable 'extra'
+// EXPECT_STDERR_CONTAINS: app/src/main.tr:7:4
+// EXPECT_STDERR_NOT_CONTAINS: dep/src/lib.tr
+// EXPECT_STDERR_NOT_CONTAINS: continues the expression

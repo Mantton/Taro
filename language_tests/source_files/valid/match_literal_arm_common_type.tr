@@ -1,0 +1,88 @@
+// A `match` used as an expression gives its arms one common type, as the
+// branches of `if`/`else` do: an untyped literal arm takes the type of the
+// other arms instead of its own default, wherever it appears.
+func pick(_ k: int32) -> usize {
+    var n: usize = 3
+
+    // A literal arm after a typed arm.
+    a := match k {
+        case 1 => n
+        case _ => 0
+    }
+
+    // A literal arm before a typed arm.
+    b := match k {
+        case 1 => 0
+        case _ => n
+    }
+
+    // More than two arms, one of them a block with its own literal local.
+    c := match k {
+        case 1 => 10
+        case 2 => n
+        case 3 => {
+            extra := 30
+            extra
+        }
+        case _ => 40
+    }
+
+    // An annotation supplies the type.
+    var d: usize = match k {
+        case 1 => 1
+        case _ => 2
+    }
+
+    // A nested match whose typed arm is inside the inner match.
+    e := match k {
+        case 1 => 5
+        case _ => match k {
+            case 2 => 6
+            case _ => n
+        }
+    }
+
+    // A guard, and a literal arm in the same arm list as the guarded one.
+    f := match k {
+        case value if value > 2 => n * 2
+        case _ => 7
+    }
+
+    // Compared with the equivalent `if`/`else`.
+    g := if k == 1 { 0 } else { n }
+    a + b + c + d + e + f + g
+}
+
+func main() {
+    var x: double = 1.5
+    var o: usize? = 4
+    for k in [1 as int32, 2, 3] {
+        // A float literal against a double arm.
+        f := match k {
+            case 1 => 2.5
+            case _ => x
+        }
+
+        // nil against an Optional arm, in either order.
+        g := match k {
+            case 1 => nil
+            case _ => o
+        }
+        h := match k {
+            case 1 => o
+            case _ => nil
+        }
+
+        // Literal-only arms keep their default.
+        i := match k {
+            case 1 => 1
+            case _ => 2
+        }
+        var big: int64 = 5000000000
+        j := match k {
+            case 1 => big
+            case _ => 3000000000
+        }
+        println("${pick(k)} ${f} ${g ?? 0} ${h ?? 0} ${i} ${j}")
+    }
+}

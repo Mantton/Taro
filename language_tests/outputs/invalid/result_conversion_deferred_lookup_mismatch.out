@@ -1,0 +1,8 @@
+error: expected bool, found usize
+ -> language_tests/source_files/invalid/result_conversion_deferred_lookup_mismatch.tr:6:42
+	func inferred() -> Result[bool, string] { Box { value: 0 }.count() }
+	                                          ^^^^^^^^^^^^^^^^^^^^^^^^
+error: expected bool, found usize
+ -> language_tests/source_files/invalid/result_conversion_deferred_lookup_mismatch.tr:7:43
+	func annotated() -> Result[bool, string] { Box[int32] { value: 0 }.count() }
+	                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

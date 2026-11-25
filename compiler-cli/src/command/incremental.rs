@@ -33,6 +33,24 @@ pub fn compute_package_fingerprint_input_with_test_selection(
         config,
         known_fingerprints,
         test_selection,
+        None,
+        &runtime_abi_fingerprint,
+    )
+}
+
+pub fn compute_package_fingerprint_input_with_fuzz_target(
+    ctx: &CompilerContext<'_>,
+    config: &Config,
+    known_fingerprints: &FxHashMap<String, String>,
+    fuzz_target: &str,
+) -> Result<PackageFingerprintInput, String> {
+    let runtime_abi_fingerprint = compiler::runtime_abi::fingerprint();
+    compute_package_fingerprint_input_with_runtime_abi(
+        ctx,
+        config,
+        known_fingerprints,
+        None,
+        Some(fuzz_target),
         &runtime_abi_fingerprint,
     )
 }
@@ -42,6 +60,7 @@ fn compute_package_fingerprint_input_with_runtime_abi(
     config: &Config,
     known_fingerprints: &FxHashMap<String, String>,
     test_selection: Option<&TestSelection>,
+    fuzz_target: Option<&str>,
     runtime_abi_fingerprint: &str,
 ) -> Result<PackageFingerprintInput, String> {
     let mut dependency_ids: Vec<String> = config
@@ -99,6 +118,7 @@ fn compute_package_fingerprint_input_with_runtime_abi(
     hash_optimization_mode(config.codegen.optimization, &mut hasher);
     hasher.update(&[module_artifact_kind_tag(config.codegen.artifact)]);
     hasher.update(&[lto_mode_tag(config.codegen.lto)]);
+    hasher.update(&[config.codegen.coverage as u8]);
     hasher.update(&[
         config.overflow_checks as u8,
         config.no_std_prelude as u8,
@@ -112,6 +132,12 @@ fn compute_package_fingerprint_input_with_runtime_abi(
     hasher.update(&[package_kind_tag(config.kind), std_mode_tag(config.std_mode)]);
 
     hash_test_selection(config, test_selection, &mut hasher)?;
+    if let Some(target) = fuzz_target {
+        let normalized = target.trim().replace("::", ".").to_ascii_lowercase();
+        hasher.update(b"fuzz:");
+        hasher.update(normalized.as_bytes());
+        hasher.update(&[0]);
+    }
 
     // `executable_out` and linker/runtime inputs are intentionally absent: they do not change
     // the compiled module artifact, and linked root cache hits always relink
@@ -205,6 +231,7 @@ fn harness_mode_tag(mode: HarnessMode) -> u8 {
         HarnessMode::None => 0,
         HarnessMode::Test => 1,
         HarnessMode::Bench => 2,
+        HarnessMode::Fuzz => 3,
     }
 }
 
@@ -402,6 +429,7 @@ mod tests {
             harness_mode: HarnessMode::None,
             std_mode: StdMode::BootstrapStd,
             is_std_provider: true,
+            lint_warnings: false,
         }
     }
 
@@ -448,6 +476,7 @@ mod tests {
                 &config,
                 &known,
                 None,
+                None,
                 "runtime-abi-a",
             )
             .unwrap()
@@ -456,6 +485,7 @@ mod tests {
                 context,
                 &config,
                 &known,
+                None,
                 None,
                 "runtime-abi-b",
             )
@@ -645,6 +675,24 @@ mod tests {
                 .unwrap()
                 .package_fingerprint;
             assert_ne!(before, after);
+        });
+    }
+
+    #[test]
+    fn coverage_mode_changes_compilation_fingerprint() {
+        with_context(|context, source| {
+            let normal = base_config(source.clone());
+            let mut covered = base_config(source);
+            covered.codegen.coverage = true;
+            let known = FxHashMap::default();
+
+            let normal_fp = compute_package_fingerprint_input(context, &normal, &known)
+                .unwrap()
+                .package_fingerprint;
+            let covered_fp = compute_package_fingerprint_input(context, &covered, &known)
+                .unwrap()
+                .package_fingerprint;
+            assert_ne!(normal_fp, covered_fp);
         });
     }
 }

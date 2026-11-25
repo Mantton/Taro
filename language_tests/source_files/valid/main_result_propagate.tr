@@ -1,0 +1,38 @@
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_CONTAINS: error: invalid digit 'x' at offset 2
+// EXPECT_STDERR_COUNT: 1 error:
+// Postfix `!` in `main` propagates a helper's concrete error into the
+// existential error type of `main`, boxing it as any other function would.
+struct ParseError {
+    digit: rune
+    offset: int32
+}
+
+conform ParseError to std::fmt::Display {
+    func display(_ into: &std::fmt::Formatter) {
+        into.writeString("invalid digit '${self.digit}' at offset ${self.offset}")
+    }
+}
+
+conform ParseError to std::error::Error {}
+
+func parseDigits(_ text: string) -> Result[int32, ParseError] {
+    var value: int32 = 0
+    var offset: int32 = 0
+    for character in text.characters() {
+        if character < '0' || character > '9' {
+            return .err(ParseError { digit: character, offset })
+        }
+        value = value * 10 + (character as int32 - '0' as int32)
+        offset += 1
+    }
+    return .ok(value)
+}
+
+func main() -> Result[(), any std::error::Error] {
+    first := parseDigits("42")!
+    print("first ${first}\n")
+    second := parseDigits("12x4")!
+    print("unreachable ${second}\n")
+    return .ok(())
+}

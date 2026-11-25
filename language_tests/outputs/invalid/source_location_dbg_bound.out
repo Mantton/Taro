@@ -1,0 +1,4 @@
+error: type 'Opaque' does not conform to interface 'Debug'
+ -> language_tests/source_files/invalid/source_location_dbg_bound.tr:2:14
+	func main() { dbg(Opaque {}) }
+	              ^^^

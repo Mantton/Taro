@@ -1,0 +1,11 @@
+enum Event[T] { case value(T); case empty; }
+func apply[T, R, F: Fn[T, R]](_ value: T, _ action: F) -> R { action(value) }
+func main() {
+    var event: Event[int64] = .value(5000000000_i64)
+    wide := apply(event, item => (match item { case .value(n) => n + 1; case .empty => 0; }))
+    assert(wide == 5000000001_i64, "wide payload")
+    var nested: Event[Event[int64]] = .value(event)
+    got := apply(&nested, item => (match item { case .value(.value(n)) => n; case _ => 0; }))
+    assert(got == 5000000000_i64, "nested and referenced")
+    println("wide")
+}

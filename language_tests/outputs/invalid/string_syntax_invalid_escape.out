@@ -1,0 +1,4 @@
+error: lexer error: malformed string, InvalidEscape
+ -> language_tests/source_files/invalid/string_syntax_invalid_escape.tr:1:23
+	func main() { var _ = "\z" }
+	                       ^^^

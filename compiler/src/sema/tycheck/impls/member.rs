@@ -102,6 +102,12 @@ impl<'ctx> Actor<'ctx> {
                     .inputs
                     .first()
                     .is_some_and(|param| self.context.symbol_eq(param.name.symbol, "self"));
+                if !has_self
+                    && interface_id.is_none()
+                    && self.conflicts_with_constant(head, impl_id, decl, false)
+                {
+                    return;
+                }
                 self.collect_function(
                     head,
                     impl_id,
@@ -121,8 +127,48 @@ impl<'ctx> Actor<'ctx> {
                     interface_id,
                 );
             }
+            hir::AssociatedDeclarationKind::Constant(_) if interface_id.is_none() => {
+                self.conflicts_with_constant(head, impl_id, decl, true);
+            }
             _ => {}
         }
+    }
+
+    fn conflicts_with_constant(
+        &self,
+        head: crate::sema::resolve::models::TypeHead,
+        impl_id: DefinitionID,
+        decl: &hir::AssociatedDeclaration,
+        constant: bool,
+    ) -> bool {
+        let candidates = self.context.with_session_type_database(|db| {
+            db.type_head_to_members
+                .get(&head)?
+                .inherent_constants
+                .get(&decl.identifier.symbol)
+                .cloned()
+        });
+        let Some(candidates) = candidates else {
+            return false;
+        };
+        let target = super::super::overloads::declaration_target(self.context, impl_id);
+        let Some(other) = candidates.into_iter().find(|id| {
+            (!constant || *id < decl.id)
+                && self.context.definition_parent(*id).and_then(|parent| {
+                    super::super::overloads::declaration_target(self.context, parent)
+                }) == target
+        }) else {
+            return false;
+        };
+        self.context.dcx().emit_error(
+            format!("invalid redeclaration of '{}'", decl.identifier.symbol),
+            Some(decl.identifier.span),
+        );
+        self.context.dcx().emit_info(
+            "associated constant declared here".into(),
+            Some(self.context.definition_ident(other).span),
+        );
+        true
     }
 
     fn collect_function(

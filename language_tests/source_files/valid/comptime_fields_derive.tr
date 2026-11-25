@@ -1,0 +1,207 @@
+import std::encoding::Codable
+import std::fmt::debugString
+import std::json
+
+struct Pair[A, B]: Debug, Codable, PartialEq {
+    first: A
+    second: B
+}
+
+struct User: Debug, Codable, PartialEq {
+    @key("user_id")
+    id: int32
+    @key("display_name")
+    name: string
+    @skip
+    transientToken: string = "local-only"
+}
+
+struct MixedVisibility {
+    public pubField: int32
+    internal internalField: string
+    private privField: bool
+}
+
+extend MixedVisibility {
+    static func make(_ pubField: int32, _ internalField: string, _ privField: bool) -> MixedVisibility {
+        MixedVisibility { pubField, internalField, privField }
+    }
+
+    func inspectInsideType() -> string {
+        var out = ""
+        #for field in #fields(MixedVisibility) {
+            #if field.index > 0 {
+                out = out + "|"
+            }
+            out = out + field.name + "=" + debugString(field.get(self))
+        }
+        return out
+    }
+}
+
+public struct SecretRecord {
+    public title: string
+    @key("public_count")
+    public count: int32
+    private pin: int32
+}
+
+extend SecretRecord {
+    public static func make(_ title: string, _ count: int32, _ pin: int32) -> SecretRecord {
+        SecretRecord { title, count, pin }
+    }
+}
+
+func derivePairDebug[A: Debug, B: Debug](_ value: Pair[A, B]) -> string {
+    var out = #typeName(Pair[A, B]) + " { "
+    #for field in #fields(Pair[A, B]) {
+        #if field.index > 0 {
+            out = out + ", "
+        }
+        out = out + field.name + ": " + debugString(field.get(value))
+    }
+    out = out + " }"
+    return out
+}
+
+func deriveUserDebug(_ value: User) -> string {
+    var out = #typeName(User) + " { "
+    #for field in #fields(User) {
+        #if field.index > 0 {
+            out = out + ", "
+        }
+        out = out + field.name + ": " + debugString(field.get(value))
+    }
+    out = out + " }"
+    return out
+}
+
+func deriveUserJson(_ value: User) -> string {
+    var out = "{"
+    var firstWritten = true
+    #for field in #fields(User) {
+        #if !field.skipped {
+            if !firstWritten {
+                out = out + ","
+            }
+            firstWritten = false
+            fval := field.get(value)
+            encodedVal := match json::encode(&fval) {
+                case .ok(s) => s
+                case .err(_) => "null"
+            }
+            out = out + "\"" + field.key + "\":" + encodedVal
+        }
+    }
+    out = out + "}"
+    return out
+}
+
+func testGenericInstantiationsMatchDerivedDebug() {
+    p1 := Pair[int32, string] { first: 42, second: "taro" }
+    p2 := Pair[bool, int32] { first: true, second: -7 }
+
+    // Generic library derivation instantiated at two distinct type argument pairs.
+    d1 := derivePairDebug(p1)
+    d2 := derivePairDebug(p2)
+    assert(d1 == debugString(p1))
+    assert(d2 == debugString(p2))
+
+    // Concrete #fields(Pair[int32, string]) and #fields(Pair[bool, int32]) expansions.
+    var concrete1 = #typeName(Pair[int32, string]) + " { "
+    #for field in #fields(Pair[int32, string]) {
+        #if field.index > 0 {
+            concrete1 = concrete1 + ", "
+        }
+        concrete1 = concrete1 + field.name + ": " + debugString(field.get(p1))
+    }
+    concrete1 = concrete1 + " }"
+    assert(concrete1 == debugString(p1))
+
+    var concrete2 = #typeName(Pair[bool, int32]) + " { "
+    #for field in #fields(Pair[bool, int32]) {
+        #if field.index > 0 {
+            concrete2 = concrete2 + ", "
+        }
+        concrete2 = concrete2 + field.name + ": " + debugString(field.get(p2))
+    }
+    concrete2 = concrete2 + " }"
+    assert(concrete2 == debugString(p2))
+}
+
+func testFieldMetadataMatchesDerivedDebugAndCodable() {
+    u := User {
+        id: 101,
+        name: "Ada",
+        transientToken: "ephemeral-token",
+    }
+
+    // Compare library-derived Debug with built-in derived Debug.
+    libDebug := deriveUserDebug(u)
+    stdDebug := debugString(u)
+    assert(libDebug == stdDebug)
+
+    // Compare library-derived JSON (respecting @key and @skip) with built-in derived Codable.
+    libJson := deriveUserJson(u)
+    stdJson := match json::encode(&u) {
+        case .ok(s) => s
+        case .err(_) => ""
+    }
+    assert(libJson == stdJson)
+}
+
+func testVisibilityMetadataAndGuardedPrivateFields() {
+    m := MixedVisibility::make(10, "hello", true)
+    // Inside `extend MixedVisibility`, all 3 fields (public, internal, private) are visible.
+    assert(m.inspectInsideType() == "pubField=10|internalField=\"hello\"|privField=true")
+
+    // Outside `extend MixedVisibility`, `pubField` and `internalField` are visible, while `privField` is not.
+    var pubCount: int32 = 0
+    var visCount: int32 = 0
+    var pieces = ""
+    #for field in #fields(MixedVisibility) {
+        #if field.isPublic {
+            pubCount += 1
+        }
+        #if field.isVisible {
+            visCount += 1
+            if pieces != "" {
+                pieces = pieces + "|"
+            }
+            pieces = pieces + field.name + "=" + debugString(field.get(m))
+        }
+    }
+    assert(pubCount == 1)
+    assert(visCount == 2)
+    assert(pieces == "pubField=10|internalField=\"hello\"")
+
+    // Struct with a private field: metadata is visible, value access is guarded by `#if field.isVisible`.
+    rec := SecretRecord::make("classified", 5, 9999)
+    var totalFields: int32 = 0
+    var visibleFields: int32 = 0
+    var hiddenFieldNames = ""
+    var visibleSummary = ""
+    #for field in #fields(SecretRecord) {
+        totalFields += 1
+        #if field.isVisible {
+            visibleFields += 1
+            if visibleSummary != "" {
+                visibleSummary = visibleSummary + ","
+            }
+            visibleSummary = visibleSummary + field.key + ":" + debugString(field.get(rec))
+        } else {
+            hiddenFieldNames = hiddenFieldNames + field.name
+        }
+    }
+    assert(totalFields == 3)
+    assert(visibleFields == 2)
+    assert(hiddenFieldNames == "pin")
+    assert(visibleSummary == "title:\"classified\",public_count:5")
+}
+
+func main() {
+    testGenericInstantiationsMatchDerivedDebug()
+    testFieldMetadataMatchesDerivedDebugAndCodable()
+    testVisibilityMetadataAndGuardedPrivateFields()
+    print("COMPTIME_FIELDS_DERIVE_OK\n")
+}

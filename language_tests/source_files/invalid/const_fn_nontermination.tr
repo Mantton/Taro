@@ -1,0 +1,11 @@
+const func forever() -> int32 {
+    var x: int32 = 0
+    loop {
+        x = x ^ 1
+    }
+    return x
+}
+
+const VALUE: int32 = forever()
+
+func main() {}

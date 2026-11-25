@@ -1,0 +1,12 @@
+func sliceDemo(_ xs: List[int32]) -> List[int32] {
+    a := xs[1..]
+    b := xs[..3]
+    c := xs[..=2]
+    d := xs[..]
+    if 10 in 5.. && 3 in ..10 && 3 in ..=3 && 0 in .. {
+        for i in 0.. {
+            if i == 2 { break }
+        }
+    }
+    a
+}

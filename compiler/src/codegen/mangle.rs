@@ -92,6 +92,9 @@ pub(crate) fn const_key<'gcx>(gcx: GlobalContext<'gcx>, c: Const<'gcx>) -> Strin
         ConstKind::Value(ConstValue::Integer(i)) => format!("value:int:{i}"),
         ConstKind::Value(ConstValue::Bool(b)) => format!("value:bool:{b}"),
         ConstKind::Value(ConstValue::Rune(ch)) => format!("value:rune:{}", ch as u32),
+        ConstKind::Value(ConstValue::Bytes(bytes)) => {
+            bytes.with_bytes(|v| format!("value:bytes:{}", blake3::hash(v)))
+        }
         ConstKind::Value(ConstValue::String(sym)) => {
             let text = gcx.symbol_text(sym);
             format!("value:string:{}", text_key(text.as_ref()))
@@ -100,6 +103,9 @@ pub(crate) fn const_key<'gcx>(gcx: GlobalContext<'gcx>, c: Const<'gcx>) -> Strin
         ConstKind::Value(ConstValue::Unit) => "value:unit".into(),
         ConstKind::Value(ConstValue::EnumUnitVariant(def_id)) => {
             format!("value:enum-unit:{}", definition_key(def_id))
+        }
+        ConstKind::Value(ConstValue::Array(arr)) => {
+            format!("value:array:{:?}", arr)
         }
         ConstKind::Param(param) => format!("param:{}", generic_parameter_key(gcx, param)),
         ConstKind::Infer(_) => panic!("ICE: unresolved inferred const reached codegen mangling"),
@@ -113,6 +119,8 @@ fn const_readable_prefix<'gcx>(gcx: GlobalContext<'gcx>, c: Const<'gcx>) -> Stri
         ConstKind::Value(ConstValue::Bool(true)) => "b1".into(),
         ConstKind::Value(ConstValue::Bool(false)) => "b0".into(),
         ConstKind::Value(ConstValue::Rune(ch)) => format!("r{}", ch as u32),
+        ConstKind::Value(ConstValue::Bytes(bytes)) => format!("bytes{}", bytes.len()),
+        ConstKind::Value(ConstValue::Array(arr)) => format!("arr{}", arr.len()),
         ConstKind::Value(ConstValue::String(sym)) => {
             let text = gcx.symbol_text(sym);
             format!("s{}", sanitize(text.as_ref()))

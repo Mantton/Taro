@@ -1,0 +1,4 @@
+error: cannot call non-const function 'runtimeOnly' during constant evaluation
+ -> language_tests/source_files/invalid/const_fn_runtime_call.tr:6:11
+	    return runtimeOnly(x)
+	           ^^^^^^^^^^^^^^

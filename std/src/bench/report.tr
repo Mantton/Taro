@@ -1,0 +1,227 @@
+import std::collections::List
+import std::encoding::{Encodable, Encoder}
+import std::fs::OpenOptions
+import std::mem::Span
+import std::result::Result
+import std::string::{stringData, stringFromParts}
+
+extern "taro_rt" {
+    unsafe func __rt__bench_release_samples(_ samples: *mut double, _ count: usize)
+}
+
+// Keep this layout in sync with runtime/src/benchmark.rs, which asserts the
+// size and field offsets of this C layout at compile time. Codegen allocates
+// the slot from the type of reportBenchmarkCase's measurement parameter.
+@repr("C")
+struct BenchmarkMeasurement {
+    iterations: uint64
+    bytesPerIteration: usize
+    samples: *mut double
+    sampleCount: usize
+    hasBytes: bool
+}
+
+// Keep in sync with the runtime's CaseOutcome. Only measured and failed runs
+// initialize the measurement slot.
+const OUTCOME_IGNORE: uint8 = 0
+const OUTCOME_LISTED: uint8 = 1
+const OUTCOME_SKIPPED: uint8 = 2
+const OUTCOME_MEASURED: uint8 = 3
+const OUTCOME_PANICKED: uint8 = 4
+const OUTCOME_MISSING_NEXT: uint8 = 5
+const OUTCOME_INCOMPLETE: uint8 = 6
+const OUTCOME_HARNESS_ERROR: uint8 = 7
+
+struct BenchmarkSummary {
+    median: double
+    p95: double
+    mad: double
+}
+
+func benchmarkMedian(_ sorted: List[double]) -> double {
+    middle := sorted.len() / 2
+    if sorted.len() % 2 != 0 { return *sorted.at(middle) }
+    return (*sorted.at(middle - 1) + *sorted.at(middle)) / 2.0
+}
+
+// The measurement engine supplies at least one sample on success. Samples
+// are finite and nonnegative, so `<` is a strict weak ordering for them.
+// sorted(by:) leaves the original measurement order intact.
+func summarizeBenchmarkSamples(_ samples: List[double]) -> BenchmarkSummary {
+    sorted := samples.sorted(by: (a, b) => a < b)
+    median := benchmarkMedian(sorted)
+    // Nearest rank is ceil(0.95 * n), with the index zero-based.
+    p95 := *sorted.at((95 * sorted.len() + 99) / 100 - 1)
+    var index: usize = 0
+    while index < sorted.len() {
+        deviation := *sorted.at(index) - median
+        sorted.set(index, deviation.abs())
+        index += 1
+    }
+    sorted.sort(by: (a, b) => a < b)
+    return BenchmarkSummary { median, p95, mad: benchmarkMedian(sorted) }
+}
+
+struct BenchmarkRecord {
+    name: string
+    tags: List[string]
+    skipped: bool
+    skipReason: string?
+    status: string?
+    error: string?
+    iterations: uint64?
+    bytesPerIteration: usize?
+    samples: List[double]?
+    summary: BenchmarkSummary?
+}
+
+func encodeBenchmarkField[T: Encodable, E: Encoder](
+    _ encoder: E, _ name: string, _ value: T,
+) -> Result[(), E::Error] {
+    encoder.beginField(name)!
+    std::encoding::encode[T, E](&value, into: encoder)
+}
+
+conform BenchmarkRecord to Encodable {
+    public func encode[E: Encoder](into encoder: E) -> Result[(), E::Error] {
+        encoder.beginObject(.none)!
+        encodeBenchmarkField(encoder, "protocol_version", 1_u32)!
+        kind := if self.status.isSome() { "result" } else { "case" }
+        encodeBenchmarkField(encoder, "kind", kind)!
+        encodeBenchmarkField(encoder, "name", self.name)!
+        encodeBenchmarkField(encoder, "tags", self.tags)!
+        encodeBenchmarkField(encoder, "skipped", self.skipped)!
+        encodeBenchmarkField(encoder, "skip_reason", self.skipReason)!
+        match self.status {
+            case .some(value) => encodeBenchmarkField(encoder, "status", value)!
+            case .none => {}
+        }
+        match self.error {
+            case .some(value) => encodeBenchmarkField(encoder, "error", value)!
+            case .none => {}
+        }
+        match self.iterations {
+            case .some(value) => encodeBenchmarkField(encoder, "iterations_per_sample", value)!
+            case .none => {}
+        }
+        match self.samples {
+            case .some(value) => encodeBenchmarkField(encoder, "samples_ns_per_op", value)!
+            case .none => {}
+        }
+        match self.summary {
+            case .some(summary) => {
+                encodeBenchmarkField(encoder, "median_ns_per_op", summary.median)!
+                encodeBenchmarkField(encoder, "p95_ns_per_op", summary.p95)!
+                encodeBenchmarkField(encoder, "mad_ns_per_op", summary.mad)!
+            }
+            case .none => {}
+        }
+        match self.bytesPerIteration {
+            case .some(value) => encodeBenchmarkField(encoder, "bytes_per_iteration", value)!
+            case .none => {}
+        }
+        return encoder.endObject()
+    }
+}
+
+func copyBenchmarkSamples(_ measurement: BenchmarkMeasurement) -> List[double] {
+    defer { unsafe { __rt__bench_release_samples(measurement.samples, measurement.sampleCount) } }
+    source := unsafe { Span[double]::from(measurement.samples, measurement.sampleCount) }
+    var samples = List[double]::new(withCapacity: source.len())
+    var index: usize = 0
+    while index < source.len() {
+        samples.append(*source.at(index))
+        index += 1
+    }
+    return samples
+}
+
+func benchmarkReportError(_ message: string) -> uint8 {
+    text := std::sprintf("benchmark harness error: %s\n", message)
+    var _ = std::io::writeStderr(stringData(text), text.byteLen())
+    return 1
+}
+
+func writeBenchmarkRecord(_ record: &BenchmarkRecord) -> Result[(), string] {
+    path := match std::env::get("TARO_BENCH_PROTOCOL_PATH") {
+        case .ok(.some(path)) => path
+        case .ok(.none) => return .err("missing TARO_BENCH_PROTOCOL_PATH; run this executable through `taro bench`")
+        case .err(error) => return .err(std::sprintf("could not read TARO_BENCH_PROTOCOL_PATH: %v", error))
+    }
+    var options = OpenOptions::new()
+    file := match options.write(true).append(true).create(true).open(path) {
+        case .ok(file) => file
+        case .err(error) => return .err(std::sprintf("could not open benchmark protocol file: %v", error))
+    }
+    var encoder = std::json::Encoder::new(file)
+    written := encoder.encodeLine(record)
+    closed := file.close()
+    match written {
+        case .ok(_) => {}
+        case .err(error) => return .err(std::sprintf("could not write benchmark result: %v", error))
+    }
+    match closed {
+        case .ok(_) => return .ok(())
+        case .err(error) => return .err(std::sprintf("could not close benchmark protocol file: %v", error))
+    }
+}
+
+@lang("BenchmarkReport")
+internal func reportBenchmarkCase(
+    _ outcome: uint8, _ measurement: *const BenchmarkMeasurement,
+    _ nameData: *const uint8, _ nameLength: usize, _ tagsData: *const uint8, _ tagsLength: usize,
+    _ skipped: bool, _ reasonData: *const uint8, _ reasonLength: usize,
+) -> uint8 {
+    if outcome == OUTCOME_IGNORE { return 0 }
+    if outcome == OUTCOME_HARNESS_ERROR { return 1 }
+    if outcome > OUTCOME_INCOMPLETE { return benchmarkReportError("invalid benchmark outcome") }
+
+    // Codegen supplies immutable UTF-8 constants with process lifetime.
+    name := unsafe { stringFromParts(nameData, nameLength) }
+    var tags = List[string]::new()
+    if tagsLength != 0 {
+        encodedTags := unsafe { stringFromParts(tagsData, tagsLength) }
+        for tag in encodedTags.split("\0") {
+            if !tag.isEmpty() { tags.append(tag) }
+        }
+    }
+    var skipReason: string? = .none
+    if reasonLength != 0 {
+        skipReason = .some(unsafe { stringFromParts(reasonData, reasonLength) })
+    }
+
+    var record = BenchmarkRecord {
+        name, tags, skipped, skipReason,
+        status: .none, error: .none, iterations: .none,
+        bytesPerIteration: .none, samples: .none, summary: .none,
+    }
+    var failed: uint8 = 0
+    if outcome == OUTCOME_SKIPPED {
+        record.status = .some("skipped")
+        failed = 1
+    } else if outcome != OUTCOME_LISTED {
+        data := unsafe { measurement.read() }
+        record.iterations = .some(data.iterations)
+        if data.hasBytes { record.bytesPerIteration = .some(data.bytesPerIteration) }
+        if outcome == OUTCOME_MEASURED {
+            samples := copyBenchmarkSamples(data)
+            record.status = .some("ok")
+            record.samples = .some(samples)
+            record.summary = .some(summarizeBenchmarkSamples(samples))
+        } else {
+            failed = 1
+            record.status = .some("failed")
+            if outcome == OUTCOME_PANICKED {
+                record.error = .some("benchmark panicked")
+            } else if outcome == OUTCOME_MISSING_NEXT {
+                record.error = .some("benchmark returned without calling benchmark.next()")
+            } else {
+                record.error = .some("benchmark stopped before measurement completed")
+            }
+        }
+    }
+    match writeBenchmarkRecord(&record) {
+        case .ok(_) => return failed
+        case .err(error) => return benchmarkReportError(error)
+    }
+}

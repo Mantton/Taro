@@ -212,6 +212,9 @@ impl<'ctx> MirPass<'ctx> for CopyPropagation {
                             remap_place(resume_arg);
                         }
                     }
+                    TerminatorKind::GeneratorYield { value, .. } => {
+                        remap_operand(value);
+                    }
                     _ => {}
                 }
             }
@@ -329,6 +332,9 @@ fn record_terminator_uses(
             if !resume_arg.projection.is_empty() {
                 record_place_use(resume_arg, block, stmt_index, uses);
             }
+        }
+        TerminatorKind::GeneratorYield { value, .. } => {
+            record_operand_use(value, block, stmt_index, uses);
         }
         _ => {}
     }

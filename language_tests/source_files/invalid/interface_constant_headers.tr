@@ -1,0 +1,10 @@
+interface Left { const WIDTH: usize = 3; }
+interface Right { const WIDTH: usize = 5; }
+interface Internal { private const HIDDEN: usize = 7; }
+struct Both: Left, Right, Internal {}
+
+// A declaration header uses the same applicability and visibility rules as a
+// value expression. Each failing alias is checked even when it is unused.
+type Ambiguous = [uint8; Both::WIDTH]
+type Invisible = [uint8; Both::HIDDEN]
+func main() {}

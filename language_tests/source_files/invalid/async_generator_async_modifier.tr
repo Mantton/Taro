@@ -1,0 +1,5 @@
+func bad() async -> some AsyncIterator[Element = int32] {
+    yield 1
+}
+
+func main() {}

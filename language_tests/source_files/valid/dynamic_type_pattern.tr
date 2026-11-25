@@ -1,0 +1,35 @@
+interface Shape { func size() -> int32; }
+struct Circle { radius: int32 }
+struct Rectangle { width: int32; height: int32 }
+struct Point {}
+conform Circle to Shape { func size() -> int32 { self.radius }; }
+conform Rectangle to Shape { func size() -> int32 { self.width * self.height }; }
+conform Point to Shape { func size() -> int32 { 0 }; }
+class Base { value: int32 }
+extend Base { public required init(_ value: int32) { self.value = value }; }
+class Child: Base { stamp: int32 = 9 }
+func next(_ count: &int32, _ value: any Shape) -> any Shape { *count += 1; return value }
+func area(_ calls: &int32, _ shape: any Shape) -> int32 {
+    match next(calls, shape) {
+        case circle as Circle if circle.radius > 0 => circle.radius * circle.radius
+        case is Circle => -1
+        case rect as Rectangle => rect.width * rect.height
+        case is Point => 0
+        case _ => shape.size()
+    }
+}
+func classify(_ base: Base) -> int32 {
+    match base {
+        case child as Child => child.stamp + child.value
+        case _ => base.value
+    }
+}
+func main() {
+    var calls: int32 = 0
+    assert(area(&calls, Circle { radius: 3 }) == 9, "concrete binding")
+    assert(area(&calls, Circle { radius: 0 }) == -1, "guard failure and repeated type")
+    assert(area(&calls, Rectangle { width: 3, height: 4 }) == 12, "second concrete type")
+    assert(area(&calls, Point {}) == 0 && calls == 4, "unbound type and one evaluation")
+    assert(classify(Child(3)) == 12 && classify(Base(2)) == 2, "class downcast")
+    println("type dispatch")
+}

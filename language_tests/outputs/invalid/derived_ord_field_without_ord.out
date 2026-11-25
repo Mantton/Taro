@@ -1,0 +1,28 @@
+error: cannot derive 'Ord' for 'Sample': field 'value' has type 'double', which does not conform to 'Ord'
+ -> language_tests/source_files/invalid/derived_ord_field_without_ord.tr:13:38
+	struct Sample: PartialEq, PartialOrd, Ord {
+	                                      ^^^
+error: cannot derive 'Ord' for 'Slot': field 'filled.1' has type 'Point', which does not conform to 'Ord'
+ -> language_tests/source_files/invalid/derived_ord_field_without_ord.tr:7:34
+	enum Slot: PartialEq, PartialOrd, Ord {
+	                                  ^^^
+error: cannot derive 'Ord' for 'Slot': field 'labelled.at' has type 'Point', which does not conform to 'Ord'
+ -> language_tests/source_files/invalid/derived_ord_field_without_ord.tr:7:34
+	enum Slot: PartialEq, PartialOrd, Ord {
+	                                  ^^^
+error: cannot derive 'PartialOrd' for 'Slot': field 'filled.1' has type 'Point', which does not conform to 'PartialOrd'
+ -> language_tests/source_files/invalid/derived_ord_field_without_ord.tr:7:22
+	enum Slot: PartialEq, PartialOrd, Ord {
+	                      ^^^^^^^^^^
+error: cannot derive 'PartialOrd' for 'Slot': field 'labelled.at' has type 'Point', which does not conform to 'PartialOrd'
+ -> language_tests/source_files/invalid/derived_ord_field_without_ord.tr:7:22
+	enum Slot: PartialEq, PartialOrd, Ord {
+	                      ^^^^^^^^^^
+error: cannot derive 'Ord' for 'Ranked': field 'position' has type 'Point', which does not conform to 'Ord'
+ -> language_tests/source_files/invalid/derived_ord_field_without_ord.tr:3:38
+	struct Ranked: PartialEq, PartialOrd, Ord {
+	                                      ^^^
+error: cannot derive 'PartialOrd' for 'Ranked': field 'position' has type 'Point', which does not conform to 'PartialOrd'
+ -> language_tests/source_files/invalid/derived_ord_field_without_ord.tr:3:26
+	struct Ranked: PartialEq, PartialOrd, Ord {
+	                          ^^^^^^^^^^

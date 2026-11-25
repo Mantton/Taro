@@ -1,0 +1,7 @@
+func main() {
+    var bounds = dep::bounds[int64](1, 5000000000)
+    var borrowed = &bounds
+    borrowed.high += 1
+    assert(bounds.1 == 5000000001, "mutable imported generic return")
+    println("imported tuple")
+}

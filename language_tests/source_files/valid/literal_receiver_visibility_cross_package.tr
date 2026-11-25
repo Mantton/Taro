@@ -1,0 +1,6 @@
+// PACKAGE: literal_receiver_visibility
+// CHECK_ONLY
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_CONTAINS: no member named 'size' found on type Boxed[int32]
+// EXPECT_STDERR_CONTAINS: no member named 'weight' found on type Boxed[int32]
+// EXPECT_STDERR_COUNT: 2 error:

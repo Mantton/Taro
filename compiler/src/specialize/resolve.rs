@@ -254,6 +254,13 @@ fn resolve_interface_method_for_concrete<'ctx>(
                     (_, TyKind::Adt(_, adt_args)) => adt_args.to_vec(),
                     _ => Vec::new(),
                 };
+                if matches!(
+                    kind,
+                    crate::sema::models::SyntheticMethodKind::EnumRawValue
+                        | crate::sema::models::SyntheticMethodKind::EnumFromRawValue
+                ) {
+                    final_args.push(*interface_args.get(1)?);
+                }
                 if !matches!(kind, crate::sema::models::SyntheticMethodKind::ClosureCall) {
                     let own_method_args = own_method_call_args(gcx, method_id, call_args);
                     final_args.extend_from_slice(&own_method_args);

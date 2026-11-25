@@ -1,0 +1,15 @@
+// EXPECT_STDERR_COUNT: 1 ("é" + "🙂") = "é🙂"
+// EXPECT_STDERR_CONTAINS: thing = Entry { value: 6 }
+struct Entry: Debug { value: int32 }
+func main() {
+    s := "é"; std::dbg(("é" + "🙂"))
+    var thing = Entry { value: 6 }
+    x := std::dbg(thing)
+    func dbg(_ x: int32) -> int32 { x + 1 }
+    var callback: (int32) -> int32 = std::dbg[int32]
+    assert(callback(21) == 21, "indirect debug function returns its operand")
+    dbgValue := std::dbg((2 +
+        3))
+    assert(dbgValue == 5, "multiline operand")
+    println("${s} ${x.value} ${dbg(8)}")
+}

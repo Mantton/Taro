@@ -1,0 +1,67 @@
+// Checking a closure argument solves the enclosing statement's constraints
+// so far, before the call that takes the closure is a goal. That solve gives
+// defaults only to the closure's own literals. A literal of the enclosing
+// expression keeps waiting and takes the type its own expression gives it,
+// as it does when no closure is involved (`same(1, xs.count())`).
+func same[T](_ a: T, _ b: T) -> T { b }
+
+func wide(_ make: () -> int64) -> int64 { make() }
+
+interface Kind {
+    func kind() -> string
+}
+
+conform int32 to Kind {
+    func kind() -> string { "int32" }
+}
+
+conform int64 to Kind {
+    func kind() -> string { "int64" }
+}
+
+conform usize to Kind {
+    func kind() -> string { "usize" }
+}
+
+func main() {
+    var xs: [int32; 2] = [1, 2]
+    var n: usize = 1
+    var limit: usize = 1
+    flag := true
+
+    // Operators.
+    x := 1 + xs.map((x) => x * 2).count()
+    ok := 2 == xs.map((x) => x * 2).count()
+    y := 10 - xs.map((x) => x * 2).count() * 2
+    small := 1 < xs.map((x) => x * 2).count() && limit < 5
+    n += 1 + xs.map((x) => x * 2).count()
+    println("${x.kind()} ${x} ${ok} ${y.kind()} ${y} ${small} ${n}")
+
+    // A generic call, an array, a branch and a tuple.
+    a := same(1, xs.map((x) => x * 2).count())
+    items := [1, xs.map((x) => x * 2).count()]
+    b := if flag { 1 } else { xs.map((x) => x * 2).count() }
+    pair := (1, xs.map((x) => x * 2).count())
+    println("${a.kind()} ${a} ${items[0].kind()} ${items[0] + items[1]} ${b.kind()} ${b} ${pair.0.kind()}")
+
+    // Unchanged: the closure first, and no closure.
+    c := same(xs.map((x) => x * 2).count(), 1)
+    d := same(1, xs.count())
+    e := [1, xs.count()]
+    f := xs.map((x) => x * 2).count() + 1
+    g := 1 + (0..10).iter().count()
+    println("${c} ${d} ${e[0]} ${f} ${g}")
+
+    // The closure's own literals still take their types here: an expected
+    // signature, a wider expected result, a literal local captured by an
+    // inner closure, and a bare literal result without context.
+    var twice: (int32) -> int32 = (x) => x * 2
+    w := wide(() => 5)
+    outer := () => {
+        var k = 3
+        inner := () => k + 1
+        inner()
+    }
+    bare := () => 7
+    println("${twice(4)} ${w.kind()} ${w} ${outer().kind()} ${outer()} ${bare().kind()}")
+}

@@ -1,0 +1,11 @@
+// Constants cannot hold nil, so `??=` on one reports both its type and its place.
+const LIMIT: int32 = 1
+
+func rename(_ name: string?) {
+    name ??= "fixed"
+}
+
+func main() {
+    LIMIT ??= 2
+    rename(nil)
+}

@@ -1,6 +1,5 @@
 import monkey::compiler::{Compiler, SymbolTable, SymbolScope}
 import monkey::lexer::Lexer
-import monkey::object::Object
 import monkey::parser::Parser
 
 /// Compiles `source` and renders everything it produced.

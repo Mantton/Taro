@@ -1,0 +1,43 @@
+// `Holder::make()` leaves T to its declared default, int32. An overloaded
+// call solved before that default is applied probes its candidates; the
+// probes must leave the default pending for the real solve.
+struct Holder[T = int32] {
+    items: [T]
+}
+
+extend[T] Holder[T] {
+    static func make() -> Holder[T] {
+        Holder[T] { items: [] }
+    }
+}
+
+func echo(_ x: int32) -> usize {
+    32
+}
+
+func echo(_ x: int64) -> usize {
+    64
+}
+
+func width[T](_ h: Holder[T]) -> usize {
+    std::mem::sizeOf[T]()
+}
+
+func main() {
+    k := 1
+    var n: usize = 3
+    a := if k == 1 {
+        h := Holder::make()
+        echo(2_i32) + width(h)
+    } else {
+        n
+    }
+    b := match k {
+        case 1 => {
+            h := Holder::make()
+            echo(2_i32) + width(h)
+        }
+        case _ => n
+    }
+    println("${a} ${b}")
+}

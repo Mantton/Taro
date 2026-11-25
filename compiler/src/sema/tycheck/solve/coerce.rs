@@ -13,6 +13,22 @@ use crate::{
 
 use super::{Adjustment, ConstraintSolver, Goal, Obligation, SolverResult};
 
+/// These conversions need the producer's actual representation: it may
+/// already be boxed, optional or a Result, or it may need wrapping.
+pub(super) fn lookup_dependent_target<'ctx>(
+    gcx: crate::compile::context::Gcx<'ctx>,
+    target: Ty<'ctx>,
+) -> bool {
+    match target.kind() {
+        TyKind::BoxedExistential { .. } => true,
+        TyKind::Adt(def, _) => {
+            Some(def.id) == gcx.std_item_def(crate::hir::StdItem::Optional)
+                || Some(def.id) == gcx.std_item_def(crate::hir::StdItem::Result)
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod nil_pointer_tests {
     #[test]
@@ -131,6 +147,42 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
     }
 
+    /// `target ??= value` stores `value` into an optional target, wrapping a
+    /// plain `T`. Errors name the operator rather than a bare coercion.
+    pub fn solve_assign_optional(
+        &mut self,
+        location: Span,
+        node_id: NodeID,
+        target: Ty<'ctx>,
+        value: Ty<'ctx>,
+    ) -> SolverResult<'ctx> {
+        let target = self.structurally_resolve(target);
+        if target.is_error() || value.is_error() {
+            return SolverResult::Solved(vec![]);
+        }
+        let optional = self.gcx().std_item_def(crate::hir::StdItem::Optional);
+        match target.kind() {
+            TyKind::Infer(InferTy::TyVar(_)) => return SolverResult::Deferred,
+            TyKind::Adt(def, _) if Some(def.id) == optional => {}
+            _ => {
+                return SolverResult::Error(vec![Spanned::new(
+                    TypeError::OptionalAssignmentTarget { target },
+                    location,
+                )]);
+            }
+        }
+        match self.solve_coerce(location, node_id, value, target) {
+            SolverResult::Error(_) => {
+                let value = self.structurally_resolve(value);
+                SolverResult::Error(vec![Spanned::new(
+                    TypeError::OptionalAssignmentValue { target, value },
+                    location,
+                )])
+            }
+            result => result,
+        }
+    }
+
     pub fn solve_coerce(
         &mut self,
         location: Span,
@@ -143,6 +195,25 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         if from == to || matches!(from.kind(), TyKind::Never) {
             return SolverResult::Solved(vec![]);
+        }
+
+        if let TyKind::Infer(InferTy::TyVar(var)) = from.kind()
+            && lookup_dependent_target(self.gcx(), to)
+            && self.awaits_lookup(var)
+        {
+            self.lookups_have_waiters = true;
+            return SolverResult::Deferred;
+        }
+
+        if let Some(result) = self.solve_collection_span_coercion(location, node_id, from, to) {
+            return result;
+        }
+
+        if let Some(result) = self.solve_interpolation_coercion(location, node_id, from, to) {
+            if matches!(result, SolverResult::Solved(_)) {
+                self.coercions += 1;
+            }
+            return result;
         }
 
         let ancestor = |source, target: Ty<'ctx>| {
@@ -224,6 +295,144 @@ impl<'ctx> ConstraintSolver<'ctx> {
         self.solve_constraint_equality(location, to, from)
     }
 
+    /// A `${...}` value prints through `Display` when its type has it, and
+    /// otherwise through `Debug`, wrapped in `std::fmt::DebugDisplay`. The
+    /// choice is made only here, for string interpolation's `any Display`
+    /// argument: a `Debug` type never satisfies `Display` anywhere else.
+    /// `None` leaves the coercion to the ordinary rules, unchanged.
+    fn solve_interpolation_coercion(
+        &mut self,
+        location: Span,
+        node_id: NodeID,
+        from: Ty<'ctx>,
+        to: Ty<'ctx>,
+    ) -> Option<SolverResult<'ctx>> {
+        use crate::hir::StdItem;
+        let gcx = self.gcx();
+        if !gcx.is_interpolation_argument(node_id) {
+            return None;
+        }
+        let TyKind::BoxedExistential { interfaces } = to.kind() else {
+            return None;
+        };
+        let display = gcx.std_item_def(StdItem::Display)?;
+        let debug = gcx.std_item_def(StdItem::Debug)?;
+        let adapter = gcx.std_item_def(StdItem::DebugDisplay)?;
+        let [wanted] = interfaces else {
+            return None;
+        };
+        if wanted.id != display
+            || from.is_infer()
+            || from.is_error()
+            || matches!(from.kind(), TyKind::Never)
+        {
+            return None;
+        }
+        // Wait until the value's type is known: the choice is static.
+        if ty_contains_unresolved_inference(from) {
+            return Some(SolverResult::Deferred);
+        }
+        let adapter_ty = gcx.get_type(adapter);
+        let erased_debug = gcx.get_struct_definition(adapter).fields.first()?.ty;
+        let TyKind::BoxedExistential {
+            interfaces: debug_interfaces,
+        } = erased_debug.kind()
+        else {
+            return None;
+        };
+
+        let mut adjustments = Vec::new();
+        if let TyKind::BoxedExistential { interfaces: provided } = from.kind() {
+            let provided: Vec<_> = provided
+                .iter()
+                .flat_map(|interface| self.collect_interface_with_supers(*interface))
+                .collect();
+            if provided.iter().any(|interface| interface.id == display) {
+                return None;
+            }
+            if !provided.iter().any(|interface| interface.id == debug) {
+                return Some(self.not_interpolatable(location, from));
+            }
+            if from != erased_debug {
+                adjustments.push(Adjustment::ExistentialUpcast {
+                    from,
+                    to: erased_debug,
+                });
+            }
+        } else {
+            let with_self = |interface| {
+                crate::sema::impl_engine::ref_ops::interface_ref_with_self(gcx, from, interface)
+            };
+            match self.solve_conforms(location, from, with_self(*wanted)) {
+                SolverResult::Solved(_) => return None,
+                SolverResult::Deferred => return Some(SolverResult::Deferred),
+                SolverResult::Error(_) => {}
+            }
+            let [debug_interface] = debug_interfaces else {
+                return None;
+            };
+            match self.solve_conforms(location, from, with_self(*debug_interface)) {
+                SolverResult::Solved(_) => {}
+                SolverResult::Deferred => return Some(SolverResult::Deferred),
+                SolverResult::Error(_) => return Some(self.not_interpolatable(location, from)),
+            }
+            adjustments.push(Adjustment::BoxExistential {
+                from,
+                interfaces: debug_interfaces,
+            });
+            // The concrete value is erased once, as ordinary boxing would.
+            self.boxings += 1;
+        }
+        adjustments.push(Adjustment::DebugDisplay { to: adapter_ty });
+        adjustments.push(Adjustment::BoxExistential {
+            from: adapter_ty,
+            interfaces,
+        });
+        self.record_adjustments(node_id, adjustments);
+        Some(SolverResult::Solved(vec![]))
+    }
+
+    /// Neither `Display` nor `Debug`: say which to add, where that is clear.
+    fn not_interpolatable(&mut self, location: Span, ty: Ty<'ctx>) -> SolverResult<'ctx> {
+        let gcx = self.gcx();
+        let suggestion = match ty.kind() {
+            TyKind::Parameter(_) => Some(format!(
+                "add a 'Debug' bound to '{}'",
+                ty.format(gcx)
+            )),
+            TyKind::Adt(definition, _)
+                if gcx.try_get_struct_definition(definition.id).is_some()
+                    || gcx.try_get_enum_definition(definition.id).is_some() =>
+            {
+                let name = gcx.symbol_text(gcx.definition_ident(definition.id).symbol);
+                let declared = gcx
+                    .std_item_def(crate::hir::StdItem::Debug)
+                    .is_some_and(|debug| {
+                        gcx.conformance_records_for_interface(definition.id.package(), debug)
+                            .into_iter()
+                            .any(|record| {
+                                record.target
+                                    == crate::sema::resolve::models::TypeHead::Nominal(
+                                        definition.id,
+                                    )
+                            })
+                    });
+                Some(if declared {
+                    format!("'{name}' is 'Debug' only when its generic arguments are")
+                } else if gcx.is_class_type(ty) {
+                    format!("implement 'Debug' for '{name}' in a conformance")
+                } else {
+                    format!("add 'Debug' to the conformance list of '{name}'")
+                })
+            }
+            _ => None,
+        };
+        SolverResult::Error(vec![Spanned::new(
+            TypeError::NotInterpolatable { ty, suggestion },
+            location,
+        )])
+    }
+
     fn solve_boxing_coercion(
         &mut self,
         location: Span,
@@ -235,18 +444,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return None;
         };
 
-        // When the source type is an inference variable and we're coercing to an
-        // existential, bind the variable directly to the existential type.
-        // This handles function return type inference: `let x = makeSomething()`
-        // where `makeSomething()` returns `any Interface`.
         if from.is_infer() {
             return Some(match from.kind() {
-                // Keep existing behavior for general type inference variables.
-                TyKind::Infer(InferTy::TyVar(_)) => self.solve_equality(location, from, to),
-                // Let numeric inference resolve to a concrete numeric type before
-                // checking existential conformance (e.g. `printf("%d", 1)`).
+                // A number needs its concrete width before checking conformance.
                 TyKind::Infer(InferTy::IntVar(_) | InferTy::FloatVar(_)) => SolverResult::Deferred,
-                // Preserve prior behavior for remaining inference kinds.
                 _ => self.solve_equality(location, from, to),
             });
         }
@@ -280,6 +481,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
             node_id,
             vec![Adjustment::BoxExistential { from, interfaces }],
         );
+        // Only here does a concrete type become an existential; overload
+        // probes prefer the candidate that erases fewer argument types.
+        self.boxings += 1;
         Some(SolverResult::Solved(obligations))
     }
 
@@ -662,7 +866,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         match ty.kind() {
             TyKind::Infer(_) => return SolverResult::Deferred,
             TyKind::Parameter(_) => {
-                let bounds = self.bounds_for_type_in_scope(ty);
+                let bounds = self.bounds_for_type(ty, &self.param_env);
                 let directly_bounded = bounds.iter().any(|bound| {
                     // Bounds can enter the parameter environment before call
                     // inference finishes. Resolve their arguments at the point
@@ -683,28 +887,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 // conditional blanket impl, so let declared selection below
                 // attempt that proof. Treating every parameter as conforming
                 // made recursive or entirely missing bounds silently succeed.
-            }
-            TyKind::Adt(def, _)
-                if self
-                    .gcx()
-                    .std_item_def(crate::hir::StdItem::Iterable)
-                    .is_some_and(|iterable_id| interface.id == iterable_id)
-                    && self
-                        .gcx()
-                        .std_item_def(crate::hir::StdItem::Range)
-                        .is_some_and(|range_id| def.id == range_id)
-                    || self
-                        .gcx()
-                        .std_item_def(crate::hir::StdItem::Iterable)
-                        .is_some_and(|iterable_id| interface.id == iterable_id)
-                        && self
-                            .gcx()
-                            .std_item_def(crate::hir::StdItem::ClosedRange)
-                            .is_some_and(|range_id| def.id == range_id) =>
-            {
-                // Range syntax diagnostics already report element Step issues; avoid emitting
-                // a second cascading "not Iterable" diagnostic for the same source expression.
-                return SolverResult::Solved(vec![]);
             }
             TyKind::Adt(def, args)
                 if args.is_empty() && !self.gcx().generics_of(def.id).is_empty() =>
@@ -737,12 +919,12 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 }
 
                 let mut satisfied = self
-                    .bounds_for_type_in_scope(ty)
+                    .bounds_for_type(ty, &self.param_env)
                     .into_iter()
                     .any(|bound| self.interface_ref_matches(interface, bound));
 
                 if !satisfied {
-                    satisfied = self.bounds_for_type_in_scope(ty).into_iter().any(|bound| {
+                    satisfied = self.bounds_for_type(ty, &self.param_env).into_iter().any(|bound| {
                         self.collect_interface_with_supers(bound)
                             .into_iter()
                             .skip(1)
@@ -877,9 +1059,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         let (args, inner_ty) = self.unwrap_optional_type(to)?;
 
-        // If from is an unresolved TyVar, let equality handle it.
-        // TyVar could become anything (including Optional), so we can't decide yet.
-        // IntVar/FloatVar will resolve to concrete types that CAN be wrapped.
+        // A generic source can itself be Optional. Allow contextual equality.
         if matches!(from.kind(), TyKind::Infer(InferTy::TyVar(_))) {
             return None;
         }
@@ -921,9 +1101,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         if self.gcx().result_parts(from).is_some() || self.gcx().result_parts(success).is_some() {
             return None;
         }
-        // An unknown producer may itself return a Result. Keep ordinary
-        // equality inference (as for Optional) instead of forcing its payload
-        // type or blocking contextual generic calls such as identity(.err(e)).
+        // A generic source can itself be a Result, as in identity(.err(e)).
         if matches!(from.kind(), TyKind::Infer(InferTy::TyVar(_))) {
             return None;
         }
@@ -980,8 +1158,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         let closure_args_ty = crate::sema::models::callable_args_ty(gcx, closure_inputs);
 
-        self.register_callable_adapter(ty);
-
         // Create obligations to match Args and Output
         let mut obligations = vec![];
 
@@ -1025,25 +1201,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
             }
         }
         None
-    }
-
-    /// Register the concrete callable adapter while type checking still has a
-    /// chance to synthesize and serialize its THIR/MIR. Generic callable calls
-    /// are specialized later, after THIR construction, which is too late to
-    /// create a missing `call` body on demand.
-    fn register_callable_adapter(&self, closure_ty: Ty<'ctx>) {
-        let gcx = self.gcx();
-        let Some(interface) = crate::sema::models::callable_interface_ref(gcx, closure_ty) else {
-            return;
-        };
-        // A closure may be erased inside generic code and then dynamically cast
-        // to any interface it implements. Demand its strongest interface and
-        // inherited adapters before THIR synthesis; codegen cannot create bodies.
-        for interface in self.collect_interface_with_supers(interface) {
-            if let Some(goal) = interface.to_goal(gcx, &[]) {
-                let _ = gcx.build_conformance_witness(goal, SelectionMode::Typecheck);
-            }
-        }
     }
 }
 

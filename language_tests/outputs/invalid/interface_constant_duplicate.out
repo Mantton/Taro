@@ -1,0 +1,8 @@
+error: invalid redeclaration of 'COUNT'
+ -> language_tests/source_files/invalid/interface_constant_duplicate.tr:5:10
+	    const COUNT: int32 = 7
+	          ^^^^^
+info: associated constant declared here
+ -> language_tests/source_files/invalid/interface_constant_duplicate.tr:4:10
+	    const COUNT: int32 = 3
+	          ^^^^^

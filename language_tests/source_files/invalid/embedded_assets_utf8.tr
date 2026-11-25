@@ -1,0 +1,1 @@
+func main() { var data = #embed("../../package_fixtures/embedded_assets/dep/assets/icon.bin") }

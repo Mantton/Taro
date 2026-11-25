@@ -1,0 +1,8 @@
+// The error type of a Result entry point must be printable.
+struct Opaque {
+    code: int32
+}
+
+func main() -> Result[(), Opaque] {
+    return .err(Opaque { code: 1 })
+}

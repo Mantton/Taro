@@ -1,0 +1,43 @@
+// Await, propagation and Optional binding inspect an operand before the
+// enclosing operator is complete. Only the operand supplies their context.
+import std::result::Result
+
+func count() async -> usize { 6 }
+
+func propagated(_ input: usize?) -> usize? {
+    n := 1 + input!
+    return .some(n)
+}
+
+enum Failure { case rejected }
+func propagatedResult(_ input: Result[usize, Failure]) -> Result[usize, Failure] {
+    n := 1 + input!
+    return .ok(n)
+}
+
+func main() async {
+    a := 1 + await count()
+    var maybe: usize? = 6
+    b := 1 + if var n = maybe { n } else { 0 }
+    calc := () => {
+        var amount = 0
+        var out: int32? = nil
+        out ??= 3
+        var wide: int64 = 5000000000
+        amount += wide
+        amount
+    }
+    match propagated(nil) {
+        case .none => {}
+        case .some(_) => assert(false, "propagating none returns before the addition")
+    }
+    match propagatedResult(.ok(6)) {
+        case .ok(n) => assert(n == 7, "Result supplies the width of the addend")
+        case .err(_) => assert(false, "expected success")
+    }
+    match propagatedResult(.err(.rejected)) {
+        case .err(.rejected) => {}
+        case _ => assert(false, "propagate the original error")
+    }
+    println("${a} ${b} ${propagated(maybe) ?? 0} ${calc()}")
+}

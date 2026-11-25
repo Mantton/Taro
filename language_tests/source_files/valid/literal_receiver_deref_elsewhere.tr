@@ -1,0 +1,34 @@
+// A Deref conformance on &Boxed[int32] cannot apply to the struct literal
+// receiver, which is not addressable, so it does not keep the `size` call
+// from being bound before the literal has its type.
+struct Boxed[T] {
+    value: T
+}
+
+interface Size {
+    func size() -> usize
+}
+
+conform Boxed[int32] to Size {
+    func size() -> usize {
+        4
+    }
+}
+
+conform Boxed[int64] to Size {
+    func size() -> usize {
+        8
+    }
+}
+
+conform &Boxed[int32] to Deref {
+    type Target = int32
+    func deref() -> &int32 {
+        &self.value
+    }
+}
+
+func main() {
+    n := Boxed { value: 0 }.size() + 1
+    println("${n}")
+}

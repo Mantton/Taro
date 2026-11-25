@@ -1,0 +1,8 @@
+import std::encoding::Codable
+
+struct Conflict: Codable {
+    @key("a") x: int32
+    a: int32
+}
+
+func main() {}

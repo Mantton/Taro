@@ -1,5 +1,5 @@
 import std::io::Error
-import std::mem::{MaybeUninit, sizeOf}
+import std::mem::MaybeUninit
 import std::optional::Optional
 import std::ops::Fn
 import std::panic::panic
@@ -79,7 +79,7 @@ extend[T] Sender[T] {
             // MaybeUninit suppresses automatic drop, so errors/cancellation
             // must explicitly recover one initialized owner for cleanup.
             if !transferred {
-                var remaining: T = unsafe { slot.assumeInitRead() }
+                var _: T = unsafe { slot.assumeInitRead() }
             }
         }
         loop {
@@ -109,7 +109,7 @@ extend[T] Sender[T] {
         var transferred: bool = false
         defer {
             if !transferred {
-                var remaining: T = unsafe { slot.assumeInitRead() }
+                var _: T = unsafe { slot.assumeInitRead() }
             }
         }
         ptr := unsafe { slot.asPtr() as *const uint8 }
@@ -340,4 +340,9 @@ extend[T] &RwLock[T] {
         }
     }
 
+}
+
+conform[T] Sender[T] to std::io::Closeable {
+    type CloseResult = Result[(), Error]
+    public func close() -> Result[(), Error] { self.close() }
 }

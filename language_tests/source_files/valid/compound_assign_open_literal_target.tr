@@ -1,0 +1,80 @@
+// A literal local in a closure body stays open until a compound assignment
+// with a typed right side gives it that type, as the binary operators already
+// do. The intrinsic rules type the target, including through a reference;
+// custom operators still dispatch on the receiver. Function-body locals still
+// default at their own statement (invalid/compound_assign_statement_default).
+struct Meters { value: int32 }
+
+conform &Meters to std::ops::AddAssign[int32] {
+    func addAssign(_ rhs: int32) { self.value += rhs }
+}
+
+struct Box[T] { value: T }
+
+interface Width[U] {
+    func width() -> usize { 6 }
+}
+
+conform Box[int32] to Width[bool] {}
+
+conform Box[int32] to std::ops::Add[int32] {
+    type Output = int32
+    func add(_ rhs: int32) -> int32 { self.value + rhs }
+}
+
+func main() {
+    var big: int64 = 5000000000
+    sum := () => {
+        var total = 0
+        total += big
+        return total
+    }
+    // The initial literal is range-checked against the final int64 type.
+    start := () => {
+        var acc = 4000000000
+        acc += 1
+        acc += big
+        return acc
+    }
+    through := () => {
+        var wide = 0
+        slot := &wide
+        *slot += big
+        return wide
+    }
+    var amount: uint64 = 40
+    shift := () => {
+        var bits = 1
+        bits <<= amount
+        return bits
+    }
+    var factor: float = 2.0
+    scaled := () => {
+        var scale = 1.5
+        scale *= factor
+        return scale
+    }
+    measure := () => {
+        var m = Meters { value: 1 }
+        m += 2
+        var count = 0
+        count += 3
+        return m.value + count
+    }
+    // The right side's receiver needs its own default before the operator
+    // knows which type to give the target.
+    pending := () => {
+        var total = 0
+        total += Box { value: 0 }.width()
+        return total
+    }
+    var width: usize = pending()
+    assert(width == 6, "the deferred RHS supplies usize")
+    // Retrying a synthesized operator lookup after its receiver defaults
+    // must not leave behind an unbound method signature.
+    added := Box { value: 0 } + 2_i32
+    assert(added == 2, "the delayed custom operator resolves")
+    var half: float = scaled()
+    assert(half == 3.0, "an open float target takes the float RHS type")
+    std::printf("%v %v %v %v %v\n", sum(), start(), through(), shift(), measure())
+}

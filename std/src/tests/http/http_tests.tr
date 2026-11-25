@@ -629,12 +629,16 @@ func emptySocketReadsDoNotAllocate() async {
     accepted := (await listener.accept()).unwrap().0
     var byte: [uint8; 1] = [0_u8; 1]
     span := unsafe { Span[uint8]::from((&byte as *mut [uint8; 1]) as *mut uint8, 1) }
-    before := std::runtime::gcStats().allocatedBytes
-    var attempts = 0
-    while attempts < 64 {
-        std::assert(accepted.tryRead(span).unwrapErr().isKind(.wouldBlock), "nothing was sent")
-        attempts += 1
-    }
-    std::assert(std::runtime::gcStats().allocatedBytes == before, "a routine miss allocates nothing")
+    // Measure the reads themselves. Construct assertion messages outside the counter.
+    var misses = 0
+    allocations := std::testing::allocations(() => {
+        var attempts = 0
+        while attempts < 64 {
+            if accepted.tryRead(span).unwrapErr().isKind(.wouldBlock) { misses += 1 }
+            attempts += 1
+        }
+    })
+    std::assert(misses == 64, "every empty read must report wouldBlock")
+    std::assert(allocations == 0, "a routine miss allocates nothing")
     var _ = client.close(); var _ = accepted.close(); var _ = listener.close()
 }

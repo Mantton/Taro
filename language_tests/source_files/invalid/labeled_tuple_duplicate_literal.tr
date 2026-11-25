@@ -1,0 +1,4 @@
+func main() {
+    pair := (low: 1, low: 2)
+    println(pair.0)
+}

@@ -1,0 +1,8 @@
+func bad() -> some Iterator[Element = int32] {
+    defer {
+        yield 1
+    }
+    yield 2
+}
+
+func main() {}

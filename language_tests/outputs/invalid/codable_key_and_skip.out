@@ -1,0 +1,4 @@
+error: `@key` and `@skip` cannot be combined on field `value`
+ -> language_tests/source_files/invalid/codable_key_and_skip.tr:4:4
+	    @key("x")
+	    ^^^^^^^^^

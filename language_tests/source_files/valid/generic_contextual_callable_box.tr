@@ -1,0 +1,28 @@
+// Contextual closure inference must register its finalized callable adapter
+// before THIR synthesis. Previously the witness pointed to a bodyless Fn.call.
+import std::cmp::Ord
+
+final class ComparatorBox[T] { callback: any Fn(T, T) -> bool }
+extend[T] ComparatorBox[T] {
+    init(_ callback: any Fn(T, T) -> bool) { self.callback = callback }
+    func compare(_ a: T, _ b: T) -> bool { self.callback(a, b) }
+}
+
+func comparator[T: Ord]() -> ComparatorBox[T] {
+    ComparatorBox[T]((a, b) => a.cmp(b).isLess())
+}
+
+func defaultComparator(_ callback: any Fn(int32, int32) -> bool = (a, b) => a < b) -> bool {
+    callback(1, 2)
+}
+
+func main() {
+    holder := ComparatorBox[int32]((a, b) => a < b)
+    assert(holder.compare(1, 2) && !holder.compare(2, 1), "contextual generic constructor")
+    assert(comparator[int32]().compare(1, 2), "generic closure erasure")
+    assert(defaultComparator(), "default closure provider")
+    var calls = 0
+    captured := ComparatorBox[int32]((a, b) => { calls += 1; a < b })
+    std::runtime::collect()
+    assert(captured.compare(1, 2) && calls == 1, "captured callback survives collection")
+}

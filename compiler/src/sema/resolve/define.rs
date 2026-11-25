@@ -5,8 +5,9 @@ use crate::{
     error::CompileResult,
     sema::resolve::{
         models::{
-            ActiveScope, DefinitionKind, Resolution, Scope, ScopeData, ScopeKind, ScopeNamespace,
-            UsageBinding, UsageEntryData, UsageKind,
+            ActiveScope, DefinitionKind, LexicalScope, LexicalScopeBinding, LexicalScopeSource,
+            Resolution, Scope, ScopeData, ScopeKind, ScopeNamespace, UsageBinding, UsageEntryData,
+            UsageKind,
         },
         resolver::Resolver,
     },
@@ -19,6 +20,7 @@ pub fn define_package_symbols(
 ) -> CompileResult<()> {
     let mut actor = Actor::new(resolver);
     walk_package(&mut actor, package);
+    actor.define_nested_types(&package.root);
     resolver.context.dcx.ok()
 }
 
@@ -40,6 +42,10 @@ impl<'r, 'a> Actor<'r, 'a> {
 }
 
 impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
+    // An extension may precede its owner, or reach it through an import.
+    // Install these definitions after the ordinary module and file scopes exist.
+    fn visit_nested_types(&mut self, _: &[ast::Declaration]) {}
+
     fn visit_module(&mut self, node: &ast::Module, is_root: bool) -> Self::Result {
         let id = self.resolver.definition_id(node.id);
         let kind = ScopeKind::Definition(id, DefinitionKind::Module);
@@ -141,6 +147,124 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
 }
 
 impl<'r, 'a> Actor<'r, 'a> {
+    fn define_nested_types(&mut self, root: &ast::Module) {
+        fn extensions<'p>(
+            module: &'p ast::Module,
+            pending: &mut Vec<(&'p ast::Impl, NodeID, FileID)>,
+        ) {
+            for file in &module.files {
+                for declaration in &file.declarations {
+                    if let ast::DeclarationKind::Impl(block) = &declaration.kind
+                        && !block.nested_types.is_empty()
+                    {
+                        pending.push((block, module.id, file.id));
+                    }
+                }
+            }
+            for child in &module.submodules {
+                extensions(child, pending);
+            }
+        }
+        let mut pending = Vec::new();
+        extensions(root, &mut pending);
+        while !pending.is_empty() {
+            super::usage::resolve_available(self.resolver);
+            let before = pending.len();
+            pending
+                .retain(|&(block, module, file)| !self.install_nested_types(block, module, file));
+            if pending.len() == before {
+                for (block, _, _) in pending {
+                    self.resolver.dcx().emit_error(
+                        "could not resolve the owner of nested type declarations".into(),
+                        Some(block.target.span),
+                    );
+                }
+                break;
+            }
+        }
+    }
+
+    /// Returns false while an owner may still be introduced by another
+    /// extension or an import. Diagnostics consume the invalid extension.
+    fn install_nested_types(&mut self, block: &ast::Impl, module: NodeID, file: FileID) -> bool {
+        let enclosing = self
+            .resolver
+            .get_definition_scope(self.resolver.definition_id(module));
+        let file = self.resolver.file_scope_mapping[&file];
+        let scopes = [enclosing, file].map(|s| LexicalScope::new(LexicalScopeSource::Scoped(s)));
+        let ast::TypeKind::Nominal(path) = &block.target.kind else {
+            self.resolver.dcx().emit_error(
+                "nested types require a nominal extension target".into(),
+                Some(block.target.span),
+            );
+            return true;
+        };
+        if !unrestricted_owner(block, path) {
+            self.resolver.dcx().emit_error(
+                "nested types require an unspecialized owner".into(),
+                Some(block.target.span),
+            );
+            return true;
+        }
+        let Some((first, rest)) = path.segments.split_first() else {
+            return false;
+        };
+        let Ok(LexicalScopeBinding::Declaration(mut holder)) = self
+            .resolver
+            .resolve_in_lexical_scopes(&first.identifier, ScopeNamespace::Type, &scopes)
+        else {
+            return false;
+        };
+        for part in rest {
+            let Some(scope) = holder
+                .resolution()
+                .definition_id()
+                .and_then(|id| self.resolver.nested_scope(id))
+            else {
+                return false;
+            };
+            let Ok(found) =
+                self.resolver
+                    .resolve_in_scope(&part.identifier, scope, ScopeNamespace::Type)
+            else {
+                return false;
+            };
+            holder = found;
+        }
+        let Resolution::Definition(owner, kind @ (DefinitionKind::Struct | DefinitionKind::Enum)) =
+            holder.resolution()
+        else {
+            self.resolver.dcx().emit_error(
+                "nested types require a struct, class or enum owner".into(),
+                Some(block.target.span),
+            );
+            return true;
+        };
+        if !owner.is_local_to_index(self.resolver.package_index()) {
+            self.resolver.dcx().emit_error(
+                "nested types must be declared in the owner's package".into(),
+                Some(block.target.span),
+            );
+            return true;
+        }
+        let scope = self.resolver.nested_scope(owner).unwrap_or_else(|| {
+            self.create_scope(ScopeData::new(
+                ScopeKind::Definition(owner, kind),
+                Some(enclosing),
+            ))
+        });
+        self.scopes.file = Some(file);
+        self.with_scope(scope, |this| {
+            for nested in &block.nested_types {
+                this.resolver
+                    .attach_nested_type(this.resolver.definition_id(nested.id), owner);
+                this.visit_declaration(nested);
+            }
+        });
+        self.scopes.file = None;
+        true
+    }
+
     fn create_scope(&mut self, scope: ScopeData<'a>) -> Scope<'a> {
         let def_id = if let ScopeKind::Definition(id, _) = &scope.kind {
             Some(*id)
@@ -372,5 +496,32 @@ impl<'r, 'a> Actor<'r, 'a> {
                 scope.glob_exports.borrow_mut().push(usage);
             }
         }
+    }
+}
+
+/// A nested name belongs to the whole owner. An explicit generic header can
+/// repeat independent parameters, but a concrete argument or bound narrows it.
+fn unrestricted_owner(block: &ast::Impl, path: &ast::Path) -> bool {
+    let Some((last, prefix)) = path.segments.split_last() else {
+        return false;
+    };
+    if block.generics.where_clause.is_some() || prefix.iter().any(|part| part.arguments.is_some()) {
+        return false;
+    }
+    match (&last.arguments, &block.generics.type_parameters) {
+        (None, None) => true,
+        (Some(args), Some(params)) if args.arguments.len() == params.parameters.len() => {
+            let mut names: rustc_hash::FxHashSet<_> = params
+                .parameters
+                .iter()
+                .map(|p| p.identifier.symbol)
+                .collect();
+            params.parameters.iter().all(|p| p.bounds.is_none()) && args.arguments.iter().all(|arg| {
+                let ast::TypeArgument::Type(ty) = arg else { return false };
+                let ast::TypeKind::Nominal(path) = &ty.kind else { return false };
+                matches!(path.segments.as_slice(), [part] if part.arguments.is_none() && names.remove(&part.identifier.symbol))
+            })
+        }
+        _ => false,
     }
 }

@@ -1,0 +1,9 @@
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: panic: before return
+func work() {
+    defer println("outer")
+    errdefer println("active")
+    panic("before return")
+    errdefer println("unreached")
+}
+func main() { work() }

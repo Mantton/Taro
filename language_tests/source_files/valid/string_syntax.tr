@@ -1,0 +1,68 @@
+// Literal-only contexts must accept every non-interpolated string spelling.
+const RAW_PATH: string = #"C:\notes\file\"#
+const ESCAPED_MARKER: string = "\${name}"
+
+func quotedBrace(_ value: string) -> string { value }
+func next(_ counter: &int32) -> int32 {
+    *counter += 1
+    *counter
+}
+
+func main() {
+    name := "Ada"
+    amount := 20
+    assert("Hello, ${name}" == "Hello, Ada", "ordinary interpolation")
+    assert("Cost: $${amount}" == "Cost: $20", "literal dollar before interpolation")
+    assert("$HOME $$ {name} }} {{" == #"$HOME $$ {name} }} {{"#, "no dollar doubling or brace escapes")
+    assert(ESCAPED_MARKER == #"${name}"#, "escaped marker stays a constant literal")
+    assert("\u{24}{name}" == #"${name}"#, "decoded escapes never create interpolation")
+    assert("$\u{7b}name}" == #"${name}"#, "decoded braces never create interpolation")
+    assert(RAW_PATH == "C:\\notes\\file\\", "raw trailing backslash")
+    assert(#"C:\users\$#{name}\notes"# == "C:\\users\\Ada\\notes", "raw interpolation")
+    assert(##"${name} $#{name} $##{name}"## == ##"${name} $#{name} Ada"##, "matching hashes only")
+    assert(##"a "# b"## == "a \"# b", "shorter closing delimiter stays literal")
+    assert(#"\$#{"\n"}"# == "\\\n", "rawness does not leak into inner expressions")
+    assert("${quotedBrace("}")}" == "}", "inner quotes hide closing braces")
+    assert("${name /* } */}" == name, "comments hide closing braces")
+    assert("${"Hello, ${name}"}" == "Hello, Ada", "nested interpolation")
+    assert("\x25v ${name} \u{25}" == "%v Ada %", "decoded percent signs stay literal")
+    assert(#"\n% $#{name}"# == "\\n% Ada", "raw percent signs and backslashes")
+    assert("${#"${notAnIdentifier}"#}" == #"${notAnIdentifier}"#, "inserted values are never rescanned")
+    match #"${name}"# {
+        case #"${name}"# => {}
+        case _ => assert(false, "raw literal pattern")
+    }
+
+    escaped := """
+        Hello\nworld
+          indented\x20\x20
+        """
+    assert(escaped == "Hello\nworld\n  indented  ", "multiline layout, escapes and trailing spaces")
+    raw := #"""
+        C:\notes
+        ${literal}
+        Hello, $#{name}
+        """#
+    assert(raw == "C:\\notes\n\${literal}\nHello, Ada", "raw multiline interpolation")
+    value := "x\n  y"
+    inserted := """
+        before ${value}
+        after
+        """
+    assert(inserted == "before x\n  y\nafter", "interpolated newlines are not reindented")
+    sum := """
+        sum=${
+1 +
+2
+}
+        """
+    assert(sum == "sum=3", "multiline expression lines are not indentation")
+    empty := """
+        """
+    assert(empty == "", "empty multiline string")
+    assert("\0${name}" == "\0Ada", "NUL survives interpolation")
+    assert("é ${name} 🦀" == "é Ada 🦀", "Unicode literal segments")
+    var counter: int32 = 0
+    assert("${next(&counter)} ${next(&counter)}" == "1 2", "expressions execute once in source order")
+    print("PASS: string syntax\n")
+}

@@ -95,6 +95,7 @@ impl<'ctx> Gcx<'ctx> {
         let id = self.allocate_synthetic_id(self.package_index());
         let parent_count = GenericsBuilder::identity_for_item(self, context).len();
         let parameter = GenericParameterDefinition {
+            is_anonymous: false,
             id: self.allocate_synthetic_id(self.package_index()),
             name: self.intern_symbol("T"),
             index: parent_count,
@@ -128,6 +129,7 @@ impl<'ctx> Gcx<'ctx> {
                     label: None,
                     name: self.intern_symbol("self"),
                     ty: receiver,
+                    is_lazy: false,
                     default_provider: None,
                 }],
                 output: instantiate_ty_with_args(self, self.get_type(result), arguments),

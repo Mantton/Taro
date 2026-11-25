@@ -1,0 +1,7 @@
+@onUnsatisfied("{Self} needs a ranking; call {{rank}} or conform {Self} to Ranked")
+interface Ranked { func rank() -> int32; }
+struct Entry[T] { value: T }
+func choose[T: Ranked](_ item: T) -> int32 { item.rank() }
+func main() {
+    var score = choose(Entry[int32] { value: 1 })
+}

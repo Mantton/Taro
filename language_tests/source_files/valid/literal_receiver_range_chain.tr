@@ -1,0 +1,31 @@
+// A call on a receiver whose literal is still untyped publishes its
+// signature early when it mentions `Self` or an associated type of `Self`
+// with a structural result, so the next call in the chain has a type before
+// literals take their defaults. `(0..10).iter()` is `RangeIterator[{integer}]`
+// from the one generic `Range[Bound]: Iterable` record, `count()` is `usize`,
+// and the `1` beside it is a `usize` too, as with the bounds written out.
+func main() {
+    count := (0..10).iter().count() + 1
+    equal := (0..10).iter().count() == 10
+    skip := (0..10).iter().skip(3).count() + 1
+    take := (0..10).iter().take(4).count() + 1
+    enumerated := (0..10).iter().enumerate().count() + 1
+    lazy := (0..10).lazy().count() + 1
+    array := [1, 2, 3].iter().count() + 1
+    var limit: usize = 4
+    declared := (0..10).iter().count() + limit
+    println("${count} ${equal} ${skip} ${take} ${enumerated} ${lazy} ${array} ${declared}")
+
+    typedCount := (0_i32..10_i32).iter().count() + 1
+    typedEqual := (0_i32..10_i32).iter().count() == 10
+    typedSkip := (0_i32..10_i32).iter().skip(3).count() + 1
+    typedTake := (0_i32..10_i32).iter().take(4).count() + 1
+    typedEnumerated := (0_i32..10_i32).iter().enumerate().count() + 1
+    typedLazy := (0_i32..10_i32).lazy().count() + 1
+    var elements: [int32; 3] = [1, 2, 3]
+    typedArray := elements.iter().count() + 1
+    typedDeclared := (0_i32..10_i32).iter().count() + limit
+    println(
+        "${typedCount} ${typedEqual} ${typedSkip} ${typedTake} ${typedEnumerated} ${typedLazy} ${typedArray} ${typedDeclared}",
+    )
+}

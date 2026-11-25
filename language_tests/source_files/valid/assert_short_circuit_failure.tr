@@ -1,0 +1,23 @@
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: assert_short_circuit_failure.tr:22
+// EXPECT_STDERR_CONTAINS: leftFalse() && rightSide()
+// EXPECT_STDERR_CONTAINS: left (leftFalse()): false
+// EXPECT_STDERR_CONTAINS: right (rightSide()): <not evaluated>
+// EXPECT_STDERR_CONTAINS: counts=1,0
+static var leftCount: int32 = 0
+static var rightCount: int32 = 0
+
+func leftFalse() -> bool {
+    leftCount += 1
+    false
+}
+
+func rightSide() -> bool {
+    rightCount += 1
+    true
+}
+
+func main() {
+    defer { eprintln("counts=${leftCount},${rightCount}") }
+    assert(leftFalse() && rightSide())
+}

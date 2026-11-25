@@ -147,6 +147,17 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                     CallUnwindAction::Terminate => write!(f, " unwind terminate"),
                 }
             }
+
+            TerminatorKind::GeneratorYield {
+                value,
+                resume,
+                cancel,
+                ..
+            } => {
+                write!(f, "gen_yield(")?;
+                self.write_operand(value, f)?;
+                write!(f, ") -> resume bb{:?} cancel bb{:?}", resume, cancel)
+            }
         }
     }
 
@@ -186,6 +197,8 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
         match &c.value {
             ConstantKind::Bool(b) => write!(f, "{}", b),
             ConstantKind::Rune(c) => write!(f, "{:?}", c),
+            ConstantKind::Bytes(value) => value.with_bytes(|bytes| write!(f, "{bytes:?}")),
+            ConstantKind::ConstArray(arr) => write!(f, "[const; {}]", arr.len()),
             ConstantKind::String(s) => write!(f, "{:?}", s),
             ConstantKind::Integer(i) => write!(f, "const {}", i),
             ConstantKind::Float(fl) => write!(f, "const {}", fl),
@@ -197,6 +210,27 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
             ConstantKind::GlobalVariableAddress(def_id) => {
                 let symbol = self.gcx.definition_symbol_or_fallback(*def_id);
                 write!(f, "global {}", symbol)
+            }
+            ConstantKind::InterfaceConstant(id, args) => {
+                let owner = self
+                    .gcx
+                    .definition_parent(*id)
+                    .expect("interface constant owner");
+                let interface = crate::sema::models::InterfaceReference {
+                    id: owner,
+                    arguments: *args,
+                    bindings: &[],
+                };
+                write!(
+                    f,
+                    "const {} as {}::{}",
+                    interface
+                        .self_ty()
+                        .expect("interface Self")
+                        .format(self.gcx),
+                    interface.format(self.gcx),
+                    self.gcx.definition_symbol_or_fallback(*id)
+                )
             }
             ConstantKind::ConstParam(param) => {
                 write!(f, "const {}", self.gcx.symbol_text(param.name))

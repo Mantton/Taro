@@ -1,0 +1,20 @@
+error: expected usize, found string
+ -> language_tests/source_files/invalid/optional_argument_deferred_lookup_mismatch.tr:31:25
+	    var direct: usize? = concrete
+	                         ^^^^^^^^
+error: expected usize, found string
+ -> language_tests/source_files/invalid/optional_argument_deferred_lookup_mismatch.tr:32:24
+	    var named: usize? = Box { v: 0 }.name()
+	                        ^^^^^^^^^^^^^^^^^^^
+error: no overload matches this call
+ -> language_tests/source_files/invalid/optional_argument_deferred_lookup_mismatch.tr:33:4
+	    printf("%d\n", pick(Box { v: 0 }.name(), 1))
+	    ^^^^^^
+error: expected usize, found string
+ -> language_tests/source_files/invalid/optional_argument_deferred_lookup_mismatch.tr:33:24
+	    printf("%d\n", pick(Box { v: 0 }.name(), 1))
+	                        ^^^^^^^^^^^^^^^^^^^
+error: type 'Box[int32]' does not conform to interface 'Bounded'
+ -> language_tests/source_files/invalid/optional_argument_deferred_lookup_mismatch.tr:34:39
+	    var bounded: usize? = Box { v: 0 }.bounded()
+	                                       ^^^^^^^

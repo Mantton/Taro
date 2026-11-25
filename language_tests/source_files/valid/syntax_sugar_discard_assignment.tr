@@ -1,0 +1,22 @@
+// `_ = value` evaluates the value once and binds nothing.
+static var calls: int32 = 0
+func value() -> int32 { calls += 1; calls }
+func never() -> ! { panic("unreachable") }
+
+struct Holder { text: string }
+
+func main() {
+    _ = value()
+    (_) = value()
+    assert(calls == 2, "discard assignment evaluates its value once")
+    _ = Holder { text: "dropped" }
+    _ = ()
+    _ = [1, 2, 3]
+    discard := (input: int32) => { _ = input; calls += 1 }
+    discard(7)
+    assert(calls == 3, "discard assignment inside a closure")
+    if calls < 0 {
+        _ = never()
+    }
+    print("PASS: discard assignment\n")
+}

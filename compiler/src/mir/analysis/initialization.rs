@@ -112,6 +112,11 @@ impl<'ctx> InitializationPaths<'ctx> {
                         }
                         paths.include(gcx, resume_arg);
                     }
+                    TerminatorKind::GeneratorYield { value, .. } => {
+                        if let Some(place) = value.place() {
+                            paths.include(gcx, place);
+                        }
+                    }
                     TerminatorKind::SwitchInt { discr, .. } => {
                         if let Some(place) = discr.place() {
                             paths.include(gcx, place);
@@ -732,6 +737,9 @@ pub fn validate_initialization<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Compi
             } => {
                 check_operand(&mut state, value, span)?;
                 check_address(&state, resume_arg, span)?;
+            }
+            TerminatorKind::GeneratorYield { value, .. } => {
+                check_operand(&mut state, value, span)?;
             }
 
             TerminatorKind::SwitchInt { discr, .. } => check_operand(&mut state, discr, span)?,

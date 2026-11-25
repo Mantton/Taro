@@ -1,0 +1,104 @@
+// Listing PartialOrd and Ord on a struct derives partialCmp and cmp: fields
+// compare in declaration order and the first unequal field decides.
+struct Version: PartialEq, PartialOrd, Ord {
+    major: int32
+    minor: int32
+    patch: int32
+}
+
+// The Comparable alias lists PartialEq, PartialOrd and Ord at once.
+struct Release: Comparable {
+    version: Version
+    name: string
+}
+
+struct Pair[T]: Comparable {
+    first: T
+    second: T
+}
+
+// A hand-written partialCmp may sit beside a derived cmp.
+struct Reversed: PartialEq, Ord {
+    value: int32
+}
+
+conform Reversed to PartialOrd {
+    func partialCmp(_ other: Reversed) -> Optional[Ordering] {
+        .some(other.value.cmp(self.value))
+    }
+}
+
+struct Empty: Comparable {}
+
+func describe(_ ordering: Ordering) -> string {
+    match ordering {
+        case .less => "less"
+        case .equal => "equal"
+        case .greater => "greater"
+    }
+}
+
+func smallest[T: Ord](_ values: [T]) -> T {
+    var best = values[0]
+    for value in values {
+        if value.cmp(best).isLess() {
+            best = value
+        }
+    }
+    best
+}
+
+func version(_ major: int32, _ minor: int32, _ patch: int32) -> Version {
+    Version { major: major, minor: minor, patch: patch }
+}
+
+func main() {
+    a := version(1, 2, 3)
+    b := version(1, 3, 0)
+    c := version(1, 2, 4)
+    println("cmp: ${describe(a.cmp(b))} ${describe(b.cmp(a))} ${describe(a.cmp(c))} ${describe(a.cmp(a))}")
+    println("operators: ${a < b} ${a <= a} ${b > c} ${c >= a} ${b < a} ${a > a}")
+    println("partialCmp: ${a.partialCmp(c).unwrap().isLess()} ${a.partialCmp(a).unwrap().isEqual()}")
+
+    var releases: [Version] = [b, version(0, 9, 9), c, a, version(2, 0, 0)]
+    releases.sort()
+    var line = ""
+    for release in releases {
+        line = line + " ${release.major}.${release.minor}.${release.patch}"
+    }
+    println("sort:${line}")
+
+    descending := releases.sorted(by: (x, y) => x > y)
+    println("sorted: ${descending[0].major}.${descending[0].minor} ${descending[4].major}.${descending[4].minor}")
+
+    var queue = PriorityQueue[Version]::new()
+    queue.push(b)
+    queue.push(version(3, 0, 0))
+    queue.push(a)
+    queue.push(version(0, 1, 0))
+    var popped = ""
+    while !queue.isEmpty() {
+        next := queue.pop().unwrap()
+        popped = popped + " ${next.major}.${next.minor}.${next.patch}"
+    }
+    println("queue:${popped}")
+
+    // Nested derived types compare field by field, recursively.
+    old := Release { version: a, name: "zeta" }
+    new := Release { version: b, name: "alpha" }
+    same := Release { version: a, name: "beta" }
+    println("nested: ${old < new} ${same < old} ${old == old} ${describe(new.cmp(same))}")
+
+    small := Pair[int32] { first: 1, second: 9 }
+    large := Pair[int32] { first: 2, second: 0 }
+    words := Pair[string] { first: "b", second: "a" }
+    println("generic: ${small < large} ${describe(large.cmp(small))} ${words > Pair[string] { first: "a", second: "z" }}")
+    println("smallest: ${smallest([large, small]).first} ${smallest([b, c, a]).patch}")
+
+    // cmp is derived from the field; partialCmp keeps its reversed answer.
+    one := Reversed { value: 1 }
+    two := Reversed { value: 2 }
+    println("mixed: ${describe(one.cmp(two))} ${one < two}")
+
+    println("empty: ${describe(Empty {}.cmp(Empty {}))} ${Empty {} <= Empty {}}")
+}

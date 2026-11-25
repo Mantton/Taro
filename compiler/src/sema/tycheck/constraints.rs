@@ -53,13 +53,21 @@ fn normalize_constraints<'ctx>(
     gcx: GlobalContext<'ctx>,
     constraints: &[Spanned<Constraint<'ctx>>],
 ) -> Vec<Spanned<Constraint<'ctx>>> {
-    let constraints = constraints
-        .iter()
-        .map(|c| {
-            let normalized = normalize_aliases(gcx, c.value);
-            Spanned::new(normalized, c.span)
-        })
-        .collect::<Vec<_>>();
+    let mut normalized: Vec<Spanned<Constraint<'ctx>>> = Vec::with_capacity(constraints.len());
+    for c in constraints {
+        let constraint = Spanned::new(normalize_aliases(gcx, c.value), c.span);
+        // A synthesized definition can repeat its parent's declarations, as
+        // a class payload repeats its class's bounds. Reaching the same
+        // declaration twice does not make it redundant; a second copy would
+        // never be kept, so dropping it only drops the false warning.
+        if !normalized
+            .iter()
+            .any(|existing| existing.value == constraint.value && existing.span == constraint.span)
+        {
+            normalized.push(constraint);
+        }
+    }
+    let constraints = normalized;
 
     let mut state = build(gcx, &constraints);
     saturate(&mut state, &constraints);
@@ -302,4 +310,35 @@ fn is_concrete(ty: Ty<'_>) -> bool {
         }
     }
     !ty.visit_with(&mut Abstract)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::test_support::analyze_script_diagnostics;
+
+    fn redundancy_warnings(source: &str) -> Vec<String> {
+        analyze_script_diagnostics(source)
+            .into_iter()
+            .map(|diagnostic| diagnostic.message)
+            .filter(|message| message.starts_with("redundant constraint"))
+            .collect()
+    }
+
+    #[test]
+    fn class_bounds_are_not_redundant_in_synthesized_members() {
+        // A class initializer synthesizes the class payload, which inherits
+        // the class's own bounds once as its constraints and once from its
+        // parent, the class. That repetition is not a redundant declaration.
+        let source = "interface Marker {}\nfinal class Holder[T: Marker] { value: T }\nextend[T: Marker] Holder[T] { init(value: T) { self.value = value } }\nfunc main() {}";
+        assert_eq!(redundancy_warnings(source), Vec::<String>::new());
+    }
+
+    #[test]
+    fn bounds_implied_by_a_super_interface_remain_redundant() {
+        let source = "interface Marker {}\ninterface Sub: Marker {}\nstruct X {}\nconform X to Sub {}\nconform X to Marker {}\nfunc g[T: Sub](_ x: T) where T: Marker {}\nfunc main() { g(X {}) }";
+        assert_eq!(
+            redundancy_warnings(source),
+            vec!["redundant constraint 'T: Marker'".to_string()]
+        );
+    }
 }

@@ -1,0 +1,7 @@
+interface Reader[R] {
+    var raw: R { get }
+    func read() -> R
+}
+func property[T: Reader[uint8] & Reader[int64]](_ value: T) -> uint8 { value.raw }
+func method[T: Reader[uint8] & Reader[int64]](_ value: T) { _ = value.read() }
+func main() {}

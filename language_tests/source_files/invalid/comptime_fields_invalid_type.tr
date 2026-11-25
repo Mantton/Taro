@@ -1,0 +1,5 @@
+func main() {
+    #for field in #fields(int32) {
+        _ = field.name
+    }
+}

@@ -1,0 +1,5 @@
+error: circular constant dependency
+	cycle: FIRST -> SECOND -> FIRST
+ -> language_tests/source_files/invalid/inherent_constant_cycle.tr:4:26
+	    const SECOND: int32 = Self::FIRST
+	                          ^^^^^^^^^^^

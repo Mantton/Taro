@@ -1,0 +1,10 @@
+static var messages: int32 = 0
+func diagnostic() -> string { messages += 1; "assertion message" }
+func main() {
+    assert(true, diagnostic())
+    debugAssert(true, diagnostic())
+    if !#cfg(profile("debug")) {
+        debugAssert(false, diagnostic())
+    }
+    println("${messages}")
+}

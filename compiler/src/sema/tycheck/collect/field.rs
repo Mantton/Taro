@@ -2,10 +2,7 @@ use crate::{
     compile::context::GlobalContext,
     error::CompileResult,
     hir,
-    sema::{
-        models::{StructDefinition, StructField, StructRepr},
-        tycheck::lower::{DefTyLoweringCtx, TypeLowerer},
-    },
+    sema::models::{StructDefinition, StructField, StructRepr},
 };
 
 pub fn run(package: &hir::Package, context: GlobalContext) -> CompileResult<()> {
@@ -15,7 +12,7 @@ pub fn run(package: &hir::Package, context: GlobalContext) -> CompileResult<()> 
     };
     hir::walk_package(&mut actor, package);
     context.dcx().ok()?;
-    super::class_hierarchy::run(package, context)?;
+    super::class_hierarchy::flatten_fields(&actor.classes, context)?;
     for class in actor.classes {
         context.ensure_class_payload(context.get_type(class));
     }
@@ -107,6 +104,93 @@ impl<'ctx> Actor<'ctx> {
         repr
     }
 
+    fn parse_field_coding_metadata(
+        &self,
+        field: &hir::FieldDefinition,
+    ) -> (Option<crate::span::Symbol>, bool) {
+        let gcx = self.context;
+        let field_name = gcx.symbol_text(field.identifier.symbol);
+        let mut coding_key: Option<crate::span::Symbol> = None;
+        let mut coding_skip = false;
+        let mut key_span = None;
+        let mut skip_span = None;
+
+        for attr in &field.attributes {
+            match attr.as_known(gcx) {
+                Some(hir::KnownAttribute::Key) => {
+                    if coding_key.is_some() {
+                        gcx.dcx().emit_error(
+                            format!("duplicate `@key` attribute on field `{field_name}`"),
+                            Some(attr.span),
+                        );
+                        continue;
+                    }
+                    let Some(args) = &attr.args else {
+                        gcx.dcx().emit_error(
+                            "`@key` expects a single string literal argument".into(),
+                            Some(attr.span),
+                        );
+                        continue;
+                    };
+                    if args.items.len() != 1 {
+                        gcx.dcx().emit_error(
+                            "`@key` expects a single string literal argument".into(),
+                            Some(attr.span),
+                        );
+                        continue;
+                    }
+                    let hir::AttributeArg::Literal {
+                        value: hir::Literal::String(sym),
+                        ..
+                    } = &args.items[0]
+                    else {
+                        gcx.dcx().emit_error(
+                            "`@key` expects a single string literal argument".into(),
+                            Some(attr.span),
+                        );
+                        continue;
+                    };
+                    coding_key = Some(*sym);
+                    key_span = Some(attr.span);
+                }
+                Some(hir::KnownAttribute::Skip) => {
+                    if coding_skip {
+                        gcx.dcx().emit_error(
+                            format!("duplicate `@skip` attribute on field `{field_name}`"),
+                            Some(attr.span),
+                        );
+                        continue;
+                    }
+                    if attr.args.as_ref().is_some_and(|args| !args.items.is_empty()) {
+                        gcx.dcx().emit_error(
+                            "`@skip` on a field does not take arguments".into(),
+                            Some(attr.span),
+                        );
+                        continue;
+                    }
+                    coding_skip = true;
+                    skip_span = Some(attr.span);
+                }
+                _ => {
+                    let attr_name = gcx.symbol_text(attr.identifier.symbol);
+                    gcx.dcx().emit_error(
+                        format!("attribute `@{attr_name}` is not allowed on a field"),
+                        Some(attr.span),
+                    );
+                }
+            }
+        }
+
+        if coding_key.is_some() && coding_skip {
+            gcx.dcx().emit_error(
+                format!("`@key` and `@skip` cannot be combined on field `{field_name}`"),
+                key_span.or(skip_span),
+            );
+        }
+
+        (coding_key, coding_skip)
+    }
+
     fn collect_struct_fields(&self, id: hir::DefinitionID, node: &hir::Struct) {
         let adt_ty = self.context.get_type(id);
         let crate::sema::models::TyKind::Adt(adt_def, _) = adt_ty.kind() else {
@@ -116,11 +200,12 @@ impl<'ctx> Actor<'ctx> {
             )
         };
 
-        let ctx = DefTyLoweringCtx::new(id, self.context);
         let mut fields: Vec<StructField<'ctx>> = Vec::with_capacity(node.fields.len());
         for field in &node.fields {
-            let ty = ctx.lowerer().lower_type(&field.ty);
-            let visibility = self.context.definition_visibility(field.def_id);
+            let ty = super::adt::lower_field(self.context, id, &field.ty);
+            let visibility = self.context.definition_visibility(
+                if node.positional { id } else { field.def_id },
+            );
             let default_provider = field.default_value.as_ref().map(|expression| {
                 let gcx = self.context;
                 let provider = gcx.allocate_synthetic_id(gcx.package_index());
@@ -128,7 +213,7 @@ impl<'ctx> Actor<'ctx> {
                 // is shorter than that allocation, as for parameter defaults.
                 let expression: &'ctx hir::Expression =
                     unsafe { std::mem::transmute(&**expression) };
-                gcx.register_default_value_expr(provider, expression);
+                gcx.register_default_value_expr(provider, expression, None);
                 let signature = gcx.store.arenas.function_signatures.alloc(
                     crate::sema::models::LabeledFunctionSignature {
                         inputs: vec![],
@@ -152,6 +237,7 @@ impl<'ctx> Actor<'ctx> {
                 );
                 provider
             });
+            let (coding_key, coding_skip) = self.parse_field_coding_metadata(field);
             fields.push(StructField {
                 default_provider,
                 name: field.identifier.symbol,
@@ -159,6 +245,8 @@ impl<'ctx> Actor<'ctx> {
                 mutability: field.mutability,
                 def_id: field.def_id,
                 visibility,
+                coding_key,
+                coding_skip,
             });
         }
 
@@ -182,6 +270,7 @@ impl<'ctx> Actor<'ctx> {
                 .try_get_struct_definition(id)
                 .and_then(|definition| definition.class_info),
             adt_def,
+            positional: node.positional,
             has_initializer: false,
             repr,
             fields,

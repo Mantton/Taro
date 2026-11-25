@@ -165,6 +165,17 @@ pub(crate) fn build_package_with_vet<'ctx>(
         eprintln!("=== End MIR Dump ===\n");
     }
 
+    if vet {
+        // Shadowing is decided during name resolution.
+        if let Some(facts) = gcx.store.lint_facts.borrow().get(&gcx.package_index()) {
+            findings.extend(facts.shadowed.iter().map(|(span, message)| {
+                crate::mir::vet::Finding {
+                    span: *span,
+                    message: message.clone(),
+                }
+            }));
+        }
+    }
     if !findings.is_empty() {
         findings.sort_by_key(|finding| {
             (
@@ -225,6 +236,7 @@ fn build_async_entry_wrapper<'ctx>(
         return_local: LocalId::from_raw(0),
         phase: crate::mir::MirPhase::Built,
         is_async: false,
+        generator_element_ty: None,
     };
 
     let return_local = push_local(

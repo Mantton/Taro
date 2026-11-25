@@ -1,0 +1,9 @@
+// A field with no declared default needs a type that conforms to Default.
+struct Handle { id: int32 }
+struct Session: Default {
+    retries: int32 = 3
+    handle: Handle
+    fallback: Handle = Handle { id: 0 }
+    name: string
+}
+func main() {}

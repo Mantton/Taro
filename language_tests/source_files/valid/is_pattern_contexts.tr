@@ -1,0 +1,19 @@
+// EXPECT_STDERR_NOT_CONTAINS: unreachable match arm
+enum Phase[T] { case idle; case empty {}; case reading(T) }
+type Phase64 = Phase[int64]
+func check(_ phase: Phase64) -> bool {
+    if phase is .empty {} && !(phase is .idle) { return true }
+    return phase is Phase64::idle
+}
+func main() {
+    var phase: Phase64 = .empty {}
+    assert(check(phase), "empty named payload in a condition")
+    phase = .idle
+    assert(check(phase), "qualified unit case through an alias")
+    var value: int32 = -5
+    matches := value is _
+    assert(matches && value is -5 && "t" is "t", "wildcard and literals")
+    assert((value, phase) is (_, _), "irrefutable tuple")
+    assert(&phase is Phase[int64]::idle, "reference scrutinee")
+    println("contexts")
+}

@@ -1,0 +1,8 @@
+error: cannot derive 'Ord' for class 'Account': only structs and enums can derive it; implement it in a conformance instead
+ -> language_tests/source_files/invalid/derived_ordering_class.tr:2:44
+	final class Account: PartialEq, PartialOrd, Ord {
+	                                            ^^^
+error: cannot derive 'PartialOrd' for class 'Account': only structs and enums can derive it; implement it in a conformance instead
+ -> language_tests/source_files/invalid/derived_ordering_class.tr:2:32
+	final class Account: PartialEq, PartialOrd, Ord {
+	                                ^^^^^^^^^^

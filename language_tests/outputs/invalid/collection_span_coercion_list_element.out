@@ -1,0 +1,4 @@
+error: expected int64, found int32
+ -> language_tests/source_files/invalid/collection_span_coercion_list_element.tr:1:46
+	func view(_ value: &[int32]) -> [int64; ..] { value }
+	                                              ^^^^^

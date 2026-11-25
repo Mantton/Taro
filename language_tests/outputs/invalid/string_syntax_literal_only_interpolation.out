@@ -1,0 +1,4 @@
+error: expected `,` or `)`, found `(`
+ -> language_tests/source_files/invalid/string_syntax_literal_only_interpolation.tr:1:7
+	@cfg(os("${"macos"}"))
+	       ^

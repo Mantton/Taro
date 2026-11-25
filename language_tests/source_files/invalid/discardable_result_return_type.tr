@@ -1,0 +1,22 @@
+// EXPECT_STDERR_NOT_CONTAINS: internal error
+@discardableResult
+func count() -> int32 { 1 }
+
+@discardableResult
+func nothing() {}
+
+@discardableResult
+func identity[T](_ value: T) -> T { value }
+
+struct Probe {}
+extend Probe {
+    @discardableResult
+    func maybe() -> int32? { .none }
+}
+
+interface Source {
+    @discardableResult
+    func next() -> int32
+}
+
+func main() {}

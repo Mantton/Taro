@@ -43,6 +43,7 @@ pub(crate) fn declaration(gcx: Gcx<'_>, kind: ClosureKind, span: Span) -> Defini
     for (index, name) in ["F", "Args", "Output"].into_iter().enumerate() {
         let name = gcx.intern_symbol(name);
         parameters.push(GenericParameterDefinition {
+            is_anonymous: false,
             name,
             id: gcx.allocate_synthetic_id(gcx.package_index()),
             index,
@@ -62,6 +63,7 @@ pub(crate) fn declaration(gcx: Gcx<'_>, kind: ClosureKind, span: Span) -> Defini
     let parameter = |name: &str, ty| LabeledFunctionParameter {
         name: gcx.intern_symbol(name),
         label: None,
+        is_lazy: false,
         default_provider: None,
         ty,
     };
@@ -262,6 +264,7 @@ pub(crate) fn build_body<'ctx>(
         return_local,
         phase: MirPhase::CfgClean,
         is_async: false,
+        generator_element_ty: None,
         escape_locals: vec![],
     })
 }

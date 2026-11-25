@@ -1,0 +1,78 @@
+func bounds() -> (low: int32, high: int32) {
+    (low: 3, high: 9)
+}
+
+func nested() -> ((int32, int32), (string, int32)) {
+    ((10, 20), ("skip", 30))
+}
+
+func bump(_ count: &int32) -> (int32, int32) {
+    *count += 1
+    (*count, *count * 10)
+}
+
+func unitSideEffect(_ count: &int32) {
+    *count += 1
+}
+
+func main() {
+    // Basic 2- and 3-element tuple shorthand destructuring
+    (quot, rem) := (17 / 5, 17 % 5)
+    assert(quot == 3 && rem == 2)
+    quot += 1
+    assert(quot == 4)
+
+    (a, b, c) := (1, 2, 3)
+    assert(a + b + c == 6)
+
+    // Nested tuples and wildcards
+    ((x, y), (_, z)) := nested()
+    assert(x == 10 && y == 20 && z == 30)
+
+    // Single-element tuple and empty unit tuple
+    (only,) := (42,)
+    assert(only == 42)
+
+    var calls: int32 = 0
+    () := unitSideEffect(&calls)
+    assert(calls == 1)
+
+    // All-wildcard destructuring evaluates RHS once
+    (_, _) := bump(&calls)
+    assert(calls == 2)
+
+    // Rest pattern inside tuple shorthand
+    (first, .., last) := (10, 20, 30, 40)
+    assert(first == 10 && last == 40)
+
+    // Labeled tuple RHS
+    (lo, hi) := bounds()
+    assert(lo == 3 && hi == 9)
+
+    // Standard library tuple return
+    (ch, _) := std::string::decodeRune("taro", 0)
+    assert(ch == 't')
+
+    // Lexical shadowing: RHS reads outer variables before inner bindings take effect
+    outerA := 10
+    outerB := 20
+    {
+        (outerA, outerB) := (outerB + 1, outerA + 2)
+        assert(outerA == 21 && outerB == 12)
+    }
+    assert(outerA == 10 && outerB == 20)
+
+    // Multiline tuple shorthand destructuring
+    (
+        m1,
+        m2,
+    ) := (7, 8)
+    assert(m1 + m2 == 15)
+
+    // Existing tuple assignment and labeled tuple expressions remain valid
+    (lo, hi) = (hi, lo)
+    assert(lo == 9 && hi == 3)
+    _ = (left: 1, right: 2)
+
+    print("tuple shorthand destructuring ok\n")
+}

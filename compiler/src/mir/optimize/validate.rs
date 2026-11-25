@@ -399,6 +399,17 @@ impl<'ctx> StructureValidator<'ctx, '_> {
                     self.check_edge(*cleanup, span);
                 }
             }
+            TerminatorKind::GeneratorYield {
+                value,
+                resume,
+                cancel,
+                cancel_complete,
+            } => {
+                self.check_operand(value, span);
+                self.check_edge(*resume, span);
+                self.check_edge(*cancel, span);
+                self.check_edge(*cancel_complete, span);
+            }
             TerminatorKind::Return | TerminatorKind::ResumeUnwind | TerminatorKind::Unreachable => {
             }
         }
@@ -484,7 +495,9 @@ fn validate_body_invariants_with_output<'ctx>(
         )
     };
     let return_local_ty = body.locals[body.return_local].ty;
-    let function_output = if let Some(output) = concrete_output {
+    let function_output = if body.generator_element_ty.is_some() {
+        gcx.types.void
+    } else if let Some(output) = concrete_output {
         output
     } else if body.is_async {
         gcx.function_body_output(body.owner)
@@ -673,6 +686,20 @@ fn validate_body_invariants_with_output<'ctx>(
                             return_slot_initialized,
                         );
                     }
+                }
+                TerminatorKind::GeneratorYield { resume, cancel, .. } => {
+                    propagate_bool_state(
+                        &mut block_states,
+                        &mut worklist,
+                        *resume,
+                        return_slot_initialized,
+                    );
+                    propagate_bool_state(
+                        &mut block_states,
+                        &mut worklist,
+                        *cancel,
+                        return_slot_initialized,
+                    );
                 }
                 TerminatorKind::Return => {
                     if require_return_slot && !return_slot_initialized {

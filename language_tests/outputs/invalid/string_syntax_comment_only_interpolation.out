@@ -1,0 +1,4 @@
+error: lexer error: string interpolation cannot be empty
+ -> language_tests/source_files/invalid/string_syntax_comment_only_interpolation.tr:1:23
+	func main() { var _ = "${ /* empty */ }" }
+	                       ^^^^^^^^^^^^^^^

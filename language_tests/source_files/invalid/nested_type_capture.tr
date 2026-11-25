@@ -1,0 +1,5 @@
+struct Queue[T] { value: T }
+extend[T] Queue[T] {
+    struct Entry(T)
+}
+func main() {}

@@ -1,0 +1,4 @@
+error: lexer error: multiline string closing delimiter must be on its own line
+ -> language_tests/source_files/invalid/string_syntax_multiline_closing.tr:3:12
+	        text"""
+	            ^

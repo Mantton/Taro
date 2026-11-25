@@ -157,6 +157,7 @@ impl<'ctx> Selector<'ctx> {
             return SelectionResult::NoSolution(vec![SelectionError::NoCandidates(goal)]);
         }
 
+        crate::sema::tycheck::ensure_conformance_headers(self.gcx, goal.self_ty, goal.interface_id);
         let key = goal_key(self.gcx, goal, self.mode);
         if let Some(cached) = self.gcx.get_selection_cache(self.gcx.package_index(), key) {
             return cached;
@@ -176,8 +177,9 @@ impl<'ctx> Selector<'ctx> {
 
         viable.sort_by_key(|candidate| match candidate.source {
             CandidateSource::Impl(id) => (id.package.index(), id.index as usize),
-            CandidateSource::ParamEnv => (usize::MAX - 4, 0),
-            CandidateSource::BuiltinTuple => (usize::MAX - 3, 0),
+            CandidateSource::ParamEnv => (usize::MAX - 5, 0),
+            CandidateSource::BuiltinTuple => (usize::MAX - 4, 0),
+            CandidateSource::BuiltinTupleConformance => (usize::MAX - 3, 0),
             CandidateSource::BuiltinCallable => (usize::MAX - 2, 0),
             CandidateSource::BuiltinClone => (usize::MAX - 1, 0),
             CandidateSource::BuiltinOperator => (usize::MAX, 0),
@@ -262,6 +264,12 @@ impl<'ctx> Selector<'ctx> {
         }
 
         if let Some(candidate) = self.builtin_tuple_candidate(goal) {
+            out.push(candidate);
+        }
+
+        if let Some(candidate) =
+            self.builtin_tuple_conformance_candidate(goal, &mut saw_ambiguous_obligation)
+        {
             out.push(candidate);
         }
 
@@ -419,6 +427,85 @@ impl<'ctx> Selector<'ctx> {
         })
     }
 
+    fn builtin_tuple_conformance_candidate(
+        &mut self,
+        goal: InterfaceGoal<'ctx>,
+        saw_ambiguous_obligation: &mut bool,
+    ) -> Option<ConfirmedCandidate<'ctx>> {
+        let item = crate::mir::tuple_conformances::CONFORMANCE_ITEMS
+            .iter()
+            .copied()
+            .find(|&item| self.gcx.std_item_def(item) == Some(goal.interface_id))?;
+        if !goal.bindings.is_empty() {
+            return None;
+        }
+        let ty = normalize_aliases(self.gcx, goal.self_ty);
+        let TyKind::Tuple(fields) = ty.kind() else {
+            return None;
+        };
+        if crate::mir::tuple_conformances::is_rhs_parameterized(item) {
+            if goal.interface_args.len() > 1 {
+                return None;
+            }
+            if let Some(arg) = goal.interface_args.first().copied() {
+                let GenericArgument::Type(rhs) = arg else {
+                    return None;
+                };
+                let rhs = normalize_aliases(self.gcx, rhs);
+                if rhs != ty {
+                    if rhs.is_infer()
+                        || (matches!(rhs.kind(), TyKind::Tuple(rhs_fields) if rhs_fields.len() == fields.len())
+                            && rhs.contains_inference())
+                    {
+                        *saw_ambiguous_obligation = true;
+                    }
+                    return None;
+                }
+            }
+        } else if !goal.interface_args.is_empty() {
+            return None;
+        }
+
+        let obligations: Vec<_> = fields
+            .iter()
+            .copied()
+            .map(|field| {
+                let interface_args = if crate::mir::tuple_conformances::is_rhs_parameterized(item) {
+                    self.gcx
+                        .store
+                        .interners
+                        .intern_generic_args(vec![GenericArgument::Type(field)])
+                } else {
+                    GenericArguments::empty()
+                };
+                InterfaceGoal {
+                    interface_id: goal.interface_id,
+                    self_ty: field,
+                    interface_args,
+                    bindings: &[],
+                    param_env: goal.param_env,
+                }
+            })
+            .collect();
+
+        match self.obligations_satisfied(&obligations) {
+            GoalSatisfaction::Satisfied => {}
+            GoalSatisfaction::Ambiguous => {
+                *saw_ambiguous_obligation = true;
+                return None;
+            }
+            GoalSatisfaction::Unsatisfied => return None,
+        }
+
+        Some(ConfirmedCandidate {
+            source: CandidateSource::BuiltinTupleConformance,
+            extension_id: None,
+            record_id: None,
+            subst: GenericArguments::empty(),
+            obligations,
+        })
+    }
+
     fn builtin_clone_candidate(
         &mut self,
         goal: InterfaceGoal<'ctx>,
@@ -505,6 +592,13 @@ impl<'ctx> Selector<'ctx> {
         record: ConformanceRecord<'ctx>,
         saw_ambiguous_obligation: &mut bool,
     ) -> Option<ConfirmedCandidate<'ctx>> {
+        // Declaration headers can ask before witness checking populates the
+        // canonical constraint cache. A missing entry cannot prove a bound.
+        if self.gcx.store.collecting_constant_headers.get()
+            && record.extension.package() == self.gcx.package_index()
+        {
+            crate::sema::tycheck::constraints::canonical_constraints_of(self.gcx, record.extension);
+        }
         let subst = self.deduce_record_subst(goal, record)?;
         let instantiated = if subst.is_empty() {
             record.interface
@@ -555,15 +649,11 @@ impl<'ctx> Selector<'ctx> {
             for field in fields {
                 let field = instantiate_ty_with_args(self.gcx, field, subst);
                 let field = normalize_ty(icx.clone(), field, &caller_env);
-                let arguments =
-                    if self.gcx.std_item_def(StdItem::PartialEq) == Some(goal.interface_id) {
-                        self.gcx
-                            .store
-                            .interners
-                            .intern_generic_args(vec![GenericArgument::Type(field)])
-                    } else {
-                        GenericArguments::empty()
-                    };
+                let arguments = crate::sema::tycheck::derive::component_interface_arguments(
+                    self.gcx,
+                    goal.interface_id,
+                    field,
+                );
                 obligations.push(InterfaceGoal {
                     self_ty: field,
                     interface_args: arguments,

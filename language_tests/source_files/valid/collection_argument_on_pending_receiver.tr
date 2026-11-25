@@ -1,0 +1,19 @@
+// Typing a collection argument may need the result of an earlier method
+// call. The receiver's default must leave the surrounding addend open.
+struct Box[T] { value: T }
+struct Counter {}
+
+extend Counter {
+    func count(_ items: [int32; 2]) -> usize { items.len() }
+}
+
+interface Provides[U] {
+    func counter() -> Counter { Counter {} }
+}
+
+conform Box[int32] to Provides[bool] {}
+
+func main() {
+    result := 1 + Box { value: 0 }.counter().count([1, 2])
+    println("${result}")
+}

@@ -1,0 +1,4 @@
+error: no applicable conformance supplies associated constant 'WIDTH' on type 'Box[Plain]'
+ -> language_tests/source_files/invalid/interface_constant_header_bound.tr:6:27
+	type Unsatisfied = [uint8; Box[Plain]::WIDTH]
+	                           ^^^^^^^^^^^^^^^^^

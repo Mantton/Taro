@@ -1,0 +1,18 @@
+ff 11111111
+ff 11111111
+-007 00000101 000a
+|hi  |  hi| hi  |*hi**|·hi··|
+|café  |hél|
+|    3.50|
+3.5e0 3.50e0 10.00 1.00e1 2 4
+-0.00 0e0 0.00e0
+plain=display:7 debug=Both { value: 7 } padded=|   Both { value: 7 }|
+str-plain=hi str-debug="hi"
+only=DebugOnly { tag: "ok" }
+|**spec=x fill=* w=40 p=2 center code=9**|
+spec=? fill=  code=9
+100% done: nested ff 50% hex=001a
+a-10100-  30
+[1, 2, 3]
+42|   7|
+[00-hello][     inf][    -inf][     nan][-0003.50]

@@ -1,7 +1,7 @@
 import monkey::ast::endsWithBinding
 import monkey::lexer::Lexer
 import monkey::parser::Parser
-import monkey::token::{TokenTag, TokenKind}
+import monkey::token::TokenTag
 
 /// Renders a source as `kind` descriptions, so a test states the whole stream.
 func tokens(_ source: string) -> string {

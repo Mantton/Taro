@@ -1,0 +1,2 @@
+func view(_ value: [int32; 2]) -> [int32; ..] { value }
+func main() {}

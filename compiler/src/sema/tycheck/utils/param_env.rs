@@ -15,6 +15,8 @@ use super::instantiate::instantiate_constraint_with_args;
 pub struct ParamEnv<'ctx> {
     type_equalities: Vec<(Ty<'ctx>, Ty<'ctx>)>,
     bounds: Vec<(Ty<'ctx>, InterfaceReference<'ctx>)>,
+    /// Bounds introduced by calls are appended after the caller's declared bounds.
+    declared_bound_count: usize,
 }
 
 impl<'ctx> ParamEnv<'ctx> {
@@ -30,35 +32,15 @@ impl<'ctx> ParamEnv<'ctx> {
 
         ParamEnv {
             type_equalities,
+            declared_bound_count: bounds.len(),
             bounds,
         }
     }
 
-    pub fn add_constraint(&mut self, constraint: Constraint<'ctx>) {
-        match constraint {
-            Constraint::TypeEquality(lhs, rhs) => {
-                if !self.type_equalities.contains(&(lhs, rhs))
-                    && !self.type_equalities.contains(&(rhs, lhs))
-                {
-                    self.type_equalities.push((lhs, rhs));
-                }
-            }
-            Constraint::Bound { ty, interface } => {
-                let item = (ty, interface);
-                if !self.bounds.contains(&item) {
-                    self.bounds.push(item);
-                }
-            }
-        }
-    }
-
-    pub fn extend_from(&mut self, other: &ParamEnv<'ctx>) {
-        for &(lhs, rhs) in &other.type_equalities {
-            self.add_constraint(Constraint::TypeEquality(lhs, rhs));
-        }
-
-        for &(ty, interface) in &other.bounds {
-            self.add_constraint(Constraint::Bound { ty, interface });
+    /// Record a bound that the current expression still has to prove.
+    pub fn add_pending_bound(&mut self, ty: Ty<'ctx>, interface: InterfaceReference<'ctx>) {
+        if !self.bounds.contains(&(ty, interface)) {
+            self.bounds.push((ty, interface));
         }
     }
 
@@ -79,15 +61,29 @@ impl<'ctx> ParamEnv<'ctx> {
     /// `InterfaceGoal` carries a canonical slice so recursive obligations from
     /// conditional conformances can consult the caller's generic assumptions.
     pub fn constraints(&self) -> Vec<Constraint<'ctx>> {
+        self.constraints_with_bounds(&self.bounds)
+    }
+
+    /// Only declarations provide assumptions when selecting an implementation.
+    /// A call still has to prove its bounds, even when one is a prerequisite
+    /// for projecting an associated type from the result of the same call.
+    pub fn witness_constraints(&self) -> Vec<Constraint<'ctx>> {
+        self.constraints_with_bounds(&self.bounds[..self.declared_bound_count])
+    }
+
+    fn constraints_with_bounds(
+        &self,
+        bounds: &[(Ty<'ctx>, InterfaceReference<'ctx>)],
+    ) -> Vec<Constraint<'ctx>> {
         let mut constraints =
-            Vec::with_capacity(self.type_equalities.len().saturating_add(self.bounds.len()));
+            Vec::with_capacity(self.type_equalities.len().saturating_add(bounds.len()));
         constraints.extend(
             self.type_equalities
                 .iter()
                 .map(|&(lhs, rhs)| Constraint::TypeEquality(lhs, rhs)),
         );
         constraints.extend(
-            self.bounds
+            bounds
                 .iter()
                 .map(|&(ty, interface)| Constraint::Bound { ty, interface }),
         );

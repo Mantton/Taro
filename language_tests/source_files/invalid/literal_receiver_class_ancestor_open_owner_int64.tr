@@ -1,0 +1,51 @@
+// The int64 spelling of literal_receiver_class_ancestor_open_owner:
+// `Derived[int64]` reaches `read` through its ancestor `Base` (Reader) and
+// through its own conformance to `Other`, so the call is ambiguous.
+class Base {
+    stamp: int32
+}
+
+extend Base {
+    public init() {
+        self.stamp = 1
+    }
+}
+
+class Derived[T]: Base {
+    value: T
+}
+
+extend[T] Derived[T] {
+    public init(_ value: T) {
+        super.init()
+        self.value = value
+    }
+}
+interface Reader {
+    func read() -> usize
+}
+
+conform Base to Reader {
+    func read() -> usize {
+        7
+    }
+}
+
+interface Other {
+    func read() -> usize
+}
+
+conform Derived[int64] to Other {
+    func read() -> usize {
+        9
+    }
+}
+
+func pick() -> usize {
+    var d: Derived[int64] = Derived(0)
+    return d.read()
+}
+
+func main() {
+    println("${pick()}")
+}

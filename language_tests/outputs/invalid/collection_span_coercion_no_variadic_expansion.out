@@ -1,0 +1,4 @@
+error: expected int32, found &List[int32]
+ -> language_tests/source_files/invalid/collection_span_coercion_no_variadic_expansion.tr:2:48
+	func main() { var values: [int32] = [1, 2]; sum(&values) }
+	                                                ^^^^^^^

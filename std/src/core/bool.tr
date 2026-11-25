@@ -1,3 +1,4 @@
+import std::default::Default
 import std::hash::{Hashable, Hasher}
 import std::ops::PartialEq
 import std::cmp::{Ordering, PartialOrd, Ord}
@@ -85,4 +86,8 @@ extend bool {
     public static func parse(_ input: string) -> Result[bool, ParseError] {
         parseBool(input)
     }
+}
+
+conform bool to Default {
+    public static func default() -> bool { false }
 }

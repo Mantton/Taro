@@ -1,0 +1,9 @@
+func work() async -> int32 {
+    return 1_i32
+}
+
+func syncFn() {
+    async var x = work()
+}
+
+func main() {}

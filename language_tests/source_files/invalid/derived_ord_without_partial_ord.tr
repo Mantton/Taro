@@ -1,0 +1,5 @@
+// A derived Ord does not derive its super-interfaces; they must be listed
+// or implemented.
+struct Score: Ord { value: int32 }
+struct Grade: PartialOrd, Ord { value: int32 }
+func main() {}

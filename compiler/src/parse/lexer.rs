@@ -205,6 +205,7 @@ pub fn tokenize_file(
     }
 
     let lexer = Lexer::new(&source, file);
+    dcx.record_source(file, source);
     match lexer.tokenize() {
         Ok(file) => Ok(file),
         Err(err) => {
@@ -387,7 +388,28 @@ impl Lexer {
             ';' => Token::Semicolon,
             ',' => Token::Comma,
             '@' => Token::At,
-            '#' => Token::Hash,
+            '#' => {
+                let extra = self.source[self.cursor..]
+                    .iter()
+                    .take_while(|ch| **ch == '#')
+                    .count();
+                if self.source.get(self.cursor + extra) == Some(&'"') {
+                    for _ in 0..extra + 1 {
+                        self.next_char();
+                    }
+                    self.lex_string(extra + 1)?;
+                    return Ok(TokenCase::Skip);
+                }
+                // Multiple hashes only introduce a raw string. Reject a bad
+                // prefix once rather than rescanning its suffix for every `#`.
+                if extra > 0 {
+                    for _ in 0..extra {
+                        self.next_char();
+                    }
+                    return Err(LexerError::InvalidCharacter('#'));
+                }
+                Token::Hash
+            }
             '~' => Token::Tilde,
             ':' => {
                 if self.eat(':') {
@@ -454,6 +476,19 @@ impl Lexer {
                     } else {
                         Token::Neq
                     }
+                } else if self.first() == Some('i')
+                    && self.second() == Some('n')
+                    && !self
+                        .source
+                        .get(self.cursor + 2)
+                        .is_some_and(|c| Lexer::is_alphanumeric(*c))
+                {
+                    // `!in` is one token only when `in` is a whole word:
+                    // `!inside` stays `!` applied to an identifier, and
+                    // `value! in set` (space after `!`) stays propagation.
+                    self.next_char();
+                    self.next_char();
+                    Token::BangIn
                 } else {
                     Token::Bang
                 }
@@ -499,8 +534,13 @@ impl Lexer {
             }
             '?' => {
                 if self.eat('?') {
-                    Token::QuestionQuestion
-                } else if self.eat('.') {
+                    if self.eat('=') {
+                        Token::QuestionQuestionEq
+                    } else {
+                        Token::QuestionQuestion
+                    }
+                } else if !self.source[self.cursor..].starts_with(&['.', '.', '.']) && self.eat('.')
+                {
                     Token::QuestionDot
                 } else {
                     Token::Question
@@ -554,14 +594,11 @@ impl Lexer {
                     Token::Underscore
                 }
             }
-            'f' => {
-                if self.first() == Some('"') {
-                    self.lex_fstring()?;
-                    return Ok(TokenCase::Skip);
-                }
-                self.identifier()
+            'f' if self.first() == Some('"') => return Err(LexerError::ObsoleteStringPrefix),
+            '"' => {
+                self.lex_string(0)?;
+                return Ok(TokenCase::Skip);
             }
-            '"' => self.string()?,
             '`' => self.escaped_identifier()?,
             '\'' => self.rune()?,
             _ => {
@@ -653,44 +690,9 @@ impl Lexer {
     }
 }
 
-// strings
-impl Lexer {
-    fn string(&mut self) -> Result<Token, LexerError> {
-        let Some(content) = self.double_quoted_string()? else {
-            return Err(LexerError::UnterminatedStringLiteral);
-        };
-
-        Ok(Token::String {
-            value: content.into(),
-        })
-    }
-
-    fn double_quoted_string(&mut self) -> Result<Option<String>, LexerError> {
-        let lo = self.cursor;
-        loop {
-            match self.next_char() {
-                Some('"') => {
-                    let hi = self.cursor - 1;
-                    return Ok(Some(self.read(lo, hi)));
-                }
-                Some('\\') if self.eat('\\') || self.eat('"') => {
-                    // `eat` already advances past the escaped character. Advancing
-                    // again would swallow the following byte, including a string's
-                    // closing quote when the escaped quote is its final character.
-                }
-                Some('\n') => return Err(LexerError::StringLiteralMustBeSingleLine),
-                None => break,
-                _ => {
-                    continue;
-                }
-            };
-        }
-
-        Ok(None)
-    }
-}
-
-// f-strings
+// Strings are decoded exactly once, here, before parser-generated format strings
+// escape percent signs. Raw text uses the same token/AST representation without
+// ever passing through the backslash decoder.
 impl Lexer {
     fn push_token_with_span(&mut self, token: Token, start: Position, end: Position) {
         self.tokens.push(Spanned::new(
@@ -703,118 +705,209 @@ impl Lexer {
         ));
     }
 
-    fn emit_fstring_text(&mut self, text: &mut String, start: Position) {
-        if text.is_empty() {
-            return;
-        }
-        let end = self.position();
-        let value = std::mem::take(text);
-        self.push_token_with_span(Token::FStringText { value }, start, end);
+    fn string_delimiter_at(&self, quotes: usize, hashes: usize) -> bool {
+        self.source
+            .get(self.cursor..self.cursor + quotes)
+            .is_some_and(|text| text.iter().all(|ch| *ch == '"'))
+            && self
+                .source
+                .get(self.cursor + quotes..self.cursor + quotes + hashes)
+                .is_some_and(|text| text.iter().all(|ch| *ch == '#'))
     }
 
-    fn lex_fstring(&mut self) -> Result<(), LexerError> {
-        let start = self.anchor;
-        if !self.eat('"') {
-            return Err(LexerError::InvalidCharacter('f'));
-        }
-        self.push_token_with_span(Token::FStringStart, start, self.position());
+    /// Only `$` followed by exactly the delimiter's hash count and `{` opens
+    /// interpolation. Mismatches remain ordinary text; `$$` has no special role.
+    fn interpolation_at(&self, hashes: usize) -> bool {
+        self.first() == Some('$')
+            && self
+                .source
+                .get(self.cursor + 1..self.cursor + 1 + hashes)
+                .is_some_and(|text| text.iter().all(|ch| *ch == '#'))
+            && self.source.get(self.cursor + 1 + hashes) == Some(&'{')
+    }
 
-        let mut text = String::new();
+    fn emit_string_text(&mut self, text: &mut String, start: Position, pieces: &mut Vec<usize>) {
+        if !text.is_empty() {
+            pieces.push(self.tokens.len());
+            self.push_token_with_span(
+                Token::StringText {
+                    value: std::mem::take(text),
+                },
+                start,
+                self.position(),
+            );
+        }
+    }
+
+    /// The opening quote has already been consumed (including any raw hashes).
+    /// Plain strings never enter the interpolation token stream, preserving
+    /// attributes, patterns and ABI names without allocating format tokens.
+    fn lex_string(&mut self, hashes: usize) -> Result<(), LexerError> {
+        let start = self.anchor;
+        let multiline = self.first() == Some('"') && self.second() == Some('"');
+        if multiline {
+            self.next_char();
+            self.next_char();
+        }
+        let opening_end = self.position();
+        if multiline && !self.eat('\n') {
+            return Err(LexerError::MultilineStringOpening);
+        }
         let mut text_start = self.position();
+        let mut text = String::new();
+        let mut pieces = Vec::new();
+        let mut interpolated = false;
+        let closing_indent;
 
         loop {
             let Some(ch) = self.first() else {
+                self.anchor = start;
                 return Err(LexerError::UnterminatedStringLiteral);
             };
-
+            if self.string_delimiter_at(if multiline { 3 } else { 1 }, hashes) {
+                closing_indent = if multiline {
+                    let line_start = self.source[..self.cursor]
+                        .iter()
+                        .rposition(|ch| *ch == '\n')
+                        .map_or(0, |i| i + 1);
+                    let indent: String = self.source[line_start..self.cursor].iter().collect();
+                    if !indent.chars().all(|ch| matches!(ch, ' ' | '\t')) {
+                        self.anchor = self.position();
+                        return Err(LexerError::MultilineStringClosing);
+                    }
+                    // The closing line's indentation and preceding boundary LF
+                    // are source layout, not part of the value.
+                    text.truncate(text.len() - indent.len());
+                    if text.ends_with('\n') {
+                        text.pop();
+                    }
+                    indent
+                } else {
+                    String::new()
+                };
+                let quote_start = self.position();
+                if !interpolated {
+                    for _ in 0..(if multiline { 3 } else { 1 }) + hashes {
+                        self.next_char();
+                    }
+                    let value = decode_string_text(
+                        text,
+                        text_start.offset == 0,
+                        multiline,
+                        &closing_indent,
+                        true,
+                        hashes,
+                    )
+                    .map_err(|(error, line)| {
+                        self.anchor = string_error_position(text_start, line);
+                        error
+                    })?;
+                    self.push_token_with_span(Token::String { value }, start, self.position());
+                    self.anchor = start;
+                    return Ok(());
+                }
+                self.emit_string_text(&mut text, text_start, &mut pieces);
+                for _ in 0..(if multiline { 3 } else { 1 }) + hashes {
+                    self.next_char();
+                }
+                self.push_token_with_span(
+                    Token::InterpolatedStringEnd,
+                    quote_start,
+                    self.position(),
+                );
+                break;
+            }
+            if self.interpolation_at(hashes) {
+                if !interpolated {
+                    self.push_token_with_span(Token::InterpolatedStringStart, start, opening_end);
+                }
+                self.emit_string_text(&mut text, text_start, &mut pieces);
+                let marker_start = self.position();
+                for _ in 0..hashes + 2 {
+                    self.next_char();
+                }
+                self.push_token_with_span(
+                    Token::StringInterpolationStart,
+                    marker_start,
+                    self.position(),
+                );
+                self.lex_string_interpolation(multiline, marker_start)?;
+                let close_start = self.position();
+                self.next_char(); // the matching `}`
+                self.push_token_with_span(
+                    Token::StringInterpolationEnd,
+                    close_start,
+                    self.position(),
+                );
+                text_start = self.position();
+                interpolated = true;
+                continue;
+            }
             match ch {
-                '"' => {
-                    self.emit_fstring_text(&mut text, text_start);
-                    let quote_start = self.position();
-                    self.next_char();
-                    self.push_token_with_span(Token::FStringEnd, quote_start, self.position());
-                    break;
-                }
-                '{' => {
-                    if self.second() == Some('{') {
-                        self.next_char();
-                        self.next_char();
-                        text.push('{');
-                        continue;
-                    }
-
-                    self.emit_fstring_text(&mut text, text_start);
-
-                    let marker_start = self.position();
-                    self.next_char(); // consume '{'
-                    let expr_start = self.position();
-                    self.push_token_with_span(Token::FStringExprStart, marker_start, expr_start);
-
-                    let anchor = self.anchor;
-                    let result = self.lex_fstring_interpolation();
-                    self.anchor = anchor;
-                    result?;
-
-                    let close_start = self.position();
-                    if !self.eat('}') {
-                        return Err(LexerError::UnterminatedFStringInterpolation);
-                    }
-                    self.push_token_with_span(Token::FStringExprEnd, close_start, self.position());
-                    text_start = self.position();
-                }
-                '}' => {
-                    if self.second() == Some('}') {
-                        self.next_char();
-                        self.next_char();
-                        text.push('}');
-                    } else {
-                        return Err(LexerError::UnmatchedFStringBrace);
+                '\\' if hashes == 0 => {
+                    text.push(self.next_char().unwrap());
+                    match self.first() {
+                        None => return Err(LexerError::UnterminatedStringLiteral),
+                        Some('\n') => return Err(LexerError::StringLineContinuation),
+                        Some(ch) => {
+                            text.push(ch);
+                            self.next_char();
+                        }
                     }
                 }
-                '\\' => {
-                    self.next_char(); // consume '\'
-                    text.push('\\');
-                    let Some(escaped) = self.first() else {
-                        return Err(LexerError::UnterminatedStringLiteral);
-                    };
-                    if escaped == '\n' {
-                        return Err(LexerError::StringLiteralMustBeSingleLine);
-                    }
-                    self.next_char();
-                    text.push(escaped);
-                }
-                '\n' => return Err(LexerError::StringLiteralMustBeSingleLine),
+                '\n' if !multiline => return Err(LexerError::StringLiteralMustBeSingleLine),
                 _ => {
-                    self.next_char();
                     text.push(ch);
+                    self.next_char();
                 }
             }
         }
 
+        let end_token = self.tokens.len() - 1;
+        for index in pieces {
+            let piece = &mut self.tokens[index];
+            let Token::StringText { value } = &mut piece.value else {
+                unreachable!()
+            };
+            *value = decode_string_text(
+                std::mem::take(value),
+                piece.span.start.offset == 0,
+                multiline,
+                &closing_indent,
+                index + 1 == end_token,
+                hashes,
+            )
+            .map_err(|(error, line)| {
+                self.anchor = string_error_position(piece.span.start, line);
+                error
+            })?;
+        }
+        self.anchor = start;
         Ok(())
     }
 
-    fn lex_fstring_interpolation(&mut self) -> Result<(), LexerError> {
-        let start = self.cursor;
-        let line = self.line;
+    fn lex_string_interpolation(
+        &mut self,
+        multiline: bool,
+        marker: Position,
+    ) -> Result<(), LexerError> {
         let mut brace_depth = 0usize;
+        let mut group_depth = 0usize;
+        let mut has_expression = false;
         loop {
             match self.first() {
-                None | Some('\n') => return Err(LexerError::UnterminatedFStringInterpolation),
+                None => {
+                    self.anchor = marker;
+                    return Err(LexerError::UnterminatedStringInterpolation);
+                }
+                Some('\n') if !multiline => {
+                    self.anchor = marker;
+                    return Err(LexerError::UnterminatedStringInterpolation);
+                }
                 Some('}') if brace_depth == 0 => {
-                    if self.source[start..self.cursor]
-                        .iter()
-                        .all(|c| c.is_whitespace())
-                    {
-                        return Err(LexerError::EmptyFStringInterpolation);
-                    }
-                    // The previous standalone lexer removed its trailing semicolon,
-                    // including an explicit one. Preserve that accepted syntax.
-                    if matches!(
-                        self.tokens.last().map(|token| &token.value),
-                        Some(Token::Semicolon)
-                    ) {
-                        self.tokens.pop();
+                    if !has_expression {
+                        self.anchor = marker;
+                        return Err(LexerError::EmptyStringInterpolation);
                     }
                     return Ok(());
                 }
@@ -822,19 +915,19 @@ impl Lexer {
             }
             self.anchor = self.position();
             let token_start = self.cursor;
+            let line = self.line;
+            let token_count = self.tokens.len();
             let token = self.next_token();
-            if self.line != line {
-                // A string, rune, escaped identifier or comment may consume
-                // the newline. Interpolation diagnostics end at that newline,
-                // just as they do when it appears between tokens.
-                let newline = self.source[token_start..self.cursor.min(self.source.len())]
+            if !multiline && self.line != line {
+                let newline = self.source[token_start..self.cursor]
                     .iter()
                     .position(|ch| *ch == '\n')
-                    .expect("token crossed a newline");
+                    .unwrap();
                 self.cursor = token_start + newline;
                 self.line = line;
                 self.offset = self.anchor.offset + newline;
-                return Err(LexerError::UnterminatedFStringInterpolation);
+                self.anchor = marker;
+                return Err(LexerError::UnterminatedStringInterpolation);
             }
             let token = token.map_err(|error| match error {
                 LexerError::UnterminatedStringLiteral
@@ -842,21 +935,162 @@ impl Lexer {
                 | LexerError::UnterminatedEscapedIdentifier
                 | LexerError::UnterminatedMultilineComment
                 | LexerError::StringLiteralMustBeSingleLine => {
-                    LexerError::UnterminatedFStringInterpolation
+                    self.anchor = marker;
+                    LexerError::UnterminatedStringInterpolation
                 }
                 other => other,
             })?;
-            if let TokenCase::Valid(token) = token {
-                match token {
-                    Token::LBrace => brace_depth += 1,
-                    Token::RBrace => brace_depth -= 1,
-                    _ => {}
+            match token {
+                // A colon outside every bracket ends the expression and opens
+                // the hole's format specifier, unless it introduces a labeled
+                // loop expression (`label: loop { ... }`). Labeled arguments
+                // and struct fields sit inside their own delimiters, so they
+                // never match.
+                TokenCase::Valid(Token::Colon)
+                    if brace_depth == 0
+                        && group_depth == 0
+                        && has_expression
+                        && !self.interpolation_colon_is_loop_label() =>
+                {
+                    let colon = self.anchor;
+                    let mut value = String::new();
+                    loop {
+                        match self.first() {
+                            Some('}') => break,
+                            None | Some('\n') => {
+                                self.anchor = marker;
+                                return Err(LexerError::UnterminatedStringInterpolation);
+                            }
+                            Some(ch) => {
+                                value.push(ch);
+                                self.next_char();
+                            }
+                        }
+                    }
+                    self.push_token_with_span(
+                        Token::InterpolationFormat { value },
+                        colon,
+                        self.position(),
+                    );
+                    return Ok(());
                 }
-                self.tokens
-                    .push(Spanned::new(token, self.span_from_anchor()));
+                TokenCase::Valid(token) => {
+                    match token {
+                        Token::LBrace => brace_depth += 1,
+                        Token::RBrace => brace_depth -= 1,
+                        Token::LParen | Token::LBracket => group_depth += 1,
+                        Token::RParen | Token::RBracket => group_depth = group_depth.saturating_sub(1),
+                        _ => {}
+                    }
+                    has_expression = true;
+                    let span = self.span_from_anchor();
+                    self.tokens.push(Spanned::new(token, span));
+                }
+                // Nested strings emit their own tokens; comments/whitespace do not.
+                TokenCase::Skip => {
+                    has_expression |= self.tokens.len() > token_count;
+                }
+                TokenCase::End => {
+                    self.anchor = marker;
+                    return Err(LexerError::UnterminatedStringInterpolation);
+                }
             }
         }
     }
+
+    fn interpolation_colon_is_loop_label(&self) -> bool {
+        let mut idx = self.cursor;
+        while let Some(&ch) = self.source.get(idx) {
+            if ch == ' ' || ch == '\t' {
+                idx += 1;
+            } else {
+                break;
+            }
+        }
+        let rest = &self.source[idx..];
+        for keyword in [&['l', 'o', 'o', 'p'][..], &['w', 'h', 'i', 'l', 'e'], &['f', 'o', 'r']] {
+            if rest.starts_with(keyword) {
+                let after = rest.get(keyword.len()).copied();
+                if after.is_none_or(|ch| !ch.is_alphanumeric() && ch != '_') {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+/// Decode literal text before the parser builds formatting strings. A raw
+/// string's hash-qualified interpolation is handled by the lexer, not here.
+/// Errors carry the line within the text piece that caused them, so the
+/// diagnostic can point at that line rather than at the start of the piece.
+fn decode_string_text(
+    mut value: String,
+    line_start: bool,
+    multiline: bool,
+    indent: &str,
+    final_piece: bool,
+    hashes: usize,
+) -> Result<String, (LexerError, usize)> {
+    if multiline {
+        value = strip_string_indentation(&value, line_start, indent, final_piece)
+            .map_err(|line| (LexerError::MultilineStringIndentation, line))?;
+    }
+    if hashes == 0 {
+        super::escape::unescape_str(&value).map_err(|error| (LexerError::MalformedString(error), 0))
+    } else if value.contains('\r') {
+        Err((
+            LexerError::MalformedString(super::escape::EscapeError::BareCarriageReturn),
+            0,
+        ))
+    } else {
+        Ok(value)
+    }
+}
+
+/// The start of `line` lines after a text piece that begins at `start`.
+fn string_error_position(start: Position, line: usize) -> Position {
+    if line == 0 {
+        start
+    } else {
+        Position {
+            line: start.line + line,
+            offset: 0,
+        }
+    }
+}
+
+/// Strip physical source indentation only. Interpolation results never pass
+/// through this function, and lines inside expression tokens are left alone.
+/// On failure, returns the index of the first badly indented line.
+fn strip_string_indentation(
+    text: &str,
+    mut line_start: bool,
+    indent: &str,
+    final_piece: bool,
+) -> Result<String, usize> {
+    let mut output = String::with_capacity(text.len());
+    let lines = text.split_inclusive('\n');
+    let line_count = lines.clone().count();
+    for (index, line) in lines.enumerate() {
+        if line_start {
+            if let Some(rest) = line.strip_prefix(indent) {
+                output.push_str(rest);
+            } else if line.chars().all(|ch| matches!(ch, ' ' | '\t' | '\n'))
+                && (line.ends_with('\n') || (final_piece && index + 1 == line_count))
+            {
+                if line.ends_with('\n') {
+                    output.push('\n');
+                }
+            } else {
+                return Err(index);
+            }
+        } else {
+            output.push_str(line);
+        }
+        line_start = line.ends_with('\n');
+    }
+    Ok(output)
 }
 
 // escaped identifiers
@@ -995,8 +1229,12 @@ impl Lexer {
             self.eat_digits(Self::is_digit);
         }
 
+        // After a member-access dot the number is a field index. A following
+        // dot starts the next projection in `value.0.1`.
+        let field_index = matches!(self.tokens.last().map(|token| &token.value),
+            Some(Token::Dot | Token::QuestionDot));
         match self.first() {
-            Some('.') => {
+            Some('.') if !field_index => {
                 let sec = self.second();
                 // eat decimal point, avoid range expr
                 if sec != None && sec != Some('.') && !Lexer::is_letter(sec.unwrap()) {
@@ -1194,10 +1432,15 @@ pub enum LexerError {
     UnterminatedEscapedIdentifier,
     UnterminatedRuneLiteral,
     UnterminatedStringLiteral,
-    UnterminatedFStringInterpolation,
-    UnmatchedFStringBrace,
-    EmptyFStringInterpolation,
+    UnterminatedStringInterpolation,
+    EmptyStringInterpolation,
     StringLiteralMustBeSingleLine,
+    MultilineStringOpening,
+    MultilineStringClosing,
+    MultilineStringIndentation,
+    StringLineContinuation,
+    MalformedString(super::escape::EscapeError),
+    ObsoleteStringPrefix,
     EscapeIdentifierMustBeSingleLine,
     InvalidIntegerLiteral,
     InvalidFloatLiteral,
@@ -1213,19 +1456,21 @@ impl std::fmt::Display for LexerError {
             }
             LexerError::UnterminatedRuneLiteral => write!(f, "unterminated rune literal"),
             LexerError::UnterminatedStringLiteral => write!(f, "unterminated string literal"),
-            LexerError::UnterminatedFStringInterpolation => {
-                write!(f, "unterminated f-string interpolation")
+            LexerError::UnterminatedStringInterpolation => {
+                write!(f, "unterminated string interpolation")
             }
-            LexerError::UnmatchedFStringBrace => write!(
-                f,
-                "f-string contains an unmatched '}}' (use '}}}}' for a literal brace)"
-            ),
-            LexerError::EmptyFStringInterpolation => {
-                write!(f, "f-string interpolation cannot be empty")
+            LexerError::EmptyStringInterpolation => {
+                write!(f, "string interpolation cannot be empty")
             }
             LexerError::StringLiteralMustBeSingleLine => {
                 write!(f, "string literals must be on a single line")
             }
+            LexerError::MultilineStringOpening => f.write_str("multiline string opening delimiter must be followed by a newline"),
+            LexerError::MultilineStringClosing => f.write_str("multiline string closing delimiter must be on its own line"),
+            LexerError::MultilineStringIndentation => f.write_str("multiline string line does not match closing delimiter indentation"),
+            LexerError::StringLineContinuation => f.write_str("backslash line continuations are not supported in strings"),
+            LexerError::MalformedString(error) => write!(f, "malformed string, {error:?}"),
+            LexerError::ObsoleteStringPrefix => f.write_str("the f string prefix is no longer supported; use ${expression} inside an ordinary string"),
             LexerError::EscapeIdentifierMustBeSingleLine => {
                 write!(f, "escaped identifiers must be on a single line")
             }
@@ -1245,23 +1490,29 @@ pub enum TokenCase {
 /// - If a newline (or EOF) follows a token that can end a statement, insert `;`.
 /// - **Unless** the next token is a line-continuation starter
 ///   (an operator/connector like `+`, `-`, `*`, `.`, `..`, `==`, `=`, `|>`, etc.).
+/// - **Unless** the newline sits directly inside `( )` or `[ ]`. Braces nested
+///   inside those delimiters (blocks, closure bodies, `match` arms) and string
+///   interpolations insert semicolons as usual.
 pub fn automatic_semicolon_insertion(tokens: Vec<Spanned<Token>>) -> Vec<Spanned<Token>> {
     use crate::span::{Span, Spanned};
 
+    let grouped = newline_inside_group(&tokens);
     let mut out = Vec::with_capacity(tokens.len() + 8);
     // Comments have already been consumed. Walk backwards for lookahead without clones.
     let mut next: Option<(usize, bool, bool)> = None;
-    let mut tokens = tokens.into_iter().rev().peekable();
-    while let Some(token) = tokens.next() {
+    let mut tokens = tokens.into_iter().zip(grouped).rev().peekable();
+    while let Some((token, grouped)) = tokens.next() {
         // The wildcard in `import path::*` ends the declaration. An ordinary
         // multiplication/dereference star still cannot end a statement.
         let path_glob = matches!(token.value, Token::Star)
-            && matches!(tokens.peek(), Some(previous) if matches!(previous.value, Token::ColonColon));
-        let insert = (can_end_statement(&token.value) || path_glob)
+            && matches!(tokens.peek(), Some((previous, _)) if matches!(previous.value, Token::ColonColon));
+        let is_wildcard = matches!(token.value, Token::Underscore)
+            && matches!(tokens.peek(), Some((previous, _)) if matches!(previous.value, Token::Is));
+        let insert = (can_end_statement(&token.value) || path_glob || is_wildcard)
             && match next {
                 None => true,
                 Some((line, eof, continuation)) => {
-                    eof || (line > token.span.end.line && !continuation)
+                    eof || (line > token.span.end.line && !continuation && !grouped)
                 }
             };
         if insert {
@@ -1286,6 +1537,47 @@ pub fn automatic_semicolon_insertion(tokens: Vec<Spanned<Token>>) -> Vec<Spanned
     out
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Group {
+    Paren,
+    Bracket,
+    Brace,
+    Interpolation,
+}
+
+/// For each token, whether the innermost delimiter still open after it is
+/// `(` or `[`, so a newline that follows it does not end a statement.
+///
+/// A closer pops back to its matching opener, discarding any unclosed
+/// delimiters in between, and a closer with no matching opener is ignored.
+/// An unclosed `(` therefore stops suppressing at the `}` that closes the
+/// enclosing block, and the parser reports the error near the `(`.
+pub(crate) fn newline_inside_group(tokens: &[Spanned<Token>]) -> Vec<bool> {
+    let mut stack: Vec<Group> = Vec::new();
+    let close = |stack: &mut Vec<Group>, group: Group| {
+        if let Some(depth) = stack.iter().rposition(|open| *open == group) {
+            stack.truncate(depth);
+        }
+    };
+    tokens
+        .iter()
+        .map(|token| {
+            match token.value {
+                Token::LParen => stack.push(Group::Paren),
+                Token::LBracket => stack.push(Group::Bracket),
+                Token::LBrace => stack.push(Group::Brace),
+                Token::StringInterpolationStart => stack.push(Group::Interpolation),
+                Token::RParen => close(&mut stack, Group::Paren),
+                Token::RBracket => close(&mut stack, Group::Bracket),
+                Token::RBrace => close(&mut stack, Group::Brace),
+                Token::StringInterpolationEnd => close(&mut stack, Group::Interpolation),
+                _ => {}
+            }
+            matches!(stack.last(), Some(Group::Paren | Group::Bracket))
+        })
+        .collect()
+}
+
 fn can_end_statement(tok: &Token) -> bool {
     match tok {
         // primaries / identifiers / literals
@@ -1294,7 +1586,7 @@ fn can_end_statement(tok: &Token) -> bool {
         | Token::Float { .. }
         | Token::Rune { .. }
         | Token::String { .. }
-        | Token::FStringEnd
+        | Token::InterpolatedStringEnd
         // singletons
         | Token::True
         | Token::False
@@ -1312,7 +1604,9 @@ fn can_end_statement(tok: &Token) -> bool {
         // wildcard path suffix at end of import / export line
         | Token::DotStar
         // Never type (!) can end a statement (e.g. extern signature)
-        | Token::Bang => true,
+        | Token::Bang
+        // Postfix lower-bounded / full range (`a..`, `..`) can end a statement
+        | Token::DotDot => true,
         _ => false,
     }
 }
@@ -1341,7 +1635,7 @@ fn is_line_continuation_starter(tok: &Token) -> bool {
         // arithmetic / bitwise / logical operators
         // Note: Star (*) and Amp (&) are excluded because they have common
         // unary uses (dereference and reference) that should start new statements
-        Plus | Minus | Quotient | Modulus
+        StringInterpolationEnd | InterpolationFormat { .. } | Plus | Minus | Quotient | Modulus
         | Caret | Bar
         | AmpAmp | BarBar
         // relational / equality
@@ -1350,15 +1644,18 @@ fn is_line_continuation_starter(tok: &Token) -> bool {
         | Shl | Shr
         // assignment family (leading assignment style)
         | Assign | ColonEq | PlusEq | MinusEq | MulEq | DivEq | RemEq
-        | ShlEq | ShrEq | CaretEq | AmpEq | BarEq | DotDotEq
-        // range / member / optional chaining
-        | Dot | ColonColon | DotDot | Ellipsis | QuestionDot
+        | ShlEq | ShrEq | CaretEq | AmpEq | BarEq | QuestionQuestionEq
+        // member / optional chaining / spread (`..` and `..=` excluded so prefix ranges start new statements)
+        | Dot | ColonColon | Ellipsis | QuestionDot
         // nullish / pipe
         | QuestionQuestion | Pipe
         // arrows can lead a continuation (e.g., in patterns or lambdas)
         | RArrow | EqArrow
         // casting / infix-like keywords that glue to the previous expr
-        | As | Is | In
+        | As | Is | In | BangIn
+        // `else` only follows an `if` block or a `guard` condition, and
+        // `where` only opens a where clause or a `for` filter
+        | Else | Where
     )
 }
 
@@ -1379,6 +1676,236 @@ mod tests {
 
     fn tokenize(input: &str) -> Vec<Token> {
         tokenize_result(input).expect("Lexing failed")
+    }
+
+    #[test]
+    fn string_syntax_regression_plain_and_escaped_markers_remain_literals() {
+        let tokens = tokenize(r#""$HOME $$ {name} \${name}""#);
+        assert_eq!(
+            tokens[0],
+            Token::String {
+                value: "$HOME $$ {name} ${name}".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn string_syntax_regression_matching_hashes_select_interpolation() {
+        let tokens = tokenize(r###"##"${name} $#{name} $##{name}"##"###);
+        assert!(tokens.iter().any(|token| matches!(token,
+            Token::StringText { value } if value == "${name} $#{name} ")));
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|token| matches!(token, Token::StringInterpolationStart))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn string_syntax_regression_raw_backslashes_are_not_decoded() {
+        let tokens = tokenize(r##"#"C:\notes\file\"#"##);
+        assert_eq!(
+            tokens[0],
+            Token::String {
+                value: "C:\\notes\\file\\".into()
+            }
+        );
+    }
+
+    #[test]
+    fn string_syntax_regression_multiline_strips_only_source_indentation() {
+        let tokens = tokenize("\"\"\"\n    Hello\n      world\n    \"\"\"");
+        assert_eq!(
+            tokens[0],
+            Token::String {
+                value: "Hello\n  world".into()
+            }
+        );
+    }
+
+    #[test]
+    fn interpolation_is_recognized_before_decoding_source_escapes() {
+        for (source, expected) in [
+            (r#""\u{24}{name}""#, "${name}"),
+            (r#""$\u{7b}name}""#, "${name}"),
+            (r#""\${name}""#, "${name}"),
+            (
+                r##"#"${name} $##{name} \n \u{24}"#"##,
+                "${name} $##{name} \\n \\u{24}",
+            ),
+            (r#""$HOME $$ {} }} {{""#, "$HOME $$ {} }} {{"),
+        ] {
+            assert_eq!(
+                tokenize(source)[0],
+                Token::String {
+                    value: expected.into()
+                },
+                "{source}"
+            );
+        }
+        let tokens = tokenize(r#""Cost: $${amount}""#);
+        assert_eq!(
+            tokens[1],
+            Token::StringText {
+                value: "Cost: $".into()
+            }
+        );
+    }
+
+    #[test]
+    fn raw_delimiters_and_interpolation_match_arbitrary_hash_counts() {
+        for count in 1..=16 {
+            let hashes = "#".repeat(count);
+            let source =
+                format!("{hashes}\"literal \\\" ${{x}} $#{hashes}{{x}} ${hashes}{{x}}\"{hashes}");
+            let tokens = tokenize(&source);
+            assert_eq!(
+                tokens
+                    .iter()
+                    .filter(|token| matches!(token, Token::StringInterpolationStart))
+                    .count(),
+                1,
+                "{source}"
+            );
+            assert!(
+                tokens
+                    .iter()
+                    .any(|token| matches!(token, Token::Identifier { value } if value == "x"))
+            );
+        }
+        assert_eq!(
+            tokenize(r###"##"a "# b"##"###)[0],
+            Token::String {
+                value: "a \"# b".into()
+            }
+        );
+    }
+
+    #[test]
+    fn long_hash_delimiters_and_malformed_prefixes_do_not_require_backtracking() {
+        let hashes = "#".repeat(4096);
+        let content = "$\"".repeat(4096);
+        let source = format!("{hashes}\"{content}\"{hashes}");
+        assert_eq!(tokenize(&source)[0], Token::String { value: content });
+        for source in [hashes.clone(), format!("{hashes}notAString")] {
+            assert!(matches!(
+                tokenize_result(&source),
+                Err(LexerError::InvalidCharacter('#'))
+            ));
+        }
+        // Existing hash directives still use the ordinary token path.
+        assert_eq!(tokenize("#cfg")[0], Token::Hash);
+    }
+
+    #[test]
+    fn raw_interpolation_uses_normal_lexing_for_inner_strings() {
+        let tokens = tokenize(r###"#"\$#{"\n"} $#{#"\t"#}"#"###);
+        let literals: Vec<_> = tokens
+            .iter()
+            .filter_map(|token| match token {
+                Token::String { value } => Some(value.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(literals, ["\n", "\\t"]);
+        assert!(
+            tokens
+                .iter()
+                .any(|token| matches!(token, Token::StringText { value } if value == "\\"))
+        );
+    }
+
+    #[test]
+    fn empty_and_comment_only_interpolations_are_errors() {
+        for source in [
+            r#""${}""#,
+            r#""${ /* } */ }""#,
+            "\"\"\"\n${\n// empty\n}\n\"\"\"",
+        ] {
+            assert!(
+                matches!(
+                    tokenize_result(source),
+                    Err(LexerError::EmptyStringInterpolation)
+                ),
+                "{source}"
+            );
+        }
+        assert!(tokenize_result(r#""${""}""#).is_ok());
+    }
+
+    #[test]
+    fn multiline_layout_preserves_blank_lines_tabs_and_escape_values() {
+        for (source, expected) in [
+            ("\"\"\"\n\"\"\"", ""),
+            ("\"\"\"\n    \n    \"\"\"", ""),
+            ("\"\"\"\n    \n    x  \n\n    \"\"\"", "\nx  \n"),
+            ("\"\"\"\n\tx\n\t  y\n\t\"\"\"", "x\n  y"),
+            ("\"\"\"\n    \\n\\t\n    \"\"\"", "\n\t"),
+            ("#\"\"\"\n    \\n\\t\n    \"\"\"#", "\\n\\t"),
+        ] {
+            assert_eq!(
+                tokenize(source)[0],
+                Token::String {
+                    value: expected.into()
+                },
+                "{source}"
+            );
+            assert_eq!(tokenize(source), tokenize(&source.replace('\n', "\r\n")));
+        }
+    }
+
+    #[test]
+    fn multiline_indentation_is_validated_even_before_an_expression() {
+        for source in [
+            "\"\"\"\n  short\n    \"\"\"",
+            "\"\"\"\n  ${x}\n    \"\"\"",
+            "\"\"\"\n\tx\n    \"\"\"",
+        ] {
+            assert!(
+                matches!(
+                    tokenize_result(source),
+                    Err(LexerError::MultilineStringIndentation)
+                ),
+                "{source}"
+            );
+        }
+        assert!(matches!(
+            tokenize_result("\"\"\"inline\"\"\""),
+            Err(LexerError::MultilineStringOpening)
+        ));
+        assert!(matches!(
+            tokenize_result("\"\"\"\ntext\"\"\""),
+            Err(LexerError::MultilineStringClosing)
+        ));
+        assert!(matches!(
+            tokenize_result("\"a\\\nb\""),
+            Err(LexerError::StringLineContinuation)
+        ));
+        assert!(matches!(
+            tokenize_result(r#"f"old""#),
+            Err(LexerError::ObsoleteStringPrefix)
+        ));
+    }
+
+    #[test]
+    fn multiline_expression_lines_are_not_literal_indentation() {
+        let source = "\"\"\"\n    before ${\n1 +\n2\n} after\n    \"\"\"";
+        let tokens = tokenize(source);
+        let text: Vec<_> = tokens
+            .iter()
+            .filter_map(|token| match token {
+                Token::StringText { value } => Some(value.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, ["before ", " after"]);
+        let end = tokens
+            .iter()
+            .position(|token| matches!(token, Token::StringInterpolationEnd))
+            .unwrap();
+        assert!(!matches!(tokens[end - 1], Token::Semicolon));
     }
 
     #[test]
@@ -1542,7 +2069,7 @@ mod tests {
                     value: "hello".into()
                 },
                 Token::String {
-                    value: r#"escaped \" quote"#.into()
+                    value: "escaped \" quote".into()
                 },
                 Token::Semicolon,
                 Token::EOF,
@@ -1557,11 +2084,9 @@ mod tests {
         assert_eq!(
             tokens,
             vec![
+                Token::String { value: "\"".into() },
                 Token::String {
-                    value: r#"\""#.into()
-                },
-                Token::String {
-                    value: r#"before\""#.into()
+                    value: "before\"".into()
                 },
                 Token::Semicolon,
                 Token::EOF,
@@ -1570,22 +2095,22 @@ mod tests {
     }
 
     #[test]
-    fn test_literals_fstring_basic() {
-        let input = r#"f"hello, {name}""#;
+    fn test_literals_string_interpolation_basic() {
+        let input = r#""hello, ${name}""#;
         let tokens = tokenize(input);
         assert_eq!(
             tokens,
             vec![
-                Token::FStringStart,
-                Token::FStringText {
+                Token::InterpolatedStringStart,
+                Token::StringText {
                     value: "hello, ".into()
                 },
-                Token::FStringExprStart,
+                Token::StringInterpolationStart,
                 Token::Identifier {
                     value: "name".into()
                 },
-                Token::FStringExprEnd,
-                Token::FStringEnd,
+                Token::StringInterpolationEnd,
+                Token::InterpolatedStringEnd,
                 Token::Semicolon,
                 Token::EOF,
             ]
@@ -1593,14 +2118,14 @@ mod tests {
     }
 
     #[test]
-    fn test_literals_fstring_zero_at_end_of_interpolation() {
-        let input = r#"f"{a + 0}""#;
+    fn interpolation_zero_at_end_of_expression() {
+        let input = r#""${a + 0}""#;
         let tokens = tokenize(input);
         assert_eq!(
             tokens,
             vec![
-                Token::FStringStart,
-                Token::FStringExprStart,
+                Token::InterpolatedStringStart,
+                Token::StringInterpolationStart,
                 Token::Identifier { value: "a".into() },
                 Token::Plus,
                 Token::Integer {
@@ -1608,8 +2133,8 @@ mod tests {
                     base: Base::Decimal,
                     suffix: None,
                 },
-                Token::FStringExprEnd,
-                Token::FStringEnd,
+                Token::StringInterpolationEnd,
+                Token::InterpolatedStringEnd,
                 Token::Semicolon,
                 Token::EOF,
             ]
@@ -1617,35 +2142,31 @@ mod tests {
     }
 
     #[test]
-    fn test_literals_fstring_with_escaped_braces() {
-        let input = r#"f"{{ok}}""#;
-        let tokens = tokenize(input);
+    fn test_braces_do_not_require_escaping() {
         assert_eq!(
-            tokens,
+            tokenize(r#""{ok}""#),
             vec![
-                Token::FStringStart,
-                Token::FStringText {
+                Token::String {
                     value: "{ok}".into()
                 },
-                Token::FStringEnd,
                 Token::Semicolon,
-                Token::EOF,
+                Token::EOF
             ]
         );
     }
 
     #[test]
-    fn test_literals_fstring_nested_braces_in_expression() {
-        let input = r#"f"value={Point { x: 1 }}""#;
+    fn test_literals_string_interpolation_nested_braces_in_expression() {
+        let input = r#""value=${Point { x: 1 }}""#;
         let tokens = tokenize(input);
         assert_eq!(
             tokens,
             vec![
-                Token::FStringStart,
-                Token::FStringText {
+                Token::InterpolatedStringStart,
+                Token::StringText {
                     value: "value=".into()
                 },
-                Token::FStringExprStart,
+                Token::StringInterpolationStart,
                 Token::Identifier {
                     value: "Point".into()
                 },
@@ -1658,8 +2179,8 @@ mod tests {
                     suffix: None,
                 },
                 Token::RBrace,
-                Token::FStringExprEnd,
-                Token::FStringEnd,
+                Token::StringInterpolationEnd,
+                Token::InterpolatedStringEnd,
                 Token::Semicolon,
                 Token::EOF,
             ]
@@ -1667,20 +2188,20 @@ mod tests {
     }
 
     #[test]
-    fn test_fstring_nested_interpolation_uses_normal_lexing() {
-        let tokens = tokenize(r#"f"{f"{"}"}"}""#);
+    fn test_string_interpolation_nested_interpolation_uses_normal_lexing() {
+        let tokens = tokenize(r#""${"${"}"}"}""#);
         assert_eq!(
             tokens,
             vec![
-                Token::FStringStart,
-                Token::FStringExprStart,
-                Token::FStringStart,
-                Token::FStringExprStart,
+                Token::InterpolatedStringStart,
+                Token::StringInterpolationStart,
+                Token::InterpolatedStringStart,
+                Token::StringInterpolationStart,
                 Token::String { value: "}".into() },
-                Token::FStringExprEnd,
-                Token::FStringEnd,
-                Token::FStringExprEnd,
-                Token::FStringEnd,
+                Token::StringInterpolationEnd,
+                Token::InterpolatedStringEnd,
+                Token::StringInterpolationEnd,
+                Token::InterpolatedStringEnd,
                 Token::Semicolon,
                 Token::EOF,
             ]
@@ -1688,8 +2209,8 @@ mod tests {
     }
 
     #[test]
-    fn fstring_interpolation_tokens_preserve_original_source_spans() {
-        let input = r#"f"{'{' /* } */ + `}` }""#;
+    fn string_interpolation_tokens_preserve_original_source_spans() {
+        let input = r#""${'{' /* } */ + `}` }""#;
         let file = Lexer::new(input, FileID::from_raw(0)).tokenize().unwrap();
         for (snippet, token) in [
             ("'{'", Token::Rune { value: "{".into() }),
@@ -1710,12 +2231,12 @@ mod tests {
     }
 
     #[test]
-    fn fstring_interpolation_newline_error_stops_before_newline() {
+    fn string_interpolation_newline_error_stops_before_newline() {
         for input in [
-            "f\"{\"unterminated\n}\"",
-            "f\"{/* unterminated\n}\"",
-            "f\"{`unterminated\n}\"",
-            "f\"{'\n'}\"",
+            "\"${\"unterminated\n}\"}",
+            "\"${/* unterminated\n}\"}",
+            "\"${`unterminated\n}\"}",
+            "\"${'\n'}\"",
         ] {
             let error = Lexer::new(input, FileID::from_raw(0))
                 .tokenize()
@@ -1723,9 +2244,9 @@ mod tests {
                 .unwrap();
             assert!(matches!(
                 error.value,
-                LexerError::UnterminatedFStringInterpolation
+                LexerError::UnterminatedStringInterpolation
             ));
-            assert_eq!(error.span.start, Position { line: 0, offset: 0 });
+            assert_eq!(error.span.start, Position { line: 0, offset: 1 });
             assert_eq!(
                 error.span.end,
                 Position {
@@ -1737,24 +2258,25 @@ mod tests {
     }
 
     #[test]
-    fn test_fstring_empty_interpolation_error() {
-        let error = tokenize_result(r#"f"{}""#).expect_err("expected lexing to fail");
-        assert!(matches!(error, LexerError::EmptyFStringInterpolation));
+    fn test_string_interpolation_empty_interpolation_error() {
+        let error = tokenize_result(r#""${}""#).expect_err("expected lexing to fail");
+        assert!(matches!(error, LexerError::EmptyStringInterpolation));
     }
 
     #[test]
-    fn test_fstring_unmatched_brace_error() {
-        let error = tokenize_result(r#"f"}""#).expect_err("expected lexing to fail");
-        assert!(matches!(error, LexerError::UnmatchedFStringBrace));
+    fn unmatched_braces_are_literal_text() {
+        assert_eq!(
+            tokenize(r#""{ok} }} {{""#)[0],
+            Token::String {
+                value: "{ok} }} {{".into()
+            }
+        );
     }
 
     #[test]
-    fn test_fstring_unterminated_interpolation_error() {
-        let error = tokenize_result(r#"f"{name""#).expect_err("expected lexing to fail");
-        assert!(matches!(
-            error,
-            LexerError::UnterminatedFStringInterpolation
-        ));
+    fn test_string_interpolation_unterminated_interpolation_error() {
+        let error = tokenize_result(r#""${name"}"#).expect_err("expected lexing to fail");
+        assert!(matches!(error, LexerError::UnterminatedStringInterpolation));
     }
 
     #[test]
@@ -1807,8 +2329,8 @@ mod tests {
         );
         assert_eq!(tokenize("/* \" /* */ \" */ 42"), tokenize("42"));
         assert_eq!(
-            tokenize("f\"{1 /* outer /* inner */ tail */ + 2}\""),
-            tokenize("f\"{1 + 2}\"")
+            tokenize("\"${1 /* outer /* inner */ tail */ + 2}\""),
+            tokenize("\"${1 + 2}\"")
         );
         let deeply_nested = format!("{}{}42", "/*".repeat(2048), "*/".repeat(2048));
         assert_eq!(tokenize(&deeply_nested), tokenize("42"));
@@ -1832,9 +2354,9 @@ mod tests {
         let file = FileID::new(0);
         for source in [
             "//+cfg family(\"unix\")\nlet x = 'é'\n/* comment\nline */\nx\n",
-            "func main() {\n let s = f\"{42}\"\n}\n",
+            "func main() {\n let s = \"${42}\"\n}\n",
             "\"first\nsecond\"",
-            "f\"{1\n}\"",
+            "\"${1\n}\"",
             "`first\nsecond`",
         ] {
             let lf = Lexer::new(source, file).tokenize().map(|f| f.tokens);
@@ -1914,7 +2436,6 @@ mod tests {
         << p
         >> q
         . r
-        .. s
         |> t
         ?? u
         ";
@@ -1924,6 +2445,48 @@ mod tests {
             .filter(|t| matches!(t, Token::Semicolon))
             .count();
         assert_eq!(semi_count, 1, "Should only have one semicolon at the end");
+    }
+
+    #[test]
+    fn test_asi_open_ended_ranges() {
+        // Postfix `start..` ends a statement at newline so the next line does not become RHS.
+        let tokens = tokenize("r := start..\nnextCall()\n");
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Identifier { value: "r".into() },
+                Token::ColonEq,
+                Token::Identifier {
+                    value: "start".into()
+                },
+                Token::DotDot,
+                Token::Semicolon,
+                Token::Identifier {
+                    value: "nextCall".into()
+                },
+                Token::LParen,
+                Token::RParen,
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+
+        // Leading `..end` and `..=end` do not continue the previous line.
+        let tokens = tokenize("a\n..b\n..=c\n");
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Identifier { value: "a".into() },
+                Token::Semicolon,
+                Token::DotDot,
+                Token::Identifier { value: "b".into() },
+                Token::Semicolon,
+                Token::DotDotEq,
+                Token::Identifier { value: "c".into() },
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
     }
 
     #[test]
@@ -1976,6 +2539,83 @@ mod tests {
                 Token::Identifier { value: "a".into() },
                 Token::Semicolon,
                 Token::Bang,
+                Token::Identifier { value: "b".into() },
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_bang_in_requires_a_whole_word() {
+        let ident = |value: &str| Token::Identifier {
+            value: value.into(),
+        };
+        // `!` touching `in` is the negated membership operator.
+        assert_eq!(
+            tokenize("a !in b"),
+            vec![ident("a"), Token::BangIn, ident("b"), Token::Semicolon, Token::EOF]
+        );
+        assert_eq!(
+            tokenize("a!in b"),
+            vec![ident("a"), Token::BangIn, ident("b"), Token::Semicolon, Token::EOF]
+        );
+        assert_eq!(
+            tokenize("a !in(b)"),
+            vec![
+                ident("a"),
+                Token::BangIn,
+                Token::LParen,
+                ident("b"),
+                Token::RParen,
+                Token::Semicolon,
+                Token::EOF
+            ]
+        );
+        // A space after `!` keeps postfix `!` followed by `in`.
+        assert_eq!(
+            tokenize("a! in b"),
+            vec![ident("a"), Token::Bang, Token::In, ident("b"), Token::Semicolon, Token::EOF]
+        );
+        // Identifiers that begin with `in` stay identifiers.
+        for name in ["inside", "index", "in_range", "in2"] {
+            assert_eq!(
+                tokenize(&format!("!{name}")),
+                vec![Token::Bang, ident(name), Token::Semicolon, Token::EOF],
+                "!{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_asi_optional_assignment_continues_the_line() {
+        let input = "
+        a
+        ??= b
+        ";
+        assert_eq!(
+            tokenize(input),
+            vec![
+                Token::Identifier { value: "a".into() },
+                Token::QuestionQuestionEq,
+                Token::Identifier { value: "b".into() },
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_asi_bang_in_continues_the_line() {
+        let input = "
+        a
+        !in b
+        ";
+        assert_eq!(
+            tokenize(input),
+            vec![
+                Token::Identifier { value: "a".into() },
+                Token::BangIn,
                 Token::Identifier { value: "b".into() },
                 Token::Semicolon,
                 Token::EOF,
@@ -2092,6 +2732,143 @@ mod tests {
             ]
         );
     }
+
+    /// Tokens after ASI, separated by spaces, without the trailing EOF.
+    fn render(input: &str) -> String {
+        let tokens = tokenize(input);
+        let (eof, tokens) = tokens.split_last().unwrap();
+        assert_eq!(*eof, Token::EOF);
+        tokens
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn asi_else_on_a_new_line_continues_the_previous_line() {
+        assert_eq!(
+            render("if a {\n    b()\n}\nelse if c {\n    d()\n}\nelse {\n    e()\n}"),
+            "if a { b ( ) ; } else if c { d ( ) ; } else { e ( ) ; } ;"
+        );
+        assert_eq!(
+            render("guard value > 0\nelse { return }"),
+            "guard value > 0 else { return } ;"
+        );
+    }
+
+    #[test]
+    fn asi_where_on_a_new_line_continues_the_previous_line() {
+        assert_eq!(
+            render("func largest[T](_ values: [T]) -> T\n    where T: Ord {\n    x\n}"),
+            "func largest [ T ] ( _ values : [ T ] ) -> T where T : Ord { x ; } ;"
+        );
+        assert_eq!(
+            render("for item in items\n    where item.enabled {\n}"),
+            "for item in items where item . enabled { } ;"
+        );
+    }
+
+    #[test]
+    fn asi_brace_on_a_new_line_still_ends_the_previous_line() {
+        // Only `else` and `where` were added; a leading `{` is unchanged.
+        assert_eq!(
+            render("func f() -> T\n    where T: Ord\n{\n}"),
+            "func f ( ) -> T where T : Ord ; { } ;"
+        );
+        assert_eq!(render("if a {\n}\n{\n}"), "if a { } ; { } ;");
+    }
+
+    #[test]
+    fn asi_does_not_insert_inside_parentheses_or_brackets() {
+        assert_eq!(
+            render("total := sum(\n    first,\n    second\n)"),
+            "total := sum ( first , second ) ;"
+        );
+        assert_eq!(
+            render("matrix := [\n    [1, 2, 3],\n    [4, 5, 6]\n]"),
+            "matrix := [ [ 1 , 2 , 3 ] , [ 4 , 5 , 6 ] ] ;"
+        );
+        assert_eq!(
+            render("value := table[\n    row\n]"),
+            "value := table [ row ] ;"
+        );
+        assert_eq!(
+            render("point := (\n    x,\n    y\n)"),
+            "point := ( x , y ) ;"
+        );
+        // A missing comma is now the parser's to report, not a stray `;`.
+        assert_eq!(render("f(\n    a\n    b\n)"), "f ( a b ) ;");
+    }
+
+    #[test]
+    fn asi_inserts_inside_braces_nested_in_parentheses_or_brackets() {
+        assert_eq!(
+            render(
+                "compute(\n    items.map(item => {\n        log(item)\n        item * 2\n    })\n)"
+            ),
+            "compute ( items . map ( item => { log ( item ) ; item * 2 ; } ) ) ;"
+        );
+        assert_eq!(
+            render("[\n    match x {\n        case .a => 1\n        case .b => 2\n    }\n]"),
+            "[ match x { case . a => 1 ; case . b => 2 ; } ] ;"
+        );
+    }
+
+    #[test]
+    fn asi_resumes_the_enclosing_rule_after_a_closing_delimiter() {
+        assert_eq!(render("f(\n    a\n)\nb"), "f ( a ) ; b ;");
+        assert_eq!(
+            render("{\n    f(a)\n    [1].count\n}"),
+            "{ f ( a ) ; [ 1 ] . count ; } ;"
+        );
+    }
+
+    #[test]
+    fn asi_keeps_explicit_semicolons_inside_brackets() {
+        assert_eq!(render("[0; 20]"), "[ 0 ; 20 ] ;");
+        assert_eq!(render("x: [uint8; 20]"), "x : [ uint8 ; 20 ] ;");
+        // A newline no longer stands in for the repeat separator.
+        assert_eq!(render("[0\n20]"), "[ 0 20 ] ;");
+    }
+
+    #[test]
+    fn asi_inside_interpolations_is_unchanged() {
+        // Interpolations in multi-line strings keep the brace rule...
+        let tokens = tokenize("\"\"\"\n    ${ a\nb }\n    \"\"\"");
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| matches!(t, Token::Semicolon))
+                .count(),
+            2
+        );
+        // ...while a call inside one suppresses insertion, and an
+        // interpolation inside a call argument returns to the call's rule.
+        let tokens = tokenize("f(\n\"\"\"\n    ${ g(\na\n) }\n    \"\"\"\n)");
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| matches!(t, Token::Semicolon))
+                .count(),
+            1
+        );
+        assert_eq!(render("f(\n    \"${x}\"\n)"), render("f(\"${x}\")"));
+    }
+
+    #[test]
+    fn asi_recovers_from_unbalanced_delimiters() {
+        // An unclosed `(` stops suppressing at the `}` that closes its block.
+        assert_eq!(
+            render("{\n    f(a\n    b\n}\nc\nd"),
+            "{ f ( a b } ; c ; d ;"
+        );
+        // A closer without an opener is ignored.
+        assert_eq!(render("a)\nb\nc]\nd"), "a ) ; b ; c ] ; d ;");
+        // End of file still inserts inside an unclosed delimiter.
+        assert_eq!(render("f(a"), "f ( a ;");
+    }
+
     #[test]
     fn test_all_keywords() {
         let keywords = vec![
@@ -2214,6 +2991,8 @@ mod tests {
             ("?", Token::Question),
             ("?.", Token::QuestionDot),
             ("??", Token::QuestionQuestion),
+            ("??=", Token::QuestionQuestionEq),
+            ("!in", Token::BangIn),
             ("@", Token::At),
             ("...", Token::Ellipsis),
             ("..", Token::DotDot),

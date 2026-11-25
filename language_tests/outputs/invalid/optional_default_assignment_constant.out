@@ -1,0 +1,12 @@
+error: cannot assign to an immutable binding
+ -> language_tests/source_files/invalid/optional_default_assignment_constant.tr:5:4
+	    name ??= "fixed"
+	    ^^^^
+error: '??=' needs an optional target, found 'int32'
+ -> language_tests/source_files/invalid/optional_default_assignment_constant.tr:9:4
+	    LIMIT ??= 2
+	    ^^^^^^^^^^^
+error: left-hand side of assignment is not assignable
+ -> language_tests/source_files/invalid/optional_default_assignment_constant.tr:9:4
+	    LIMIT ??= 2
+	    ^^^^^

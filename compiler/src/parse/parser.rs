@@ -41,19 +41,30 @@ impl NodeTagger {
         id
     }
 }
+/// `lint_warnings` enables the parser's advisory warnings for the package
+/// being compiled (see `ParserError::ContinuedLine`); dependencies parse
+/// without them.
 pub fn parse_package(
     package: lexer::Pacakge,
     dcx: &DiagCtx,
+    lint_warnings: bool,
 ) -> Result<ast::Package, ReportedError> {
     let next: NextNode = Default::default();
-    let root = parse_module(package.root, next, dcx, true)?;
+    let options = ParseOptions { lint_warnings };
+    let root = parse_module(package.root, next, dcx, options, true)?;
     Ok(ast::Package { root })
+}
+
+#[derive(Clone, Copy)]
+struct ParseOptions {
+    lint_warnings: bool,
 }
 
 fn parse_module(
     module: lexer::Module,
     next: NextNode,
     dcx: &DiagCtx,
+    options: ParseOptions,
     is_root: bool,
 ) -> Result<ast::Module, ReportedError> {
     let name = Symbol::new(&module.name);
@@ -62,13 +73,13 @@ fn parse_module(
     let mut module_decls: Vec<ModuleDecl> = vec![];
 
     for file in module.files {
-        let (file, decls) = parse_file(file, next.clone(), dcx)?;
+        let (file, decls) = parse_file(file, next.clone(), dcx, options)?;
         files.push(file);
         module_decls.extend(decls);
     }
 
     for module in module.submodules {
-        let module = parse_module(module, next.clone(), dcx, false)?;
+        let module = parse_module(module, next.clone(), dcx, options, false)?;
         submodules.push(module);
     }
 
@@ -140,9 +151,13 @@ fn parse_file(
     file: lexer::File,
     next: NextNode,
     dcx: &DiagCtx,
+    options: ParseOptions,
 ) -> Result<(ast::File, Vec<ModuleDecl>), ReportedError> {
     let id = file.id;
-    let parser = Parser::new(file, next.clone());
+    let mut parser = Parser::new(file, next.clone());
+    if options.lint_warnings {
+        parser.enable_lint_warnings();
+    }
     let (declarations, module_decls, warnings) = match parser.parse() {
         Ok(items) => items,
         Err((errors, warnings)) => {
@@ -177,10 +192,15 @@ struct Parser {
     file: lexer::File,
     cursor: usize,
     restrictions: Restrictions,
-    token_splits: Vec<(usize, Spanned<Token>)>,
+    /// Split token index, its original token and how many tokens were inserted after it.
+    token_splits: Vec<(usize, Spanned<Token>, usize)>,
     next_index: NextNode,
     errors: Vec<Spanned<ParserError>>,
     warnings: Vec<Spanned<ParserError>>,
+    /// Start positions of tokens that begin a line directly inside `( )` or
+    /// `[ ]`, where no semicolon is inserted, so the parser may join them to
+    /// the previous line's expression. Empty unless lint warnings are on.
+    continued_line_starts: rustc_hash::FxHashSet<crate::span::Position>,
 }
 
 impl Parser {
@@ -193,7 +213,51 @@ impl Parser {
             errors: vec![],
             warnings: vec![],
             next_index: next,
+            continued_line_starts: Default::default(),
         }
+    }
+
+    fn enable_lint_warnings(&mut self) {
+        let tokens = &self.file.tokens;
+        let grouped = lexer::newline_inside_group(tokens);
+        self.continued_line_starts = tokens
+            .iter()
+            .zip(tokens.iter().skip(1))
+            .zip(grouped)
+            .filter(|((previous, token), grouped)| {
+                *grouped
+                    && previous.span.end.line < token.span.start.line
+                    && matches!(
+                        token.value,
+                        Token::LParen | Token::LBracket | Token::Amp | Token::Star
+                    )
+            })
+            .map(|((_, token), _)| token.span.start)
+            .collect();
+    }
+
+    /// Warns when the current `(`, `[`, `&` or `*` starts a line inside
+    /// `( )` or `[ ]` and is about to join the previous line's expression:
+    /// a missing comma between elements reads the same way. A binary `&` or
+    /// `*` warns only when its operand follows without a space (`&b`, `*p`),
+    /// which reads as a new reference or dereference element.
+    fn warn_if_continued_line(&mut self, binary: bool) {
+        let Some(token) = self.current() else {
+            return;
+        };
+        if !self.continued_line_starts.contains(&token.span.start) {
+            return;
+        }
+        let span = token.span;
+        if binary {
+            let Some(operand) = self.file.tokens.get(self.cursor + 1) else {
+                return;
+            };
+            if operand.span.start != span.end {
+                return;
+            }
+        }
+        self.emit_warning(ParserError::ContinuedLine, span);
     }
 }
 
@@ -267,8 +331,8 @@ impl Parser {
 
     /// Speculation must restore token edits and diagnostics as well as the cursor.
     fn restore(&mut self, checkpoint: ParserCheckpoint) {
-        for (index, original) in self.token_splits.drain(checkpoint.token_splits..).rev() {
-            self.file.tokens.remove(index + 1);
+        for (index, original, inserted) in self.token_splits.drain(checkpoint.token_splits..).rev() {
+            self.file.tokens.drain(index + 1..index + 1 + inserted);
             self.file.tokens[index] = original;
         }
         self.cursor = checkpoint.cursor;
@@ -294,7 +358,7 @@ impl Parser {
     fn matches_question(&self) -> bool {
         matches!(
             self.current_token(),
-            &Token::Question | &Token::QuestionQuestion
+            &Token::Question | &Token::QuestionQuestion | &Token::QuestionQuestionEq
         )
     }
 
@@ -305,7 +369,7 @@ impl Parser {
             line: span.start.line,
             offset: span.start.offset + 1,
         };
-        self.token_splits.push((self.cursor, original));
+        self.token_splits.push((self.cursor, original, 1));
         self.file.tokens[self.cursor] = Spanned::new(token.clone(), Span { end: mid, ..span });
         self.file.tokens.insert(
             self.cursor + 1,
@@ -324,8 +388,35 @@ impl Parser {
                 self.bump();
                 true
             }
+            &Token::QuestionQuestionEq => {
+                // `var value: T??= nil` closes a doubly optional type.
+                self.split_question_question_eq();
+                self.bump();
+                true
+            }
             _ => false,
         }
+    }
+
+    /// Splits `??=` into `?`, `?` and `=`, one character each.
+    fn split_question_question_eq(&mut self) {
+        let original = self.file.tokens[self.cursor].clone();
+        let span = original.span;
+        let at = |offset: usize| Position {
+            line: span.start.line,
+            offset: span.start.offset + offset,
+        };
+        self.token_splits.push((self.cursor, original, 2));
+        self.file.tokens[self.cursor] =
+            Spanned::new(Token::Question, Span { end: at(1), ..span });
+        self.file.tokens.insert(
+            self.cursor + 1,
+            Spanned::new(Token::Question, Span { start: at(1), end: at(2), ..span }),
+        );
+        self.file.tokens.insert(
+            self.cursor + 2,
+            Spanned::new(Token::Assign, Span { start: at(2), ..span }),
+        );
     }
 
     fn eat_amp(&mut self) -> bool {
@@ -404,6 +495,10 @@ impl Parser {
     fn expect_semi(&mut self) -> R<()> {
         if self.eat(Token::Semicolon) {
             return Ok(());
+        } else if self.matches(Token::Else) {
+            // A line that begins with `else` continues the previous line, so
+            // a stray `else` surfaces here rather than as an expression.
+            return Err(self.err_at_current(ParserError::UnexpectedElse));
         } else {
             return Err(self.err_at_current(ParserError::ExpectedSemiColon));
         }
@@ -597,7 +692,7 @@ impl Parser {
         visibility: Visibility,
         fn_mode: FnParseMode,
     ) -> R<Option<Declaration>> {
-        let Some((identifier, kind)) = self.parse_declaration_kind(fn_mode)? else {
+        let Some((identifier, kind)) = self.parse_declaration_kind(fn_mode, visibility)? else {
             return Ok(None);
         };
         let declaration = Declaration {
@@ -671,6 +766,16 @@ impl Parser {
         fn_mode: FnParseMode,
     ) -> R<Vec<AssociatedDeclaration>> {
         let (start_span, attributes, visibility) = self.parse_declaration_header()?;
+        self.parse_associated_body(fn_mode, start_span, attributes, visibility)
+    }
+
+    fn parse_associated_body(
+        &mut self,
+        fn_mode: FnParseMode,
+        start_span: Span,
+        attributes: AttributeList,
+        visibility: Visibility,
+    ) -> R<Vec<AssociatedDeclaration>> {
         if self.matches(Token::Var) {
             let declarations = self.parse_computed_property_associated(
                 start_span,
@@ -793,6 +898,7 @@ impl Parser {
                         },
                         annotated_type: Box::new(self_type),
                         default_value: None,
+                        is_lazy: false,
                         is_variadic: false,
                         span,
                     };
@@ -922,6 +1028,7 @@ impl Parser {
                 kind: TypeKind::ImplicitSelf,
             }),
             default_value: None,
+            is_lazy: false,
             is_variadic: false,
             span,
         }
@@ -1004,6 +1111,7 @@ impl Parser {
                     },
                     block,
                     is_unsafe: false,
+                    is_const: false,
                     is_async: false,
                     is_final: false,
                     is_override: false,
@@ -1081,10 +1189,11 @@ impl Parser {
     fn parse_declaration_kind(
         &mut self,
         mode: FnParseMode,
+        visibility: Visibility,
     ) -> R<Option<(Identifier, DeclarationKind)>> {
         let token = self.current_token();
         let (identifier, kind) = match token {
-            Token::Struct => self.parse_struct_declaration()?,
+            Token::Struct => self.parse_struct_declaration(visibility)?,
             Token::Class | Token::Final => self.parse_class_declaration()?,
             Token::Enum => self.parse_enum_declaration()?,
             Token::Interface => self.parse_interface()?,
@@ -1095,6 +1204,9 @@ impl Parser {
                 return Err(self.err_at_current(ParserError::TopLevelVariableMustBeStatic));
             }
             Token::Static => self.parse_static_variable_decl()?,
+            Token::Const if self.next_matches(1, Token::Function) => {
+                self.parse_function_declaration_kind(mode)?
+            }
             Token::Const => self.parse_const_decl()?,
             Token::Import => (
                 Identifier::emtpy(self.file.id),
@@ -1124,12 +1236,17 @@ impl Parser {
         &mut self,
         mode: FnParseMode,
     ) -> R<(Identifier, DeclarationKind)> {
+        let is_const = self.eat(Token::Const);
         let is_unsafe = self.eat(Token::Unsafe);
         if is_unsafe && !self.matches(Token::Function) {
             return Err(self.err_at_current(ParserError::UnsafeModifierRequiresFunction));
         }
 
-        self.parse_function(mode, is_unsafe)
+        let (ident, mut kind) = self.parse_function(mode, is_unsafe)?;
+        if is_const && let DeclarationKind::Function(func) = &mut kind {
+            func.is_const = true;
+        }
+        Ok((ident, kind))
     }
 
     fn parse_extern_declaration(&mut self) -> R<(Identifier, DeclarationKind)> {
@@ -1488,11 +1605,50 @@ impl Parser {
             (None, first_type)
         };
 
+        let delegate = if conformance && self.matches_contextual_identifier("by") {
+            self.bump();
+            self.parse_self()?;
+            self.expect(Token::Dot)?;
+            Some(self.parse_identifier()?)
+        } else {
+            None
+        };
+
         let where_clause = self.parse_generic_where_clause()?;
 
-        let declarations = self.parse_declaration_list(|p| {
-            p.parse_associated_declaration(FnParseMode { req_body: true })
+        enum ExtensionItem {
+            Nested(Declaration),
+            Associated(AssociatedDeclaration),
+        }
+        let entries = self.parse_declaration_list(|p| {
+            let (span, attributes, visibility) = p.parse_declaration_header()?;
+            let mode = FnParseMode { req_body: true };
+            if interface.is_none()
+                && (matches!(
+                    p.current_token(),
+                    Token::Struct | Token::Enum | Token::Class | Token::Interface
+                ) || (p.matches(Token::Final) && p.next_matches(1, Token::Class)))
+            {
+                let nested = p
+                    .parse_declaration_body(span, attributes, visibility, mode)?
+                    .expect("nominal declaration");
+                p.eat(Token::Semicolon);
+                Ok(vec![ExtensionItem::Nested(nested)])
+            } else {
+                Ok(p.parse_associated_body(mode, span, attributes, visibility)?
+                    .into_iter()
+                    .map(ExtensionItem::Associated)
+                    .collect())
+            }
         })?;
+        let mut nested_types = Vec::new();
+        let mut declarations = Vec::new();
+        for entry in entries {
+            match entry {
+                ExtensionItem::Nested(ty) => nested_types.push(ty),
+                ExtensionItem::Associated(item) => declarations.push(item),
+            }
+        }
         if interface.is_some() {
             for declaration in &declarations {
                 if matches!(declaration.kind, AssociatedDeclarationKind::Initializer(_)) {
@@ -1512,7 +1668,9 @@ impl Parser {
         let impl_block = Impl {
             generics,
             interface,
+            delegate,
             target,
+            nested_types,
             declarations,
         };
 
@@ -1521,10 +1679,25 @@ impl Parser {
 }
 
 impl Parser {
-    fn parse_struct_declaration(&mut self) -> R<(Identifier, DeclarationKind)> {
+    fn parse_struct_declaration(&mut self, visibility: Visibility) -> R<(Identifier, DeclarationKind)> {
         self.expect(Token::Struct)?;
         let identifier = self.parse_identifier()?;
         let type_parameters = self.parse_type_parameters()?;
+        let positional_fields = if self.matches(Token::LParen) {
+            let mut index = 0;
+            Some(self.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, |p| {
+                let ty = p.parse_type()?;
+                let span = ty.span;
+                let identifier = Identifier { symbol: p.intern_symbol(&index.to_string()), span };
+                index += 1;
+                Ok(FieldDefinition {
+                    id: p.next_id(), attributes: Vec::new(), identifier, ty, visibility, span,
+                    mutability: Mutability::Mutable, label: None, default_value: None,
+                })
+            })?)
+        } else {
+            None
+        };
         let conformances = self.parse_conformances()?;
         let where_clause = self.parse_generic_where_clause()?;
         let generics = Generics {
@@ -1532,9 +1705,14 @@ impl Parser {
             where_clause,
         };
 
-        let fields = self.parse_field_definitions(Delimiter::Brace)?;
+        let positional = positional_fields.is_some();
+        let fields = match positional_fields {
+            Some(fields) => fields,
+            None => self.parse_field_definitions(Delimiter::Brace)?,
+        };
 
         let s = Struct {
+            positional,
             generics,
             fields,
             conformances,
@@ -1865,22 +2043,48 @@ impl Parser {
         )
     }
 
-    /// Parse `#cfg(...)` compile-time configuration check expression
-    fn parse_cfg_check_expression(&mut self) -> R<Box<Expression>> {
+    /// Parse a hash directive in expression position.
+    fn parse_hash_expression(&mut self) -> R<Box<Expression>> {
         let lo = self.lo_span();
         self.expect(Token::Hash)?;
 
-        // Expect "cfg" identifier
         let ident = self.parse_identifier()?;
-        if !self.symbol_eq(ident.symbol, "cfg") {
-            return Err(Spanned::new(ParserError::ExpectedCfgIdentifier, ident.span));
-        }
-
-        self.expect(Token::LParen)?;
-        let cfg_expr = self.parse_cfg_expr()?;
-        self.expect(Token::RParen)?;
-
-        let kind = ExpressionKind::CfgCheck(cfg_expr);
+        let kind = match ident.symbol.as_str() {
+            "embed" | "embedBytes" => {
+                self.expect(Token::LParen)?;
+                let Token::String { value } = self.current_token() else {
+                    return Err(self.err_at_current(ParserError::ExpectedAssetPath));
+                };
+                let path = value.clone();
+                self.bump();
+                self.expect(Token::RParen)?;
+                ExpressionKind::Embed {
+                    path,
+                    bytes: ident.symbol.as_str() == "embedBytes",
+                }
+            }
+            "file" => ExpressionKind::SourceLocation(ast::SourceLocation::File),
+            "line" => ExpressionKind::SourceLocation(ast::SourceLocation::Line),
+            "function" => ExpressionKind::SourceLocation(ast::SourceLocation::Function),
+            "cfg" => {
+                self.expect(Token::LParen)?;
+                let cfg = self.parse_cfg_expr()?;
+                self.expect(Token::RParen)?;
+                ExpressionKind::CfgCheck(cfg)
+            }
+            "typeName" => {
+                self.expect(Token::LParen)?;
+                let ty = self.parse_type()?;
+                self.expect(Token::RParen)?;
+                ExpressionKind::TypeName(ty)
+            }
+            _ => {
+                return Err(Spanned::new(
+                    ParserError::UnknownDirective(ident.symbol),
+                    ident.span,
+                ));
+            }
+        };
         Ok(self.build_expr(kind, lo.to(self.hi_span())))
     }
 
@@ -2009,6 +2213,7 @@ impl Parser {
 impl Parser {
     fn parse_field_definition(&mut self) -> R<FieldDefinition> {
         let lo = self.lo_span();
+        let attributes = self.parse_attributes()?;
         let visibility = self.parse_visibility()?;
         // `weak` remains a valid field/module name when followed by `:`.
         if self.matches_contextual_identifier("weak") && !self.next_matches(1, Token::Colon) {
@@ -2034,6 +2239,7 @@ impl Parser {
         };
         let fd = FieldDefinition {
             id: self.next_id(),
+            attributes,
             default_value,
             visibility,
             label: None,
@@ -2167,6 +2373,7 @@ impl Parser {
 
         let def = FieldDefinition {
             id: self.next_id(),
+            attributes: Vec::new(),
             default_value: None,
             visibility: vis,
             label,
@@ -2272,13 +2479,45 @@ impl Parser {
         Ok(kind)
     }
 
+    fn parse_tuple_label(&mut self) -> R<Option<Identifier>> {
+        if matches!(self.current_token(), Token::Identifier { .. })
+            && self.next_matches(1, Token::Colon)
+        {
+            let label = self.parse_identifier()?;
+            self.expect(Token::Colon)?;
+            Ok(Some(label))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn tuple_elements<T>(
+        &mut self,
+        entries: Vec<(Option<Identifier>, T)>,
+    ) -> (Vec<T>, crate::ast::TupleLabels) {
+        let mut labels = crate::ast::TupleLabels::new();
+        let mut seen = rustc_hash::FxHashSet::default();
+        let mut values = Vec::with_capacity(entries.len());
+        for (label, value) in entries {
+            if let Some(label) = label {
+                if !seen.insert(label.symbol) {
+                    self.emit_error(ParserError::DuplicateTupleLabel(label.symbol), label.span);
+                }
+                labels.push((values.len(), label));
+            }
+            values.push(value);
+        }
+        (values, labels)
+    }
+
     fn parse_tuple_type(&mut self) -> R<TypeKind> {
         self.expect(Token::LParen)?;
         let (elements, trailing) = if self.eat(Token::RParen) {
             (Vec::new(), false)
         } else {
+            let label = self.parse_tuple_label()?;
             let first = self.parse_type()?;
-            if self.eat(Token::As) {
+            if label.is_none() && self.eat(Token::As) {
                 let interface = self.parse_type()?;
                 self.expect(Token::RParen)?;
                 self.expect(Token::Dot)?;
@@ -2289,12 +2528,19 @@ impl Parser {
                     member,
                 });
             }
-            self.parse_delimiter_sequence_tail(Delimiter::Parenthesis, Token::Comma, first, |p| {
-                p.parse_type()
-            })?
+            self.parse_delimiter_sequence_tail(
+                Delimiter::Parenthesis,
+                Token::Comma,
+                (label, first),
+                |p| Ok((p.parse_tuple_label()?, p.parse_type()?)),
+            )?
         };
 
+        let (elements, labels) = self.tuple_elements(elements);
         if self.matches(Token::RArrow) {
+            if let Some((_, label)) = labels.first() {
+                self.emit_error(ParserError::LabeledFunctionTypeInput, label.span);
+            }
             self.expect(Token::RArrow)?;
             let output = self.parse_type()?;
 
@@ -2306,12 +2552,12 @@ impl Parser {
             return Ok(kind);
         }
 
-        if elements.len() == 1 && !trailing {
+        if elements.len() == 1 && !trailing && labels.is_empty() {
             let first = elements.into_iter().next().unwrap();
             return Ok(TypeKind::Parenthesis(first));
         }
 
-        Ok(TypeKind::Tuple(elements))
+        Ok(TypeKind::Tuple(elements, labels))
     }
 
     fn parse_collection_type(&mut self) -> R<TypeKind> {
@@ -2476,6 +2722,7 @@ impl Parser {
         let kind = TypeParameterKind::Constant { ty, default };
 
         let tp = TypeParameter {
+            is_anonymous: false,
             id: self.next_id(),
             identifier,
             span,
@@ -2507,6 +2754,7 @@ impl Parser {
         let span = lo.to(self.hi_span());
 
         let tp = TypeParameter {
+            is_anonymous: false,
             id: self.next_id(),
             identifier,
             span,
@@ -2604,36 +2852,37 @@ impl Parser {
 
 // Patterns
 impl Parser {
-    fn parse_match_arm_pattern(&mut self) -> R<Pattern> {
+    fn parse_pattern_alternatives(&mut self, terminators: &[Token]) -> R<Pattern> {
         let lo = self.lo_span();
-        let cases =
-            self.parse_sequence_until(&[Token::EqArrow], Token::Bar, |p| p.parse_pattern())?;
-
-        if cases.is_empty() {
-            return Err(self.err_at_current(ParserError::ExpectedMatchingPattern));
-        }
-
-        // has one pattern
+        let mut cases = self.parse_sequence_until(terminators, Token::Bar, Self::parse_pattern)?;
         if cases.len() == 1 {
-            return Ok(cases.into_iter().next().unwrap());
+            return Ok(cases.pop().unwrap());
         }
-
-        // has multiple patterns is an or pattern
+        for part in &cases {
+            if matches!(part.kind, PatternKind::Rest) {
+                self.emit_error(ParserError::DisallowedRestPatterns, part.span);
+            }
+        }
         let span = lo.to(self.hi_span());
-        let kind = PatternKind::Or(cases, span);
-
-        let pat = Pattern {
-            id: self.next_id(),
-            span,
-            kind,
-        };
-
-        Ok(pat)
+        Ok(Pattern { id: self.next_id(), span, kind: PatternKind::Or(cases, span) })
     }
 
     fn parse_pattern(&mut self) -> R<Pattern> {
         let lo = self.lo_span();
-        let k = self.parse_pattern_kind()?;
+        let checkpoint = self.checkpoint();
+        let mut k = self.parse_pattern_kind()?;
+        if matches!(self.current_token(), Token::DotDot | Token::DotDotEq) {
+            // A path is normally a binding or constructor here. Once a range
+            // operator follows, resolve it as a value expression instead.
+            self.restore(checkpoint);
+            let start = self.parse_pattern_bound()?;
+            let inclusive = self.eat(Token::DotDotEq);
+            if !inclusive {
+                self.expect(Token::DotDot)?;
+            }
+            let end = self.parse_pattern_bound()?;
+            k = PatternKind::Range { start, end, inclusive };
+        }
 
         let o = Pattern {
             id: self.next_id(),
@@ -2644,8 +2893,62 @@ impl Parser {
         Ok(o)
     }
 
+    fn parse_pattern_bound(&mut self) -> R<Box<Expression>> {
+        let restrictions = self.restrictions
+            | Restrictions::NO_STRUCT_LITERALS
+            | Restrictions::STOP_MATCH_ARM_ARROW;
+        let bound = self.with_restrictions(restrictions, Self::parse_prefix_expr)?;
+        fn constant_path(expr: &Expression) -> bool {
+            match &expr.kind {
+                ExpressionKind::Identifier(_) => true,
+                ExpressionKind::Member { target, qualified: true, .. }
+                | ExpressionKind::Specialize { target, .. } => constant_path(target),
+                _ => false,
+            }
+        }
+        let valid = match &bound.kind {
+            ExpressionKind::Literal(Literal::Integer { .. } | Literal::Rune { .. }) => true,
+            ExpressionKind::Unary(UnaryOperator::Negate, operand) => {
+                matches!(operand.kind, ExpressionKind::Literal(Literal::Integer { .. }))
+            }
+            _ => constant_path(&bound),
+        };
+        if !valid {
+            return Err(Spanned::new(ParserError::InvalidRangePatternBound, bound.span));
+        }
+        Ok(bound)
+    }
+
     fn parse_pattern_kind(&mut self) -> R<PatternKind> {
         match self.current_token() {
+            Token::Identifier { .. } if self.next_matches(1, Token::At) => {
+                let name = self.parse_identifier()?;
+                let binding = Pattern {
+                    id: self.next_id(), span: name.span, kind: PatternKind::Identifier(name),
+                };
+                self.expect(Token::At)?;
+                let pattern = self.with_restrictions(
+                    self.restrictions - Restrictions::ALLOW_REST_PATTERN, Self::parse_pattern,
+                )?;
+                Ok(PatternKind::At {
+                    binding: Box::new(binding),
+                    pattern: Box::new(pattern),
+                })
+            }
+            Token::Is => {
+                self.bump();
+                Ok(PatternKind::TypeTest { target: self.parse_type()?, binding: None })
+            }
+            Token::Identifier { .. } if self.next_matches(1, Token::As) => {
+                let name = self.parse_identifier()?;
+                let binding = Pattern {
+                    id: self.next_id(), span: name.span, kind: PatternKind::Identifier(name),
+                };
+                self.expect(Token::As)?;
+                Ok(PatternKind::TypeTest {
+                    target: self.parse_type()?, binding: Some(Box::new(binding)),
+                })
+            }
             Token::LParen => self.parse_pattern_tuple_kind(),
             Token::Amp | Token::AmpAmp => self.reject_reference_pattern(),
             Token::Underscore => {
@@ -2677,7 +2980,7 @@ impl Parser {
         res.insert(Restrictions::ALLOW_REST_PATTERN);
         let (mut pats, trailing) = self.with_restrictions(res, |p| {
             p.parse_delimiter_sequence_trailing(Delimiter::Parenthesis, Token::Comma, |p| {
-                p.parse_pattern()
+                p.parse_pattern_alternatives(&[])
             })
         })?;
         // `(pat)` without a trailing comma is a parenthesized pattern;
@@ -2712,7 +3015,7 @@ impl Parser {
         let path = self.parse_constructor_path()?;
 
         match self.current_token() {
-            Token::LBrace => {
+            Token::LBrace if !self.restrictions.contains(Restrictions::IS_PATTERN) || self.is_pattern_field_list() => {
                 let lo = self.lo_span();
                 let mut rest = false;
                 let mut names = std::collections::HashSet::new();
@@ -2733,7 +3036,7 @@ impl Parser {
                             p.emit_error(ParserError::DuplicateNamedField(name.symbol), name.span);
                         }
                         let pattern = if p.eat(Token::Colon) {
-                            p.parse_pattern()?
+                            p.parse_pattern_alternatives(&[])?
                         } else {
                             Pattern {
                                 id: p.next_id(),
@@ -2760,7 +3063,7 @@ impl Parser {
                 res.insert(Restrictions::ALLOW_REST_PATTERN);
                 let fields = self.with_restrictions(res, |p| {
                     p.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, |p| {
-                        p.parse_pattern()
+                        p.parse_pattern_alternatives(&[])
                     })
                 })?;
 
@@ -2857,20 +3160,44 @@ impl Parser {
 
         match self.current_token() {
             Token::Let | Token::Var => self.parse_local_statement(),
+            Token::Async if self.next_matches(1, Token::Var) => self.parse_async_local_statement(),
+            Token::Identifier { value }
+                if value == "using" && matches!(self.next(1), Some(Token::Identifier { .. })) =>
+            {
+                self.bump();
+                Ok(StatementKind::Using(self.parse_named_local(Token::Assign)?))
+            }
             Token::Identifier { value }
                 if value == "weak"
                     && (self.next_matches(1, Token::Var) || self.next_matches(1, Token::Let)) =>
             {
                 self.parse_local_statement()
             }
-            Token::Identifier { .. } if self.next_matches(1, Token::ColonEq) => {
+            Token::Identifier { .. } | Token::Underscore
+                if self.next_matches(1, Token::ColonEq) =>
+            {
                 self.parse_shorthand_local_statement()
             }
-            Token::Loop => self.parse_loop_stmt(label),
+            Token::LParen => match self.tuple_shorthand_local_kind() {
+                TupleShorthandStart::Shorthand => self.parse_shorthand_local_statement(),
+                TupleShorthandStart::TypedShorthand => {
+                    Err(self.err_at_current(ParserError::TypedShorthandDeclaration))
+                }
+                TupleShorthandStart::None => {
+                    let expr = self.parse_expression()?;
+                    Ok(StatementKind::Expression(expr))
+                }
+            },
+            Token::Loop => Ok(StatementKind::Expression(self.parse_loop_expression(label)?)),
             Token::While => self.parse_while_stmt(label),
             Token::For => self.parse_for_stmt(label),
-            Token::Defer => self.parse_defer_stmt(),
+            Token::Defer => self.parse_defer_stmt(ast::DeferKind::Always),
+            Token::Identifier { value } if value == "errdefer" && self.starts_errdefer_body() => {
+                self.parse_defer_stmt(ast::DeferKind::OnFailure)
+            }
             Token::Guard => self.parse_guard_stmt(),
+            Token::Hash if self.next_matches(1, Token::For) => self.parse_comptime_for_stmt(),
+            Token::Hash if self.next_matches(1, Token::If) => self.parse_comptime_if_stmt(),
             _ => {
                 // `unsafe { ... }` is an expression statement, not a declaration start.
                 let can_start_decl =
@@ -2894,6 +3221,13 @@ impl Parser {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TupleShorthandStart {
+    None,
+    Shorthand,
+    TypedShorthand,
+}
+
 impl Parser {
     fn parse_local(&mut self) -> R<Local> {
         // var <binding_pattern> <type_annotation>? <initializer_clause>?
@@ -2911,13 +3245,16 @@ impl Parser {
             self.bump();
         }
 
-        let pattern = self.parse_pattern()?;
+        let pattern = self.parse_pattern_alternatives(&[])?;
         if !matches!(
             pattern.kind,
             PatternKind::Identifier(..)
+                | PatternKind::At { .. }
+                | PatternKind::Or(..)
                 | PatternKind::Wildcard
                 | PatternKind::Tuple(..)
                 | PatternKind::PathNamed { .. }
+                | PatternKind::PathTuple { path: ConstructorPath::Qualified { .. }, .. }
         ) {
             return Err(Spanned::new(
                 ParserError::DisallowedLocalBindingPattern,
@@ -2957,36 +3294,206 @@ impl Parser {
 
         Ok(local)
     }
+    fn tuple_shorthand_local_kind(&self) -> TupleShorthandStart {
+        let mut paren_depth: usize = 0;
+        let mut bracket_depth: usize = 0;
+        let mut brace_depth: usize = 0;
+        let mut has_colon_inside = false;
+        let mut index: usize = 0;
+
+        while let Some(token) = self.next(index) {
+            match token {
+                Token::LParen => paren_depth += 1,
+                Token::RParen => {
+                    paren_depth = paren_depth.saturating_sub(1);
+                    if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 {
+                        match self.next(index + 1) {
+                            Some(Token::ColonEq) => {
+                                return if has_colon_inside {
+                                    TupleShorthandStart::TypedShorthand
+                                } else {
+                                    TupleShorthandStart::Shorthand
+                                };
+                            }
+                            Some(Token::Colon) => {
+                                let mut type_index = index + 2;
+                                let mut p = 0usize;
+                                let mut b = 0usize;
+                                let mut c = 0usize;
+                                while let Some(tok) = self.next(type_index) {
+                                    match tok {
+                                        Token::LParen => p += 1,
+                                        Token::RParen => p = p.saturating_sub(1),
+                                        Token::LBracket => b += 1,
+                                        Token::RBracket => b = b.saturating_sub(1),
+                                        Token::LBrace => c += 1,
+                                        Token::RBrace => {
+                                            if c == 0 {
+                                                break;
+                                            }
+                                            c -= 1;
+                                        }
+                                        Token::ColonEq if p == 0 && b == 0 && c == 0 => {
+                                            return TupleShorthandStart::TypedShorthand;
+                                        }
+                                        Token::Semicolon | Token::Assign | Token::EOF
+                                            if p == 0 && b == 0 && c == 0 =>
+                                        {
+                                            break;
+                                        }
+                                        _ => {}
+                                    }
+                                    type_index += 1;
+                                }
+                                return TupleShorthandStart::None;
+                            }
+                            _ => return TupleShorthandStart::None,
+                        }
+                    }
+                }
+                Token::LBracket => bracket_depth += 1,
+                Token::RBracket => bracket_depth = bracket_depth.saturating_sub(1),
+                Token::LBrace => brace_depth += 1,
+                Token::RBrace => brace_depth = brace_depth.saturating_sub(1),
+                Token::Colon if bracket_depth == 0 && brace_depth == 0 => {
+                    has_colon_inside = true;
+                }
+                Token::EOF => return TupleShorthandStart::None,
+                _ => {}
+            }
+            index += 1;
+        }
+        TupleShorthandStart::None
+    }
+
+    fn parse_shorthand_tuple_pattern(&mut self) -> R<Pattern> {
+        let lo = self.lo_span();
+        let mut res = Restrictions::empty();
+        res.insert(Restrictions::ALLOW_REST_PATTERN);
+        let (pats, trailing) = self.with_restrictions(res, |p| {
+            p.parse_delimiter_sequence_trailing(Delimiter::Parenthesis, Token::Comma, |p| {
+                p.parse_pattern_alternatives(&[])
+            })
+        })?;
+        let span = lo.to(self.hi_span());
+        if pats.len() == 1 && !trailing {
+            return Err(Spanned::new(ParserError::DisallowedLocalBindingPattern, span));
+        }
+
+        fn validate_shorthand_pattern(pattern: &Pattern) -> Result<(), Span> {
+            match &pattern.kind {
+                PatternKind::Identifier(..) | PatternKind::Wildcard | PatternKind::Rest => Ok(()),
+                PatternKind::Tuple(items, _) => {
+                    for item in items {
+                        validate_shorthand_pattern(item)?;
+                    }
+                    Ok(())
+                }
+                _ => Err(pattern.span),
+            }
+        }
+
+        for pat in &pats {
+            if let Err(bad_span) = validate_shorthand_pattern(pat) {
+                return Err(Spanned::new(
+                    ParserError::DisallowedLocalBindingPattern,
+                    bad_span,
+                ));
+            }
+        }
+
+        Ok(Pattern {
+            id: self.next_id(),
+            span,
+            kind: PatternKind::Tuple(pats, span),
+        })
+    }
+
     fn parse_shorthand_local_statement(&mut self) -> R<StatementKind> {
+        if self.matches(Token::LParen) {
+            let pattern = self.parse_shorthand_tuple_pattern()?;
+            return Ok(StatementKind::Variable(
+                self.parse_initialized_local(pattern, Token::ColonEq)?,
+            ));
+        }
+        if self.matches(Token::Underscore) {
+            let span = self.lo_span();
+            self.bump();
+            let pattern = Pattern {
+                id: self.next_id(),
+                span,
+                kind: PatternKind::Wildcard,
+            };
+            return Ok(StatementKind::Variable(
+                self.parse_initialized_local(pattern, Token::ColonEq)?,
+            ));
+        }
+        Ok(StatementKind::Variable(
+            self.parse_named_local(Token::ColonEq)?,
+        ))
+    }
+
+    fn parse_named_local(&mut self, separator: Token) -> R<Local> {
         let identifier = self.parse_identifier()?;
-        self.expect(Token::ColonEq)?;
-        let initializer = self.parse_expression()?;
         let pattern = Pattern {
             id: self.next_id(),
             span: identifier.span,
             kind: PatternKind::Identifier(identifier),
         };
-        Ok(StatementKind::Variable(Local {
+        self.parse_initialized_local(pattern, separator)
+    }
+
+    fn parse_initialized_local(&mut self, pattern: Pattern, separator: Token) -> R<Local> {
+        self.expect(separator)?;
+        let initializer = self.parse_expression()?;
+        Ok(Local {
             id: self.next_id(),
             mutability: Mutability::Mutable,
             pattern,
             ty: None,
             initializer: Some(initializer),
             is_shorthand: true,
-        }))
+        })
     }
 
     fn parse_local_statement(&mut self) -> R<StatementKind> {
         let local = self.parse_local()?;
         Ok(StatementKind::Variable(local))
     }
+
+    fn parse_async_local_statement(&mut self) -> R<StatementKind> {
+        self.expect(Token::Async)?;
+        self.expect(Token::Var)?;
+        let identifier = self.parse_identifier()?;
+        let pattern = Pattern {
+            id: self.next_id(),
+            span: identifier.span,
+            kind: PatternKind::Identifier(identifier),
+        };
+        let ty = if self.eat(Token::Colon) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        self.expect(Token::Assign)?;
+        let initializer = self.parse_expression()?;
+        Ok(StatementKind::AsyncVariable(Local {
+            id: self.next_id(),
+            mutability: Mutability::Immutable,
+            pattern,
+            ty,
+            initializer: Some(initializer),
+            is_shorthand: false,
+        }))
+    }
 }
 
 impl Parser {
-    fn parse_loop_stmt(&mut self, label: Option<Label>) -> R<StatementKind> {
+    fn parse_loop_expression(&mut self, label: Option<Label>) -> R<Box<Expression>> {
+        let lo = label.map(|l| l.span).unwrap_or_else(|| self.lo_span());
         self.expect(Token::Loop)?;
         let block = self.parse_block()?;
-        Ok(StatementKind::Loop { label, block })
+        Ok(self.build_expr(ExpressionKind::Loop { label, block }, lo.to(self.hi_span())))
     }
 
     fn parse_while_stmt(&mut self, label: Option<Label>) -> R<StatementKind> {
@@ -2998,6 +3505,54 @@ impl Parser {
             label,
             condition,
             block,
+        })
+    }
+
+    fn parse_comptime_for_stmt(&mut self) -> R<StatementKind> {
+        self.expect(Token::Hash)?;
+        self.expect(Token::For)?;
+        let ident = self.parse_identifier()?;
+        let pattern = Pattern {
+            id: self.next_id(),
+            span: ident.span,
+            kind: PatternKind::Identifier(ident),
+        };
+        self.expect(Token::In)?;
+        self.expect(Token::Hash)?;
+        let directive = self.parse_identifier()?;
+        if directive.symbol.as_str() != "fields" {
+            return Err(Spanned::new(
+                ParserError::UnknownDirective(directive.symbol),
+                directive.span,
+            ));
+        }
+        self.expect(Token::LParen)?;
+        let target_type = self.parse_type()?;
+        self.expect(Token::RParen)?;
+        let body = self.parse_block()?;
+        Ok(StatementKind::ComptimeFor {
+            pattern,
+            target_type,
+            body,
+        })
+    }
+
+    fn parse_comptime_if_stmt(&mut self) -> R<StatementKind> {
+        self.expect(Token::Hash)?;
+        self.expect(Token::If)?;
+        let condition = self.with_restrictions(Restrictions::NO_STRUCT_LITERALS, |p| {
+            p.parse_expression()
+        })?;
+        let then_block = self.parse_block()?;
+        let else_block = if self.eat(Token::Else) {
+            Some(self.parse_block()?)
+        } else {
+            None
+        };
+        Ok(StatementKind::ComptimeIf {
+            condition,
+            then_block,
+            else_block,
         })
     }
 
@@ -3050,8 +3605,48 @@ impl Parser {
     fn parse_break_expression(&mut self) -> R<Box<Expression>> {
         let lo = self.lo_span();
         self.expect(Token::Break)?;
-        let label = self.parse_optional_identifier()?;
-        let kind = ExpressionKind::Break { label };
+        if self.matches_any(&[
+            Token::Semicolon,
+            Token::RBrace,
+            Token::RParen,
+            Token::RBracket,
+            Token::Comma,
+            Token::EOF,
+        ]) {
+            let kind = ExpressionKind::Break {
+                label: None,
+                value: None,
+            };
+            return Ok(self.build_expr(kind, lo.to(self.hi_span())));
+        }
+
+        // Bare `break name` before a statement/expression delimiter can refer to
+        // either an in-scope loop label or a local/value expression. Record both
+        // so name resolution lets a visible label win.
+        let is_bare_ident = matches!(self.current_token(), Token::Identifier { .. })
+            && matches!(
+                self.next(1),
+                Some(
+                    Token::Semicolon
+                        | Token::RBrace
+                        | Token::RParen
+                        | Token::RBracket
+                        | Token::Comma
+                        | Token::EOF
+                ) | None
+            );
+        if is_bare_ident {
+            let ident = self.parse_identifier()?;
+            let ident_expr = self.build_expr(ExpressionKind::Identifier(ident), ident.span);
+            let kind = ExpressionKind::Break {
+                label: Some(ident),
+                value: Some(ident_expr),
+            };
+            return Ok(self.build_expr(kind, lo.to(self.hi_span())));
+        }
+
+        let value = Some(self.parse_expression()?);
+        let kind = ExpressionKind::Break { label: None, value };
         Ok(self.build_expr(kind, lo.to(self.hi_span())))
     }
 
@@ -3063,8 +3658,37 @@ impl Parser {
         Ok(self.build_expr(kind, lo.to(self.hi_span())))
     }
 
-    fn parse_defer_stmt(&mut self) -> R<StatementKind> {
-        self.expect(Token::Defer)?;
+    // A call, subscript, member access or infix operator after an identifier
+    // belongs to that identifier. A block can wrap any ambiguous cleanup expression.
+    fn starts_errdefer_body(&self) -> bool {
+        matches!(
+            self.next(1),
+            Some(
+                Token::LBrace
+                    | Token::Identifier { .. }
+                    | Token::Hash
+                    | Token::If
+                    | Token::Match
+                    | Token::Unsafe
+                    | Token::Await
+                    | Token::Return
+                    | Token::Break
+                    | Token::Continue
+                    | Token::Integer { .. }
+                    | Token::Float { .. }
+                    | Token::Rune { .. }
+                    | Token::String { .. }
+                    | Token::InterpolatedStringStart
+                    | Token::True
+                    | Token::False
+                    | Token::Nil
+                    | Token::Tilde
+            )
+        )
+    }
+
+    fn parse_defer_stmt(&mut self, kind: ast::DeferKind) -> R<StatementKind> {
+        self.bump();
         let block = if self.matches(Token::LBrace) {
             self.parse_block()?
         } else {
@@ -3083,7 +3707,7 @@ impl Parser {
                 has_declarations: false,
             }
         };
-        Ok(StatementKind::Defer(block))
+        Ok(StatementKind::Defer(kind, block))
     }
 
     fn parse_guard_stmt(&mut self) -> R<StatementKind> {
@@ -3157,14 +3781,29 @@ impl Parser {
             items.push(action(self)?);
         }
 
-        if self.matches(Token::Semicolon) {
+        // Newlines inside `( )` and `[ ]` never insert semicolons, but they
+        // still do inside braces.
+        if matches!(delim, Delimiter::Brace) && self.matches(Token::Semicolon) {
             return Err(self.err_at_current(ParserError::UnexpectedSemicolonInList {
                 context: "multiline list - add a trailing comma before the newline",
             }));
         }
 
-        self.expect(delim.close())?;
+        self.expect_list_close(separator, delim.close())?;
         Ok((items, trailing))
+    }
+
+    /// Expect the closing delimiter of a separated list, reporting both the
+    /// separator and the closer when neither follows an element.
+    fn expect_list_close(&mut self, separator: Token, close: Token) -> R<()> {
+        if self.eat(close.clone()) {
+            return Ok(());
+        }
+        Err(self.err_at_current(ParserError::ExpectedListSeparator {
+            separator,
+            close,
+            found: self.current_token().clone(),
+        }))
     }
 
     fn parse_sequence_until<T, F>(
@@ -3279,7 +3918,8 @@ impl Parser {
         // Nested grouped/call expressions have their normal operator grammar.
         // A binding initializer opts into the connector boundary explicitly.
         let expression = self.with_restrictions(
-            self.restrictions - Restrictions::STOP_CONDITION_CONNECTORS,
+            self.restrictions
+                - (Restrictions::STOP_CONDITION_CONNECTORS | Restrictions::STOP_MATCH_ARM_ARROW),
             Self::parse_assignment_expr,
         )?;
         if self.matches(Token::ColonEq)
@@ -3316,6 +3956,18 @@ impl Parser {
         use Token as T;
 
         if self.eat(Token::Assign) {
+            // Wildcards are valid only as a whole assignee (`_ = value`) or
+            // as leaves of a tuple assignee here. Parsing them provisionally
+            // preserves the existing diagnostics for wildcard values and
+            // malformed destinations such as `_ + 1`.
+            if Self::is_tuple_assignee(&expr) || Self::is_discard_assignee(&expr) {
+                let mut discards = Vec::new();
+                Self::tuple_assignee_discards(&expr, &mut discards);
+                self.errors.retain(|error| {
+                    !matches!(error.value, ParserError::DisallowedWildcardExpression)
+                        || !discards.contains(&error.span)
+                });
+            }
             let value = self.parse_non_assignment_expr()?;
             let span = expr.span.to(value.span);
             let kind = ExpressionKind::Assign(expr, value);
@@ -3340,9 +3992,42 @@ impl Parser {
             let span = expr.span.to(value.span);
             let kind = ExpressionKind::AssignOp(op, expr, value);
             expr = self.build_expr(kind, span);
+        } else if self.eat(Token::QuestionQuestionEq) {
+            let value = self.parse_non_assignment_expr()?;
+            let span = expr.span.to(value.span);
+            expr = self.build_expr(ExpressionKind::AssignOptional(expr, value), span);
         }
 
         Ok(expr)
+    }
+
+    fn tuple_assignee_discards(expr: &Expression, spans: &mut Vec<Span>) {
+        match &expr.kind {
+            ExpressionKind::Tuple(items, _) => {
+                for item in items {
+                    Self::tuple_assignee_discards(item, spans);
+                }
+            }
+            ExpressionKind::Parenthesis(inner) => Self::tuple_assignee_discards(inner, spans),
+            ExpressionKind::Wildcard => spans.push(expr.span),
+            _ => {}
+        }
+    }
+
+    fn is_discard_assignee(expr: &Expression) -> bool {
+        match &expr.kind {
+            ExpressionKind::Wildcard => true,
+            ExpressionKind::Parenthesis(inner) => Self::is_discard_assignee(inner),
+            _ => false,
+        }
+    }
+
+    fn is_tuple_assignee(expr: &Expression) -> bool {
+        match &expr.kind {
+            ExpressionKind::Tuple(_, _) => true,
+            ExpressionKind::Parenthesis(inner) => Self::is_tuple_assignee(inner),
+            _ => false,
+        }
     }
 }
 
@@ -3405,8 +4090,60 @@ impl Parser {
 }
 
 impl Parser {
+    fn can_start_range_rhs(&self, op_span: Span) -> bool {
+        if self.lo_span().start.line != op_span.end.line {
+            return false;
+        }
+        match self.current_token() {
+            Token::Integer { .. }
+            | Token::Float { .. }
+            | Token::String { .. }
+            | Token::Rune { .. }
+            | Token::True
+            | Token::False
+            | Token::Nil
+            | Token::InterpolatedStringStart
+            | Token::Identifier { .. }
+            | Token::Dot
+            | Token::LParen
+            | Token::LBracket
+            | Token::Bang
+            | Token::Tilde
+            | Token::Star
+            | Token::Amp
+            | Token::Minus
+            | Token::If
+            | Token::Match
+            | Token::Loop
+            | Token::Unsafe
+            | Token::Await
+            | Token::Hash => true,
+            Token::LBrace => !self.restrictions.contains(Restrictions::NO_STRUCT_LITERALS),
+            _ => false,
+        }
+    }
+
     fn parse_range_expr(&mut self) -> R<Box<Expression>> {
+        // Prefix open-ended ranges: `..b`, `..=b`, `..`
+        if matches!(self.current_token(), Token::DotDot | Token::DotDotEq) {
+            let op_span = self.lo_span();
+            let is_inclusive = self.eat(Token::DotDotEq);
+            if !is_inclusive {
+                self.expect(Token::DotDot)?;
+            }
+            if is_inclusive || self.can_start_range_rhs(op_span) {
+                let rhs = self.parse_bool_or_expr()?;
+                let span = op_span.to(rhs.span);
+                return Ok(self.build_expr(
+                    ExpressionKind::Range(None, Some(rhs), is_inclusive),
+                    span,
+                ));
+            }
+            return Ok(self.build_expr(ExpressionKind::Range(None, None, false), op_span));
+        }
+
         let mut expr = self.parse_bool_or_expr()?;
+        let op_span = self.lo_span();
         let is_inclusive = if self.eat(Token::DotDot) {
             false
         } else if self.eat(Token::DotDotEq) {
@@ -3415,12 +4152,16 @@ impl Parser {
             return Ok(expr);
         };
 
-        let rhs = self.parse_bool_or_expr()?;
-
-        let span = expr.span.to(rhs.span);
-        let kind = ExpressionKind::Range(expr, rhs, is_inclusive);
-
-        expr = self.build_expr(kind, span);
+        if is_inclusive || self.can_start_range_rhs(op_span) {
+            let rhs = self.parse_bool_or_expr()?;
+            let span = expr.span.to(rhs.span);
+            let kind = ExpressionKind::Range(Some(expr), Some(rhs), is_inclusive);
+            expr = self.build_expr(kind, span);
+        } else {
+            let span = expr.span.to(op_span);
+            let kind = ExpressionKind::Range(Some(expr), None, false);
+            expr = self.build_expr(kind, span);
+        }
         Ok(expr)
     }
 }
@@ -3456,7 +4197,7 @@ impl Parser {
     }
 
     fn parse_comparison_expr(&mut self) -> R<Box<Expression>> {
-        let mut expr = self.parse_bit_or_expr()?;
+        let mut expr = self.parse_membership_expr()?;
 
         while matches!(
             self.current_token(),
@@ -3469,9 +4210,64 @@ impl Parser {
                 | Token::IdentityEql
                 | Token::IdentityNeq
         ) {
-            expr = self.build_binary_expr(expr, |p| p.parse_bit_or_expr())?;
+            expr = self.build_binary_expr(expr, |p| p.parse_membership_expr())?;
         }
 
+        Ok(expr)
+    }
+
+    /// `element in container` / `element !in container`, between comparison
+    /// and the bitwise operators. The container operand may be a range, so
+    /// `x + 1 in 0..n && ok` reads as `((x + 1) in (0..n)) && ok` even though
+    /// a standalone range binds more loosely than `&&`. Membership tests do
+    /// not chain.
+    fn parse_membership_expr(&mut self) -> R<Box<Expression>> {
+        let expr = self.parse_bit_or_expr()?;
+        let op = match self.current_token() {
+            Token::In => BinaryOperator::In,
+            Token::BangIn => BinaryOperator::NotIn,
+            _ => return Ok(expr),
+        };
+        self.bump();
+
+        let container = if matches!(self.current_token(), Token::DotDot | Token::DotDotEq) {
+            let op_span = self.lo_span();
+            let is_inclusive = matches!(self.current_token(), Token::DotDotEq);
+            self.bump();
+            if is_inclusive || self.can_start_range_rhs(op_span) {
+                let end = self.parse_bit_or_expr()?;
+                let span = op_span.to(end.span);
+                self.build_expr(ExpressionKind::Range(None, Some(end), is_inclusive), span)
+            } else {
+                self.build_expr(ExpressionKind::Range(None, None, false), op_span)
+            }
+        } else {
+            let start = self.parse_bit_or_expr()?;
+            if matches!(self.current_token(), Token::DotDot | Token::DotDotEq) {
+                let op_span = self.lo_span();
+                let is_inclusive = matches!(self.current_token(), Token::DotDotEq);
+                self.bump();
+                if is_inclusive || self.can_start_range_rhs(op_span) {
+                    let end = self.parse_bit_or_expr()?;
+                    let span = start.span.to(end.span);
+                    self.build_expr(
+                        ExpressionKind::Range(Some(start), Some(end), is_inclusive),
+                        span,
+                    )
+                } else {
+                    let span = start.span.to(op_span);
+                    self.build_expr(ExpressionKind::Range(Some(start), None, false), span)
+                }
+            } else {
+                start
+            }
+        };
+
+        let span = expr.span.to(container.span);
+        let expr = self.build_expr(ExpressionKind::Binary(op, expr, container), span);
+        if matches!(self.current_token(), Token::In | Token::BangIn) {
+            return Err(self.err_at_current(ParserError::ChainedMembership));
+        }
         Ok(expr)
     }
     fn parse_bit_or_expr(&mut self) -> R<Box<Expression>> {
@@ -3501,6 +4297,7 @@ impl Parser {
         let mut expr = self.parse_bit_shift_expr()?;
 
         while matches!(self.current_token(), Token::Amp) {
+            self.warn_if_continued_line(true);
             expr = self.build_binary_expr(expr, |p| p.parse_bit_shift_expr())?;
         }
 
@@ -3537,6 +4334,9 @@ impl Parser {
             self.current_token(),
             Token::Quotient | Token::Star | Token::Modulus
         ) {
+            if matches!(self.current_token(), Token::Star) {
+                self.warn_if_continued_line(true);
+            }
             expr = self.build_binary_expr(expr, |p| p.parse_cast_expr())?;
         }
 
@@ -3565,6 +4365,87 @@ impl Parser {
 }
 
 impl Parser {
+    fn parse_is_expression(&mut self, value: Box<Expression>) -> R<Box<Expression>> {
+        // Type and pattern syntax overlap for paths and tuples. Preserve a
+        // complete type, unless a constructor payload or wildcard tuple makes
+        // the intended pattern clear.
+        let checkpoint = self.checkpoint();
+        let can_start_pattern = matches!(
+            self.current_token(),
+            Token::Dot | Token::LParen | Token::Minus | Token::Underscore
+                | Token::Integer { .. } | Token::Float { .. } | Token::String { .. }
+                | Token::Rune { .. } | Token::True | Token::False | Token::Nil
+        );
+        let ty = match self.parse_type() {
+            Ok(ty) => Some(ty),
+            Err(error) if !can_start_pattern => return Err(error),
+            Err(_) => None,
+        };
+        if let Some(ty) = ty {
+            fn wildcard_type(ty: &Type) -> bool {
+                match &ty.kind {
+                    TypeKind::Infer => true,
+                    TypeKind::Tuple(fields, _) => {
+                        !fields.is_empty() && fields.iter().all(|field| wildcard_type(field))
+                    }
+                    _ => false,
+                }
+            }
+            let constructor = matches!(ty.kind, TypeKind::Nominal(_))
+                && (self.matches(Token::LParen)
+                    || (self.matches(Token::LBrace) && self.is_pattern_field_list()));
+            let range = matches!(self.current_token(), Token::DotDot | Token::DotDotEq);
+            if !range && !constructor && !wildcard_type(&ty) {
+                let span = value.span.to(ty.span);
+                return Ok(self.build_expr(ExpressionKind::TypeIs(value, ty), span));
+            }
+        }
+        self.restore(checkpoint);
+        let pattern = self.with_restrictions(self.restrictions | Restrictions::IS_PATTERN, Self::parse_pattern)?;
+        let mut binding = None;
+        pattern.walk(&mut |part| {
+            if binding.is_none() && matches!(part.kind, PatternKind::Identifier(_)) {
+                binding = Some(part.span);
+            }
+            binding.is_none()
+        });
+        if let Some(span) = binding {
+            return Err(Spanned::new(ParserError::BindingInIsPattern, span));
+        }
+        let span = value.span.to(pattern.span);
+        let test = PatternBindingCondition { expression: value, pattern, span };
+        Ok(self.build_expr(ExpressionKind::PatternIs(test), span))
+    }
+
+    /// A block following a unit case in an if, while or match condition belongs
+    /// to the enclosing construct. Explicit field syntax identifies a payload.
+    fn is_pattern_field_list(&self) -> bool {
+        if !self.restrictions.contains(Restrictions::NO_STRUCT_LITERALS)
+            || self.next_matches(1, Token::DotDot)
+        {
+            return true;
+        }
+        let after = if self.next_matches(1, Token::RBrace) {
+            2
+        } else if matches!(self.next(1), Some(Token::Identifier { .. })) {
+            if self.next_matches(2, Token::Colon) || self.next_matches(2, Token::Comma) {
+                return true;
+            }
+            if !self.next_matches(2, Token::RBrace) {
+                return false;
+            }
+            3
+        } else {
+            return false;
+        };
+        // Both an empty block and a single identifier can also be a body.
+        // A second block or a continued expression disambiguates the payload.
+        self.next(after).is_some_and(|token| {
+            matches!(token, Token::LBrace | Token::Is | Token::As | Token::Dot)
+                || Self::bin_op_non_assign(token).is_some()
+        })
+    }
+
     fn parse_cast_expr(&mut self) -> R<Box<Expression>> {
         let mut expr = self.parse_kw_prefix_expr()?;
 
@@ -3584,9 +4465,7 @@ impl Parser {
             }
 
             if self.eat(Token::Is) {
-                let ty = self.parse_type()?;
-                let span = expr.span.clone().to(ty.span);
-                expr = self.build_expr(ExpressionKind::TypeIs(expr, ty), span);
+                expr = self.parse_is_expression(expr)?;
                 continue;
             }
 
@@ -3609,7 +4488,11 @@ impl Parser {
     fn parse_prefix_expr(&mut self) -> R<Box<Expression>> {
         let lo = self.lo_span();
         // Expression Statements
-        if (self.matches(Token::If) || self.matches(Token::Match))
+        if (self.matches(Token::If)
+            || self.matches(Token::Match)
+            || self.matches(Token::Loop)
+            || self.is_labeled_loop_expr()
+            || self.is_select_expr())
             && !self
                 .restrictions
                 .contains(Restrictions::ALLOW_BINDING_CONDITION)
@@ -3704,6 +4587,7 @@ impl Parser {
             // Both generic arguments and value subscripts use brackets. Keep
             // both syntactic interpretations until the receiver is resolved.
             if self.matches(Token::LBracket) {
+                self.warn_if_continued_line(false);
                 let lo = expr.span;
                 let (type_arguments, index) = self.parse_bracket_suffix()?;
                 let kind = match type_arguments {
@@ -3721,15 +4605,18 @@ impl Parser {
                 continue;
             }
 
-            // parsing call expr: `foo(<expr_arguments>)`
+            // parsing call expr: `foo(<expr_arguments>)` (with optional same-line trailing closure)
             if self.matches(Token::LParen) {
+                self.warn_if_continued_line(false);
                 expr = self.parse_call_expr(expr)?;
                 continue;
             }
 
-            // parsing optional chaining: `foo?.member`
+            // parsing optional chaining: `foo?.member`, `foo?.0`, `foo?.[i]`, `foo?.(args)`
             // The `?.` wraps the expression BEFORE it (like Swift)
-            // So `a?.b` becomes Member(OptionalUnwrap(a), b)
+            // So `a?.b` becomes Member(OptionalUnwrap(a), b),
+            // `a?.[i]` becomes Index(OptionalUnwrap(a), [i]),
+            // and `a?.(args)` becomes Call(OptionalUnwrap(a), args).
             if self.eat(Token::QuestionDot) {
                 *is_optional_chain = true;
 
@@ -3737,6 +4624,22 @@ impl Parser {
                 let span = expr.span.to(self.hi_span());
                 let kind = ExpressionKind::OptionalUnwrap(expr);
                 expr = self.build_expr(kind, span);
+
+                if self.matches(Token::LBracket) {
+                    let lo = expr.span;
+                    let index = self.parse_expression_argument_list(Delimiter::Bracket)?;
+                    let kind = ExpressionKind::Index {
+                        target: expr,
+                        index,
+                    };
+                    expr = self.build_expr(kind, lo.to(self.hi_span()));
+                    continue;
+                }
+
+                if self.matches(Token::LParen) {
+                    expr = self.parse_call_expr(expr)?;
+                    continue;
+                }
 
                 // The dot is part of the `?.` token, so continue parsing the member/tuple access
                 pre_consumed_dot = true;
@@ -3751,7 +4654,7 @@ impl Parser {
             }
 
             let before = self.cursor;
-            expr = self.try_parse_struct_literal(expr)?;
+            expr = self.try_parse_brace_suffix(expr)?;
             if self.cursor == before {
                 break;
             }
@@ -3805,7 +4708,8 @@ impl Parser {
                     | ExpressionKind::If(_)
                     | ExpressionKind::Block(_)
                     | ExpressionKind::UnsafeBlock(_)
-                    | ExpressionKind::Match(_) => {}
+                    | ExpressionKind::Match(_)
+                    | ExpressionKind::Select(_) => {}
                     ExpressionKind::PatternBinding(binding)
                     | ExpressionKind::OptionalPatternBinding(binding) => {
                         if !permitted {
@@ -3856,7 +4760,7 @@ impl Parser {
         // case <pattern> = <expr>
         self.expect(Token::Case)?;
         self.eat(Token::Var);
-        let pattern = self.parse_pattern()?;
+        let pattern = self.parse_pattern_alternatives(&[])?;
         if self.matches(Token::ColonEq) {
             return Err(self.err_at_current(ParserError::ConditionalShorthandBinding));
         }
@@ -3923,7 +4827,22 @@ impl Parser {
 
 impl Parser {
     fn parse_call_expr(&mut self, expr: Box<Expression>) -> R<Box<Expression>> {
-        let args = self.parse_expression_argument_list(Delimiter::Parenthesis)?;
+        let mut args = self.parse_expression_argument_list(Delimiter::Parenthesis)?;
+        let call_end_line = self.hi_span().end.line;
+        if self.matches(Token::LBrace)
+            && !self.restrictions.contains(Restrictions::NO_STRUCT_LITERALS)
+            && self.lo_span().start.line == call_end_line
+        {
+            let closure = self.parse_trailing_closure()?;
+            let closure_span = closure.span;
+            args.push(ExpressionArgument {
+                label: None,
+                expression: closure,
+                span: closure_span,
+                interpolated: false,
+                is_trailing_closure: true,
+            });
+        }
         let s = expr.span;
         let k = ExpressionKind::Call(expr, args);
         return Ok(self.build_expr(k, s.to(self.hi_span())));
@@ -3936,8 +4855,19 @@ impl Parser {
     fn try_parse_arrow_closure(&mut self, lo: Span) -> R<Option<Box<Expression>>> {
         let checkpoint = self.checkpoint();
         let header: R<(FunctionSignature, bool)> = (|| {
-            let mut prototype = self.parse_closure_prototype()?;
-            let is_async = self.eat(Token::Async);
+            let bare = matches!(
+                self.current_token(),
+                Token::Identifier { .. } | Token::Underscore
+            ) && self.next_matches(1, Token::EqArrow);
+            let mut prototype = if bare {
+                FunctionPrototype {
+                    inputs: vec![self.parse_closure_parameter()?],
+                    output: None,
+                }
+            } else {
+                self.parse_closure_prototype()?
+            };
+            let is_async = !bare && self.eat(Token::Async);
             if is_async && prototype.output.is_none() && self.eat(Token::RArrow) {
                 prototype.output = Some(self.parse_type()?);
             }
@@ -3974,6 +4904,7 @@ impl Parser {
         let closure = ClosureExpression {
             signature,
             is_async,
+            has_implicit_it: false,
             body,
             span,
         };
@@ -4018,7 +4949,16 @@ impl Parser {
         let lo = self.lo_span();
         let attributes = self.parse_attributes()?;
 
-        let ident = self.parse_identifier()?;
+        let ident = if self.matches(Token::Underscore) {
+            let span = self.lo_span();
+            self.bump();
+            Identifier {
+                span,
+                symbol: self.intern_symbol("_"),
+            }
+        } else {
+            self.parse_identifier()?
+        };
         let mut is_variadic = false;
         let ty = if self.eat(Token::Colon) {
             let t = self.parse_type()?;
@@ -4039,6 +4979,7 @@ impl Parser {
             name: ident,
             annotated_type: ty,
             default_value: None,
+            is_lazy: false,
             is_variadic,
             span: lo.to(self.hi_span()),
         };
@@ -4054,16 +4995,17 @@ impl Parser {
         let (items, trailing) =
             self.with_restrictions(self.restrictions - Restrictions::NO_STRUCT_LITERALS, |p| {
                 p.parse_delimiter_sequence_trailing(Delimiter::Parenthesis, Token::Comma, |p| {
-                    p.parse_expression()
+                    Ok((p.parse_tuple_label()?, p.parse_expression()?))
                 })
             })?;
 
+        let (items, labels) = self.tuple_elements(items);
         let span = lo.to(self.hi_span());
 
-        let kind = if items.len() == 1 && !trailing {
+        let kind = if items.len() == 1 && !trailing && labels.is_empty() {
             ExpressionKind::Parenthesis(items.into_iter().next().unwrap())
         } else {
-            ExpressionKind::Tuple(items)
+            ExpressionKind::Tuple(items, labels)
         };
 
         let expr = self.build_expr(kind, span);
@@ -4139,7 +5081,7 @@ impl Parser {
             });
             SS::Dict
         } else {
-            array_elements.push(first_expr);
+            array_elements.push(self.parse_spread_suffix(first_expr));
             SS::Array
         };
 
@@ -4150,7 +5092,7 @@ impl Parser {
 
                 match state {
                     SS::Array => {
-                        array_elements.push(k);
+                        array_elements.push(p.parse_spread_suffix(k));
                     }
                     SS::Dict => {
                         p.expect(Token::Colon)?;
@@ -4165,7 +5107,7 @@ impl Parser {
             let _ = self.parse_sequence_until(&[Token::RBracket], Token::Comma, |p| parser(p))?;
         }
 
-        self.expect(Token::RBracket)?;
+        self.expect_list_close(Token::Comma, Token::RBracket)?;
 
         let kind = match state {
             SS::Dict => ExpressionKind::DictionaryLiteral(map_pairs),
@@ -4187,7 +5129,17 @@ impl Parser {
             | Token::True
             | Token::False
             | Token::Nil => self.parse_literal(),
-            Token::FStringStart => self.parse_fstring_expression(),
+            Token::InterpolatedStringStart => self.parse_interpolated_string_expression(),
+            Token::Identifier { .. } | Token::Underscore
+                if self.next_matches(1, Token::EqArrow)
+                    && !self
+                        .restrictions
+                        .contains(Restrictions::STOP_MATCH_ARM_ARROW) =>
+            {
+                Ok(self
+                    .try_parse_arrow_closure(self.lo_span())?
+                    .expect("single parameter followed by arrow"))
+            }
             Token::Identifier { .. } if self.matches_contextual_identifier("move") => {
                 if let Some(expr) = self.try_parse_move_closure_expression()? {
                     Ok(expr)
@@ -4195,10 +5147,19 @@ impl Parser {
                     self.parse_identifier_expression()
                 }
             }
+            Token::Identifier { .. }
+                if self.matches_contextual_identifier("yield") && self.starts_yield_value() =>
+            {
+                self.parse_yield_expression()
+            }
             Token::Identifier { .. } => self.parse_identifier_expression(),
             Token::Dot => self.parse_inferred_member_expression(),
             Token::LParen => {
-                if let Some(closure) = self.try_parse_arrow_closure(self.lo_span())? {
+                if !self
+                    .restrictions
+                    .contains(Restrictions::STOP_MATCH_ARM_ARROW)
+                    && let Some(closure) = self.try_parse_arrow_closure(self.lo_span())?
+                {
                     Ok(closure)
                 } else {
                     self.parse_tuple_expr()
@@ -4227,7 +5188,8 @@ impl Parser {
                 self.bump();
                 Ok(self.build_expr(kind, lo.to(self.hi_span())))
             }
-            Token::Hash => self.parse_cfg_check_expression(),
+            Token::Hash => self.parse_hash_expression(),
+            Token::Else => Err(self.err_at_current(ParserError::UnexpectedElse)),
             _ => return Err(self.err_at_current(ParserError::ExpectedExpression)),
         }
     }
@@ -4248,34 +5210,72 @@ impl Parser {
         Ok(self.build_expr(ExpressionKind::InferredMember { name }, span))
     }
 
+    fn parse_spread_suffix(&mut self, source: Box<Expression>) -> Box<Expression> {
+        if !self.eat(Token::Ellipsis) {
+            return source;
+        }
+        let span = source.span.to(self.hi_span());
+        self.build_expr(ExpressionKind::Spread(source), span)
+    }
+
     fn parse_expression_argument_list(&mut self, delim: Delimiter) -> R<Vec<ExpressionArgument>> {
+        let allow_spread = matches!(delim, Delimiter::Parenthesis);
         self.with_restrictions(
             self.restrictions
-                - (Restrictions::NO_STRUCT_LITERALS | Restrictions::STOP_CONDITION_CONNECTORS),
-            |p| p.parse_delimiter_sequence(delim, Token::Comma, |p| p.parse_expression_argument()),
+                - (Restrictions::NO_STRUCT_LITERALS
+                    | Restrictions::STOP_CONDITION_CONNECTORS
+                    | Restrictions::STOP_MATCH_ARM_ARROW),
+            |p| {
+                p.parse_delimiter_sequence(delim, Token::Comma, |p| {
+                    p.parse_expression_argument(allow_spread)
+                })
+            },
         )
     }
 
-    fn parse_expression_argument(&mut self) -> R<ExpressionArgument> {
+    fn parse_expression_argument(&mut self, allow_spread: bool) -> R<ExpressionArgument> {
         let lo = self.lo_span();
         let label = self.parse_label()?;
         let expression = self.parse_non_assignment_expr()?;
+        let expression = if allow_spread {
+            self.parse_spread_suffix(expression)
+        } else {
+            expression
+        };
         let span = lo.to(self.hi_span());
         let arg = ExpressionArgument {
             label,
             expression,
             span,
+            interpolated: false,
+            is_trailing_closure: false,
         };
 
         Ok(arg)
     }
 }
 impl Parser {
+    fn is_labeled_loop_expr(&self) -> bool {
+        matches!(self.current_token(), Token::Identifier { .. })
+            && self.next_matches(1, Token::Colon)
+            && self.next_matches(2, Token::Loop)
+    }
+
+    fn is_select_expr(&self) -> bool {
+        self.matches_contextual_identifier("select") && self.next_matches(1, Token::LBrace)
+    }
+
     fn parse_stmt_expr(&mut self) -> R<Box<Expression>> {
         match self.current_token() {
             Token::If => self.parse_if_expr(),
             Token::Match => self.parse_match_expression(),
-            _ => unreachable!("must manually check for token kind matching if | switch | match"),
+            Token::Loop => self.parse_loop_expression(None),
+            Token::Identifier { .. } if self.is_select_expr() => self.parse_select_expression(),
+            Token::Identifier { .. } if self.is_labeled_loop_expr() => {
+                let label = self.parse_label()?;
+                self.parse_loop_expression(label)
+            }
+            _ => unreachable!("must manually check for token kind matching if | match | loop"),
         }
     }
 
@@ -4294,6 +5294,57 @@ impl Parser {
         self.expect(Token::Await)?;
         let value = self.parse_expression()?;
         let kind = ExpressionKind::Await(value);
+        Ok(self.build_expr(kind, lo.to(self.hi_span())))
+    }
+
+    fn starts_yield_value(&self) -> bool {
+        let Some(cur) = self.current() else {
+            return false;
+        };
+        let Some(next) = self.file.tokens.get(self.cursor + 1) else {
+            return false;
+        };
+        if next.span.start.line != cur.span.end.line {
+            return false;
+        }
+        let has_space_before = next.span.start.offset > cur.span.end.offset;
+        match &next.value {
+            Token::Identifier { .. }
+            | Token::Integer { .. }
+            | Token::Float { .. }
+            | Token::Rune { .. }
+            | Token::String { .. }
+            | Token::InterpolatedStringStart
+            | Token::True
+            | Token::False
+            | Token::Nil
+            | Token::If
+            | Token::Match
+            | Token::Loop
+            | Token::Unsafe
+            | Token::Await
+            | Token::LBrace
+            | Token::Hash
+            | Token::Tilde
+            | Token::Bang => true,
+            Token::Dot | Token::LParen | Token::LBracket => has_space_before,
+            Token::Minus | Token::Star | Token::Amp | Token::AmpAmp => {
+                has_space_before
+                    && self.file.tokens.get(self.cursor + 2).is_some_and(|after| {
+                        after.span.start.line == next.span.end.line
+                            && after.span.start.offset == next.span.end.offset
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    /// `yield expr`
+    fn parse_yield_expression(&mut self) -> R<Box<Expression>> {
+        let lo = self.lo_span();
+        self.bump();
+        let value = self.parse_expression()?;
+        let kind = ExpressionKind::Yield(value);
         Ok(self.build_expr(kind, lo.to(self.hi_span())))
     }
 
@@ -4346,6 +5397,59 @@ impl Parser {
 }
 
 impl Parser {
+    fn parse_select_expression(&mut self) -> R<Box<Expression>> {
+        let lo = self.lo_span();
+        let kw_span = self.lo_span();
+        self.bump(); // consume contextual `select`
+
+        let mut arms = vec![];
+        self.expect(Token::LBrace)?;
+
+        while !self.matches(Token::RBrace) && !self.is_at_end() {
+            match self.parse_select_arm() {
+                Ok(item) => {
+                    arms.push(item);
+                    if !self.eat(Token::Comma) {
+                        if let Err(e) = self.expect_semi() {
+                            self.emit_error(e.value, e.span);
+                            self.synchronize_match_arm();
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.emit_error(e.value, e.span);
+                    self.synchronize_match_arm();
+                }
+            }
+        }
+
+        self.expect(Token::RBrace)?;
+
+        let node = ast::SelectExpression { arms, kw_span };
+        Ok(self.build_expr(ExpressionKind::Select(node), lo.to(self.hi_span())))
+    }
+
+    fn parse_select_arm(&mut self) -> R<ast::SelectArm> {
+        let lo = self.lo_span();
+        self.expect(Token::Case)?;
+        let pattern = self.parse_pattern_alternatives(&[Token::Assign])?;
+        self.expect(Token::Assign)?;
+        self.expect(Token::Await)?;
+        let operation = self.with_restrictions(
+            (self.restrictions - Restrictions::STOP_CONDITION_CONNECTORS)
+                | Restrictions::STOP_MATCH_ARM_ARROW,
+            Self::parse_assignment_expr,
+        )?;
+        self.expect(Token::EqArrow)?;
+        let body = self.parse_expression()?;
+        Ok(ast::SelectArm {
+            pattern,
+            operation,
+            body,
+            span: lo.to(self.hi_span()),
+        })
+    }
+
     fn parse_match_expression(&mut self) -> R<Box<Expression>> {
         let lo = self.lo_span();
 
@@ -4406,9 +5510,15 @@ impl Parser {
     }
 
     fn parse_match_arm_body(&mut self, lo: Span) -> R<MatchArm> {
-        let pattern = self.parse_match_arm_pattern()?;
+        let pattern = self.parse_pattern_alternatives(&[Token::EqArrow])?;
         let guard = if self.eat(Token::If) {
-            Some(self.parse_expression()?)
+            // A top-level arrow terminates the guard rather than introducing
+            // a closure. Delimited subexpressions restore closure parsing.
+            Some(self.with_restrictions(
+                (self.restrictions - Restrictions::STOP_CONDITION_CONNECTORS)
+                    | Restrictions::STOP_MATCH_ARM_ARROW,
+                Self::parse_assignment_expr,
+            )?)
         } else {
             None
         };
@@ -4463,16 +5573,131 @@ impl Parser {
         segment.replace('%', "%%")
     }
 
-    fn parse_fstring_expression(&mut self) -> R<Box<Expression>> {
+    fn format_spec_error_span(spec_span: Span, char_idx: usize, char_len: usize) -> Span {
+        let start_offset = spec_span.start.offset + 1 + char_idx;
+        let end_offset = (start_offset + char_len).min(spec_span.end.offset.max(start_offset + 1));
+        Span {
+            start: crate::span::Position {
+                line: spec_span.start.line,
+                offset: start_offset,
+            },
+            end: crate::span::Position {
+                line: spec_span.start.line,
+                offset: end_offset,
+            },
+            file: spec_span.file,
+        }
+    }
+
+    /// Validates an interpolation format specifier (`[[fill]align][0][width][.precision][x|b|e|?]`).
+    /// Diagnostics point directly at the offending part inside the interpolation hole.
+    fn validate_interpolation_format_spec(spec: &str, spec_span: Span) -> R<()> {
+        if spec.is_empty() {
+            return Err(Spanned::new(
+                ParserError::InvalidFormatSpecifier(
+                    "expected a format specifier after ':'".to_string(),
+                ),
+                spec_span,
+            ));
+        }
+
+        let chars: Vec<char> = spec.chars().collect();
+        let mut idx = 0usize;
+
+        let is_align = |ch: char| matches!(ch, '<' | '>' | '^');
+        if idx + 1 < chars.len() && is_align(chars[idx + 1]) {
+            idx += 2;
+        } else if idx < chars.len() && is_align(chars[idx]) {
+            idx += 1;
+        }
+
+        if idx < chars.len() && chars[idx] == '0' {
+            idx += 1;
+        }
+
+        let width_start = idx;
+        let mut width_val: usize = 0;
+        while idx < chars.len() && chars[idx].is_ascii_digit() {
+            let digit = (chars[idx] as u8 - b'0') as usize;
+            let Some(next) = width_val.checked_mul(10).and_then(|v| v.checked_add(digit)) else {
+                return Err(Spanned::new(
+                    ParserError::InvalidFormatSpecifier(
+                        "format width is too large".to_string(),
+                    ),
+                    Self::format_spec_error_span(spec_span, width_start, idx - width_start + 1),
+                ));
+            };
+            width_val = next;
+            idx += 1;
+        }
+
+        if idx < chars.len() && chars[idx] == '.' {
+            let dot_pos = idx;
+            idx += 1;
+            let prec_start = idx;
+            let mut prec_val: usize = 0;
+            while idx < chars.len() && chars[idx].is_ascii_digit() {
+                let digit = (chars[idx] as u8 - b'0') as usize;
+                let Some(next) = prec_val.checked_mul(10).and_then(|v| v.checked_add(digit)) else {
+                    return Err(Spanned::new(
+                        ParserError::InvalidFormatSpecifier(
+                            "format precision is too large".to_string(),
+                        ),
+                        Self::format_spec_error_span(spec_span, prec_start, idx - prec_start + 1),
+                    ));
+                };
+                prec_val = next;
+                idx += 1;
+            }
+            if idx == prec_start {
+                return Err(Spanned::new(
+                    ParserError::InvalidFormatSpecifier(
+                        "expected decimal precision digits after '.'".to_string(),
+                    ),
+                    Self::format_spec_error_span(spec_span, dot_pos, 1),
+                ));
+            }
+        }
+
+        if idx < chars.len() {
+            match chars[idx] {
+                'x' | 'b' | 'e' | '?' => {
+                    idx += 1;
+                }
+                ch => {
+                    return Err(Spanned::new(
+                        ParserError::InvalidFormatSpecifier(format!(
+                            "unknown format specifier '{ch}'; expected alignment, width, precision, or presentation ('x', 'b', 'e', '?')"
+                        )),
+                        Self::format_spec_error_span(spec_span, idx, 1),
+                    ));
+                }
+            }
+        }
+
+        if idx < chars.len() {
+            let ch = chars[idx];
+            return Err(Spanned::new(
+                ParserError::InvalidFormatSpecifier(format!(
+                    "unexpected trailing character '{ch}' in format specifier"
+                )),
+                Self::format_spec_error_span(spec_span, idx, chars.len() - idx),
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn parse_interpolated_string_expression(&mut self) -> R<Box<Expression>> {
         let lo = self.lo_span();
-        self.expect(Token::FStringStart)?;
+        self.expect(Token::InterpolatedStringStart)?;
 
         let mut text = String::new();
         let mut arguments: Vec<ExpressionArgument> = vec![];
 
-        while !self.matches(Token::FStringEnd) && !self.is_at_end() {
+        while !self.matches(Token::InterpolatedStringEnd) && !self.is_at_end() {
             match self.current_token() {
-                Token::FStringText { value } => {
+                Token::StringText { value } => {
                     if arguments.is_empty() {
                         text.push_str(value);
                     } else {
@@ -4480,31 +5705,44 @@ impl Parser {
                     }
                     self.bump();
                 }
-                Token::FStringExprStart => {
+                Token::StringInterpolationStart => {
                     if arguments.is_empty() {
                         text = Self::escape_percent_for_sprintf(&text);
                     }
-                    self.bump(); // consume FStringExprStart
+                    self.bump(); // consume StringInterpolationStart
 
-                    text.push_str("%v");
                     let expression = self.with_restrictions(
                         self.restrictions - Restrictions::NO_STRUCT_LITERALS,
                         Self::parse_expression,
                     )?;
                     let span = expression.span;
+
+                    if let Token::InterpolationFormat { value } = self.current_token().clone() {
+                        let spec_span = self.lo_span();
+                        self.bump();
+                        Self::validate_interpolation_format_spec(&value, spec_span)?;
+                        text.push_str("%{");
+                        text.push_str(&value);
+                        text.push('}');
+                    } else {
+                        text.push_str("%v");
+                    }
+
                     arguments.push(ExpressionArgument {
                         label: None,
                         expression,
                         span,
+                        interpolated: true,
+                        is_trailing_closure: false,
                     });
 
-                    self.expect(Token::FStringExprEnd)?;
+                    self.expect(Token::StringInterpolationEnd)?;
                 }
                 _ => return Err(self.err_at_current(ParserError::ExpectedExpression)),
             }
         }
 
-        self.expect(Token::FStringEnd)?;
+        self.expect(Token::InterpolatedStringEnd)?;
         let span = lo.to(self.hi_span());
 
         if arguments.is_empty() {
@@ -4525,6 +5763,8 @@ impl Parser {
                 label: None,
                 expression: format_expr,
                 span: format_span,
+                interpolated: false,
+                is_trailing_closure: false,
             },
         );
 
@@ -4598,8 +5838,19 @@ impl Parser {
 
     fn parse_fn(&mut self, mode: FnParseMode, is_unsafe: bool) -> R<Function> {
         let lo = self.lo_span();
-        let type_parameters = self.parse_type_parameters()?;
-        let parameters = self.parse_function_parameters()?;
+        let mut type_parameters = self.parse_type_parameters()?;
+        let mut parameters = self.parse_function_parameters()?;
+        for (index, input) in parameters.iter_mut().enumerate() {
+            if let Some(parameter) = self.lower_parameter_bound(index, &mut input.annotated_type) {
+                type_parameters
+                    .get_or_insert_with(|| TypeParameters {
+                        span: parameter.span,
+                        parameters: Vec::new(),
+                    })
+                    .parameters
+                    .push(parameter);
+            }
+        }
 
         // `func foo() async -> T`
         let is_async = self.eat(Token::Async);
@@ -4644,6 +5895,7 @@ impl Parser {
             block,
             generics,
             is_unsafe,
+            is_const: false,
             is_async,
             is_final: false,
             is_override: false,
@@ -4651,6 +5903,38 @@ impl Parser {
         };
 
         Ok(func)
+    }
+
+    /// Each complete `some P` input has its own generic identity. Move the
+    /// original bound paths (and their source spans) onto that parameter so
+    /// name resolution, overload selection and specialization use normal
+    /// declared bounds. A direct definition reference keeps the input hygienic.
+    fn lower_parameter_bound(
+        &mut self,
+        index: usize,
+        annotated: &mut Type,
+    ) -> Option<TypeParameter> {
+        let interfaces = match &mut annotated.kind {
+            TypeKind::Parenthesis(inner) => return self.lower_parameter_bound(index, inner),
+            TypeKind::ImplTrait { interfaces } => std::mem::take(interfaces),
+            _ => return None,
+        };
+        let span = annotated.span;
+        let identifier = Identifier::new(self.intern_symbol(&format!("<some {index}>")), span);
+        let bounds = interfaces
+            .into_iter()
+            .map(|path| GenericBound { path })
+            .collect();
+        let id = self.next_id();
+        annotated.kind = TypeKind::AnonymousParameter(id, identifier);
+        Some(TypeParameter {
+            is_anonymous: true,
+            id,
+            span,
+            identifier,
+            bounds: Some(bounds),
+            kind: TypeParameterKind::Type { default: None },
+        })
     }
 
     fn parse_function_parameters(&mut self) -> R<Vec<FunctionParameter>> {
@@ -4698,6 +5982,13 @@ impl Parser {
             None
         };
 
+        let is_lazy = self.eat(Token::At);
+        if is_lazy {
+            if !self.matches_contextual_identifier("lazy") {
+                return Err(self.err_at_current(ParserError::ExpectedLazyModifier));
+            }
+            self.bump();
+        }
         let ty = self.parse_type()?;
 
         let is_variadic = self.eat(Token::Ellipsis);
@@ -4716,6 +6007,7 @@ impl Parser {
             name,
             annotated_type: ty,
             default_value,
+            is_lazy,
             is_variadic,
             span: lo.to(self.hi_span()),
         };
@@ -4747,6 +6039,7 @@ impl Parser {
             name: ident,
             annotated_type: Box::new(ty),
             default_value: None,
+            is_lazy: false,
             is_variadic: false,
             span: lo.to(self.hi_span()),
         })
@@ -4785,7 +6078,7 @@ impl Parser {
         let args = Box::new(Type {
             id: self.next_id(),
             span: tuple_span,
-            kind: TypeKind::Tuple(inputs),
+            kind: TypeKind::Tuple(inputs, Vec::new()),
         });
 
         Ok(TypeArguments {
@@ -4926,6 +6219,386 @@ impl Parser {
         }
     }
 
+    fn is_qualified_path_expr(expr: &Expression) -> bool {
+        match &expr.kind {
+            ExpressionKind::Identifier(_) => true,
+            ExpressionKind::Member {
+                target,
+                qualified: true,
+                ..
+            } => Self::is_qualified_path_expr(target),
+            ExpressionKind::Specialize { target, .. } => Self::is_qualified_path_expr(target),
+            _ => false,
+        }
+    }
+
+    fn path_last_segment_starts_uppercase(expr: &Expression) -> bool {
+        match &expr.kind {
+            ExpressionKind::Identifier(id) => id
+                .symbol
+                .as_str()
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_ascii_uppercase()),
+            ExpressionKind::Member { name, .. } => name
+                .symbol
+                .as_str()
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_ascii_uppercase()),
+            ExpressionKind::Specialize { target, .. } => {
+                Self::path_last_segment_starts_uppercase(target)
+            }
+            _ => false,
+        }
+    }
+
+    /// Speculatively checks whether `{ ... }` starts with an explicit trailing
+    /// closure parameter header (`a, b =>`, `(a: T) =>`, `=>`).
+    fn looks_like_trailing_closure_header(&mut self) -> bool {
+        let checkpoint = self.checkpoint();
+        let saved_errors = self.errors.len();
+        let saved_warnings = self.warnings.len();
+        let is_header = self.try_consume_trailing_closure_header().is_some();
+        self.restore(checkpoint);
+        self.errors.truncate(saved_errors);
+        self.warnings.truncate(saved_warnings);
+        is_header
+    }
+
+    /// Attempts to parse `{` followed by an explicit trailing closure header up
+    /// to and including `=>`. On `None`, the caller restores its checkpoint.
+    fn try_consume_trailing_closure_header(
+        &mut self,
+    ) -> Option<(Vec<FunctionParameter>, Option<Box<Type>>, bool)> {
+        if !self.eat(Token::LBrace) {
+            return None;
+        }
+        let (inputs, output, is_async) = if self.matches(Token::LParen) {
+            let proto = self.parse_closure_prototype().ok()?;
+            let is_async = self.eat(Token::Async);
+            (proto.inputs, proto.output, is_async)
+        } else {
+            let mut inputs = Vec::new();
+            if !self.matches(Token::EqArrow) {
+                inputs.push(self.parse_bare_trailing_closure_parameter()?);
+                while self.eat(Token::Comma) {
+                    if self.matches(Token::EqArrow) {
+                        break;
+                    }
+                    inputs.push(self.parse_bare_trailing_closure_parameter()?);
+                }
+            }
+            (inputs, None, false)
+        };
+        if !self.eat(Token::EqArrow) {
+            return None;
+        }
+        Some((inputs, output, is_async))
+    }
+
+    fn parse_bare_trailing_closure_parameter(&mut self) -> Option<FunctionParameter> {
+        let lo = self.lo_span();
+        let ident = if self.matches(Token::Underscore) {
+            let span = self.lo_span();
+            self.bump();
+            Identifier {
+                span,
+                symbol: self.intern_symbol("_"),
+            }
+        } else {
+            self.parse_identifier().ok()?
+        };
+        Some(FunctionParameter {
+            id: self.next_id(),
+            attributes: vec![],
+            label: None,
+            name: ident,
+            annotated_type: Box::new(Type {
+                id: self.next_id(),
+                span: ident.span,
+                kind: TypeKind::InferedClosureParameter,
+            }),
+            default_value: None,
+            is_lazy: false,
+            is_variadic: false,
+            span: lo.to(self.hi_span()),
+        })
+    }
+
+    fn matches_explicit_struct_literal_body(&self) -> bool {
+        if self.next_matches(1, Token::DotDot) {
+            return true;
+        }
+        matches!(self.next(1), Some(Token::Identifier { .. }))
+            && (self.next_matches(2, Token::Colon) || self.next_matches(2, Token::Comma))
+    }
+
+    fn try_parse_brace_suffix(&mut self, expr: Box<Expression>) -> R<Box<Expression>> {
+        if !self.matches(Token::LBrace) {
+            return Ok(expr);
+        }
+
+        // Control-flow heads (`if`, `guard`, `while`, `for`, `match`) forbid both
+        // bare struct literals and bare trailing closures.
+        if self.restrictions.contains(Restrictions::NO_STRUCT_LITERALS) {
+            return self.try_parse_struct_literal(expr);
+        }
+
+        // Retain struct literal recognition for `Name { ... }`, `Mod::Name { ... }`,
+        // `.variant { ... }`, and legacy `pkg.Name { ... }` diagnostics.
+        if matches!(expr.kind, ExpressionKind::InferredMember { .. })
+            || Self::path_last_segment_starts_uppercase(&expr)
+        {
+            return self.try_parse_struct_literal(expr);
+        }
+
+        // Enum variant constructors use a lowercase variant name on an uppercase
+        // type path (`Shape::empty {}`, `Shape[int64]::empty { value }`).
+        let is_enum_variant_ctor = matches!(
+            &expr.kind,
+            ExpressionKind::Member {
+                target,
+                qualified: true,
+                ..
+            } if Self::path_last_segment_starts_uppercase(target)
+        );
+        if is_enum_variant_ctor
+            && (self.next_matches(1, Token::RBrace)
+                || (matches!(self.next(1), Some(Token::Identifier { .. }))
+                    && self.next_matches(2, Token::RBrace)))
+        {
+            return self.try_parse_struct_literal(expr);
+        }
+
+        let same_line = self.lo_span().start.line == expr.span.end.line;
+        if !same_line {
+            if Self::is_qualified_path_expr(&expr) {
+                return self.try_parse_struct_literal(expr);
+            }
+            return Ok(expr);
+        }
+
+        let has_closure_header = self.looks_like_trailing_closure_header();
+        if !has_closure_header && self.matches_explicit_struct_literal_body() {
+            return self.try_parse_struct_literal(expr);
+        }
+
+        let closure = self.parse_trailing_closure()?;
+        let closure_span = closure.span;
+        let span = expr.span.to(closure_span);
+        let arg = ExpressionArgument {
+            label: None,
+            expression: closure,
+            span: closure_span,
+            interpolated: false,
+            is_trailing_closure: true,
+        };
+        Ok(self.build_expr(ExpressionKind::Call(expr, vec![arg]), span))
+    }
+
+    fn parse_trailing_closure(&mut self) -> R<Box<Expression>> {
+        let lo = self.lo_span();
+        let checkpoint = self.checkpoint();
+        let saved_errors = self.errors.len();
+        let saved_warnings = self.warnings.len();
+
+        let (has_header, mut inputs, output, is_async) =
+            if let Some((inputs, output, is_async)) = self.try_consume_trailing_closure_header() {
+                (true, inputs, output, is_async)
+            } else {
+                self.restore(checkpoint);
+                self.errors.truncate(saved_errors);
+                self.warnings.truncate(saved_warnings);
+                self.expect(Token::LBrace)?;
+                (false, Vec::new(), None, false)
+            };
+
+        let mut has_declarations = false;
+        let statements = self.with_restrictions(
+            self.restrictions
+                - (Restrictions::NO_STRUCT_LITERALS
+                    | Restrictions::ALLOW_BINDING_CONDITION
+                    | Restrictions::STOP_CONDITION_CONNECTORS),
+            |p| {
+                let mut items = vec![];
+                while !p.matches(Token::RBrace) && !p.is_at_end() {
+                    let start = p.cursor;
+                    match p.parse_statement() {
+                        Ok(stmt) => {
+                            has_declarations = has_declarations
+                                || matches!(stmt.kind, StatementKind::Declaration(..));
+                            items.push(stmt);
+                        }
+                        Err(e) => {
+                            p.emit_error(e.value, e.span);
+                            p.synchronize_statement();
+                            if p.cursor == start && !p.matches(Token::RBrace) && !p.is_at_end() {
+                                p.bump();
+                            }
+                        }
+                    }
+                    while p.eat(Token::Semicolon) {}
+                }
+                p.expect(Token::RBrace)?;
+                Ok(items)
+            },
+        )?;
+
+        let span = lo.to(self.hi_span());
+        let block = Block {
+            id: self.next_id(),
+            statements,
+            span,
+            has_declarations,
+        };
+
+        let mut has_implicit_it = false;
+        if !has_header && Self::block_uses_free_it(&block) {
+            has_implicit_it = true;
+            let it_symbol = self.intern_symbol("it");
+            inputs.push(FunctionParameter {
+                id: self.next_id(),
+                attributes: vec![],
+                label: None,
+                name: Identifier {
+                    symbol: it_symbol,
+                    span: lo,
+                },
+                annotated_type: Box::new(Type {
+                    id: self.next_id(),
+                    span: lo,
+                    kind: TypeKind::InferedClosureParameter,
+                }),
+                default_value: None,
+                is_lazy: false,
+                is_variadic: false,
+                span: lo,
+            });
+        }
+
+        let body = self.build_expr(ExpressionKind::Block(block), span);
+        let signature = FunctionSignature {
+            prototype: FunctionPrototype { inputs, output },
+            span: lo,
+        };
+        let closure = ClosureExpression {
+            signature,
+            is_async,
+            has_implicit_it,
+            body,
+            span,
+        };
+        Ok(self.build_expr(ExpressionKind::Closure(closure), span))
+    }
+
+    fn pattern_binds_name(pattern: &Pattern, name: &str) -> bool {
+        match &pattern.kind {
+            PatternKind::Identifier(id) => id.symbol.as_str() == name,
+            PatternKind::Tuple(patterns, _)
+            | PatternKind::PathTuple { fields: patterns, .. }
+            | PatternKind::Or(patterns, _) => {
+                patterns.iter().any(|p| Self::pattern_binds_name(p, name))
+            }
+            PatternKind::PathNamed { fields, .. } => fields
+                .iter()
+                .any(|f| Self::pattern_binds_name(&f.pattern, name)),
+            PatternKind::At { binding, pattern } => {
+                Self::pattern_binds_name(binding, name) || Self::pattern_binds_name(pattern, name)
+            }
+            PatternKind::TypeTest {
+                binding: Some(binding),
+                ..
+            } => Self::pattern_binds_name(binding, name),
+            _ => false,
+        }
+    }
+
+    fn block_uses_free_it(block: &Block) -> bool {
+        use crate::ast::AstVisitor;
+
+        struct FreeItFinder {
+            found: bool,
+        }
+
+        impl crate::ast::AstVisitor for FreeItFinder {
+            fn visit_block(&mut self, block: &Block) -> Self::Result {
+                for stmt in &block.statements {
+                    if self.found {
+                        return;
+                    }
+                    match &stmt.kind {
+                        StatementKind::Variable(local)
+                        | StatementKind::Using(local)
+                        | StatementKind::AsyncVariable(local) => {
+                            if let Some(init) = &local.initializer {
+                                self.visit_expression(init);
+                            }
+                            if Parser::pattern_binds_name(&local.pattern, "it") {
+                                // `it` is now locally shadowed for the rest of this block.
+                                return;
+                            }
+                        }
+                        StatementKind::Declaration(_) => {}
+                        StatementKind::For(for_stmt) => {
+                            self.visit_expression(&for_stmt.iterator);
+                            if !Parser::pattern_binds_name(&for_stmt.pattern, "it") {
+                                if let Some(clause) = &for_stmt.clause {
+                                    self.visit_expression(clause);
+                                }
+                                self.visit_block(&for_stmt.block);
+                            }
+                        }
+                        _ => crate::ast::walk_statement(self, stmt),
+                    }
+                }
+            }
+
+            fn visit_expression(&mut self, expr: &Expression) -> Self::Result {
+                if self.found {
+                    return;
+                }
+                match &expr.kind {
+                    ExpressionKind::Identifier(id) if id.symbol.as_str() == "it" => {
+                        self.found = true;
+                    }
+                    ExpressionKind::Closure(closure) => {
+                        let shadows_it = closure
+                            .signature
+                            .prototype
+                            .inputs
+                            .iter()
+                            .any(|param| param.name.symbol.as_str() == "it");
+                        if !shadows_it {
+                            self.visit_expression(&closure.body);
+                        }
+                    }
+                    ExpressionKind::Match(match_expr) => {
+                        self.visit_expression(&match_expr.value);
+                        for arm in &match_expr.arms {
+                            if !Parser::pattern_binds_name(&arm.pattern, "it") {
+                                self.visit_expression(&arm.body);
+                            }
+                        }
+                    }
+                    ExpressionKind::Select(select_expr) => {
+                        for arm in &select_expr.arms {
+                            self.visit_expression(&arm.operation);
+                            if !Parser::pattern_binds_name(&arm.pattern, "it") {
+                                self.visit_expression(&arm.body);
+                            }
+                        }
+                    }
+                    _ => crate::ast::walk_expression(self, expr),
+                }
+            }
+        }
+
+        let mut finder = FreeItFinder { found: false };
+        finder.visit_block(block);
+        finder.found
+    }
+
     fn try_parse_struct_literal(&mut self, expr: Box<Expression>) -> R<Box<Expression>> {
         if !self.matches(Token::LBrace) {
             return Ok(expr);
@@ -4978,7 +6651,7 @@ impl Parser {
                         self.next(3),
                         Some(
                             Token::String { .. }
-                                | Token::FStringStart
+                                | Token::InterpolatedStringStart
                                 | Token::Integer { .. }
                                 | Token::Float { .. }
                                 | Token::True
@@ -5099,8 +6772,14 @@ impl Parser {
 #[derive(Debug)]
 pub(crate) enum ParserError {
     Expected(Token, Token),
+    ExpectedListSeparator {
+        separator: Token,
+        close: Token,
+        found: Token,
+    },
     ExpectedIdentifier,
-    ExpectedCfgIdentifier,
+    UnknownDirective(Symbol),
+    ExpectedAssetPath,
     ExpectedSemiColon,
     QualifiedPathSeparator,
     LegacyImplDeclaration,
@@ -5125,6 +6804,8 @@ pub(crate) enum ParserError {
     EnumPayloadVisibility,
     DuplicateEnumPayloadField(Symbol),
     DuplicateNamedField(Symbol),
+    DuplicateTupleLabel(Symbol),
+    LabeledFunctionTypeInput,
     StructUpdateBaseMustBeLast,
     InvalidNamedPatternRest,
     InvalidFieldShorthand,
@@ -5134,11 +6815,14 @@ pub(crate) enum ParserError {
     ExpectedTopLevelDeclaration,
     TopLevelVariableMustBeStatic,
     ExpectedType,
+    ExpectedLazyModifier,
+    BindingInIsPattern,
+    InvalidRangePatternBound,
     ExpectedInterfaceSetMember,
     ExpectedGenericRequirement,
-    ExpectedMatchingPattern,
     ExpectedMatchArmCaseKeyword,
     ExpectedElseBlock,
+    UnexpectedElse,
     ExpectedExpression,
     InvalidCollectionType,
     ExpectedStaticVar,
@@ -5154,8 +6838,12 @@ pub(crate) enum ParserError {
     DisallowedWildcardExpression,
     DisallowedBindingCondition,
     DisallowedLabel,
+    /// A warning: a `(`, `[`, `&` or `*` that starts a line inside `( )` or
+    /// `[ ]` joined the previous line's expression.
+    ContinuedLine,
     FunctionBodyRequired,
     UnknownBinaryOperator,
+    ChainedMembership,
     ExpectedParameterNameOrLabel,
     ExpectedParameterName,
     ExpectedSelf,
@@ -5176,10 +6864,16 @@ pub(crate) enum ParserError {
     UnsafeModifierRequiresFunction,
     UnsafeAttributeRemoved,
     DeinitRemoved,
-    UnexpectedSemicolonInList { context: &'static str },
+    UnexpectedSemicolonInList {
+        context: &'static str,
+    },
     DuplicateModuleDecl,
-    ModuleDeclNameMismatch { declared: String, expected: String },
+    ModuleDeclNameMismatch {
+        declared: String,
+        expected: String,
+    },
     ModuleDeclInRoot,
+    InvalidFormatSpecifier(String),
 }
 
 impl Display for ParserError {
@@ -5189,10 +6883,12 @@ impl Display for ParserError {
             Expected(expected, found) => {
                 write!(f, "expected `{expected}`, found `{found}`")
             }
-            ExpectedIdentifier => f.write_str("expected identifier"),
-            ExpectedCfgIdentifier => {
-                f.write_str("expected 'cfg' following '#' in configuration expression")
+            ExpectedListSeparator { separator, close, found } => {
+                write!(f, "expected `{separator}` or `{close}`, found `{found}`")
             }
+            ExpectedIdentifier => f.write_str("expected identifier"),
+            ExpectedAssetPath => f.write_str("expected a string literal for the embedded asset path"),
+            UnknownDirective(name) => write!(f, "unknown compiler directive #{name}"),
             ExpectedSemiColon => f.write_str("expected ';'"),
             QualifiedPathSeparator => f.write_str("qualified paths require `::` instead of `.`"),
             LegacyImplDeclaration => f.write_str(
@@ -5206,6 +6902,8 @@ impl Display for ParserError {
             ReferenceConstModifier => f.write_str("`&const T` is removed; write `&T`"),
             EnumPayloadVisibility => f.write_str("enum payload fields inherit the variant’s visibility; remove the field visibility modifier"),
             DuplicateEnumPayloadField(name) => write!(f, "duplicate enum payload field `{name}`"),
+            DuplicateTupleLabel(name) => write!(f, "duplicate tuple label `{name}`"),
+            LabeledFunctionTypeInput => f.write_str("a function pointer input cannot have a tuple label"),
             DuplicateNamedField(name) => write!(f, "duplicate named field `{name}`"),
             StructUpdateBaseMustBeLast => write!(f, "a struct update base must appear once and at the end"),
             InvalidNamedPatternRest => write!(f, "`..` must appear once, at the end of a named pattern"),
@@ -5231,14 +6929,19 @@ impl Display for ParserError {
             TopLevelVariableMustBeStatic => f.write_str(
                 "top-level and namespace variables must use `static var`",
             ),
+            ExpectedLazyModifier => f.write_str("expected parameter modifier '@lazy'"),
             ExpectedType => f.write_str("expected type"),
+            InvalidRangePatternBound => f.write_str("a range pattern bound must be an integer, rune or named constant"),
+            BindingInIsPattern => f.write_str("an `is` pattern cannot introduce a binding; use `if case` or `match` to bind the value"),
             ExpectedInterfaceSetMember => {
                 f.write_str("interface-set members must be interface paths")
             }
             ExpectedGenericRequirement => f.write_str("expected generic requirement"),
-            ExpectedMatchingPattern => f.write_str("expected a matching pattern"),
             ExpectedMatchArmCaseKeyword => f.write_str("expected 'case' before match arm"),
             ExpectedElseBlock => f.write_str("expected 'else' block"),
+            UnexpectedElse => {
+                f.write_str("`else` must follow an `if` block or a `guard` condition")
+            }
             ExpectedExpression => f.write_str("expected expression"),
             InvalidCollectionType => f.write_str("invalid collection type"),
             ExpectedStaticVar => f.write_str("expected `var` after `static`"),
@@ -5261,8 +6964,14 @@ impl Display for ParserError {
             DisallowedWildcardExpression => f.write_str("disallowed wildcard expression"),
             DisallowedBindingCondition => f.write_str("disallowed binding condition"),
             DisallowedLabel => f.write_str("disallowed label"),
+            ContinuedLine => f.write_str(
+                "this line continues the expression on the previous line; add a ',' if a new element was meant",
+            ),
             FunctionBodyRequired => f.write_str("function body required"),
             UnknownBinaryOperator => f.write_str("unknown binary operator"),
+            ChainedMembership => f.write_str(
+                "membership tests do not chain; add parentheses, as in `(a in b) == c`",
+            ),
             ExpectedParameterNameOrLabel => f.write_str("expected parameter name or label"),
             ExpectedParameterName => f.write_str("expected parameter name"),
             ExpectedSelf => f.write_str("expected 'self'"),
@@ -5327,6 +7036,7 @@ impl Display for ParserError {
             ModuleDeclInRoot => {
                 f.write_str("`mod` declarations are not allowed in the package root")
             }
+            InvalidFormatSpecifier(detail) => f.write_str(detail),
         }
     }
 }
@@ -5389,6 +7099,7 @@ fn is_generic_type_disambiguating_token(token: &Token) -> bool {
             | &Semicolon
             | &EOF
             | &QuestionDot
+            | &Ellipsis
             | &Bang
             | &Colon
             | &Question
@@ -5416,6 +7127,8 @@ bitflags::bitflags! {
         const ALLOW_REST_PATTERN = 1 << 2;
         const NO_STRUCT_LITERALS = 1 << 3;
         const STOP_CONDITION_CONNECTORS = 1 << 4;
+        const STOP_MATCH_ARM_ARROW = 1 << 5;
+        const IS_PATTERN = 1 << 6;
     }
 }
 
@@ -5627,7 +7340,7 @@ mod tests {
             "if values.get(Key { index: 0 }) {}",
             "if { Flag { enabled: true }.enabled } {}",
             "if accept(() => { Flag { enabled: true } }) {}",
-            "if f\"{Flag { enabled: true }.enabled}\" == \"true\" {}",
+            "if \"${Flag { enabled: true }.enabled}\" == \"true\" {}",
             "match (Flag { enabled: true }) { case value => {}; }",
         ] {
             parse_expr_str(source);
@@ -5932,6 +7645,86 @@ mod tests {
     }
 
     #[test]
+    fn tuple_shorthand_destructuring_parses_irrefutable_tuples_and_rejects_invalid_forms() {
+        for source in [
+            "func f() { (a, b) := (1, 2) }",
+            "func f() { (a, _) := (1, 2) }",
+            "func f() { (_, _) := (1, 2) }",
+            "func f() { (only,) := (42,) }",
+            "func f() { () := () }",
+            "func f() { ((x, y), (_, z)) := ((1, 2), (3, 4)) }",
+            "func f() { (first, .., last) := (1, 2, 3, 4) }",
+            "func f() { (\n    a,\n    b,\n) := (1, 2) }",
+        ] {
+            let DeclarationKind::Function(function) = parse_one_decl(source).kind else {
+                panic!("function: {source}");
+            };
+            let block = function.block.unwrap();
+            let StatementKind::Variable(local) = &block.statements[0].kind else {
+                panic!("expected local variable for {source}");
+            };
+            assert!(local.is_shorthand, "{source}");
+            assert!(local.ty.is_none(), "{source}");
+            assert!(local.initializer.is_some(), "{source}");
+            assert!(matches!(local.pattern.kind, PatternKind::Tuple(..)), "{source}");
+        }
+
+        // Labeled tuple expressions and tuple assignments stay expressions.
+        for source in [
+            "func f() { _ = (a: 1, b: 2) }",
+            "func f() { (a, b) = (1, 2) }",
+            "func f() { (a: 1, b: 2) }",
+        ] {
+            parse_one_decl(source);
+        }
+
+        // Typed shorthand tuple declarations report TypedShorthandDeclaration.
+        for source in [
+            "func f() { (a: int32, b: int32) := (1, 2) }",
+            "func f() { (a, b): (int32, int32) := (1, 2) }",
+        ] {
+            let errors = parse_decls(source).expect_err(source);
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| matches!(e.value, ParserError::TypedShorthandDeclaration)),
+                "{source}: {errors:?}"
+            );
+        }
+
+        // Parenthesized single identifier and refutable patterns are rejected.
+        for source in [
+            "func f() { (x) := 1 }",
+            "func f() { (1, x) := (1, 2) }",
+            "func f() { (.some(x), y) := (.some(1), 2) }",
+            "func f() { (a | b, c) := (1, 2) }",
+            "func f() { (whole @ (a, b), c) := ((1, 2), 3) }",
+        ] {
+            let errors = parse_decls(source).expect_err(source);
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| matches!(e.value, ParserError::DisallowedLocalBindingPattern)),
+                "{source}: {errors:?}"
+            );
+        }
+
+        // Conditional bindings still reject `:=` on tuple patterns.
+        for source in [
+            "func f(p: (int32, int32)?) { if (a, b) := p {} }",
+            "func f(p: (int32, int32)?) { guard (a, b) := p else { return } }",
+        ] {
+            let errors = parse_decls(source).expect_err(source);
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| matches!(e.value, ParserError::ConditionalShorthandBinding)),
+                "{source}: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
     fn conditional_bindings_accept_writable_value_patterns() {
         for source in [
             "if var value = optional {}",
@@ -6189,6 +7982,14 @@ mod tests {
     #[test]
     fn arrow_closures_parse_without_changing_parenthesized_expressions() {
         for source in [
+            "item => item.name",
+            "item => { item.name }",
+            "x => y => x + y",
+            "_ => 42",
+            "(_: int32) => 42",
+            "(_, value) => value",
+            "(_, _) => 42",
+            "item\n => item.name",
             "() => 42",
             "(x) => x",
             "(x: int32,) -> int32 => x",
@@ -6371,7 +8172,7 @@ mod tests {
             .expect("callable shorthand lowers to type arguments");
         assert_eq!(args.arguments.len(), 2);
         assert!(
-            matches!(&args.arguments[0], TypeArgument::Type(ty) if matches!(&ty.kind, TypeKind::Tuple(items) if items.len() == 1 && matches!(items[0].kind, TypeKind::Nominal(_))))
+            matches!(&args.arguments[0], TypeArgument::Type(ty) if matches!(&ty.kind, TypeKind::Tuple(items, _) if items.len() == 1 && matches!(items[0].kind, TypeKind::Nominal(_))))
         );
         assert!(
             matches!(&args.arguments[1], TypeArgument::Type(ty) if matches!(ty.kind, TypeKind::Nominal(_)))
@@ -6388,11 +8189,11 @@ mod tests {
         let TypeArgument::Type(args_ty) = &args.arguments[0] else {
             panic!("Expected argument tuple");
         };
-        let TypeKind::Tuple(inputs) = &args_ty.kind else {
+        let TypeKind::Tuple(inputs, _) = &args_ty.kind else {
             panic!("Expected argument tuple");
         };
         assert_eq!(inputs.len(), 1);
-        assert!(matches!(&inputs[0].kind, TypeKind::Tuple(items) if items.len() == 2));
+        assert!(matches!(&inputs[0].kind, TypeKind::Tuple(items, _) if items.len() == 2));
     }
 
     #[test]
@@ -6408,7 +8209,7 @@ mod tests {
         assert_eq!(args.arguments.len(), 2);
         assert!(matches!(
             &args.arguments[0],
-            TypeArgument::Type(ty) if matches!(&ty.kind, TypeKind::Tuple(items) if items.len() == 2)
+            TypeArgument::Type(ty) if matches!(&ty.kind, TypeKind::Tuple(items, _) if items.len() == 2)
         ));
     }
 
@@ -6424,7 +8225,7 @@ mod tests {
             .expect("callable shorthand lowers to type arguments");
         assert!(matches!(
             &args.arguments[0],
-            TypeArgument::Type(ty) if matches!(&ty.kind, TypeKind::Tuple(items) if items.is_empty())
+            TypeArgument::Type(ty) if matches!(&ty.kind, TypeKind::Tuple(items, _) if items.is_empty())
         ));
     }
 
@@ -6450,21 +8251,40 @@ mod tests {
     }
 
     #[test]
+    fn tuple_labels_preserve_sparse_positions_and_singletons() {
+        let ty = parse_type_str("(int32, high: int32)");
+        let TypeKind::Tuple(values, labels) = ty.kind else {
+            panic!("tuple type")
+        };
+        assert_eq!(values.len(), 2);
+        assert_eq!(labels[0].0, 1);
+        assert_eq!(labels[0].1.symbol.as_str(), "high");
+
+        let singleton = parse_expr_str("(low: 1)");
+        let ExpressionKind::Tuple(values, labels) = singleton.kind else {
+            panic!("tuple literal")
+        };
+        assert_eq!(values.len(), 1);
+        assert_eq!(labels[0].0, 0);
+        assert_eq!(labels[0].1.symbol.as_str(), "low");
+    }
+
+    #[test]
     fn test_tuple_type_empty() {
         let ty = parse_type_str("()");
-        assert!(matches!(ty.kind, TypeKind::Tuple(_)));
+        assert!(matches!(ty.kind, TypeKind::Tuple(_, _)));
     }
 
     #[test]
     fn test_tuple_type() {
         let ty = parse_type_str("(int32, string, bool)");
-        assert!(matches!(&ty.kind, TypeKind::Tuple(types) if types.len() == 3));
+        assert!(matches!(&ty.kind, TypeKind::Tuple(types, _) if types.len() == 3));
     }
 
     #[test]
     fn test_single_element_tuple_type() {
         let ty = parse_type_str("(int32,)");
-        assert!(matches!(&ty.kind, TypeKind::Tuple(types) if types.len() == 1));
+        assert!(matches!(&ty.kind, TypeKind::Tuple(types, _) if types.len() == 1));
     }
 
     #[test]
@@ -6766,7 +8586,7 @@ mod tests {
         };
         let body = function.block.unwrap();
         assert_eq!(body.statements.len(), 2);
-        let StatementKind::Defer(block) = &body.statements[0].kind else {
+        let StatementKind::Defer(ast::DeferKind::Always, block) = &body.statements[0].kind else {
             panic!("defer");
         };
         assert!(!block.has_declarations);
@@ -6827,8 +8647,8 @@ mod tests {
     }
 
     #[test]
-    fn test_fstring_no_interpolation_lowers_to_string_literal() {
-        let expr = parse_expr_str(r#"f"hello {{world}}""#);
+    fn test_string_interpolation_no_interpolation_lowers_to_string_literal() {
+        let expr = parse_expr_str(r#""hello {world}""#);
         match &expr.kind {
             ExpressionKind::Literal(Literal::String { value }) => {
                 assert_eq!(value, "hello {world}");
@@ -6838,8 +8658,8 @@ mod tests {
     }
 
     #[test]
-    fn test_fstring_interpolation_lowers_to_std_sprintf_call() {
-        let expr = parse_expr_str(r#"f"hello {name}""#);
+    fn test_string_interpolation_lowers_to_std_sprintf_call() {
+        let expr = parse_expr_str(r#""hello ${name}""#);
         let ExpressionKind::Call(callee, args) = &expr.kind else {
             panic!("expected call expression");
         };
@@ -6874,8 +8694,8 @@ mod tests {
     }
 
     #[test]
-    fn test_fstring_interpolation_escapes_percent_in_literal_segments() {
-        let expr = parse_expr_str(r#"f"100% {value}""#);
+    fn test_string_interpolation_escapes_percent_in_literal_segments() {
+        let expr = parse_expr_str(r#""100% ${value}""#);
         let ExpressionKind::Call(_, args) = &expr.kind else {
             panic!("expected call expression");
         };
@@ -6888,13 +8708,13 @@ mod tests {
     }
 
     #[test]
-    fn fstring_percent_escaping_preserves_literal_and_interpolated_segments() {
-        let literal = parse_expr_str(r#"f"100% {{done}} %%""#);
+    fn string_interpolation_percent_escaping_preserves_literal_and_interpolated_segments() {
+        let literal = parse_expr_str(r#""100% {done} %%""#);
         assert!(
             matches!(&literal.kind, ExpressionKind::Literal(Literal::String { value })
             if value == "100% {done} %%")
         );
-        let call = parse_expr_str(r#"f"100% {first} %% {second}%""#);
+        let call = parse_expr_str(r#""100% ${first} %% ${second}%""#);
         let ExpressionKind::Call(_, args) = &call.kind else {
             panic!("expected format call")
         };
@@ -6902,6 +8722,69 @@ mod tests {
         assert!(matches!(&args[0].expression.kind,
             ExpressionKind::Literal(Literal::String { value })
             if value == "100%% %v %%%% %v%%"));
+    }
+
+    #[test]
+    fn interpolation_escapes_decoded_percent_signs_and_preserves_raw_text() {
+        for (source, expected) in [
+            (r#""\x25v ${value} \u{25}""#, "%%v %v %%"),
+            (r##"#"\n% $#{value}"#"##, "\\n%% %v"),
+        ] {
+            let expression = parse_expr_str(source);
+            let ExpressionKind::Call(_, args) = &expression.kind else {
+                panic!("expected interpolation call")
+            };
+            assert!(matches!(&args[0].expression.kind,
+                ExpressionKind::Literal(Literal::String { value }) if value == expected));
+        }
+    }
+
+    #[test]
+    fn multiline_interpolation_accepts_normal_expression_line_breaks() {
+        let expression = parse_expr_str("\"\"\"\n    sum=${\n1 +\n2\n}\n    \"\"\"");
+        let ExpressionKind::Call(_, args) = &expression.kind else {
+            panic!("expected interpolation call")
+        };
+        assert_eq!(args.len(), 2);
+        assert!(matches!(
+            &args[1].expression.kind,
+            ExpressionKind::Binary { .. }
+        ));
+    }
+
+    #[test]
+    fn interpolation_format_specifiers_lower_to_brace_directives() {
+        let expr = parse_expr_str(r#""${name:<12}${price:>8.2}${mask:x}${item:?}""#);
+        let ExpressionKind::Call(_, args) = &expr.kind else {
+            panic!("expected interpolation call");
+        };
+        assert_eq!(args.len(), 5);
+        assert!(matches!(
+            &args[0].expression.kind,
+            ExpressionKind::Literal(Literal::String { value })
+                if value == "%{<12}%{>8.2}%{x}%{?}"
+        ));
+    }
+
+    #[test]
+    fn interpolation_format_specifiers_preserve_nested_colons_and_reject_malformed() {
+        let expr = parse_expr_str(r#""${call(label: 1):04x}""#);
+        let ExpressionKind::Call(_, args) = &expr.kind else {
+            panic!("expected interpolation call");
+        };
+        assert!(matches!(
+            &args[0].expression.kind,
+            ExpressionKind::Literal(Literal::String { value }) if value == "%{04x}"
+        ));
+
+        let errs = parse_expr_err(r#""${mask:z}""#);
+        let err = &errs[0];
+        assert!(
+            matches!(err.value, ParserError::InvalidFormatSpecifier(_)),
+            "unexpected error: {:?}",
+            err.value
+        );
+        assert_eq!(err.span.start.offset, 8);
     }
 
     #[test]
@@ -7080,19 +8963,19 @@ mod tests {
     #[test]
     fn test_tuple_expr_empty() {
         let expr = parse_expr_str("()");
-        assert!(matches!(expr.kind, ExpressionKind::Tuple(_)));
+        assert!(matches!(expr.kind, ExpressionKind::Tuple(_, _)));
     }
 
     #[test]
     fn test_tuple_expr() {
         let expr = parse_expr_str("(a, b, c)");
-        assert!(matches!(&expr.kind, ExpressionKind::Tuple(elems) if elems.len() == 3));
+        assert!(matches!(&expr.kind, ExpressionKind::Tuple(elems, _) if elems.len() == 3));
     }
 
     #[test]
     fn test_single_element_tuple_expr() {
         let expr = parse_expr_str("(1,)");
-        assert!(matches!(&expr.kind, ExpressionKind::Tuple(elems) if elems.len() == 1));
+        assert!(matches!(&expr.kind, ExpressionKind::Tuple(elems, _) if elems.len() == 1));
     }
 
     #[test]
@@ -7111,6 +8994,24 @@ mod tests {
     fn test_array_expr() {
         let expr = parse_expr_str("[1, 2, 3]");
         assert!(matches!(&expr.kind, ExpressionKind::Array(elems) if elems.len() == 3));
+    }
+
+    #[test]
+    fn postfix_spread_preserves_each_source_in_calls_and_literals() {
+        let call = parse_expr_str("emit(1, values..., 4)");
+        let ExpressionKind::Call(_, arguments) = &call.kind else {
+            panic!("expected call");
+        };
+        assert!(
+            matches!(&arguments[1].expression.kind, ExpressionKind::Spread(source) if matches!(source.kind, ExpressionKind::Identifier(_)))
+        );
+        let array = parse_expr_str("[first..., 0, last...]");
+        let ExpressionKind::Array(elements) = &array.kind else {
+            panic!("expected array");
+        };
+        assert!(matches!(elements[0].kind, ExpressionKind::Spread(_)));
+        assert!(matches!(elements[1].kind, ExpressionKind::Literal(_)));
+        assert!(matches!(elements[2].kind, ExpressionKind::Spread(_)));
     }
 
     #[test]
@@ -7722,6 +9623,75 @@ mod tests {
         assert!(matches!(decl.kind, DeclarationKind::Function(_)));
     }
 
+    /// `ContinuedLine` warnings of `source` as (line, column), 1-based line.
+    fn continued_lines(source: &str, lint_warnings: bool) -> Vec<(usize, usize)> {
+        let mut parser = parser(source);
+        if lint_warnings {
+            parser.enable_lint_warnings();
+        }
+        let (_decls, _module_decls, warnings) = parser.parse().expect("Parse failed");
+        warnings
+            .iter()
+            .filter(|warning| matches!(warning.value, ParserError::ContinuedLine))
+            .map(|warning| (warning.span.start.line + 1, warning.span.start.offset))
+            .collect()
+    }
+
+    #[test]
+    fn line_starts_joined_to_the_previous_element_warn() {
+        let source = "func f() {
+    var calls = [
+        first
+        (second)
+    ]
+    var items = (
+        values
+        [0],
+        mask
+        &flags,
+        base
+        *pointer,
+    )
+}";
+        assert_eq!(
+            continued_lines(source, true),
+            vec![(4, 8), (8, 8), (10, 8), (12, 8)]
+        );
+        // Dependencies parse without the warning.
+        assert!(continued_lines(source, false).is_empty());
+    }
+
+    #[test]
+    fn deliberate_continuations_do_not_warn() {
+        let source = "func f() {
+    var product = (
+        width
+        * height
+    )
+    var chained = (
+        builder
+            .add(1)
+            .add(2)
+    )
+    var listed = [
+        first,
+        (second),
+        &third,
+        *fourth,
+    ]
+    if ready {
+        work()
+        (other)
+    }
+    var call = make(1)(2)
+    var nested = outer(() => {
+        value
+        (next)
+    })
+}";
+        assert!(continued_lines(source, true).is_empty());
+    }
+
     #[test]
     fn test_label_on_non_loop_statement_is_preserved_as_warning() {
         let parser = parser("func foo() { misplaced: var x = 1 }");
@@ -8089,6 +10059,187 @@ mod tests {
         ));
     }
 
+    // ==================== OPTIONAL ASSIGNMENT ====================
+
+    #[test]
+    fn test_optional_default_assignment() {
+        let expr = parse_expr_str("config.name ??= fallback ?? 0");
+        let ExpressionKind::AssignOptional(target, value) = &expr.kind else {
+            panic!("expected ??=, found {:?}", expr.kind);
+        };
+        assert!(matches!(target.kind, ExpressionKind::Member { .. }));
+        assert!(matches!(value.kind, ExpressionKind::OptionalDefault(_, _)));
+        // `??` alone is unchanged.
+        let expr = parse_expr_str("a ?? b");
+        assert!(matches!(expr.kind, ExpressionKind::OptionalDefault(_, _)));
+    }
+
+    #[test]
+    fn test_doubly_optional_type_before_initializer() {
+        // `T??= value` with no space closes the type and starts the initializer.
+        let decl = parse_one_decl("func f() { var nested: int32??= nil }");
+        let DeclarationKind::Function(function) = &decl.kind else {
+            panic!("expected function");
+        };
+        let block = function.block.as_ref().expect("function body");
+        let StatementKind::Variable(local) = &block.statements[0].kind else {
+            panic!("expected variable, found {:?}", block.statements[0].kind);
+        };
+        let ty = local.ty.as_ref().expect("annotated type");
+        let TypeKind::Optional(inner) = &ty.kind else {
+            panic!("expected optional, found {:?}", ty.kind);
+        };
+        assert!(matches!(inner.kind, TypeKind::Optional(_)));
+        assert!(local.initializer.is_some());
+    }
+
+    // ==================== MEMBERSHIP ====================
+
+    #[test]
+    fn test_membership_in_and_not_in() {
+        let expr = parse_expr_str("a in b");
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Binary(BinaryOperator::In, _, _)
+        ));
+        let expr = parse_expr_str("a !in b");
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Binary(BinaryOperator::NotIn, _, _)
+        ));
+    }
+
+    #[test]
+    fn test_membership_binds_looser_than_arithmetic_and_ranges() {
+        // `x + 1 in 0..n` is `(x + 1) in (0..n)`.
+        let expr = parse_expr_str("x + 1 in 0..n");
+        let ExpressionKind::Binary(BinaryOperator::In, lhs, rhs) = &expr.kind else {
+            panic!("expected membership, found {:?}", expr.kind);
+        };
+        assert!(matches!(
+            lhs.kind,
+            ExpressionKind::Binary(BinaryOperator::Add, _, _)
+        ));
+        assert!(matches!(rhs.kind, ExpressionKind::Range(_, _, false)));
+        let expr = parse_expr_str("x in 0..=n");
+        let ExpressionKind::Binary(BinaryOperator::In, _, rhs) = &expr.kind else {
+            panic!("expected membership");
+        };
+        assert!(matches!(rhs.kind, ExpressionKind::Range(_, _, true)));
+    }
+
+    #[test]
+    fn test_membership_binds_tighter_than_equality_and_logic() {
+        let expr = parse_expr_str("a in b == true");
+        let ExpressionKind::Binary(BinaryOperator::Eql, lhs, _) = &expr.kind else {
+            panic!("expected equality, found {:?}", expr.kind);
+        };
+        assert!(matches!(
+            lhs.kind,
+            ExpressionKind::Binary(BinaryOperator::In, _, _)
+        ));
+        let expr = parse_expr_str("a in b && c !in 0..d");
+        let ExpressionKind::Binary(BinaryOperator::BoolAnd, lhs, rhs) = &expr.kind else {
+            panic!("expected &&, found {:?}", expr.kind);
+        };
+        assert!(matches!(
+            lhs.kind,
+            ExpressionKind::Binary(BinaryOperator::In, _, _)
+        ));
+        assert!(matches!(
+            rhs.kind,
+            ExpressionKind::Binary(BinaryOperator::NotIn, _, _)
+        ));
+    }
+
+    #[test]
+    fn test_membership_under_logical_not() {
+        let expr = parse_expr_str("!(a in b)");
+        let ExpressionKind::Unary(UnaryOperator::LogicalNot, inner) = &expr.kind else {
+            panic!("expected !, found {:?}", expr.kind);
+        };
+        let ExpressionKind::Parenthesis(inner) = &inner.kind else {
+            panic!("expected parentheses, found {:?}", inner.kind);
+        };
+        assert!(matches!(
+            inner.kind,
+            ExpressionKind::Binary(BinaryOperator::In, _, _)
+        ));
+    }
+
+    #[test]
+    fn test_bang_spacing_around_in() {
+        // `!` touching `in` is the operator, with or without a space before it.
+        for input in ["value !in set", "value!in set"] {
+            let expr = parse_expr_str(input);
+            assert!(
+                matches!(
+                    &expr.kind,
+                    ExpressionKind::Binary(BinaryOperator::NotIn, lhs, _)
+                        if matches!(lhs.kind, ExpressionKind::Identifier(_))
+                ),
+                "{input}: {:?}",
+                expr.kind
+            );
+        }
+        // A space after `!` makes it postfix propagation, then a membership test.
+        let expr = parse_expr_str("value! in set");
+        let ExpressionKind::Binary(BinaryOperator::In, lhs, _) = &expr.kind else {
+            panic!("expected membership, found {:?}", expr.kind);
+        };
+        assert!(matches!(lhs.kind, ExpressionKind::Propagate(_)));
+        // An identifier that merely starts with `in` keeps the prefix `!`.
+        for input in ["!inside", "!index", "!in_range", "!in2"] {
+            let expr = parse_expr_str(input);
+            assert!(
+                matches!(
+                    &expr.kind,
+                    ExpressionKind::Unary(UnaryOperator::LogicalNot, inner)
+                        if matches!(inner.kind, ExpressionKind::Identifier(_))
+                ),
+                "{input}: {:?}",
+                expr.kind
+            );
+        }
+    }
+
+    #[test]
+    fn test_membership_does_not_chain() {
+        for input in ["a in b in c", "a in b !in c", "a !in b in c"] {
+            let errors = parse_expr_err(input);
+            assert!(
+                matches!(errors[0].value, ParserError::ChainedMembership),
+                "{input}: {errors:?}"
+            );
+        }
+        // Parentheses make the intent explicit.
+        let expr = parse_expr_str("(a in b) in c");
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Binary(BinaryOperator::In, _, _)
+        ));
+    }
+
+    #[test]
+    fn test_for_in_keeps_membership_in_iterable_and_clause() {
+        let decl = parse_one_decl(
+            "func foo() { for x in (a in b) ? xs : ys where x in allowed && x !in denied { } }",
+        );
+        let DeclarationKind::Function(function) = &decl.kind else {
+            panic!("expected function");
+        };
+        let block = function.block.as_ref().expect("function body");
+        let StatementKind::For(statement) = &block.statements[0].kind else {
+            panic!("expected for loop, found {:?}", block.statements[0].kind);
+        };
+        assert!(matches!(statement.iterator.kind, ExpressionKind::Ternary(_, _, _)));
+        let clause = statement.clause.as_ref().expect("where clause");
+        assert!(matches!(
+            clause.kind,
+            ExpressionKind::Binary(BinaryOperator::BoolAnd, _, _)
+        ));
+    }
+
     #[test]
     fn test_compound_assignment_add() {
         let expr = parse_expr_str("a += 1");
@@ -8145,7 +10296,77 @@ mod tests {
     #[test]
     fn test_range_exclusive() {
         let expr = parse_expr_str("1..10");
-        assert!(matches!(&expr.kind, ExpressionKind::Range(_, _, false)));
+        assert!(matches!(&expr.kind, ExpressionKind::Range(Some(_), Some(_), false)));
+    }
+
+    #[test]
+    fn open_ended_range_expressions_and_asi_rules_parse() {
+        assert!(matches!(
+            &parse_expr_str("1..").kind,
+            ExpressionKind::Range(Some(_), None, false)
+        ));
+        assert!(matches!(
+            &parse_expr_str("..10").kind,
+            ExpressionKind::Range(None, Some(_), false)
+        ));
+        assert!(matches!(
+            &parse_expr_str("..=10").kind,
+            ExpressionKind::Range(None, Some(_), true)
+        ));
+        assert!(matches!(
+            &parse_expr_str("..").kind,
+            ExpressionKind::Range(None, None, false)
+        ));
+
+        // Membership with open-ended ranges
+        for (src, check_lhs, check_rhs, inc) in [
+            ("x in 10..", true, false, false),
+            ("x in ..10", false, true, false),
+            ("x in ..=10", false, true, true),
+            ("x in ..", false, false, false),
+        ] {
+            let expr = parse_expr_str(src);
+            let ExpressionKind::Binary(BinaryOperator::In, _, rhs) = &expr.kind else {
+                panic!("expected membership: {src}");
+            };
+            let ExpressionKind::Range(lhs, end, is_inc) = &rhs.kind else {
+                panic!("expected range: {src}");
+            };
+            assert_eq!(lhs.is_some(), check_lhs, "{src}");
+            assert_eq!(end.is_some(), check_rhs, "{src}");
+            assert_eq!(*is_inc, inc, "{src}");
+        }
+
+        // Control-flow heads keep `{` as block body rather than range upper bound.
+        parse_one_decl("func f() { for i in 0.. { break } }");
+        parse_one_decl("func f(x: int32) { if x in 10.. { } }");
+        parse_one_decl("func f(x: int32) { if x in .. { } }");
+        parse_one_decl("func f(x: int32) -> bool { x in 10.. && x in ..100 }");
+        parse_one_decl("func f(x: int32) -> bool { x in .. && x in ..=10 }");
+
+        // ASI: postfix `start..` ends the statement at newline and does not swallow the next line.
+        let DeclarationKind::Function(func) =
+            parse_one_decl("func f() {\n    r := 1..\n    nextCall()\n}").kind
+        else {
+            panic!("function");
+        };
+        let block = func.block.unwrap();
+        assert_eq!(block.statements.len(), 2);
+        let StatementKind::Variable(local) = &block.statements[0].kind else {
+            panic!("expected variable");
+        };
+        assert!(matches!(
+            local.initializer.as_ref().unwrap().kind,
+            ExpressionKind::Range(Some(_), None, false)
+        ));
+
+        // Invalid range forms
+        for bad in ["1..=", "..=", "1..2..3", "1.. ..2"] {
+            assert!(
+                parse_decls(&format!("func f() {{ _ = {bad} }}")).is_err(),
+                "expected error for {bad}"
+            );
+        }
     }
 
     #[test]
@@ -8228,6 +10449,36 @@ mod tests {
     }
 
     #[test]
+    fn wildcard_assignee_discards_the_value() {
+        for source in ["_ = value()", "(_) = value()"] {
+            let mut parser = parser(source);
+            let expr = parser.parse_expression().expect("discard assignment");
+            let ExpressionKind::Assign(target, _) = &expr.kind else {
+                panic!("expected an assignment: {source}");
+            };
+            assert!(
+                matches!(&target.kind, ExpressionKind::Wildcard)
+                    || matches!(&target.kind, ExpressionKind::Parenthesis(inner) if matches!(inner.kind, ExpressionKind::Wildcard)),
+                "{source}"
+            );
+            assert!(parser.errors.is_empty(), "{source}: {:#?}", parser.errors);
+        }
+        // Only a plain assignment discards; a compound one still needs a place.
+        let mut parser = parser("_ += 1");
+        parser
+            .parse_expression()
+            .expect("recover compound wildcard");
+        assert!(
+            parser
+                .errors
+                .iter()
+                .any(|error| matches!(error.value, ParserError::DisallowedWildcardExpression)),
+            "{:#?}",
+            parser.errors
+        );
+    }
+
+    #[test]
     fn wildcard_expression_is_recovered_with_a_diagnostic() {
         let mut parser = parser("_");
         let expr = parser
@@ -8300,7 +10551,7 @@ mod tests {
     #[test]
     fn test_trailing_comma_tuple_type() {
         let ty = parse_type_str("(int32, string,)");
-        assert!(matches!(ty.kind, TypeKind::Tuple(_)));
+        assert!(matches!(ty.kind, TypeKind::Tuple(_, _)));
     }
 
     #[test]
@@ -8373,6 +10624,55 @@ mod tests {
                 }
             }
             _ => panic!("Expected OptionalEvaluation"),
+        }
+    }
+
+    #[test]
+    fn optional_chaining_parses_subscripts_and_calls() {
+        let idx = parse_expr_str("grid?.[0]?.[1]");
+        match &idx.kind {
+            ExpressionKind::OptionalEvaluation(inner) => match &inner.kind {
+                ExpressionKind::Index { target, index } => {
+                    assert_eq!(index.len(), 1);
+                    match &target.kind {
+                        ExpressionKind::OptionalUnwrap(mid) => match &mid.kind {
+                            ExpressionKind::Index { target, index } => {
+                                assert_eq!(index.len(), 1);
+                                assert!(matches!(target.kind, ExpressionKind::OptionalUnwrap(_)));
+                            }
+                            _ => panic!("expected inner Index"),
+                        },
+                        _ => panic!("expected outer OptionalUnwrap"),
+                    }
+                }
+                _ => panic!("expected outer Index"),
+            },
+            _ => panic!("expected OptionalEvaluation"),
+        }
+
+        let call = parse_expr_str("cb?.(1, 2)");
+        match &call.kind {
+            ExpressionKind::OptionalEvaluation(inner) => match &inner.kind {
+                ExpressionKind::Call(callee, args) => {
+                    assert_eq!(args.len(), 2);
+                    assert!(matches!(callee.kind, ExpressionKind::OptionalUnwrap(_)));
+                }
+                _ => panic!("expected Call"),
+            },
+            _ => panic!("expected OptionalEvaluation"),
+        }
+
+        let trailing = parse_expr_str("cb?.(x) { it + 1 }");
+        match &trailing.kind {
+            ExpressionKind::OptionalEvaluation(inner) => match &inner.kind {
+                ExpressionKind::Call(callee, args) => {
+                    assert_eq!(args.len(), 2);
+                    assert!(args[1].is_trailing_closure);
+                    assert!(matches!(callee.kind, ExpressionKind::OptionalUnwrap(_)));
+                }
+                _ => panic!("expected Call with trailing closure"),
+            },
+            _ => panic!("expected OptionalEvaluation"),
         }
     }
 
@@ -9165,6 +11465,138 @@ mod tests {
                     .any(|e| matches!(e.value, ParserError::StructUpdateBaseMustBeLast)),
                 "{errors:?}"
             );
+        }
+    }
+
+    #[test]
+    fn multiline_parenthesized_and_bracketed_lists_need_no_trailing_comma() {
+        for source in [
+            "func f() { total := sum(\n    first,\n    second\n) }",
+            "func f() { m := [\n    [1, 2],\n    [3, 4]\n] }",
+            "func f() { d := [\n    \"a\": 1,\n    \"b\": 2\n] }",
+            "func f() { v := table[\n    row\n] }",
+            "func f() { p := (\n    x,\n    y\n) }",
+            "func f() { r := compute(\n    base\n        + offset,\n    items.map(item => {\n        log(item)\n        item * 2\n    })\n) }",
+            "func g[\n    T,\n    U\n](\n    _ a: T,\n    _ b: U\n) -> (\n    T,\n    U\n) { (a, b) }",
+            "func h(_ f: (\n    int32,\n    int32\n) -> int32) {}",
+            "@attr(\n    a,\n    b\n)\nfunc i() {}",
+            "func j() { match p {\n    case (\n        a,\n        b\n    ) => a\n} }",
+            "func k() { x := Box[\n    int32\n](1) }",
+            "func l(_ x: [\n    int32\n]) {}",
+        ] {
+            if let Err(errors) = parse_decls(source) {
+                panic!("rejected {source}: {errors:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn missing_comma_between_lines_reports_the_list_separator() {
+        for (source, close) in [
+            ("func f() { sum(\n    1\n    2\n) }", Token::RParen),
+            ("func f() { x := [\n    1\n    2\n] }", Token::RBracket),
+            (
+                "func f() { x := [\n    1,\n    2\n    3\n] }",
+                Token::RBracket,
+            ),
+        ] {
+            let errors = parse_decls(source).expect_err("missing comma");
+            let ParserError::ExpectedListSeparator {
+                separator,
+                close: found_close,
+                found,
+            } = &errors[0].value
+            else {
+                panic!("{source}: {errors:?}");
+            };
+            assert_eq!(*separator, Token::Comma);
+            assert_eq!(*found_close, close);
+            assert!(matches!(found, Token::Integer { .. }), "{found:?}");
+            // The element that should have been preceded by a comma.
+            assert_eq!(errors[0].span.start.offset, 4, "{source}");
+            assert!(errors[0].span.start.line >= 2, "{source}");
+        }
+        assert_eq!(
+            ParserError::ExpectedListSeparator {
+                separator: Token::Comma,
+                close: Token::RParen,
+                found: Token::Identifier { value: "b".into() },
+            }
+            .to_string(),
+            "expected `,` or `)`, found `b`"
+        );
+    }
+
+    #[test]
+    fn else_and_where_may_begin_a_line() {
+        for source in [
+            "func f() {\n    if a {\n        b()\n    }\n    else if c {\n        d()\n    }\n    else {\n        e()\n    }\n}",
+            "func f() {\n    guard value > 0\n    else { return }\n}",
+            "func largest[T](_ values: [T]) -> T\n    where T: Ord {\n    values[0]\n}",
+            "func f() {\n    for item in items\n        where item.enabled {\n    }\n}",
+        ] {
+            if let Err(errors) = parse_decls(source) {
+                panic!("rejected {source}: {errors:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn stray_else_reports_a_dedicated_error() {
+        for source in [
+            "func f() {\n    x := 1\n    else { x }\n}",
+            "func f() {\n    while x {\n    }\n    else { x }\n}",
+            "func f() {\n    x := 1;\n    else { x }\n}",
+        ] {
+            let errors = parse_decls(source).expect_err("stray else");
+            assert!(
+                matches!(errors[0].value, ParserError::UnexpectedElse),
+                "{source}: {errors:?}"
+            );
+            assert_eq!(errors[0].span.start.offset, 4, "{source}");
+        }
+    }
+
+    #[test]
+    fn contextual_yield_parses_expression_or_identifier() {
+        use crate::ast::{DeclarationKind, ExpressionKind, StatementKind};
+
+        fn body_has_top_yield(source: &str) -> bool {
+            let decls = parse_decls(source).unwrap_or_else(|e| panic!("{source}: {e:?}"));
+            let DeclarationKind::Function(func) = &decls[0].kind else {
+                panic!("expected function declaration");
+            };
+            let block = func.block.as_ref().unwrap();
+            matches!(
+                block.statements.first().map(|stmt| &stmt.kind),
+                Some(StatementKind::Expression(expr))
+                    if matches!(expr.kind, ExpressionKind::Yield(_))
+            )
+        }
+
+        // `yield <expr>` parses as ExpressionKind::Yield
+        for src in [
+            "func f() { yield 1 }",
+            "func f() { yield x }",
+            "func f() { yield -1 }",
+            "func f() { yield (1, 2) }",
+            "func f() { yield [1, 2] }",
+            "func f() { yield .some(1) }",
+        ] {
+            assert!(body_has_top_yield(src), "expected Yield for `{src}`");
+        }
+
+        // Identifier/call/binary/member/index uses of `yield` stay ordinary expressions
+        for src in [
+            "func f() { yield := 1 }",
+            "func f() { yield = 2 }",
+            "func f() { yield(1) }",
+            "func f() { yield - 1 }",
+            "func f() { yield + 1 }",
+            "func f() { yield.x }",
+            "func f() { yield[0] }",
+        ] {
+            assert!(!body_has_top_yield(src), "expected non-Yield for `{src}`");
         }
     }
 }

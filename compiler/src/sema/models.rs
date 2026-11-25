@@ -17,18 +17,54 @@ use crate::{
     utils::intern::{Interned, List},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Ty<'arena>(Interned<'arena, TyKind<'arena>>);
+/// The interned kind is the type's identity for inference, overloads and ABI.
+/// A spelling can additionally carry labeled positions through nested types.
+#[derive(Clone, Copy)]
+pub struct Ty<'arena>(&'arena TypeData<'arena>);
+
+pub(crate) struct TypeData<'arena> {
+    pub(crate) kind: TyKind<'arena>,
+    pub(crate) canonical: Option<Ty<'arena>>,
+    pub(crate) labels: &'arena [(usize, Symbol)],
+}
+
+impl PartialEq for Ty<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self.canonical().0, other.canonical().0)
+    }
+}
+
+impl Eq for Ty<'_> {}
+
+impl Hash for Ty<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::ptr::hash(self.canonical().0, state);
+    }
+}
+
+impl std::fmt::Debug for Ty<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let kind = Interned::new_unchecked(&self.canonical().0.kind);
+        f.debug_tuple("Ty").field(&kind).finish()
+    }
+}
 
 pub type TyList<'arena> = List<'arena, Ty<'arena>>;
 
 impl<'arena> Ty<'arena> {
-    pub fn with_kind(k: Interned<'arena, TyKind<'arena>>) -> Ty<'arena> {
-        Ty(k)
+    pub(crate) fn from_data(data: &'arena TypeData<'arena>) -> Self {
+        Ty(data)
     }
 
     pub fn new(k: TyKind<'arena>, gcx: Gcx<'arena>) -> Ty<'arena> {
         gcx.store.interners.intern_ty(k)
+    }
+
+    pub(crate) fn optional(self, gcx: Gcx<'arena>) -> (Self, GenericArguments<'arena>) {
+        let id = gcx.std_item_def(hir::StdItem::Optional).expect("Optional type must exist");
+        let adt = gcx.get_enum_definition(id).adt_def;
+        let args = gcx.store.interners.intern_generic_args(vec![GenericArgument::Type(self)]);
+        (Self::new(TyKind::Adt(adt, args), gcx), args)
     }
 
     pub fn error(gcx: Gcx<'arena>) -> Ty<'arena> {
@@ -89,7 +125,70 @@ impl<'arena> Ty<'arena> {
 
     #[inline]
     pub fn kind(self) -> TyKind<'arena> {
-        *self.0.0
+        self.0.kind
+    }
+
+    pub(crate) fn has_presentation(self) -> bool {
+        self.0.canonical.is_some()
+    }
+
+    pub(crate) fn canonical(self) -> Self {
+        self.0.canonical.unwrap_or(self)
+    }
+
+    pub(crate) fn presented(
+        self,
+        kind: TyKind<'arena>,
+        labels: &'arena [(usize, Symbol)],
+        arena: &'arena bumpalo::Bump,
+    ) -> Self {
+        Ty(arena.alloc(TypeData {
+            kind,
+            labels,
+            canonical: Some(self.canonical()),
+        }))
+    }
+
+    pub(crate) fn tuple_labels(self) -> &'arena [(usize, Symbol)] {
+        self.0.labels
+    }
+
+    pub(crate) fn labeled_tuple_field(self, name: Symbol) -> Option<(usize, Self)> {
+        let TyKind::Tuple(elements) = self.kind() else {
+            return None;
+        };
+        let &(index, _) = self
+            .tuple_labels()
+            .iter()
+            .find(|(_, label)| *label == name)?;
+        Some((index, elements[index]))
+    }
+
+    pub(crate) fn with_tuple_labels(
+        self,
+        labels: &'arena [(usize, Symbol)],
+        gcx: Gcx<'arena>,
+    ) -> Self {
+        if labels.is_empty() {
+            return self;
+        }
+        self.presented(self.kind(), labels, &gcx.store.arenas.global)
+    }
+
+    pub(crate) fn with_source_labels(
+        self,
+        labels: &crate::hir::TupleLabels,
+        gcx: Gcx<'arena>,
+    ) -> Self {
+        if labels.is_empty() || !matches!(self.kind(), TyKind::Tuple(_)) {
+            return self;
+        }
+        let labels = gcx.store.arenas.global.alloc_slice_fill_iter(
+            labels
+                .iter()
+                .map(|(position, label)| (*position, label.symbol)),
+        );
+        self.with_tuple_labels(labels, gcx)
     }
 
     pub fn is_error(self) -> bool {
@@ -152,8 +251,15 @@ impl<'arena> Ty<'arena> {
                 format!("[{}; {}]", element.format(gcx), len_str)
             }
             TyKind::Adt(adt, args) => {
-                let ident = gcx.definition_ident(adt.id);
-                let mut out = String::from(gcx.symbol_text(ident.symbol).as_ref());
+                fn write_name(gcx: Gcx<'_>, id: DefinitionID, out: &mut String) {
+                    if let Some(parent) = gcx.nested_type_owner(id) {
+                        write_name(gcx, parent, out);
+                        out.push_str("::");
+                    }
+                    out.push_str(gcx.definition_ident(id).symbol.as_str());
+                }
+                let mut out = String::new();
+                write_name(gcx, adt.id, &mut out);
                 out.push_str(&format_generic_args(&args, gcx));
                 out
             }
@@ -317,6 +423,21 @@ impl<'ctx> Ty<'ctx> {
             }
         }
         self.visit_with(&mut Parameters)
+    }
+
+    /// Exact query for unresolved inference variables. Unlike
+    /// contains_inference, aliases and projections do not count.
+    pub fn has_inference_variables(self) -> bool {
+        struct Variables;
+        impl<'ctx> TypeVisitor<'ctx> for Variables {
+            fn visit_ty(&mut self, ty: Ty<'ctx>) -> bool {
+                matches!(ty.kind(), TyKind::Infer(_)) || ty.super_visit_with(self)
+            }
+            fn visit_const(&mut self, value: Const<'ctx>) -> bool {
+                matches!(value.kind, ConstKind::Infer(_)) || value.ty.visit_with(self)
+            }
+        }
+        self.visit_with(&mut Variables)
     }
 }
 
@@ -554,6 +675,8 @@ pub struct StructField<'arena> {
     pub mutability: Mutability,
     pub def_id: DefinitionID,
     pub visibility: crate::sema::resolve::models::Visibility,
+    pub coding_key: Option<Symbol>,
+    pub coding_skip: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -639,6 +762,7 @@ pub struct ClassWitnessMethod<'ctx> {
 
 #[derive(Debug, Clone)]
 pub struct StructDefinition<'arena> {
+    pub positional: bool,
     pub adt_def: AdtDef,
     pub class_info: Option<ClassInfo<'arena>>,
     pub has_initializer: bool,
@@ -757,7 +881,7 @@ impl<'ctx> LabeledFunctionSignature<'ctx> {
     /// Returns `true` when:
     /// * both have the same `is_variadic` flag,
     /// * the parameter list is the same length, and
-    /// * every parameter's `label` and `default_provider` status match in order.
+    /// * every parameter's label, evaluation mode and default-provider status match in order.
     pub fn same_shape(&self, other: &Self) -> bool {
         // Quick field/length checks first.
         if self.is_variadic != other.is_variadic || self.inputs.len() != other.inputs.len() {
@@ -766,7 +890,9 @@ impl<'ctx> LabeledFunctionSignature<'ctx> {
 
         // Compare each parameter, ignoring `ty`.
         self.inputs.iter().zip(&other.inputs).all(|(a, b)| {
-            a.label == b.label && a.default_provider.is_some() == b.default_provider.is_some()
+            a.label == b.label
+                && a.is_lazy == b.is_lazy
+                && a.default_provider.is_some() == b.default_provider.is_some()
         })
     }
 
@@ -788,6 +914,20 @@ impl<'ctx> LabeledFunctionSignature<'ctx> {
     }
 }
 
+pub fn lazy_parameter_result_ty<'ctx>(gcx: Gcx<'ctx>, param_ty: Ty<'ctx>) -> Option<Ty<'ctx>> {
+    let fn_id = gcx.std_item_def(hir::StdItem::Fn)?;
+    let TyKind::BoxedExistential { interfaces } = param_ty.kind() else {
+        return None;
+    };
+    let [interface] = interfaces else {
+        return None;
+    };
+    if interface.id != fn_id {
+        return None;
+    }
+    interface.arguments.get(2)?.ty()
+}
+
 fn format_parameter_for_display<'ctx>(
     signature: &LabeledFunctionSignature<'ctx>,
     index: usize,
@@ -795,6 +935,11 @@ fn format_parameter_for_display<'ctx>(
 ) -> String {
     let param = &signature.inputs[index];
     let is_variadic = signature.is_variadic && index + 1 == signature.inputs.len();
+    if param.is_lazy
+        && let Some(result) = lazy_parameter_result_ty(gcx, param.ty)
+    {
+        return format!("@lazy {}", result.format(gcx));
+    }
     format_parameter_type_for_display(param.ty, is_variadic, gcx)
 }
 
@@ -824,6 +969,7 @@ fn variadic_element_type<'ctx>(ty: Ty<'ctx>, gcx: Gcx<'ctx>) -> Option<Ty<'ctx>>
 
 #[derive(Debug, Clone, Copy)]
 pub struct LabeledFunctionParameter<'ctx> {
+    pub is_lazy: bool,
     pub label: Option<Symbol>,
     pub name: Symbol,
     pub ty: Ty<'ctx>,
@@ -878,8 +1024,46 @@ pub enum ConstKind {
     Infer(ConstVarID),
 }
 
+thread_local! {
+    static SESSION_CONST_ARRAYS: std::cell::RefCell<indexmap::IndexSet<Box<[ConstValue]>>> =
+        std::cell::RefCell::new(indexmap::IndexSet::new());
+}
+
+pub(crate) fn reset_const_arrays() {
+    SESSION_CONST_ARRAYS.with_borrow_mut(|values| *values = Default::default());
+}
+
+/// Session-interned fixed-size constant array value so `ConstValue` remains `Copy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InternedConstArray(u32);
+
+impl InternedConstArray {
+    pub fn new(elements: Vec<ConstValue>) -> Self {
+        let boxed: Box<[ConstValue]> = elements.into_boxed_slice();
+        SESSION_CONST_ARRAYS.with_borrow_mut(|values| {
+            let index = values
+                .get_index_of(&boxed)
+                .unwrap_or_else(|| values.insert_full(boxed).0);
+            Self(u32::try_from(index).expect("const array table exhausted"))
+        })
+    }
+
+    pub fn with_elements<R>(self, read: impl FnOnce(&[ConstValue]) -> R) -> R {
+        SESSION_CONST_ARRAYS.with_borrow(|values| read(&values[self.0 as usize]))
+    }
+
+    pub fn len(self) -> usize {
+        self.with_elements(<[ConstValue]>::len)
+    }
+
+    pub fn to_vec(self) -> Vec<ConstValue> {
+        self.with_elements(|items| items.to_vec())
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum ConstValue {
+    Bytes(crate::span::InternedBytes),
     Integer(i128),
     Bool(bool),
     Rune(char),
@@ -887,6 +1071,7 @@ pub enum ConstValue {
     Float(f64),
     Unit,
     EnumUnitVariant(DefinitionID),
+    Array(InternedConstArray),
 }
 
 impl PartialEq for ConstValue {
@@ -895,10 +1080,12 @@ impl PartialEq for ConstValue {
             (ConstValue::Integer(a), ConstValue::Integer(b)) => a == b,
             (ConstValue::Bool(a), ConstValue::Bool(b)) => a == b,
             (ConstValue::Rune(a), ConstValue::Rune(b)) => a == b,
+            (ConstValue::Bytes(a), ConstValue::Bytes(b)) => a == b,
             (ConstValue::String(a), ConstValue::String(b)) => a == b,
             (ConstValue::Float(a), ConstValue::Float(b)) => a.to_bits() == b.to_bits(),
             (ConstValue::Unit, ConstValue::Unit) => true,
             (ConstValue::EnumUnitVariant(a), ConstValue::EnumUnitVariant(b)) => a == b,
+            (ConstValue::Array(a), ConstValue::Array(b)) => a == b,
             _ => false,
         }
     }
@@ -921,6 +1108,10 @@ impl Hash for ConstValue {
                 2u8.hash(state);
                 v.hash(state);
             }
+            ConstValue::Bytes(v) => {
+                7u8.hash(state);
+                v.hash(state);
+            }
             ConstValue::String(v) => {
                 3u8.hash(state);
                 v.hash(state);
@@ -936,6 +1127,10 @@ impl Hash for ConstValue {
                 6u8.hash(state);
                 v.hash(state);
             }
+            ConstValue::Array(v) => {
+                8u8.hash(state);
+                v.hash(state);
+            }
         }
     }
 }
@@ -947,6 +1142,24 @@ pub enum GenericArgument<'arena> {
 }
 
 impl<'arena> GenericArgument<'arena> {
+    pub(crate) fn has_presentation(self) -> bool {
+        match self {
+            Self::Type(ty) => ty,
+            Self::Const(c) => c.ty,
+        }
+        .has_presentation()
+    }
+
+    pub(crate) fn canonical(self) -> Self {
+        match self {
+            Self::Type(ty) => Self::Type(ty.canonical()),
+            Self::Const(c) => Self::Const(Const {
+                ty: c.ty.canonical(),
+                ..c
+            }),
+        }
+    }
+
     pub fn ty(self) -> Option<Ty<'arena>> {
         match self {
             GenericArgument::Type(ty) => Some(ty),
@@ -986,6 +1199,10 @@ pub struct Generics {
 }
 
 impl Generics {
+    pub fn explicit_parameter_count(&self) -> usize {
+        self.parameters.iter().filter(|p| !p.is_anonymous).count()
+    }
+
     pub fn total_count(&self) -> usize {
         return self.parameters.len();
     }
@@ -1015,6 +1232,8 @@ impl Generics {
 
 #[derive(Debug, Clone)]
 pub struct GenericParameterDefinition {
+    /// Hidden parameters participate in inference and specialization only.
+    pub is_anonymous: bool,
     pub name: Symbol,
     pub id: DefinitionID,
     pub index: usize,
@@ -1079,7 +1298,7 @@ pub struct InterfaceConstantRequirement<'ctx> {
     pub id: DefinitionID,
     pub name: Symbol,
     pub ty: Ty<'ctx>,
-    pub default: Option<Const<'ctx>>, // Evaluated default value if provided
+    pub has_default: bool,
 }
 
 // For interface types (any/some Protocol)
@@ -1264,6 +1483,7 @@ pub enum CandidateSource {
     Impl(ConformanceRecordId),
     ParamEnv,
     BuiltinTuple,
+    BuiltinTupleConformance,
     BuiltinCallable,
     BuiltinClone,
     BuiltinAnyObject,
@@ -1477,6 +1697,13 @@ pub enum SyntheticDefinitionKind {
         conformance: ConformanceRecordId,
         source: DefinitionID,
     },
+    /// Conformance-owned forwarder through a resolved stored field.
+    DelegatedMethod {
+        conformance: ConformanceRecordId,
+        source: DefinitionID,
+        field: u32,
+        borrow_field: bool,
+    },
     /// Rebase a default argument into its adopted entry's generic environment.
     AdoptedClassDefaultArgument {
         method: DefinitionID,
@@ -1535,12 +1762,16 @@ pub enum SyntheticDefinitionKind {
     /// Primitive operator witnesses are instantiated in the consuming package
     /// so checked arithmetic follows that package's compilation profile.
     PrimitiveOperator(crate::hir::StdItem),
+    /// Built-in structural tuple conformance (`PartialEq`, `Hashable`,
+    /// `PartialOrd`, `Ord`, `Default`, `Debug`), materialized per concrete tuple.
+    TupleConformance(crate::hir::StdItem),
 }
 
 impl SyntheticDefinitionKind {
     pub fn is_instance_generated(self) -> bool {
         self.is_builtin_clone()
             || self.is_primitive_operator()
+            || self.is_tuple_conformance()
             || matches!(self, Self::FunctionPointerCall { .. })
     }
 
@@ -1553,6 +1784,10 @@ impl SyntheticDefinitionKind {
 
     pub fn is_primitive_operator(self) -> bool {
         matches!(self, Self::PrimitiveOperator(_))
+    }
+
+    pub fn is_tuple_conformance(self) -> bool {
+        matches!(self, Self::TupleConformance(_))
     }
 }
 
@@ -1573,6 +1808,18 @@ pub enum SyntheticMethodKind {
     MemberwiseEncode,
     /// Struct fields decoded through the format-neutral codec.
     MemberwiseDecode,
+    /// PartialOrd.partialCmp: lexicographic over fields, enum cases by declaration order.
+    MemberwisePartialOrder,
+    /// Ord.cmp: lexicographic over fields, enum cases by declaration order.
+    MemberwiseTotalOrder,
+    /// Default.default: each field's declared default, else its type's Default.
+    MemberwiseDefault,
+    /// Debug.debug: the type or case name, then each field's own debug text.
+    MemberwiseDebug,
+    EnumRawValue,
+    EnumFromRawValue,
+    EnumCaseName,
+    EnumCaseAt,
     /// Getter synthesized from a stored field.
     PropertyFieldGetter(usize),
 }

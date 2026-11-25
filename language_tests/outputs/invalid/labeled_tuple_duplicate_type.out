@@ -1,0 +1,4 @@
+error: duplicate tuple label `low`
+ -> language_tests/source_files/invalid/labeled_tuple_duplicate_type.tr:1:32
+	func width(_ pair: (low: int32, low: int32)) -> int32 { pair.0 }
+	                                ^^^

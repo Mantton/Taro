@@ -1,6 +1,8 @@
+import std::default::Default
 import std::hash::Hashable
 import std::iter::{Iterable, Iterator}
 import std::marker::Clone
+import std::ops::{Contains, PartialEq}
 
 /// A shared handle to a hash set (G15). Copying a Set shares its elements;
 /// `copy()` makes an independent set.
@@ -130,4 +132,19 @@ conform[Element: Hashable] SetIterator[Element] to Iterable {
     type Element = Element
     type Iterator = SetIterator[Element]
     public func iter() -> Self::Iterator { self }
+}
+
+conform[Element: Hashable] Set[Element] to Contains[Element] {
+    public func contains(_ value: &Element) -> bool { self.contains(value) }
+}
+
+conform[Element: Hashable] Set[Element] to Default {
+    public static func default() -> Self { Self::new() }
+}
+
+/// Order-independent set equality.
+conform[Element: Hashable] Set[Element] to PartialEq {
+    public func eq(_ other: Self) -> bool {
+        self.len() == other.len() && self.isSubset(of: other)
+    }
 }

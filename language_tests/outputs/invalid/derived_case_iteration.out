@@ -1,0 +1,8 @@
+error: only payload-free enums can derive CaseIterable
+ -> language_tests/source_files/invalid/derived_case_iteration.tr:2:7
+	struct Record: CaseIterable {}
+	       ^^^^^^
+error: cannot derive CaseIterable for case 'value' with a payload
+ -> language_tests/source_files/invalid/derived_case_iteration.tr:1:35
+	enum Envelope: CaseIterable { case value(int32) }
+	                                   ^^^^^

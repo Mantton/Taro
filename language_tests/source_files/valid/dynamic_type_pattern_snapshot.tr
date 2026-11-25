@@ -1,0 +1,50 @@
+interface Named { func id() -> int32; }
+struct Tag { value: int32 }
+struct Other {}
+conform Tag to Named { func id() -> int32 { self.value }; }
+conform Other to Named { func id() -> int32 { -1 }; }
+func redirect(_ slot: &any Named) -> bool { *slot = Other {}; return false }
+func concrete(_ input: &any Named) -> int32 {
+    match input {
+        case first as Tag if redirect(input) => first.value + 1
+        case is Other => -1
+        case next as Tag => next.value
+        case _ => 0
+    }
+}
+func generic[T](_ input: T, _ slot: &any Named) -> int32 {
+    match input {
+        case _ if redirect(slot) => -2
+        case is Other => -1
+        case next as Tag => next.value
+        case _ => 0
+    }
+}
+func keepReference(_ input: &any Named) -> int32 {
+    match input {
+        case first as Tag if redirect(input) => first.value
+        case is Other => -5
+        case alias => alias.id()
+    }
+}
+enum Wrapper { case named(&any Named); case empty }
+func nested(_ wrapped: Wrapper, _ slot: &any Named) -> int32 {
+    match wrapped {
+        case _ if redirect(slot) => -2
+        case .named(is Other) => -1
+        case .named(next as Tag) => next.value
+        case _ => 0
+    }
+}
+func main() {
+    var value: any Named = Tag { value: 7 }
+    assert(concrete(&value) == 7 && value.id() == -1, "fallback uses the original referent")
+    value = Tag { value: 8 }
+    assert(generic(&value, &value) == 8 && value.id() == -1, "generic match snapshots before the guard")
+    value = Tag { value: 9 }
+    assert(keepReference(&value) == -1, "plain binding keeps the live reference")
+    value = Tag { value: 10 }
+    assert(nested(.named(&value), &value) == 10, "guard before an enum payload test")
+    assert(nested(.empty, &value) == 0, "inactive payload is never read")
+    println("snapshots")
+}

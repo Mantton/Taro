@@ -56,9 +56,19 @@ impl<'ctx> Checker<'ctx> {
             hir::PatternKind::Binding { .. }
                 | hir::PatternKind::Wildcard
                 | hir::PatternKind::Rest
+                | hir::PatternKind::At { .. }
                 | hir::PatternKind::Or(..)
+                | hir::PatternKind::TypeTest { .. }
         ) {
-            while let TyKind::Reference(inner) = cs.infer_cx.resolve_vars_if_possible(*ctx).kind() {
+            loop {
+                let resolved = cs.infer_cx.resolve_vars_if_possible(*ctx);
+                let resolved = if matches!(pattern.kind, hir::PatternKind::Literal { .. }) {
+                    resolved
+                } else {
+                    cs.resolve_projection_head(resolved)
+                };
+                *ctx = resolved;
+                let TyKind::Reference(inner) = resolved.kind() else { break };
                 if !autoderef {
                     self.gcx().dcx().emit_error(
                         "local destructuring requires an explicit dereference".into(),
@@ -71,8 +81,56 @@ impl<'ctx> Checker<'ctx> {
             }
         }
 
+        // The enclosing application can supply a closure parameter's enum only
+        // after synthesizing its arguments. Retain the pattern and its bindings
+        // in the same inference system until its scrutinee becomes concrete.
+        if matches!(ctx.kind(), TyKind::Infer(crate::sema::models::InferTy::TyVar(_)))
+            && matches!(
+                &pattern.kind,
+                hir::PatternKind::Member(hir::ConstructorPath::Inferred { .. })
+                    | hir::PatternKind::PathTuple { path: hir::ConstructorPath::Inferred { .. }, .. }
+                    | hir::PatternKind::PathNamed { path: hir::ConstructorPath::Inferred { .. }, .. }
+            )
+        {
+            cs.pending_enum_patterns.push(crate::sema::tycheck::solve::PendingEnumPattern {
+                pattern: pattern.clone(),
+                scrutinee: *ctx,
+                autoderef,
+            });
+            return;
+        }
+
         // Now check the pattern against the adjusted type
         self.check_pattern_inner(pattern, ctx, autoderef, cs);
+    }
+
+    /// Check contextual patterns before committing the statement, while their
+    /// payloads and arm expressions still share inference variables.
+    pub(super) fn finish_enum_patterns(&self, cs: &mut Cs<'ctx>) {
+        while !cs.pending_enum_patterns.is_empty() {
+            cs.without_fallbacks(|cs| cs.solve_intermediate());
+            let mut progressed = false;
+            for pending in std::mem::take(&mut cs.pending_enum_patterns) {
+                let mut ty = cs.structurally_resolve(pending.scrutinee);
+                if ty.is_infer() {
+                    cs.pending_enum_patterns.push(pending);
+                    continue;
+                }
+                progressed = true;
+                self.check_pattern_with_context(
+                    &pending.pattern, &mut ty, pending.pattern.id, pending.autoderef, cs,
+                );
+            }
+            if !progressed {
+                // An unconstrained scrutinee still needs the ordinary diagnostic
+                // at the shorthand constructor.
+                for pending in std::mem::take(&mut cs.pending_enum_patterns) {
+                    let mut ty = cs.structurally_resolve(pending.scrutinee);
+                    self.check_pattern_inner(&pending.pattern, &mut ty, pending.autoderef, cs);
+                }
+                break;
+            }
+        }
     }
 
     /// Check the pattern against its value type.
@@ -194,28 +252,64 @@ impl<'ctx> Checker<'ctx> {
                 cs.equal(*ctx, enum_ty, pattern.span);
             }
             hir::PatternKind::PathTuple { path, fields, .. } => {
-                let Some((variant, enum_ty, variant_fields)) = self
-                    .resolve_enum_tuple_variant_pattern(*ctx, pattern.id, path, pattern.span, cs)
-                else {
-                    return;
+                let struct_path = match path {
+                    hir::ConstructorPath::Qualified { path } => {
+                        let resolution = match path {
+                            hir::ResolvedPath::Resolved(path) => &path.resolution,
+                            hir::ResolvedPath::Relative(_, segment) => &segment.resolution,
+                        };
+                        matches!(resolution, hir::Resolution::Definition(_, DefinitionKind::Struct | DefinitionKind::TypeAlias)
+                            | hir::Resolution::SelfTypeAlias(_)).then_some(path)
+                    }
+                    _ => None,
                 };
-
-                let variant_name = self.gcx().symbol_text(variant.name);
-                let context = format!("enum variant '{}'", variant_name);
+                let (owner, field_types, context) = if let Some(path) = struct_path {
+                    let ty = self.lower_type(&hir::Type {
+                        id: pattern.id, kind: hir::TypeKind::Nominal(path.clone()), span: pattern.span,
+                    });
+                    let ty = cs.structurally_resolve(ty);
+                    self.add_type_constraints(ty, pattern.span, cs);
+                    let definition = match ty.kind() {
+                        TyKind::Adt(def, args) if def.kind == crate::sema::models::AdtKind::Struct => {
+                            Some((self.gcx().get_struct_definition(def.id), args))
+                        }
+                        _ => None,
+                    };
+                    let Some((definition, args)) = definition.filter(|(definition, _)| definition.positional) else {
+                        self.gcx().dcx().emit_error("parenthesized struct patterns require a positional struct".into(), Some(pattern.span));
+                        self.mark_pattern_bindings_error(pattern);
+                        return;
+                    };
+                    if !self.gcx().is_visibility_allowed(self.gcx().definition_visibility(definition.adt_def.id), self.current_def) {
+                        self.gcx().dcx().emit_error(format!("fields of {} are not visible here", ty.format(self.gcx())), Some(pattern.span));
+                        self.mark_pattern_bindings_error(pattern);
+                        return;
+                    }
+                    let types: Vec<_> = definition.fields.iter().map(|field|
+                        crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args(self.gcx(), field.ty, args)
+                    ).collect();
+                    cs.record_expr_ty(pattern.id, ty);
+                    (ty, types, format!("positional struct '{}'", ty.format(self.gcx())))
+                } else {
+                    let Some((variant, ty, fields)) =
+                        self.resolve_enum_tuple_variant_pattern(*ctx, pattern.id, path, pattern.span, cs)
+                    else { return };
+                    (ty, fields.iter().map(|field| field.ty).collect(),
+                     format!("enum variant '{}'", self.gcx().symbol_text(variant.name)))
+                };
                 let Some(field_mapping) = self.compute_pattern_field_mapping(
                     fields,
-                    variant_fields.len(),
+                    field_types.len(),
                     &context,
                     pattern.span,
                 ) else {
                     return;
                 };
 
-                cs.equal(*ctx, enum_ty, pattern.span);
+                cs.equal(*ctx, owner, pattern.span);
 
                 for (pat_index, field_index) in field_mapping {
-                    let field = variant_fields[field_index];
-                    let mut sub_ctx = field.ty;
+                    let mut sub_ctx = field_types[field_index];
 
                     self.check_pattern_with_context(
                         &fields[pat_index],
@@ -284,6 +378,13 @@ impl<'ctx> Checker<'ctx> {
                     }
                 };
                 let gcx = self.gcx();
+                if let TyKind::Adt(def, _) = ty.kind()
+                    && def.kind == crate::sema::models::AdtKind::Struct && gcx.get_struct_definition(def.id).positional
+                {
+                    gcx.dcx().emit_error("destructure a positional struct with parentheses".into(), Some(pattern.span));
+                    self.mark_pattern_bindings_error(pattern);
+                    return;
+                }
                 let Some(declared) =
                     crate::sema::tycheck::utils::named_fields::named_fields(gcx, ty, constructor)
                 else {
@@ -345,11 +446,37 @@ impl<'ctx> Checker<'ctx> {
                     self.mark_pattern_bindings_error(pattern);
                 }
             }
+            hir::PatternKind::At { binding, pattern } => {
+                self.check_pattern_inner(binding, ctx, false, cs);
+                let mut sub_ctx = *ctx;
+                self.check_pattern_with_context(pattern, &mut sub_ctx, pattern.id, autoderef, cs);
+            }
             hir::PatternKind::Or(patterns, _) => {
+                // One arm-local is shared by alternatives that bind the same name.
+                let mut bindings = rustc_hash::FxHashMap::default();
                 for pat in patterns {
                     let mut sub_ctx = *ctx;
-
                     self.check_pattern_with_context(pat, &mut sub_ctx, pat.id, autoderef, cs);
+                    pat.for_each_binding(&mut |id, name| {
+                        let ty = self.get_local(id).ty;
+                        if let Some(first) = bindings.insert(name.symbol, ty) {
+                            cs.equal(first, ty, name.span);
+                        }
+                    });
+                }
+            }
+            hir::PatternKind::TypeTest { target, binding } => {
+                let mut ty = self.lower_type(target);
+                self.add_type_constraints(ty, target.span, cs);
+                cs.record_expr_ty(target.id, ty);
+                if let Some(binding) = binding {
+                    self.check_pattern_inner(binding, &mut ty, false, cs);
+                }
+            }
+            hir::PatternKind::Range { start, end, .. } => {
+                for bound in [start, end] {
+                    let ty = self.synth_with_expectation(bound, Some(*ctx), cs);
+                    cs.equal(*ctx, ty, bound.span);
                 }
             }
             hir::PatternKind::Literal { value } => {
@@ -741,6 +868,13 @@ impl<'ctx> Checker<'ctx> {
         match &pattern.kind {
             hir::PatternKind::Binding { .. } => {
                 self.finalize_local(pattern.id, self.gcx().types.error);
+            }
+            hir::PatternKind::At { binding, pattern } => {
+                self.mark_pattern_bindings_error(binding);
+                self.mark_pattern_bindings_error(pattern);
+            }
+            hir::PatternKind::TypeTest { binding: Some(binding), .. } => {
+                self.mark_pattern_bindings_error(binding);
             }
 
             hir::PatternKind::Tuple(patterns, _)

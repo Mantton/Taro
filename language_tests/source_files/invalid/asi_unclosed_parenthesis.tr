@@ -1,0 +1,13 @@
+func sum(_ first: int32, _ second: int32) -> int32 {
+    first + second
+}
+
+func main() {
+    total := sum(1, 2
+    other := 3
+}
+
+func later() -> int32 {
+    value := 4
+    value
+}

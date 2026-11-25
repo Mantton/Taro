@@ -1,0 +1,26 @@
+// EXPECT_STDERR_COUNT: 1 warning: unreachable match arm
+interface Stored {}
+struct Cell { n: int32 }
+conform Cell to Stored {}
+func inspect(_ value: &Cell) -> bool { value.n = 99; return false }
+func pair(_ lhs: any Stored, _ rhs: any Stored) -> int32 {
+    match (lhs, rhs) {
+        case (a as Cell, b as Cell) if inspect(&a) => a.n + b.n
+        case (a as Cell, b as Cell) => a.n + b.n
+        case (is Cell, is Cell) => -1
+        case _ => 0
+    }
+}
+func closure(_ value: any Stored) -> any Fn() -> int32 {
+    match value {
+        case c as Cell => () => c.n
+        case _ => () => -1
+    }
+}
+func main() {
+    var a: any Stored = Cell { n: 7 }
+    var b: any Stored = Cell { n: 2 }
+    assert(pair(a, b) == 9 && pair(a, b) == 9, "guard discards its binding copy")
+    assert(closure(a)() == 7, "returned closure captures the successful binding")
+    println("guards")
+}

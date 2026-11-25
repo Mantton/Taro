@@ -1,0 +1,16 @@
+error: no overload matches this call
+ -> language_tests/source_files/invalid/debug_not_display_outside_interpolation.tr:8:4
+	    printf("%v\n", version)
+	    ^^^^^^
+error: no overload matches this call
+ -> language_tests/source_files/invalid/debug_not_display_outside_interpolation.tr:9:15
+	    var text = sprintf("%v", version)
+	               ^^^^^^^
+error: type 'Version' does not conform to interface 'Display'
+ -> language_tests/source_files/invalid/debug_not_display_outside_interpolation.tr:10:29
+	    var shown: any Display = version
+	                             ^^^^^^^
+error: type 'Version' does not conform to interface 'Display'
+ -> language_tests/source_files/invalid/debug_not_display_outside_interpolation.tr:11:17
+	    takesDisplay(version)
+	                 ^^^^^^^

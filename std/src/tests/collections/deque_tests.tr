@@ -1,0 +1,138 @@
+import std::collections::{Deque, List}
+
+@test
+func testDequeEndsWrappingGrowthAndCopies() {
+    queue := Deque[int32]::new()
+    std::testing::assertTrue(queue.popFront().isNone() && queue.popBack().isNone(), "empty pops")
+    std::testing::assertTrue(queue.front().isNone() && queue.back().isNone(), "empty peeks")
+    queue.reserve(3)
+    queue.pushBack(1)
+    queue.pushBack(2)
+    queue.pushBack(3)
+    std::testing::assertEqual(queue.popFront().unwrap(), 1, "front")
+    queue.pushBack(4) // Wrapped full buffer.
+    queue.pushFront(0) // Grow and rebase wrapped contents.
+    std::testing::assertEqual(queue.collect[List[int32]](), [0, 2, 3, 4], "wrapped growth")
+    alias := queue
+    copy := queue.copy()
+    std::testing::assertEqual(alias.popBack().unwrap(), 4, "shared back")
+    std::testing::assertEqual(queue.back().unwrap(), 3, "alias removes")
+    std::testing::assertEqual(copy.back().unwrap(), 4, "copy independent")
+    std::testing::assertTrue(queue.get(9).isNone(), "bounds")
+    queue.clear()
+    queue.pushFront(9)
+    std::testing::assertEqual(alias.popBack().unwrap(), 9, "reuse after clear")
+    std::testing::assertTrue(queue.isEmpty(), "singleton remove")
+}
+
+@test
+func testDequeAgainstListModel() {
+    queue := Deque[int32]::new()
+    var model: [int32] = []
+    var seed: uint32 = 1
+    var step: int32 = 0
+    while step < 10000 {
+        // Bounded arithmetic gives the same pseudo-random sequence in both profiles.
+        seed = (seed * 25173_u32 + 13849_u32) % 65536_u32
+        operation := (seed >> 8) % 4_u32
+        if operation == 0 {
+            queue.pushFront(step)
+            var _ = model.insert(at: 0, step)
+        } else if operation == 1 {
+            queue.pushBack(step)
+            model.append(step)
+        } else if !model.isEmpty() {
+            actual := if operation == 2 { queue.popFront() } else { queue.popBack() }
+            expected := if operation == 2 { model.removeAt(0) } else { model.pop() }
+            std::testing::assertEqual(actual.unwrap(), expected.unwrap(), "deque model")
+        }
+        std::testing::assertEqual(queue.len(), model.len(), "model length")
+        if step % 97 == 0 {
+            queue.reserve(queue.len() + 3)
+            std::testing::assertEqual(queue.collect[List[int32]](), model, "model contents")
+        }
+        step += 1
+    }
+}
+
+@test
+func testDequeManagedValuesAndOptionalElements() {
+    queue := Deque[string]::new()
+    var index: int32 = 0
+    while index < 200 {
+        queue.pushBack(std::sprintf("item %v", index))
+        index += 1
+    }
+    std::runtime::collect()
+    index = 0
+    while index < 200 {
+        std::testing::assertEqual(queue.popFront().unwrap(), std::sprintf("item %v", index), "managed ring slot")
+        index += 1
+    }
+    optional := Deque[int32?]::new()
+    optional.pushBack(.none)
+    std::testing::assertTrue(optional.popFront().unwrap().isNone(), "stored none differs from empty")
+}
+
+@test
+@expectPanic("deque changed structurally during iteration")
+func testDequeCursorInvalidation() {
+    queue := Deque[int32]::new()
+    queue.pushBack(1)
+    cursor := queue.iter()
+    queue.popFront()
+    var _ = cursor.next()
+}
+
+@test
+func testDequeCursorReserveAndExhaustion() {
+    queue := Deque[int32]::new()
+    queue.pushBack(1)
+    cursor := queue.iter()
+    alias := cursor
+    queue.reserve(32)
+    std::testing::assertEqual(alias.next().unwrap(), 1, "reserve preserves logical cursor")
+    std::testing::assertTrue(cursor.next().isNone(), "shared cursor position")
+    queue.pushBack(2)
+    std::testing::assertTrue(cursor.next().isNone(), "exhaustion stays fused")
+}
+
+@test
+func testDequeSubscriptSetterWritesThroughWrappedStorage() {
+    queue := Deque[int32]::new()
+    queue.reserve(4)
+    for value in [1, 2, 3, 4] { queue.pushBack(value) }
+    var _ = queue.popFront()
+    queue.pushBack(5) // Logical index 3 now wraps to physical slot 0.
+    alias := queue
+    cursor := queue.iter()
+    queue[0] = 20
+    queue[3] = 50
+    std::testing::assertEqual(alias.collect[List[int32]](), [20, 3, 4, 50], "writes are shared and wrap")
+    std::testing::assertEqual(cursor.next().unwrap(), 20, "element writes keep cursors valid")
+}
+
+@test
+@expectPanic("deque index out of range")
+func testDequeSubscriptSetterChecksBounds() {
+    queue := Deque[int32]::new()
+    queue.pushBack(1)
+    queue[1] = 2
+}
+
+@test
+func testDequeEqualityComparesLogicalOrder() {
+    wrapped := Deque[int32]::new()
+    wrapped.reserve(4)
+    for value in [0, 1, 2, 3] { wrapped.pushBack(value) }
+    var _ = wrapped.popFront()
+    wrapped.pushBack(4)
+    straight := Deque[int32]::new()
+    for value in [1, 2, 3, 4] { straight.pushBack(value) }
+    std::testing::assertTrue(wrapped == straight, "ring offset and capacity are ignored")
+    straight[3] = 5
+    std::testing::assertTrue(wrapped != straight, "element difference")
+    var _ = straight.popBack()
+    std::testing::assertTrue(wrapped != straight, "length difference")
+    std::testing::assertTrue(Deque[string]::new() == Deque[string]::new(), "empty deques")
+}

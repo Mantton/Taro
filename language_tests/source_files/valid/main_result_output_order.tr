@@ -1,0 +1,33 @@
+// EXPECT_EXIT: 1
+// Standard error is redirected onto standard output here, so the snapshot
+// shows that output written before `main` returns appears before the error
+// line, and that `defer` blocks in `main` run before it is reported.
+extern "C" {
+    func dup2(_ from: int32, _ to: int32) -> int32
+}
+
+struct Failure {}
+
+conform Failure to std::fmt::Display {
+    func display(_ into: &std::fmt::Formatter) { into.writeString("step two failed") }
+}
+
+conform Failure to std::error::Error {}
+
+func step(_ index: int32) -> Result[(), Failure] {
+    print("step ${index}\n")
+    if index == 2 {
+        return .err(Failure {})
+    }
+    return .ok(())
+}
+
+func main() -> Result[(), any std::error::Error] {
+    var _ = dup2(1, 2)
+    defer { print("deferred cleanup\n") }
+    step(1)!
+    eprint("diagnostic on stderr\n")
+    step(2)!
+    step(3)!
+    return .ok(())
+}

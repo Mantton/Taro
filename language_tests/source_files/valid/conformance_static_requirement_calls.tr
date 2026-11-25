@@ -1,0 +1,50 @@
+// `Type::member()` reaches a static requirement that a type implements in a
+// conformance block, without an inherent copy of the method. An inherent
+// static with the same name still wins.
+interface Make {
+    static func make() -> Self
+}
+
+interface Named {
+    static func label() -> string
+}
+
+interface Titled: Named {
+    static func title() -> string
+}
+
+struct Widget { size: int32 }
+
+conform Widget to Make {
+    static func make() -> Widget { Widget { size: 7 } }
+}
+
+conform Widget to Named {
+    static func label() -> string { "conformance" }
+}
+
+conform Widget to Titled {
+    static func title() -> string { "Widget" }
+}
+
+struct Gadget {}
+
+conform Gadget to Named {
+    static func label() -> string { "conformance" }
+}
+
+extend Gadget {
+    static func label() -> string { "inherent" }
+}
+
+struct Box[T] { value: T }
+
+conform[T: Make] Box[T] to Make {
+    static func make() -> Box[T] { Box[T] { value: T::make() } }
+}
+
+func main() {
+    println("${Widget::make().size} ${Widget::label()} ${Widget::title()}")
+    println("${Gadget::label()}")
+    println("${Box[Widget]::make().value.size}")
+}

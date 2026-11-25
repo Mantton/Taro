@@ -1,0 +1,4 @@
+error: qualify a nested type with its unspecialized owner
+ -> language_tests/source_files/invalid/nested_type_specialized_constructor.tr:6:16
+	    var entry = Queue[int32]::Entry(42)
+	                ^^^^^^^^^^^^

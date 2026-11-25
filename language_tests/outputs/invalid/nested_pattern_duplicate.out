@@ -1,0 +1,4 @@
+error: identifier `x` bound more than once in the same pattern
+ -> language_tests/source_files/invalid/nested_pattern_duplicate.tr:5:25
+	        case x @ Point { x } => x
+	                         ^

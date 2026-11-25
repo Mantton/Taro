@@ -1,0 +1,34 @@
+// The int32 and int64 records give Self::Size different types. Lookup
+// waits for the receiver literal to default to int32; its usize result
+// then supplies the type of the neighboring addend.
+struct Boxed[T] {
+    value: T
+}
+
+interface Measured {
+    type Size
+    func size() -> Self::Size
+}
+
+conform Boxed[int32] to Measured {
+    type Size = usize
+
+    func size() -> usize {
+        4
+    }
+}
+
+conform Boxed[int64] to Measured {
+    type Size = uint32
+
+    func size() -> uint32 {
+        8
+    }
+}
+
+func main() {
+    size := Boxed { value: 0 }.size() + 1
+    var fromRecord: usize = size
+    typed := Boxed[int32] { value: 0 }.size() + 1
+    println("${fromRecord} ${typed}")
+}

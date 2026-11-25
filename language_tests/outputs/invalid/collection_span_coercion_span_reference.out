@@ -1,0 +1,4 @@
+error: expected Span[int32], found &Span[int32]
+ -> language_tests/source_files/invalid/collection_span_coercion_span_reference.tr:1:50
+	func view(_ value: &[int32; ..]) -> [int32; ..] { value }
+	                                                  ^^^^^

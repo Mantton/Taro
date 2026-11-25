@@ -3,6 +3,7 @@ use crate::error::CompileResult;
 use crate::mir::{Body, MirPhase};
 
 pub mod async_transform;
+pub mod generator_transform;
 pub mod coalesce;
 pub mod const_prop;
 pub mod dse;
@@ -84,6 +85,16 @@ pub fn lower_async_for_canonical_mir<'ctx>(
     gcx: Gcx<'ctx>,
     body: &mut Body<'ctx>,
 ) -> CompileResult<()> {
+    if body.generator_element_ty.is_some() {
+        {
+            escape_graph::apply_async_bridge(gcx, body)?;
+        }
+        let mut passes: Vec<Box<dyn MirPass>> =
+            vec![Box::new(generator_transform::GeneratorTransform)];
+        run_passes(gcx, body, &mut passes)?;
+        return run_local_passes(gcx, body);
+    }
+
     if !body.is_async {
         return Ok(());
     }

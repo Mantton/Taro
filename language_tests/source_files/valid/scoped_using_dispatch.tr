@@ -1,0 +1,21 @@
+interface Other { func close(); }
+struct Resource { log: &int32 }
+conform Resource to Other {
+    func close() { *self.log += 100 }
+}
+conform Resource to Closeable {
+    type CloseResult = int32
+    func close() -> int32 {
+        *self.log += 1
+        return 7
+    }
+}
+func generic[T: Closeable](_ x: T) { using item = x }
+func erased(_ x: any Other & Closeable[CloseResult = int32]) { using item = x }
+func main() {
+    var log: int32 = 0
+    value := Resource { log: &log }
+    generic(value)
+    erased(value)
+    println("${log}")
+}

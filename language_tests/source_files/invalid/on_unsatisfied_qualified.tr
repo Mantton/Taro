@@ -1,0 +1,5 @@
+@onUnsatisfied("{Self} needs an Item witness")
+interface Source { type Item; }
+struct NotSource {}
+type Projected = (NotSource as Source).Item
+func main() {}

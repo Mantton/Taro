@@ -50,6 +50,9 @@ fn filter_declaration(
     gcx: GlobalContext<'_>,
 ) -> bool {
     if !should_include_attrs(&decl.attributes, target, gcx) {
+        note_removed(gcx, decl.span, |collector| {
+            ast::AstVisitor::visit_declaration(collector, decl)
+        });
         return false;
     }
 
@@ -64,6 +67,11 @@ fn filter_declaration(
             filter_extern_declarations(&mut node.declarations, target, gcx);
         }
         ast::DeclarationKind::Impl(node) => {
+            let type_only = !node.nested_types.is_empty() && node.declarations.is_empty();
+            filter_declarations(&mut node.nested_types, target, gcx);
+            if type_only && node.nested_types.is_empty() {
+                return false;
+            }
             filter_assoc_declarations(&mut node.declarations, target, gcx);
         }
         _ => {}
@@ -86,6 +94,9 @@ fn filter_namespace_declaration(
     gcx: GlobalContext<'_>,
 ) -> bool {
     if !should_include_attrs(&decl.attributes, target, gcx) {
+        note_removed(gcx, decl.span, |collector| {
+            ast::AstVisitor::visit_namespace_declaration(collector, decl)
+        });
         return false;
     }
 
@@ -107,7 +118,15 @@ fn filter_assoc_declarations(
     target: &TargetInfo,
     gcx: GlobalContext<'_>,
 ) {
-    decls.retain_mut(|decl| should_include_attrs(&decl.attributes, target, gcx));
+    decls.retain_mut(|decl| {
+        let keep = should_include_attrs(&decl.attributes, target, gcx);
+        if !keep {
+            note_removed(gcx, decl.span, |collector| {
+                ast::walk_assoc_declaration(collector, decl, ast::AssocContext::Impl(decl.id))
+            });
+        }
+        keep
+    });
 }
 
 fn filter_extern_declarations(
@@ -115,7 +134,51 @@ fn filter_extern_declarations(
     target: &TargetInfo,
     gcx: GlobalContext<'_>,
 ) {
-    decls.retain_mut(|decl| should_include_attrs(&decl.attributes, target, gcx));
+    decls.retain_mut(|decl| {
+        let keep = should_include_attrs(&decl.attributes, target, gcx);
+        if !keep {
+            note_removed(gcx, decl.span, |collector| {
+                ast::AstVisitor::visit_extern_declaration(collector, decl)
+            });
+        }
+        keep
+    });
+}
+
+/// Names in a declaration removed for this target (or, by `ast_lowering`, for
+/// this harness mode) may refer to imports the declaration uses elsewhere, so
+/// the unused-import lint must not report them. Recorded only when lints are
+/// on.
+pub(crate) fn note_removed(
+    gcx: GlobalContext<'_>,
+    span: crate::span::Span,
+    walk: impl FnOnce(&mut RemovedNames),
+) {
+    if !gcx.config.lint_warnings {
+        return;
+    }
+    let mut collector = RemovedNames::default();
+    walk(&mut collector);
+    gcx.store
+        .lint_facts
+        .borrow_mut()
+        .entry(gcx.config.index)
+        .or_default()
+        .cfg_removed_names
+        .entry(span.file)
+        .or_default()
+        .extend(collector.names);
+}
+
+#[derive(Default)]
+pub(crate) struct RemovedNames {
+    names: rustc_hash::FxHashSet<crate::span::Symbol>,
+}
+
+impl ast::AstVisitor for RemovedNames {
+    fn visit_identifier(&mut self, identifier: &ast::Identifier) -> Self::Result {
+        self.names.insert(identifier.symbol);
+    }
 }
 
 pub fn should_include_attrs(

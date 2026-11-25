@@ -1,0 +1,45 @@
+// The alias, field, function and generic default all read the same conformance
+// override. Each declaration precedes the conformance that supplies its value.
+type Bytes = [uint8; Wide::SIZE]
+type DefaultBytes = [uint8; Small::SIZE]
+type MarkedBytes = [uint8; Box[Marked]::SIZE]
+type InheritedBytes = [uint8; Leaf::SIZE]
+struct Packet { payload: [uint8; Wide::SIZE] }
+struct Buffer[const N: usize = Wide::SIZE] { payload: [uint8; N] }
+func first(_ bytes: [uint8; Wide::SIZE]) -> uint8 { bytes[0] }
+
+interface Size { const SIZE: usize = 3; }
+struct Small: Size {}
+struct Wide {}
+conform Wide to Size { const SIZE: usize = 5; }
+
+interface Marker {}
+struct Marked: Marker {}
+struct Box[T] {}
+conform[T: Marker] Box[T] to Size { const SIZE: usize = 7; }
+
+class Base {}
+conform Base to Size { const SIZE: usize = 11; }
+final class Leaf: Base {}
+conform Leaf to Size {}
+
+// Resolving an implementation target can itself require another conformance.
+interface FixedPacket {}
+interface InheritedPacket {}
+conform Box[[uint8; Leaf::SIZE]] to InheritedPacket {}
+func acceptInherited[T: InheritedPacket](_ value: T) {}
+conform Box[[uint8; Wide::SIZE]] to FixedPacket {}
+func acceptFixed[T: FixedPacket](_ value: T) {}
+
+func main() {
+    acceptInherited(Box[[uint8; 11]] {})
+    acceptFixed(Box[[uint8; 5]] {})
+    var inherited: InheritedBytes = [8; 11]
+    assert(inherited.len() == Leaf::SIZE, "header and expression select the inherited override")
+    var bytes: Bytes = [8; 5]
+    var small: DefaultBytes = [1; 3]
+    var marked: MarkedBytes = [2; 7]
+    packet := Packet { payload: bytes }
+    var buffer: Buffer = Buffer { payload: bytes }
+    println("${first(packet.payload)} ${buffer.payload.len()} ${small.len()} ${marked.len()}")
+}

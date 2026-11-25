@@ -1,20 +1,16 @@
 //! Process-local support for generated benchmark harnesses.
 //!
 //! The compiler emits only case metadata and a small wrapper. Calibration,
-//! measurement, panic containment, and protocol serialization live here so
-//! every compiler backend observes the same benchmark semantics.
+//! measurement, and panic containment live here. The standard library
+//! summarizes completed measurements and writes the benchmark protocol.
 
-use serde::Serialize;
 use std::{
     cell::RefCell,
-    fs::OpenOptions,
-    io::Write,
     time::{Duration, Instant},
 };
 
 const ACTION_ENV: &str = "TARO_BENCH_ACTION";
 const CASE_ENV: &str = "TARO_BENCH_CASE";
-const PROTOCOL_PATH_ENV: &str = "TARO_BENCH_PROTOCOL_PATH";
 const WARMUP_NS_ENV: &str = "TARO_BENCH_WARMUP_NS";
 const MEASUREMENT_NS_ENV: &str = "TARO_BENCH_MEASUREMENT_NS";
 const SAMPLES_ENV: &str = "TARO_BENCH_SAMPLES";
@@ -198,114 +194,6 @@ fn calibrated_iterations(current: u64, elapsed: Duration, target: Duration) -> u
     estimated.clamp(1, upper_step.min(MAX_BATCH_ITERATIONS) as u128) as u64
 }
 
-#[derive(Serialize)]
-struct ProtocolRecord<'a> {
-    protocol_version: u32,
-    kind: &'static str,
-    name: &'a str,
-    tags: &'a [String],
-    skipped: bool,
-    skip_reason: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    status: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    iterations_per_sample: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    samples_ns_per_op: Option<Vec<f64>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    median_ns_per_op: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    p95_ns_per_op: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    mad_ns_per_op: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    bytes_per_iteration: Option<usize>,
-}
-
-impl<'a> ProtocolRecord<'a> {
-    fn listed(name: &'a str, tags: &'a [String], skipped: bool, reason: Option<&'a str>) -> Self {
-        Self {
-            protocol_version: 1,
-            kind: "case",
-            name,
-            tags,
-            skipped,
-            skip_reason: reason,
-            status: None,
-            error: None,
-            iterations_per_sample: None,
-            samples_ns_per_op: None,
-            median_ns_per_op: None,
-            p95_ns_per_op: None,
-            mad_ns_per_op: None,
-            bytes_per_iteration: None,
-        }
-    }
-}
-
-fn parse_bytes(ptr: *const u8, len: usize) -> String {
-    if ptr.is_null() || len == 0 {
-        return String::new();
-    }
-    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-    String::from_utf8_lossy(bytes).into_owned()
-}
-
-fn parse_tags(ptr: *const u8, len: usize) -> Vec<String> {
-    if ptr.is_null() || len == 0 {
-        return Vec::new();
-    }
-    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-    bytes
-        .split(|byte| *byte == 0)
-        .filter(|tag| !tag.is_empty())
-        .map(|tag| String::from_utf8_lossy(tag).into_owned())
-        .collect()
-}
-
-fn write_record(record: &ProtocolRecord<'_>) -> Result<(), String> {
-    let path = std::env::var_os(PROTOCOL_PATH_ENV).ok_or_else(|| {
-        format!("missing {PROTOCOL_PATH_ENV}; run this executable through `taro bench`")
-    })?;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|error| format!("could not open benchmark protocol file {path:?}: {error}"))?;
-    serde_json::to_writer(&mut file, record)
-        .map_err(|error| format!("could not serialize benchmark result: {error}"))?;
-    file.write_all(b"\n")
-        .map_err(|error| format!("could not write benchmark result: {error}"))
-}
-
-fn percentile_nearest_rank(sorted: &[f64], percentile: f64) -> f64 {
-    let rank = (percentile * sorted.len() as f64).ceil() as usize;
-    sorted[rank.saturating_sub(1).min(sorted.len() - 1)]
-}
-
-fn summary(samples: &[f64]) -> (f64, f64, f64) {
-    let mut sorted = samples.to_vec();
-    sorted.sort_by(f64::total_cmp);
-    let median = if sorted.len() % 2 == 0 {
-        (sorted[sorted.len() / 2 - 1] + sorted[sorted.len() / 2]) / 2.0
-    } else {
-        sorted[sorted.len() / 2]
-    };
-    let mut deviations = sorted
-        .iter()
-        .map(|sample| (sample - median).abs())
-        .collect::<Vec<_>>();
-    deviations.sort_by(f64::total_cmp);
-    let mad = if deviations.len() % 2 == 0 {
-        (deviations[deviations.len() / 2 - 1] + deviations[deviations.len() / 2]) / 2.0
-    } else {
-        deviations[deviations.len() / 2]
-    };
-    (median, percentile_nearest_rank(&sorted, 0.95), mad)
-}
-
 /// Drive warmup and measured batches for the active benchmark.
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt__bench_next_batch() -> usize {
@@ -341,73 +229,90 @@ pub extern "C" fn __rt__black_box(value: *mut u8, size: usize) {
     std::hint::black_box((value, size));
 }
 
-/// List or run one statically generated benchmark case.
+// Keep these values in sync with std.bench's report driver.
+#[repr(u8)]
+enum CaseOutcome {
+    Ignore = 0,
+    Listed = 1,
+    Skipped = 2,
+    Measured = 3,
+    Panicked = 4,
+    MissingNext = 5,
+    Incomplete = 6,
+    HarnessError = 7,
+}
+
+/// The matching `@repr("C")` standard-library type is used by codegen to
+/// allocate one output slot in the generated harness. Only successful
+/// measurements transfer a sample allocation to the reporter.
+#[repr(C)]
+pub struct BenchmarkMeasurement {
+    iterations: u64,
+    bytes_per_iteration: usize,
+    samples: *mut f64,
+    sample_count: usize,
+    has_bytes: bool,
+}
+
+// std/src/bench/report.tr declares the same fields in this order with
+// `@repr("C")`. Pin that layout so a change on this side cannot silently
+// disagree with the reader, which has no way to check it.
+const _: () = {
+    use std::mem::{offset_of, size_of};
+    let word = size_of::<usize>();
+    assert!(offset_of!(BenchmarkMeasurement, iterations) == 0);
+    assert!(offset_of!(BenchmarkMeasurement, bytes_per_iteration) == 8);
+    assert!(offset_of!(BenchmarkMeasurement, samples) == 8 + word);
+    assert!(offset_of!(BenchmarkMeasurement, sample_count) == 8 + 2 * word);
+    assert!(offset_of!(BenchmarkMeasurement, has_bytes) == 8 + 3 * word);
+    assert!(size_of::<BenchmarkMeasurement>() == (8 + 3 * word + 1).next_multiple_of(8));
+};
+
+/// Select or measure one statically generated case.
+///
+/// # Safety
+/// The callback must be a valid generated benchmark wrapper. `name_ptr`
+/// must address `name_len` immutable bytes of compiler-generated UTF-8.
+/// `output` must be aligned, writable storage for one measurement. The caller
+/// must release any returned sample allocation exactly once.
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__bench_run_case(
+pub unsafe extern "C" fn __rt__bench_measure_case(
     function: extern "C-unwind" fn(),
     name_ptr: *const u8,
     name_len: usize,
-    tags_ptr: *const u8,
-    tags_len: usize,
     skipped: bool,
-    reason_ptr: *const u8,
-    reason_len: usize,
+    output: *mut BenchmarkMeasurement,
 ) -> u8 {
-    let name = parse_bytes(name_ptr, name_len);
-    let tags = parse_tags(tags_ptr, tags_len);
-    let reason = parse_bytes(reason_ptr, reason_len);
-    let reason = (!reason.is_empty()).then_some(reason);
-
     let action = match Action::from_env() {
         Ok(action) => action,
         Err(error) => {
             eprintln!("benchmark harness error: {error}");
-            return 1;
+            return CaseOutcome::HarnessError as u8;
         }
     };
-
     if action == Action::List {
-        return match write_record(&ProtocolRecord::listed(
-            &name,
-            &tags,
-            skipped,
-            reason.as_deref(),
-        )) {
-            Ok(()) => 0,
-            Err(error) => {
-                eprintln!("benchmark harness error: {error}");
-                1
-            }
-        };
+        return CaseOutcome::Listed as u8;
     }
 
-    if std::env::var(CASE_ENV).ok().as_deref() != Some(name.as_str()) {
-        return 0;
+    let name =
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len)) };
+    if std::env::var(CASE_ENV).ok().as_deref() != Some(name) {
+        return CaseOutcome::Ignore as u8;
     }
-
     if skipped {
-        let mut record = ProtocolRecord::listed(&name, &tags, true, reason.as_deref());
-        record.kind = "result";
-        record.status = Some("skipped");
-        return match write_record(&record) {
-            Ok(()) => 0,
-            Err(error) => {
-                eprintln!("benchmark harness error: {error}");
-                1
-            }
-        };
+        return CaseOutcome::Skipped as u8;
     }
 
     let config = match BenchmarkConfig::from_env() {
         Ok(config) => config,
         Err(error) => {
             eprintln!("benchmark harness error: {error}");
-            return 1;
+            return CaseOutcome::HarnessError as u8;
         }
     };
     if STATE.with(|slot| slot.borrow().is_some()) {
         eprintln!("benchmark harness error: nested benchmark invocation");
-        return 1;
+        return CaseOutcome::HarnessError as u8;
     }
     STATE.with(|slot| *slot.borrow_mut() = Some(BenchmarkState::new(config)));
 
@@ -416,41 +321,47 @@ pub extern "C" fn __rt__bench_run_case(
         .with(|slot| slot.borrow_mut().take())
         .expect("benchmark state installed");
 
-    let mut record = ProtocolRecord::listed(&name, &tags, false, None);
-    record.kind = "result";
-    record.iterations_per_sample = Some(state.batch_iterations);
-    record.bytes_per_iteration = state.bytes_per_iteration;
-
-    if panicked {
-        record.status = Some("failed");
-        record.error = Some("benchmark panicked".into());
+    let outcome = if panicked {
         crate::panic_unwind::finish_unexpected_harness_panic();
+        CaseOutcome::Panicked
     } else if !state.called_next {
-        record.status = Some("failed");
-        record.error = Some("benchmark returned without calling benchmark.next()".into());
+        CaseOutcome::MissingNext
     } else if state.phase != Phase::Done || state.samples_ns_per_op.len() != config.samples {
-        record.status = Some("failed");
-        record.error = Some("benchmark stopped before measurement completed".into());
+        CaseOutcome::Incomplete
     } else {
-        let (median, p95, mad) = summary(&state.samples_ns_per_op);
-        record.status = Some("ok");
-        record.samples_ns_per_op = Some(state.samples_ns_per_op);
-        record.median_ns_per_op = Some(median);
-        record.p95_ns_per_op = Some(p95);
-        record.mad_ns_per_op = Some(mad);
-    }
+        CaseOutcome::Measured
+    };
 
-    let failed = record.status != Some("ok");
-    if let Err(error) = write_record(&record) {
-        eprintln!("benchmark harness error: {error}");
-        return 1;
+    let mut measurement = BenchmarkMeasurement {
+        iterations: state.batch_iterations,
+        bytes_per_iteration: state.bytes_per_iteration.unwrap_or(0),
+        samples: std::ptr::null_mut(),
+        sample_count: 0,
+        has_bytes: state.bytes_per_iteration.is_some(),
+    };
+    if matches!(outcome, CaseOutcome::Measured) {
+        let samples = state.samples_ns_per_op.into_boxed_slice();
+        measurement.sample_count = samples.len();
+        measurement.samples = Box::into_raw(samples).cast::<f64>();
     }
-    u8::from(failed)
+    unsafe { output.write(measurement) };
+    outcome as u8
+}
+
+/// # Safety
+/// A non-null pointer and count must come from a successful measurement
+/// that has not been released yet.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __rt__bench_release_samples(samples: *mut f64, count: usize) {
+    if !samples.is_null() {
+        let slice = std::ptr::slice_from_raw_parts_mut(samples, count);
+        drop(unsafe { Box::from_raw(slice) });
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BenchmarkConfig, BenchmarkState, Phase, calibrated_iterations, summary};
+    use super::{BenchmarkConfig, BenchmarkState, Phase, calibrated_iterations};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -484,13 +395,5 @@ mod tests {
         now += Duration::from_nanos(20);
         assert_eq!(state.next_batch_at(now), 0);
         assert_eq!(state.samples_ns_per_op.len(), 2);
-    }
-
-    #[test]
-    fn summary_uses_median_nearest_rank_p95_and_mad() {
-        let (median, p95, mad) = summary(&[1.0, 2.0, 3.0, 100.0]);
-        assert_eq!(median, 2.5);
-        assert_eq!(p95, 100.0);
-        assert_eq!(mad, 1.0);
     }
 }

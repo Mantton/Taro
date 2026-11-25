@@ -1,0 +1,2 @@
+func sum(_ values: int32...) {}
+func main() { var values: [int32] = [1, 2]; sum(&values) }

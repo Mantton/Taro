@@ -8,7 +8,9 @@
     "taro"
   ],
   "devDependencies": {
-    "tree-sitter-cli": "^0.24.0"
+    "tree-sitter-cli": "^0.24.0",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.3.2"
   },
   "scripts": {
     "build": "tree-sitter generate",

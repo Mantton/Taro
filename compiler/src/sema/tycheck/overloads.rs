@@ -64,6 +64,14 @@ pub(super) fn member_fingerprint<'ctx>(
     hash.finish()
 }
 
+pub(super) fn declaration_target<'ctx>(
+    gcx: Gcx<'ctx>,
+    extension: DefinitionID,
+) -> Option<Ty<'ctx>> {
+    gcx.get_impl_target_ty(extension)
+        .map(|ty| ty.fold_with(&mut Parameters(gcx)))
+}
+
 pub(super) fn dispatch_fingerprint<'ctx>(
     gcx: Gcx<'ctx>,
     id: DefinitionID,

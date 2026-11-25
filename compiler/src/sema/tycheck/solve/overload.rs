@@ -1,4 +1,5 @@
 use crate::sema::{
+    error::SpannedErrorList,
     impl_engine::ref_ops::{InterfaceRefMatch, interface_ref_matches},
     models::TyKind,
 };
@@ -13,6 +14,12 @@ use crate::{
     },
     span::{Span, Spanned},
 };
+
+enum OverloadChoice<'ctx> {
+    Winner(Goal<'ctx>),
+    Ambiguous,
+    NoMatch(Vec<SpannedErrorList<'ctx>>),
+}
 
 impl<'ctx> ConstraintSolver<'ctx> {
     pub fn solve_disjunction(
@@ -29,10 +36,87 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return self.solve(&obligation);
         }
 
+        // Preserve the choices made with defaulted arguments when a late
+        // lookup finds several overloads. Try those defaults in a snapshot:
+        // if *none* can take them, let the signatures type the literals.
+        // For example, List's scalar subscript accepts usize and its other
+        // overloads accept ranges. Defaulting a held index to int32 would
+        // rule out every candidate for list[0].
+        let held_node = branches.iter().find_map(|branch| {
+            binding_node(&branch.goal).filter(|node| self.held_literals.contains_key(node))
+        });
+        let choice = if let Some(node) = held_node {
+            let vars = &self.held_literals[&node];
+            let scope = self.defaultable_numeric_vars();
+            let (choice, diagnostics) = self.gcx().dcx().with_deferred_diagnostics(|| {
+                self.icx.probe(|_| {
+                    for &var in vars {
+                        self.default_numeric_var_in(scope.as_ref(), var);
+                    }
+                    self.select_overload(location, branches.clone())
+                })
+            });
+            if matches!(choice, OverloadChoice::NoMatch(_)) {
+                self.select_overload(location, branches)
+            } else {
+                for diagnostic in diagnostics {
+                    self.gcx().dcx().emit(diagnostic);
+                }
+                self.release_held_literals(node);
+                choice
+            }
+        } else {
+            self.select_overload(location, branches)
+        };
+
+        let failures = match choice {
+            OverloadChoice::Winner(goal) => return self.solve(&Obligation { location, goal }),
+            OverloadChoice::Ambiguous => {
+                return SolverResult::Error(vec![Spanned::new(
+                    crate::sema::error::TypeError::AmbiguousOverload,
+                    location,
+                )]);
+            }
+            OverloadChoice::NoMatch(failures) => failures,
+        };
+
+        if !failures.is_empty() {
+            // An interpolated value that cannot print explains the failure
+            // better than either string-formatting overload does.
+            if let Some(error) = failures.iter().flatten().find(|error| {
+                matches!(
+                    error.value,
+                    crate::sema::error::TypeError::NotInterpolatable { .. }
+                )
+            }) {
+                return SolverResult::Error(vec![error.clone()]);
+            }
+            // No branch succeeded. When exactly one candidate accepts the
+            // arguments and fails only on a conformance, name it: that is the
+            // call the user meant, and the bare message hides the reason.
+            let error =
+                unmet_requirement(&failures)
+                    .map(|(ty, interface)| {
+                        crate::sema::error::TypeError::NoOverloadMeetsRequirement { ty, interface }
+                    })
+                    .unwrap_or(crate::sema::error::TypeError::NoOverloadMatches);
+            return SolverResult::Error(vec![Spanned::new(error, location)]);
+        }
+
+        SolverResult::Deferred
+    }
+
+    // Return the original branch goal. All inference inside a probe is
+    // rolled back before the caller commits the selected binding.
+    fn select_overload(
+        &self,
+        location: Span,
+        branches: Vec<DisjunctionBranch<'ctx>>,
+    ) -> OverloadChoice<'ctx> {
         // Rank first and probe only the highest-priority group that can succeed.
         // Lower-priority groups can never beat a successful higher-scoring group.
         let mut ranked = rank_branches(self.gcx(), branches).into_iter().peekable();
-        let mut failed = false;
+        let mut failures: Vec<crate::sema::error::SpannedErrorList<'ctx>> = Vec::new();
 
         while let Some(first) = ranked.next() {
             let score = first.score;
@@ -43,19 +127,15 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 group.push(next.branch);
             }
 
-            let mut winner: Option<(DisjunctionBranch<'ctx>, (u32, bool))> = None;
+            // Fewer conversions win, then a non-generic candidate, then the
+            // candidate that boxes fewer arguments into an existential, so a
+            // conversion that keeps the concrete type (`usize` to `usize?`)
+            // beats one that erases it (`usize` to `any Show`).
+            let mut winner: Option<(DisjunctionBranch<'ctx>, (u32, bool, u32))> = None;
             let mut tied = false;
             let mut interface_instances = rustc_hash::FxHashSet::default();
             for branch in group {
                 let probe_goal = branch.goal.clone();
-                fn binding_node(goal: &Goal<'_>) -> Option<crate::hir::NodeID> {
-                    match goal {
-                        Goal::BindOverload(data) => Some(data.node_id),
-                        Goal::BindInterfaceMethod(data) => Some(data.node_id),
-                        Goal::BindMethodOverload(data) => binding_node(&data.binding),
-                        _ => None,
-                    }
-                }
                 let node = binding_node(&probe_goal);
                 let probe_result = self.icx.probe(|_| {
                     let mut fork = self.fork_for_probe(node);
@@ -75,60 +155,43 @@ impl<'ctx> ConstraintSolver<'ctx> {
                             (!args.iter().any(crate::sema::tycheck::utils::unresolved::generic_arg_contains_unresolved_inference))
                                 .then_some((call.method_id, args))
                         });
-                        (driver.solver.coercions, instance)
+                        (driver.solver.coercions, driver.solver.boxings, instance)
                     })
                 });
 
                 let generic = branch
                     .source
                     .is_some_and(|source| !self.gcx().generics_of(source).parameters.is_empty());
-                let probe_result = probe_result.map(|(cost, instance)| ((cost, generic), instance));
                 match probe_result {
-                    Ok((cost, instance)) => {
+                    Ok((coercions, boxings, instance)) => {
                         if instance.is_some_and(|instance| !interface_instances.insert(instance)) {
                             continue;
                         }
+                        let cost = (coercions, generic, boxings);
                         match &winner {
-                            None => {
-                                winner = Some((branch, cost));
-                                tied = false;
-                            }
-                            Some((_, best)) if cost < *best => {
-                                winner = Some((branch, cost));
-                                tied = false;
-                            }
                             Some((_, best)) if cost == *best => tied = true,
-                            _ => {}
+                            Some((_, best)) if cost > *best => {}
+                            _ => {
+                                winner = Some((branch, cost));
+                                tied = false;
+                            }
                         }
                     }
-                    Err(_) => failed = true,
+                    Err(errors) => {
+                        failures.push(errors);
+                    }
                 }
             }
 
             if let Some((winner, _)) = winner {
-                if tied {
-                    return SolverResult::Error(vec![Spanned::new(
-                        crate::sema::error::TypeError::AmbiguousOverload,
-                        location,
-                    )]);
-                }
-                let obligation = Obligation {
-                    location,
-                    goal: winner.goal,
+                return if tied {
+                    OverloadChoice::Ambiguous
+                } else {
+                    OverloadChoice::Winner(winner.goal)
                 };
-                return self.solve(&obligation);
             }
         }
-
-        if failed {
-            // No branch succeeded; surface a generic overload failure.
-            return SolverResult::Error(vec![Spanned::new(
-                crate::sema::error::TypeError::NoOverloadMatches,
-                location,
-            )]);
-        }
-
-        SolverResult::Deferred
+        OverloadChoice::NoMatch(failures)
     }
 
     pub fn solve_bind_overload(
@@ -202,6 +265,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             candidate_ty,
             call_info,
             instantiation_args,
+            published_projections,
         } = data;
 
         let existential_dispatch = instantiation_args
@@ -230,6 +294,13 @@ impl<'ctx> ConstraintSolver<'ctx> {
         } else {
             (candidate_ty, None)
         };
+        // An early binding's published associated types take their place in
+        // the instantiated signature, where the receiver is already `Self`.
+        let actual_ty = super::early_interface::substitute_published_projections(
+            self.gcx(),
+            actual_ty,
+            &published_projections,
+        );
 
         if existential_dispatch.is_some()
             && (crate::sema::tycheck::utils::erased_self::has_free_self(actual_ty)
@@ -346,4 +417,45 @@ impl<'ctx> ConstraintSolver<'ctx> {
             result
         }
     }
+}
+
+fn binding_node(goal: &Goal<'_>) -> Option<crate::hir::NodeID> {
+    match goal {
+        Goal::BindOverload(data) => Some(data.node_id),
+        Goal::BindInterfaceMethod(data) => Some(data.node_id),
+        Goal::BindMethodOverload(data) => binding_node(&data.binding),
+        _ => None,
+    }
+}
+
+/// The one conformance that kept an otherwise applicable candidate out, if
+/// every other candidate failed on the shape of the arguments.
+fn unmet_requirement<'ctx>(
+    failures: &[crate::sema::error::SpannedErrorList<'ctx>],
+) -> Option<(
+    crate::sema::models::Ty<'ctx>,
+    crate::sema::models::InterfaceReference<'ctx>,
+)> {
+    use crate::sema::error::TypeError;
+    let mut requirement = None;
+    for errors in failures {
+        if !errors.is_empty()
+            && errors
+                .iter()
+                .all(|error| matches!(error.value, TypeError::Apply(_)))
+        {
+            continue;
+        }
+        let [error] = errors.as_slice() else {
+            return None;
+        };
+        let TypeError::NonConformance { ty, interface } = &error.value else {
+            return None;
+        };
+        if requirement.is_some() || ty.has_inference_variables() {
+            return None;
+        }
+        requirement = Some((*ty, *interface));
+    }
+    requirement
 }

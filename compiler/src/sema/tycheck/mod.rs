@@ -8,7 +8,14 @@ use crate::{
 use std::time::{Duration, Instant};
 
 mod check;
+pub(crate) use check::{check_const_expr_on_demand, check_const_fn_on_demand};
 mod collect;
+pub(crate) use collect::adt::HeaderFields;
+pub(crate) use collect::class_hierarchy::ensure_base as ensure_class_base;
+pub(crate) use collect::conformances::{
+    Header as ConformanceHeader, ensure_candidates as ensure_conformance_headers,
+};
+pub(crate) use collect::function::{InitializerHeader, find_decoder_header};
 pub mod constraints;
 pub mod derive;
 pub(crate) mod fold;
@@ -29,7 +36,7 @@ pub struct TypecheckPhaseTiming {
     pub duration: Duration,
 }
 
-const TYPECHECK_PHASE_COUNT: usize = 25;
+const TYPECHECK_PHASE_COUNT: usize = 27;
 
 pub fn resolve_conformance_witness<'ctx>(
     context: GlobalContext<'ctx>,
@@ -89,9 +96,10 @@ fn run_typecheck_pipeline<'ctx>(
         "sema.typecheck.collect.constant_definitions",
         || collect::constant::register(package, context),
     )?; // Register constant definitions before compile-time values are consumed
-    run_typecheck_phase(phase_timings, "sema.typecheck.collect.generics", || {
-        collect::generics::run(package, context)
-    })?; // Collect Generics Headers
+    let parameter_owners =
+        run_typecheck_phase(phase_timings, "sema.typecheck.collect.generics", || {
+            collect::generics::run(package, context)
+        })?; // Collect Generics Headers
     run_typecheck_phase(phase_timings, "sema.typecheck.collect.adt", || {
         collect::adt::run(package, context)
     })?; // Collect ADT Definitions
@@ -108,23 +116,35 @@ fn run_typecheck_pipeline<'ctx>(
     run_typecheck_phase(phase_timings, "sema.typecheck.impls.identify", || {
         impls::identify::run(package, context)
     })?; // Resolve Impl Block Identities
-    run_typecheck_phase(phase_timings, "sema.typecheck.collect.alias", || {
-        collect::alias::run(package, context)
-    })?; // Collect Type Aliases
-    run_typecheck_phase(
+    let aliases = run_typecheck_phase(
         phase_timings,
-        "sema.typecheck.collect.static_variable",
-        || collect::static_variable::run(package, context),
-    )?; // Collect Static Variable Types
-    run_typecheck_phase(phase_timings, "sema.typecheck.collect.constant", || {
-        collect::constant::run(package, context)
-    })?; // Collect Constant Types
+        "sema.typecheck.collect.alias_headers",
+        || collect::alias::register(package, context),
+    )?;
+    let conformances = collect::conformances::register(package, context);
     run_typecheck_phase(phase_timings, "sema.typecheck.collect.constraints", || {
         collect::constraints::run(package, context)
     })?; // Collect Generic Constraints
     run_typecheck_phase(phase_timings, "sema.typecheck.impls.target", || {
         impls::target::run(package, context)
     })?; // Cache Impl Target Types
+    run_typecheck_phase(phase_timings, "sema.typecheck.collect.conformances", || {
+        collect::conformances::finish(conformances, context)
+    })?;
+    collect::class_hierarchy::finish_bases(context)?;
+    run_typecheck_phase(phase_timings, "sema.typecheck.collect.alias", || {
+        collect::alias::resolve(aliases, context)
+    })?;
+    run_typecheck_phase(
+        phase_timings,
+        "sema.typecheck.collect.generic_defaults",
+        || collect::generics::collect_defaults(parameter_owners, context),
+    )?;
+    run_typecheck_phase(
+        phase_timings,
+        "sema.typecheck.collect.static_variable",
+        || collect::static_variable::run(package, context),
+    )?; // Collect Static Variable Types
     run_typecheck_phase(phase_timings, "sema.typecheck.collect.function", || {
         collect::function::run(package, context)
     })?; // Collect Function Type Signatures
@@ -132,6 +152,9 @@ fn run_typecheck_pipeline<'ctx>(
     run_typecheck_phase(phase_timings, "sema.typecheck.collect.variant", || {
         collect::variant::run(package, context)
     })?; // Collect Enum Variant Definitions
+    run_typecheck_phase(phase_timings, "sema.typecheck.collect.constant", || {
+        collect::constant::run(package, context)
+    })?;
     run_typecheck_phase(phase_timings, "sema.typecheck.collect.field", || {
         collect::field::run(package, context)
     })?; // Collect ADT Type Definitions
@@ -146,9 +169,15 @@ fn run_typecheck_pipeline<'ctx>(
     run_typecheck_phase(phase_timings, "sema.typecheck.impls.member", || {
         impls::member::run(package, context)
     })?; // Collect Impl Block Members
-    run_typecheck_phase(phase_timings, "sema.typecheck.collect.conformances", || {
-        collect::conformances::run(package, context)
-    })?;
+    context.store.collecting_constant_headers.set(false);
+    context.store.header_fields.take();
+    context.store.decoder_headers.take();
+    // Header queries precede complete field layouts and member signatures.
+    context.with_session_type_database(|db| {
+        db.selection_cache.clear();
+        db.witness_cache.clear();
+    });
+    impls::delegation::register(package, context)?;
     crate::sema::lowering::class_codable::prepare(context)?;
     run_typecheck_phase(
         phase_timings,
@@ -169,6 +198,11 @@ fn run_typecheck_pipeline<'ctx>(
         || collect::interface::conform::run(package, context),
     )?; // Validate Conformances
 
+    run_typecheck_phase(
+        phase_timings,
+        "sema.typecheck.collect.constant_values",
+        || collect::constant::collect_values(package, context),
+    )?;
     // WellFormed?
     run_typecheck_phase(phase_timings, "sema.typecheck.wf", || {
         wf::run(package, context)

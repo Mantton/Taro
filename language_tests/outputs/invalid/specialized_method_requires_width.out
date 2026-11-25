@@ -1,0 +1,12 @@
+error: no member named 'wideOnly' found on type Box[int32]
+ -> language_tests/source_files/invalid/specialized_method_requires_width.tr:10:25
+	    _ = Box { value: 0 }.wideOnly()
+	                         ^^^^^^^^
+error: ambiguous overload; unable to pick a best candidate
+ -> language_tests/source_files/invalid/specialized_method_requires_width.tr:13:25
+	    _ = Box { value: 0 }.pick(5000000000_i64)
+	                         ^^^^
+error: ambiguous overload; unable to pick a best candidate
+ -> language_tests/source_files/invalid/specialized_method_requires_width.tr:14:32
+	    _ = Box[int64] { value: 0 }.pick(5000000000_i64)
+	                                ^^^^

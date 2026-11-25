@@ -1,0 +1,11 @@
+// A generic derived conformance holds only for arguments that meet it.
+struct Plain { value: int32 }
+struct Pair[T]: Comparable { first: T, second: T }
+struct Holder[T]: Default { value: T }
+func needsOrd[T: Ord](_ value: T) {}
+func main() {
+    needsOrd(Pair[int32] { first: 1, second: 2 })
+    needsOrd(Pair[Plain] { first: Plain { value: 1 }, second: Plain { value: 2 } })
+    fine := Holder[int32]::default()
+    broken := Holder[Plain]::default()
+}

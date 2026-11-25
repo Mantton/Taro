@@ -1,0 +1,20 @@
+import std::encoding::{Decoder, Decodable}
+
+struct Plain {}
+class Custom[T]: Decodable { value: Plain }
+extend[T] Custom[T] {
+    public required init[D: Decoder](from decoder: D) -> Result[Self, D::Error] {
+        self.value = Plain {}
+    }
+}
+
+interface Fixed { const WIDTH: usize = 5; }
+struct Box[T] {}
+conform[T: Decodable] Box[T] to Fixed {}
+
+// The handwritten initializer supplies Decodable for every Custom[T].
+type Bytes = [uint8; Box[Custom[Plain]]::WIDTH]
+func main() {
+    var bytes: Bytes = [0; 5]
+    println("${bytes.len()} ${Box[Custom[Plain]]::WIDTH}")
+}

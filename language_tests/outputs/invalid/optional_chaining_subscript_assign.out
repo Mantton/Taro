@@ -1,0 +1,4 @@
+error: left-hand side of assignment is not assignable
+ -> language_tests/source_files/invalid/optional_chaining_subscript_assign.tr:3:4
+	    items?.[0] = 5
+	    ^^^^^^^^^^

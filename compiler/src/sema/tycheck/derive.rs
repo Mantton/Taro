@@ -90,6 +90,10 @@ pub fn try_synthesize_method<'ctx>(
         if !class.is_final && !matches!(std_interface, StdItem::Encodable | StdItem::Decodable) {
             return None;
         }
+        // Orderings and defaults are value recipes: structs and enums only.
+        if is_value_only_derivation(std_interface) {
+            return None;
+        }
         if std_interface == StdItem::Hashable && !has_structural_equality(gcx, self_ty) {
             return None;
         }
@@ -142,6 +146,86 @@ pub fn try_synthesize_method<'ctx>(
             args_template,
             std_interface,
         ),
+        StdItem::PartialOrd => try_synthesize_order(
+            gcx,
+            type_head,
+            self_ty,
+            interface_id,
+            interface_args,
+            method_name,
+            method_id,
+            args_template,
+            StdItem::PartialOrd,
+        ),
+        StdItem::Ord => try_synthesize_order(
+            gcx,
+            type_head,
+            self_ty,
+            interface_id,
+            interface_args,
+            method_name,
+            method_id,
+            args_template,
+            StdItem::Ord,
+        ),
+        StdItem::Default => try_synthesize_default(
+            gcx,
+            type_head,
+            self_ty,
+            interface_id,
+            interface_args,
+            method_name,
+            method_id,
+            args_template,
+        ),
+        StdItem::Debug => try_synthesize_debug(
+            gcx,
+            type_head,
+            self_ty,
+            interface_id,
+            interface_args,
+            method_name,
+            method_id,
+            args_template,
+        ),
+        StdItem::RawValue | StdItem::CaseIterable => {
+            let TypeHead::Nominal(owner) = type_head else {
+                return None;
+            };
+            if enum_derivation_obstacle(gcx, owner, std_interface, interface_args).is_some() {
+                return None;
+            }
+            let requirements = gcx.get_interface_requirements(interface_id)?;
+            let kind = if requirements
+                .properties
+                .iter()
+                .any(|p| p.getter_id == method_id)
+            {
+                if std_interface == StdItem::CaseIterable {
+                    SyntheticMethodKind::EnumCaseName
+                } else {
+                    SyntheticMethodKind::EnumRawValue
+                }
+            } else if std_interface == StdItem::CaseIterable && gcx.symbol_eq(method_name, "caseAt")
+            {
+                SyntheticMethodKind::EnumCaseAt
+            } else if std_interface == StdItem::RawValue && gcx.symbol_eq(method_name, "from") {
+                SyntheticMethodKind::EnumFromRawValue
+            } else {
+                return None;
+            };
+            Some(register_synthesized(
+                gcx,
+                type_head,
+                self_ty,
+                interface_id,
+                interface_args,
+                method_name,
+                method_id,
+                args_template,
+                kind,
+            ))
+        }
         StdItem::Tuple => None,
         StdItem::Iterator | StdItem::Iterable | StdItem::AsyncIterator | StdItem::AsyncIterable => {
             // Iterator-like interfaces are not auto-derivable
@@ -173,7 +257,7 @@ pub fn try_synthesize_method<'ctx>(
         | StdItem::Shr
         | StdItem::ShrAssign
         | StdItem::BitNot
-        | StdItem::PartialOrd => None,
+        | StdItem::Contains => None,
         _ => None,
     }
 }
@@ -249,6 +333,59 @@ fn has_structural_equality<'ctx>(gcx: Gcx<'ctx>, self_ty: Ty<'ctx>) -> bool {
         })
 }
 
+/// Both enum derivations require unit cases. RawValue also checks that each
+/// source discriminant fits the selected integer representation.
+pub(crate) fn enum_derivation_obstacle<'ctx>(
+    gcx: Gcx<'ctx>,
+    owner: DefinitionID,
+    interface: StdItem,
+    arguments: GenericArguments<'ctx>,
+) -> Option<(String, crate::span::Span)> {
+    let name = interface.name_str()?;
+    let ident = gcx.definition_ident(owner);
+    let Some(definition) = gcx.try_get_enum_definition(owner) else {
+        return Some((
+            format!("only payload-free enums can derive {name}"),
+            ident.span,
+        ));
+    };
+    let raw_layout = if interface == StdItem::RawValue {
+        let raw = crate::sema::tycheck::utils::normalize_aliases(gcx, arguments.get(1)?.ty()?);
+        let Some(layout) = crate::sema::tycheck::utils::const_eval::integer_layout(gcx, raw) else {
+            return Some((
+                format!(
+                    "cannot derive RawValue for raw type '{}'; expected an integer type",
+                    raw.format(gcx)
+                ),
+                ident.span,
+            ));
+        };
+        Some((raw, layout))
+    } else {
+        None
+    };
+    for variant in definition.variants {
+        let problem = if !matches!(variant.kind, crate::sema::models::EnumVariantKind::Unit) {
+            format!(
+                "cannot derive {name} for case '{}' with a payload",
+                variant.name.as_str()
+            )
+        } else if let Some((raw, layout)) = raw_layout
+            && !layout.contains(i128::from(variant.discriminant))
+        {
+            format!(
+                "enum discriminant {} is out of range for raw type '{}'",
+                variant.discriminant,
+                raw.format(gcx)
+            )
+        } else {
+            continue;
+        };
+        return Some((problem, gcx.definition_ident(variant.def_id).span));
+    }
+    None
+}
+
 /// Get the StdItem variant for a given interface definition ID.
 fn get_std_interface(gcx: Gcx<'_>, interface_id: DefinitionID) -> Option<StdItem> {
     for iface in StdItem::ALL_INTERFACES {
@@ -289,7 +426,8 @@ fn try_synthesize_codec<'ctx>(
             || capability != StdItem::Decodable
             || crate::sema::lowering::class_codable::manual_initializer(gcx, self_ty, method_id)
                 .is_none())
-            && !all_fields_implement(gcx, type_head, capability)
+            && (!all_fields_implement(gcx, type_head, capability)
+                || !codec_field_metadata_obstacles(gcx, owner, capability).is_empty())
     {
         return None;
     }
@@ -482,6 +620,174 @@ fn try_synthesize_partial_eq<'ctx>(
     })
 }
 
+/// Interfaces whose derivation builds, compares or prints plain values. They
+/// are never synthesized for classes (a derived `Debug` could recurse forever
+/// through a reference cycle), and `Default` is never synthesized for enums.
+pub(crate) fn is_value_only_derivation(item: StdItem) -> bool {
+    matches!(
+        item,
+        StdItem::PartialOrd | StdItem::Ord | StdItem::Default | StdItem::Debug
+    )
+}
+
+/// Publish a synthesized witness for `kind`, reusing an earlier registration.
+fn register_synthesized<'ctx>(
+    gcx: Gcx<'ctx>,
+    type_head: TypeHead,
+    self_ty: Ty<'ctx>,
+    interface_id: DefinitionID,
+    interface_args: GenericArguments<'ctx>,
+    method_name: Symbol,
+    method_id: DefinitionID,
+    args_template: GenericArguments<'ctx>,
+    kind: SyntheticMethodKind,
+) -> SynthesizedMethod<'ctx> {
+    let existing = gcx.find_synthetic_method(type_head, method_id);
+    let syn_id = existing.and_then(|info| info.syn_id);
+    if existing.is_none() {
+        let info = SyntheticMethodInfo {
+            kind,
+            self_ty,
+            interface_id,
+            interface_args,
+            interface_bindings: &[],
+            method_id,
+            method_name,
+            syn_id,
+        };
+        gcx.register_synthetic_method(type_head, method_id, method_name, info);
+    }
+    SynthesizedMethod {
+        witness: MethodWitness {
+            implementation: MethodImplementation::Synthetic(kind, syn_id),
+            args_template,
+        },
+    }
+}
+
+/// `PartialOrd.partialCmp` and `Ord.cmp` compare stored fields (or enum cases,
+/// then payloads) in declaration order. Super-interfaces are not synthesized
+/// here: conformance checking requires them to be declared separately.
+fn try_synthesize_order<'ctx>(
+    gcx: Gcx<'ctx>,
+    type_head: TypeHead,
+    self_ty: Ty<'ctx>,
+    interface_id: DefinitionID,
+    interface_args: GenericArguments<'ctx>,
+    method_name: Symbol,
+    method_id: DefinitionID,
+    args_template: GenericArguments<'ctx>,
+    capability: StdItem,
+) -> Option<SynthesizedMethod<'ctx>> {
+    let TypeHead::Nominal(owner) = type_head else {
+        return None;
+    };
+    let (expected, kind) = if capability == StdItem::PartialOrd {
+        ("partialCmp", SyntheticMethodKind::MemberwisePartialOrder)
+    } else {
+        ("cmp", SyntheticMethodKind::MemberwiseTotalOrder)
+    };
+    if !gcx.symbol_eq(method_name, expected)
+        || gcx.is_class_type(self_ty)
+        || (gcx.try_get_struct_definition(owner).is_none()
+            && gcx.try_get_enum_definition(owner).is_none())
+    {
+        return None;
+    }
+    if capability == StdItem::PartialOrd
+        && equality_rhs(gcx, interface_args, self_ty)?
+            != crate::sema::tycheck::utils::normalize_aliases(gcx, self_ty)
+    {
+        return None;
+    }
+    if !all_fields_implement(gcx, type_head, capability) {
+        return None;
+    }
+    Some(register_synthesized(
+        gcx,
+        type_head,
+        self_ty,
+        interface_id,
+        interface_args,
+        method_name,
+        method_id,
+        args_template,
+        kind,
+    ))
+}
+
+/// `Default.default` builds a struct from each field's declared default
+/// expression, or else from the field type's own `Default`. Initializers are
+/// not run, as for derived `Clone` and `Decodable`.
+fn try_synthesize_default<'ctx>(
+    gcx: Gcx<'ctx>,
+    type_head: TypeHead,
+    self_ty: Ty<'ctx>,
+    interface_id: DefinitionID,
+    interface_args: GenericArguments<'ctx>,
+    method_name: Symbol,
+    method_id: DefinitionID,
+    args_template: GenericArguments<'ctx>,
+) -> Option<SynthesizedMethod<'ctx>> {
+    let TypeHead::Nominal(owner) = type_head else {
+        return None;
+    };
+    if !gcx.symbol_eq(method_name, "default")
+        || gcx.is_class_type(self_ty)
+        || gcx.try_get_struct_definition(owner).is_none()
+        || !all_fields_implement(gcx, type_head, StdItem::Default)
+    {
+        return None;
+    }
+    Some(register_synthesized(
+        gcx,
+        type_head,
+        self_ty,
+        interface_id,
+        interface_args,
+        method_name,
+        method_id,
+        args_template,
+        SyntheticMethodKind::MemberwiseDefault,
+    ))
+}
+
+/// `Debug.debug` writes a struct's name and fields, or an enum value's case
+/// name and payload, each component through its own `debug`.
+fn try_synthesize_debug<'ctx>(
+    gcx: Gcx<'ctx>,
+    type_head: TypeHead,
+    self_ty: Ty<'ctx>,
+    interface_id: DefinitionID,
+    interface_args: GenericArguments<'ctx>,
+    method_name: Symbol,
+    method_id: DefinitionID,
+    args_template: GenericArguments<'ctx>,
+) -> Option<SynthesizedMethod<'ctx>> {
+    let TypeHead::Nominal(owner) = type_head else {
+        return None;
+    };
+    if !gcx.symbol_eq(method_name, "debug")
+        || gcx.is_class_type(self_ty)
+        || (gcx.try_get_struct_definition(owner).is_none()
+            && gcx.try_get_enum_definition(owner).is_none())
+        || !all_fields_implement(gcx, type_head, StdItem::Debug)
+    {
+        return None;
+    }
+    Some(register_synthesized(
+        gcx,
+        type_head,
+        self_ty,
+        interface_id,
+        interface_args,
+        method_name,
+        method_id,
+        args_template,
+        SyntheticMethodKind::MemberwiseDebug,
+    ))
+}
+
 /// Resolve a derivation's RHS without mistaking an arbitrary generic parameter
 /// for Self. Cross-type equality is supported through explicit implementations.
 pub(crate) fn equality_rhs<'ctx>(
@@ -516,6 +822,23 @@ fn stored_fields<'ctx>(
     owner: DefinitionID,
     capability: StdItem,
 ) -> Option<Vec<Ty<'ctx>>> {
+    Some(
+        stored_field_entries(gcx, owner, capability)?
+            .into_iter()
+            .map(|(_, ty)| ty)
+            .collect(),
+    )
+}
+
+/// The components a derivation of `capability` uses, named for diagnostics:
+/// a struct field by its name, an enum payload as `case.label` or `case.index`.
+/// A derived `Default` uses only the fields without a declared default, and
+/// is never synthesized for an enum.
+fn stored_field_entries<'ctx>(
+    gcx: Gcx<'ctx>,
+    owner: DefinitionID,
+    capability: StdItem,
+) -> Option<Vec<(String, Ty<'ctx>)>> {
     if let Some(definition) = gcx.try_get_struct_definition(owner) {
         let skip = if matches!(capability, StdItem::Encodable | StdItem::Decodable) {
             codec_field_offset(gcx, gcx.get_type(owner))
@@ -525,21 +848,42 @@ fn stored_fields<'ctx>(
         return Some(
             definition.fields[skip..]
                 .iter()
-                .map(|field| field.ty)
+                .filter(|field| {
+                    if capability == StdItem::Default {
+                        field.default_provider.is_none()
+                    } else if matches!(capability, StdItem::Encodable | StdItem::Decodable) {
+                        !field.coding_skip
+                    } else {
+                        true
+                    }
+                })
+                .map(|field| (gcx.symbol_text(field.name).to_string(), field.ty))
                 .collect(),
         );
+    }
+    if capability == StdItem::Default {
+        return None;
     }
     let definition = gcx.try_get_enum_definition(owner)?;
     Some(
         definition
             .variants
             .iter()
-            .flat_map(|variant| match variant.kind {
-                crate::sema::models::EnumVariantKind::Unit => &[][..],
-                crate::sema::models::EnumVariantKind::Tuple(fields)
-                | crate::sema::models::EnumVariantKind::Struct(fields) => fields,
+            .flat_map(|variant| {
+                let fields = match variant.kind {
+                    crate::sema::models::EnumVariantKind::Unit => &[][..],
+                    crate::sema::models::EnumVariantKind::Tuple(fields)
+                    | crate::sema::models::EnumVariantKind::Struct(fields) => fields,
+                };
+                fields.iter().enumerate().map(move |(index, field)| {
+                    let case = gcx.symbol_text(variant.name);
+                    let name = match field.label {
+                        Some(label) => format!("{case}.{}", gcx.symbol_text(label)),
+                        None => format!("{case}.{index}"),
+                    };
+                    (name, field.ty)
+                })
             })
-            .map(|field| field.ty)
             .collect(),
     )
 }
@@ -551,15 +895,22 @@ fn all_fields_implement_clone(gcx: Gcx<'_>, head: TypeHead) -> bool {
 /// A derivation can keep generic component calls abstract: conditional
 /// selection checks their substituted obligations before the body is used.
 fn all_fields_implement(gcx: Gcx<'_>, head: TypeHead, capability: StdItem) -> bool {
+    nonconforming_fields(gcx, head, capability).is_some_and(|fields| fields.is_empty())
+}
+
+/// The named components that cannot prove `capability`. Components that
+/// depend on a generic parameter are left to conditional selection. `None`
+/// means the type has no derivable shape for the capability at all.
+fn nonconforming_fields<'ctx>(
+    gcx: Gcx<'ctx>,
+    head: TypeHead,
+    capability: StdItem,
+) -> Option<Vec<(String, Ty<'ctx>)>> {
     let TypeHead::Nominal(owner) = head else {
-        return false;
+        return None;
     };
-    let Some(interface_id) = gcx.std_item_def(capability) else {
-        return false;
-    };
-    let Some(fields) = stored_fields(gcx, owner, capability) else {
-        return false;
-    };
+    let interface_id = gcx.std_item_def(capability)?;
+    let fields = stored_field_entries(gcx, owner, capability)?;
     let constraints: Vec<_> = gcx
         .canonical_constraints_of(owner)
         .iter()
@@ -568,28 +919,209 @@ fn all_fields_implement(gcx: Gcx<'_>, head: TypeHead, capability: StdItem) -> bo
     let param_env = gcx.store.arenas.global.alloc_slice_clone(&constraints);
     let environment = crate::sema::tycheck::utils::ParamEnv::new(constraints);
     let icx = std::rc::Rc::new(crate::sema::tycheck::infer::InferCtx::new(gcx));
-    fields.into_iter().all(|field| {
-        if !gcx.generics_of(owner).is_empty() && field.needs_instantiation() {
-            return true;
+    Some(
+        fields
+            .into_iter()
+            .filter(|(_, field)| {
+                if !gcx.generics_of(owner).is_empty() && field.needs_instantiation() {
+                    return false;
+                }
+                let field =
+                    crate::sema::tycheck::utils::normalize_ty(icx.clone(), *field, &environment);
+                let goal = crate::sema::models::InterfaceGoal {
+                    interface_id,
+                    self_ty: field,
+                    interface_args: component_interface_arguments(gcx, interface_id, field),
+                    bindings: &[],
+                    param_env,
+                };
+                gcx.prove_interface_goal(goal, crate::sema::models::SelectionMode::Typecheck)
+                    != crate::sema::models::GoalResult::Proven
+            })
+            .collect(),
+    )
+}
+
+/// A derived component obligation compares a component with itself, so the
+/// `Rhs` of `PartialEq` and `PartialOrd` is the component type.
+pub(crate) fn component_interface_arguments<'ctx>(
+    gcx: Gcx<'ctx>,
+    interface_id: DefinitionID,
+    component: Ty<'ctx>,
+) -> GenericArguments<'ctx> {
+    if [StdItem::PartialEq, StdItem::PartialOrd]
+        .iter()
+        .any(|item| gcx.std_item_def(*item) == Some(interface_id))
+    {
+        gcx.store
+            .interners
+            .intern_generic_args(vec![GenericArgument::Type(component)])
+    } else {
+        GenericArguments::empty()
+    }
+}
+
+pub(crate) fn codec_field_metadata_obstacles<'ctx>(
+    gcx: Gcx<'ctx>,
+    owner: DefinitionID,
+    capability: StdItem,
+) -> Vec<String> {
+    let Some(definition) = gcx.try_get_struct_definition(owner) else {
+        return Vec::new();
+    };
+    let self_ty = gcx.get_type(owner);
+    let offset = codec_field_offset(gcx, self_ty);
+    let fields = &definition.fields[offset..];
+    let type_name = TypeHead::Nominal(owner).format(gcx);
+    let mut obstacles = Vec::new();
+
+    let mut seen_keys: rustc_hash::FxHashMap<Symbol, Symbol> = rustc_hash::FxHashMap::default();
+    for field in fields {
+        if field.coding_skip {
+            continue;
         }
-        let field = crate::sema::tycheck::utils::normalize_ty(icx.clone(), field, &environment);
-        let arguments = if capability == StdItem::PartialEq {
-            gcx.store
-                .interners
-                .intern_generic_args(vec![GenericArgument::Type(field)])
+        let effective_key = field.coding_key.unwrap_or(field.name);
+        if let Some(&first_field) = seen_keys.get(&effective_key) {
+            obstacles.push(format!(
+                "duplicate coding key \"{}\" on type '{type_name}' (fields '{}' and '{}' map to the same key)",
+                gcx.symbol_text(effective_key),
+                gcx.symbol_text(first_field),
+                gcx.symbol_text(field.name),
+            ));
         } else {
-            GenericArguments::empty()
+            seen_keys.insert(effective_key, field.name);
+        }
+    }
+
+    if capability == StdItem::Decodable {
+        let optional_id = gcx.std_item_def(StdItem::Optional);
+        let default_id = gcx.std_item_def(StdItem::Default);
+        let constraints: Vec<_> = gcx
+            .canonical_constraints_of(owner)
+            .iter()
+            .map(|bound| bound.value)
+            .collect();
+        let param_env = gcx.store.arenas.global.alloc_slice_clone(&constraints);
+        let environment = crate::sema::tycheck::utils::ParamEnv::new(constraints);
+        let icx = std::rc::Rc::new(crate::sema::tycheck::infer::InferCtx::new(gcx));
+
+        for field in fields {
+            if !field.coding_skip {
+                continue;
+            }
+            if field.default_provider.is_some() {
+                continue;
+            }
+            let normalized =
+                crate::sema::tycheck::utils::normalize_ty(icx.clone(), field.ty, &environment);
+            if optional_id.is_some_and(|opt| {
+                matches!(normalized.kind(), TyKind::Adt(def, _) if def.id == opt)
+            }) {
+                continue;
+            }
+            let has_default = default_id.is_some_and(|interface_id| {
+                let goal = crate::sema::models::InterfaceGoal {
+                    interface_id,
+                    self_ty: normalized,
+                    interface_args: GenericArguments::empty(),
+                    bindings: &[],
+                    param_env,
+                };
+                gcx.prove_interface_goal(goal, crate::sema::models::SelectionMode::Typecheck)
+                    == crate::sema::models::GoalResult::Proven
+            });
+            if !has_default {
+                obstacles.push(format!(
+                    "`@skip` field '{}' on type '{type_name}' requires a default value, an Optional type, or Default conformance to derive 'Decodable'",
+                    gcx.symbol_text(field.name),
+                ));
+            }
+        }
+    }
+
+    obstacles
+}
+
+/// Explain why an inline `PartialEq`, `Hashable`, `Clone`, `PartialOrd`,
+/// `Ord`, `Default` or `Debug` cannot be derived for the record's type: the
+/// type's kind, or every component that lacks the interface. Empty when
+/// nothing stands in the way, or for other interfaces.
+pub(crate) fn derive_obstacles<'ctx>(
+    gcx: Gcx<'ctx>,
+    record: crate::sema::models::ConformanceRecord<'ctx>,
+) -> Vec<String> {
+    let Some(capability) = get_std_interface(gcx, record.interface.id) else {
+        return Vec::new();
+    };
+    if record.is_inline && matches!(capability, StdItem::Encodable | StdItem::Decodable) {
+        let TypeHead::Nominal(owner) = record.target else {
+            return Vec::new();
         };
-        let goal = crate::sema::models::InterfaceGoal {
-            interface_id,
-            self_ty: field,
-            interface_args: arguments,
-            bindings: &[],
-            param_env,
+        let self_ty = gcx.get_type(owner);
+        if gcx.is_class_type(self_ty)
+            && capability == StdItem::Decodable
+            && let Some(reqs) = gcx.get_interface_requirements(record.interface.id)
+            && let Some(decode_method) = reqs
+                .methods
+                .iter()
+                .find(|method| gcx.symbol_eq(method.name, "decode"))
+            && crate::sema::lowering::class_codable::manual_initializer(
+                gcx,
+                self_ty,
+                decode_method.id,
+            )
+            .is_some()
+        {
+            return Vec::new();
+        }
+        return codec_field_metadata_obstacles(gcx, owner, capability);
+    }
+    let memberwise = matches!(
+        capability,
+        StdItem::PartialEq | StdItem::Hashable | StdItem::Clone
+    );
+    if !record.is_inline || !(memberwise || is_value_only_derivation(capability)) {
+        return Vec::new();
+    }
+    let TypeHead::Nominal(owner) = record.target else {
+        return Vec::new();
+    };
+    let interface = capability.name_str().unwrap_or_default();
+    let type_name = record.target.format(gcx);
+    let self_ty = gcx.get_type(owner);
+    if is_value_only_derivation(capability) && gcx.is_class_type(self_ty) {
+        let kinds = if capability == StdItem::Default {
+            "structs"
+        } else {
+            "structs and enums"
         };
-        gcx.prove_interface_goal(goal, crate::sema::models::SelectionMode::Typecheck)
-            == crate::sema::models::GoalResult::Proven
-    })
+        return vec![format!(
+            "cannot derive '{interface}' for class '{type_name}': only {kinds} can derive it; implement it in a conformance instead"
+        )];
+    }
+    if capability == StdItem::Default && gcx.try_get_enum_definition(owner).is_some() {
+        return vec![format!(
+            "cannot derive 'Default' for enum '{type_name}': enums have no synthesized default; implement 'static func default() -> Self' in a conformance instead"
+        )];
+    }
+    let Some(fields) = nonconforming_fields(gcx, record.target, capability) else {
+        return Vec::new();
+    };
+    fields
+        .into_iter()
+        .map(|(field, ty)| {
+            let ty = ty.format(gcx);
+            if capability == StdItem::Default {
+                format!(
+                    "cannot derive 'Default' for '{type_name}': field '{field}' has no default value and its type '{ty}' does not conform to 'Default'"
+                )
+            } else {
+                format!(
+                    "cannot derive '{interface}' for '{type_name}': field '{field}' has type '{ty}', which does not conform to '{interface}'"
+                )
+            }
+        })
+        .collect()
 }
 
 /// Stored components that condition an inline generic value derivation.
@@ -601,16 +1133,7 @@ pub(crate) fn conditional_fields<'ctx>(
 ) -> Option<Vec<Ty<'ctx>>> {
     if !record.is_inline
         || gcx.generics_of(record.extension).is_empty()
-        || ![
-            StdItem::Clone,
-            StdItem::PartialEq,
-            StdItem::Hashable,
-            StdItem::Equatable,
-            StdItem::Encodable,
-            StdItem::Decodable,
-        ]
-        .iter()
-        .any(|item| gcx.std_item_def(*item) == Some(record.interface.id))
+        || !get_std_interface(gcx, record.interface.id).is_some_and(StdItem::is_derivable)
     {
         return None;
     }
@@ -619,7 +1142,10 @@ pub(crate) fn conditional_fields<'ctx>(
     };
     // Equatable has no own methods: its actual PartialEq super-conformance
     // supplies equality, including a valid manual implementation.
-    if gcx.std_item_def(StdItem::Equatable) == Some(record.interface.id) {
+    if [StdItem::Equatable, StdItem::RawValue, StdItem::CaseIterable]
+        .iter()
+        .any(|&item| gcx.std_item_def(item) == Some(record.interface.id))
+    {
         return Some(Vec::new());
     }
     if gcx.is_class_type(gcx.get_type(id))
@@ -636,7 +1162,13 @@ pub(crate) fn conditional_fields<'ctx>(
     {
         return Some(vec![]);
     }
-    stored_fields(gcx, id, get_std_interface(gcx, record.interface.id)?)
+    let capability = get_std_interface(gcx, record.interface.id)?;
+    if gcx.store.collecting_constant_headers.get()
+        && let Some(components) = super::collect::adt::derived_fields(gcx, id, capability)
+    {
+        return Some(components);
+    }
+    stored_fields(gcx, id, capability)
 }
 
 #[cfg(test)]
@@ -1047,6 +1579,313 @@ func main() {{}}
                 .iter()
                 .any(|error| error.message.contains("Hashable")),
             "{errors:?}"
+        );
+    }
+
+    fn ordering_diagnostics(body: &str) -> Vec<crate::diagnostics::DiagnosticRecord> {
+        let source = format!(
+            r#"
+enum Ordering {{ case less; case equal; case greater; }}
+enum Optional[T] {{ case some(T); case none; }}
+interface PartialEq[Rhs = Self] {{
+    func eq(_ other: Rhs) -> bool
+}}
+interface PartialOrd[Rhs = Self]: PartialEq[Rhs] {{
+    func partialCmp(_ other: Rhs) -> Optional[Ordering]
+}}
+interface Ord: PartialOrd {{
+    func cmp(_ other: Self) -> Ordering
+}}
+interface Default {{
+    static func default() -> Self
+}}
+type Comparable = PartialEq & PartialOrd & Ord
+conform int32 to PartialEq {{
+    func eq(_ other: int32) -> bool {{ true }}
+}}
+conform int32 to PartialOrd {{
+    func partialCmp(_ other: int32) -> Optional[Ordering] {{ .none }}
+}}
+conform int32 to Ord {{
+    func cmp(_ other: int32) -> Ordering {{ .equal }}
+}}
+conform int32 to Default {{
+    static func default() -> int32 {{ 0 }}
+}}
+conform double to PartialEq {{
+    func eq(_ other: double) -> bool {{ true }}
+}}
+conform double to PartialOrd {{
+    func partialCmp(_ other: double) -> Optional[Ordering] {{ .none }}
+}}
+{body}
+func main() {{}}
+"#
+        );
+        analyze_language_item_script(
+            &source,
+            false,
+            &[
+                (StdItem::PartialEq, "PartialEq"),
+                (StdItem::PartialOrd, "PartialOrd"),
+                (StdItem::Ord, "Ord"),
+                (StdItem::Default, "Default"),
+            ],
+        )
+    }
+
+    fn assert_reports(body: &str, expected: &[&str]) {
+        let errors = ordering_diagnostics(body);
+        for message in expected {
+            assert!(
+                errors.iter().any(|error| error.message.contains(message)),
+                "{body}: expected '{message}' in {errors:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordering_derives_for_structs_enums_and_the_comparable_alias() {
+        for body in [
+            "struct Version: PartialEq, PartialOrd, Ord { major: int32; minor: int32 }",
+            "struct Version: Comparable { major: int32; minor: int32 }",
+            "struct Empty: Comparable {}",
+            "enum Priority: Comparable { case low; case high }",
+            "enum Shape: Comparable { case point; case circle(int32); case rect(width: int32, height: int32); case named { size: int32 } }",
+            "struct Inner: Comparable { value: int32 }\nstruct Outer: Comparable { inner: Inner; extra: int32 }",
+            "struct Measure: PartialEq, PartialOrd { value: double }",
+            "func needsOrd[T: Ord](_ value: T) {}\nstruct Version: Comparable { major: int32 }\nfunc test() { needsOrd(Version { major: 1 }) }",
+        ] {
+            let errors = ordering_diagnostics(body);
+            assert!(errors.is_empty(), "{body}: {errors:#?}");
+        }
+    }
+
+    #[test]
+    fn ordering_derivation_names_each_nonconforming_field() {
+        assert_reports(
+            "struct Point: PartialEq { x: int32 }\nstruct Ranked: Comparable { rank: int32; position: Point }",
+            &[
+                "cannot derive 'PartialOrd' for 'Ranked': field 'position' has type 'Point', which does not conform to 'PartialOrd'",
+                "cannot derive 'Ord' for 'Ranked': field 'position' has type 'Point', which does not conform to 'Ord'",
+            ],
+        );
+        assert_reports(
+            "struct Point: PartialEq { x: int32 }\nenum Slot: Comparable { case empty; case filled(int32, Point); case at(spot: Point) }",
+            &[
+                "field 'filled.1' has type 'Point'",
+                "field 'at.spot' has type 'Point'",
+            ],
+        );
+        assert_reports(
+            "struct Sample: Comparable { value: double }",
+            &[
+                "cannot derive 'Ord' for 'Sample': field 'value' has type 'double', which does not conform to 'Ord'",
+            ],
+        );
+    }
+
+    #[test]
+    fn ordering_synthesis_rejects_other_rhs_types() {
+        assert_reports(
+            "struct Other { value: int32 }\nstruct Wrong: PartialOrd[Other] { value: int32 }\nconform Wrong to PartialEq[Other] {\nfunc eq(_ other: Other) -> bool { true }\n}",
+            &["automatic ordering requires Rhs = Self"],
+        );
+    }
+
+    #[test]
+    fn derived_ord_requires_listed_super_interfaces() {
+        assert_reports(
+            "struct Score: Ord { value: int32 }",
+            &[
+                "interface 'Ord' requires type 'Score' to conform to 'PartialOrd[Score]'",
+                "add 'PartialOrd' to the conformance list of 'Score'",
+                "add 'PartialEq' to the conformance list of 'Score'",
+            ],
+        );
+        assert_reports(
+            "struct Score[T]: Ord { value: T }",
+            &["add 'PartialOrd' to the conformance list of 'Score'"],
+        );
+        // A hand-written super-interface satisfies a derived Ord.
+        let errors = ordering_diagnostics(
+            "struct Score: PartialEq, Ord { value: int32 }\nconform Score to PartialOrd {\nfunc partialCmp(_ other: Score) -> Optional[Ordering] { .none }\n}",
+        );
+        assert!(errors.is_empty(), "{errors:#?}");
+    }
+
+    #[test]
+    fn generic_ordering_and_default_are_conditional_on_arguments() {
+        let declarations = "struct Plain { value: int32 }\nstruct Pair[T]: Comparable, Default { first: T; second: T }\nfunc needsOrd[T: Ord](_ value: T) {}\nfunc needsDefault[T: Default](_ value: T) {}\n";
+        let errors = ordering_diagnostics(&format!(
+            "{declarations}func test(_ value: Pair[int32]) {{ needsOrd(value); needsDefault(value) }}"
+        ));
+        assert!(errors.is_empty(), "{errors:#?}");
+        let errors = ordering_diagnostics(&format!(
+            "{declarations}func test(_ value: Pair[Plain]) {{ needsOrd(value); needsDefault(value) }}"
+        ));
+        for interface in ["'Ord'", "'Default'"] {
+            assert!(
+                errors.iter().any(|error| error.message.contains(interface)),
+                "{interface}: {errors:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn default_derives_from_field_defaults_and_field_types() {
+        for body in [
+            "struct Settings: Default { retries: int32 = 3; count: int32 }",
+            "struct Handle { id: int32 }\nstruct Session: Default { handle: Handle = Handle { id: 1 } }",
+            "struct Inner: Default { value: int32 }\nstruct Outer: Default { inner: Inner }",
+            "struct Empty: Default {}",
+            "struct Plain { value: int32 }\nstruct Labelled[T]: Default { value: T; plain: Plain = Plain { value: 1 } }",
+        ] {
+            let errors = ordering_diagnostics(body);
+            assert!(errors.is_empty(), "{body}: {errors:#?}");
+        }
+        assert_reports(
+            "struct Handle { id: int32 }\nstruct Session: Default { retries: int32 = 3; handle: Handle }",
+            &[
+                "cannot derive 'Default' for 'Session': field 'handle' has no default value and its type 'Handle' does not conform to 'Default'",
+            ],
+        );
+    }
+
+    #[test]
+    fn value_only_derivations_reject_enum_defaults_and_classes() {
+        assert_reports(
+            "enum Mode: Default { case fast; case slow }",
+            &["cannot derive 'Default' for enum 'Mode'"],
+        );
+        assert_reports(
+            "final class Account: PartialEq, PartialOrd, Ord { balance: int32 }",
+            &[
+                "cannot derive 'PartialOrd' for class 'Account': only structs and enums",
+                "cannot derive 'Ord' for class 'Account'",
+            ],
+        );
+        assert_reports(
+            "final class Config: Default { retries: int32 = 3 }",
+            &["cannot derive 'Default' for class 'Config': only structs can derive it"],
+        );
+        // A conformance block implements the requirement instead.
+        let errors = ordering_diagnostics(
+            "enum Mode { case fast; case slow }\nconform Mode to Default {\nstatic func default() -> Mode { .slow }\n}",
+        );
+        assert!(errors.is_empty(), "{errors:#?}");
+    }
+
+    #[test]
+    fn equality_derivation_names_each_nonconforming_field() {
+        let errors = ordering_diagnostics(
+            "struct Plain { value: int32 }\nstruct Keyed: PartialEq { id: int32; plain: Plain }\nenum Slot: PartialEq { case empty; case filled(int32, Plain) }\nfinal class Account: PartialEq { owner: Plain }",
+        );
+        for message in [
+            "cannot derive 'PartialEq' for 'Keyed': field 'plain' has type 'Plain', which does not conform to 'PartialEq'",
+            "cannot derive 'PartialEq' for 'Slot': field 'filled.1' has type 'Plain'",
+            "cannot derive 'PartialEq' for 'Account': field 'owner' has type 'Plain'",
+        ] {
+            assert!(
+                errors.iter().any(|error| error.message.contains(message)),
+                "expected '{message}' in {errors:#?}"
+            );
+        }
+        assert!(
+            !errors
+                .iter()
+                .any(|error| error.message.contains("does not satisfy requirements")),
+            "{errors:#?}"
+        );
+    }
+
+    fn debug_diagnostics(body: &str) -> Vec<crate::diagnostics::DiagnosticRecord> {
+        let source = format!(
+            r#"
+struct Formatter {{}}
+interface Debug {{
+    func debug(_ into: &Formatter)
+}}
+conform int32 to Debug {{
+    func debug(_ into: &Formatter) {{}}
+}}
+{body}
+func main() {{}}
+"#
+        );
+        analyze_language_item_script(&source, false, &[(StdItem::Debug, "Debug")])
+    }
+
+    fn assert_debug_reports(body: &str, expected: &[&str]) {
+        let errors = debug_diagnostics(body);
+        for message in expected {
+            assert!(
+                errors.iter().any(|error| error.message.contains(message)),
+                "{body}: expected '{message}' in {errors:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn debug_derives_for_structs_and_every_enum_payload_shape() {
+        for body in [
+            "struct Version: Debug { major: int32; minor: int32 }",
+            "struct Empty: Debug {}",
+            "struct Inner: Debug { value: int32 }\nstruct Outer: Debug { inner: Inner; extra: int32 }",
+            "enum Event: Debug { case quit; case key(int32); case click { x: int32, y: int32 }; case resize(width: int32, height: int32) }",
+            "enum Never: Debug {}",
+            "func needsDebug[T: Debug](_ value: T) {}\nstruct Version: Debug { major: int32 }\nfunc test() { needsDebug(Version { major: 1 }) }",
+        ] {
+            let errors = debug_diagnostics(body);
+            assert!(errors.is_empty(), "{body}: {errors:#?}");
+        }
+    }
+
+    #[test]
+    fn debug_derivation_names_each_nonconforming_field() {
+        assert_debug_reports(
+            "struct Plain { value: int32 }\nstruct Holder: Debug { count: int32; plain: Plain }",
+            &[
+                "cannot derive 'Debug' for 'Holder': field 'plain' has type 'Plain', which does not conform to 'Debug'",
+            ],
+        );
+        assert_debug_reports(
+            "struct Plain { value: int32 }\nenum Slot: Debug { case empty; case filled(int32, Plain); case at(spot: Plain); case record { inner: Plain } }",
+            &[
+                "field 'filled.1' has type 'Plain'",
+                "field 'at.spot' has type 'Plain'",
+                "field 'record.inner' has type 'Plain'",
+            ],
+        );
+    }
+
+    #[test]
+    fn debug_is_derived_for_value_types_only() {
+        assert_debug_reports(
+            "final class Node: Debug { value: int32 }",
+            &["cannot derive 'Debug' for class 'Node': only structs and enums can derive it"],
+        );
+        // A conformance block implements it for a class instead.
+        let errors = debug_diagnostics(
+            "final class Node { value: int32 }\nconform Node to Debug {\nfunc debug(_ into: &Formatter) {}\n}",
+        );
+        assert!(errors.is_empty(), "{errors:#?}");
+    }
+
+    #[test]
+    fn generic_debug_is_conditional_on_arguments() {
+        let declarations = "struct Plain { value: int32 }\nstruct Pair[T]: Debug { first: T; second: T }\nenum Choice[T]: Debug { case none; case some(T) }\nfunc needsDebug[T: Debug](_ value: T) {}\n";
+        let errors = debug_diagnostics(&format!(
+            "{declarations}func test(_ pair: Pair[int32], _ choice: Choice[int32]) {{ needsDebug(pair); needsDebug(choice) }}"
+        ));
+        assert!(errors.is_empty(), "{errors:#?}");
+        // Pair[Plain] is still a valid type; it only lacks Debug.
+        let errors = debug_diagnostics(&format!(
+            "{declarations}func test(_ pair: Pair[Plain]) {{ needsDebug(pair) }}"
+        ));
+        assert!(
+            errors.iter().any(|error| error.message.contains("'Debug'")),
+            "{errors:#?}"
         );
     }
 }

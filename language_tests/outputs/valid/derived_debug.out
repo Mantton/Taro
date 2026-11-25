@@ -1,0 +1,16 @@
+Version { major: 1, minor: 4 }
+Empty
+Box { value: 1 }
+Box { value: Version { major: 2, minor: 0 } }
+Box { value: "text" }
+Person { name: "Ada", tags: ["x", "y"], manager: none, initial: 'A' }
+quit
+key('a')
+click { x: 1, y: 2 }
+resize(width: 3, height: 4)
+pair(5, Version { major: 0, minor: 1 })
+nothing
+one(Box { value: 'q' })
+Holder { secret: Secret(<hidden>) }
+[quit, key('\n')]
+some(Version { major: 3, minor: 3 })

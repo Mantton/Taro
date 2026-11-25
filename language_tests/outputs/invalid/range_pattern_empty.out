@@ -1,0 +1,8 @@
+error: range pattern is empty
+ -> language_tests/source_files/invalid/range_pattern_empty.tr:1:37
+	func empty(_ n: int8) -> bool { n is 5..5 }
+	                                     ^^^^
+error: range pattern is empty
+ -> language_tests/source_files/invalid/range_pattern_empty.tr:2:40
+	func reversed(_ n: rune) -> bool { n is 'z'..='a' }
+	                                        ^^^^^^^^^

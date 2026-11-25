@@ -1,0 +1,4 @@
+@onUnsatisfied("{Self} needs an Item witness")
+interface Source { type Item; }
+func accept(_ source: Source) {}
+func main() {}

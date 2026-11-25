@@ -1,0 +1,12 @@
+import std::encoding::Codable
+
+struct NoDefault {
+    v: int32
+}
+
+struct BadSkip: Codable {
+    name: string
+    @skip state: NoDefault
+}
+
+func main() {}

@@ -2,12 +2,9 @@ use crate::{
     compile::context::GlobalContext,
     error::CompileResult,
     hir::{self, HirVisitor},
-    sema::{
-        models::{
-            EnumDefinition, EnumVariant, EnumVariantField, EnumVariantKind,
-            LabeledFunctionParameter, LabeledFunctionSignature, Ty, TyKind,
-        },
-        tycheck::lower::{DefTyLoweringCtx, TypeLowerer},
+    sema::models::{
+        EnumDefinition, EnumVariant, EnumVariantField, EnumVariantKind, LabeledFunctionParameter,
+        LabeledFunctionSignature, Ty, TyKind,
     },
 };
 use rustc_hash::FxHashSet;
@@ -41,7 +38,6 @@ impl<'ctx> Actor<'ctx> {
             return;
         };
 
-        let ctx = DefTyLoweringCtx::new(id, self.context);
         let mut next_discriminant: u64 = 0;
         let mut used_discriminants: FxHashSet<u64> = FxHashSet::default();
         let mut variants: Vec<EnumVariant<'ctx>> = Vec::with_capacity(node.variants.len());
@@ -70,7 +66,7 @@ impl<'ctx> Actor<'ctx> {
                 hir::VariantKind::Tuple(fields) | hir::VariantKind::Struct(fields) => {
                     let mut out: Vec<EnumVariantField<'ctx>> = Vec::with_capacity(fields.len());
                     for field in fields {
-                        let ty = ctx.lowerer().lower_type(&field.ty);
+                        let ty = super::adt::lower_field(self.context, id, &field.ty);
                         let label = field.label.map(|l| l.identifier.symbol);
                         out.push(EnumVariantField {
                             label,
@@ -128,6 +124,7 @@ impl<'ctx> Actor<'ctx> {
                             label: field.label,
                             name,
                             ty: field.ty,
+                            is_lazy: false,
                             default_provider: None,
                         });
                         input_tys.push(field.ty);

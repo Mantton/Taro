@@ -23,8 +23,8 @@ mod declarations;
 pub mod wire;
 
 const META_MAGIC: [u8; 8] = *b"TAROMETA";
-// Format131 removes unused MIR devirtualization hints and static initializer cache entries.
-const META_FORMAT_VERSION: u32 = 136;
+// Format 148 can replay source-level allocation decisions from a cached object.
+const META_FORMAT_VERSION: u32 = 161;
 
 #[derive(Debug, Clone)]
 pub struct DependencyFingerprint {
@@ -558,6 +558,13 @@ pub fn try_load_package_metadata<'ctx>(
             Err(message) => return MetadataLoadStatus::Miss(message),
         };
 
+    if gcx.explains_allocations() && payload.allocation_report.is_none() {
+        return MetadataLoadStatus::Miss("cached package has no allocation report".into());
+    }
+    if let Err(reason) = crate::compile::assets::validate_inputs(config, &payload.embedded_inputs) {
+        return MetadataLoadStatus::Miss(reason);
+    }
+
     let artifact = if header.has_artifact_ref {
         let Some(kind) = header.artifact_kind else {
             return MetadataLoadStatus::Miss("metadata artifact kind missing".into());
@@ -707,6 +714,13 @@ pub fn hydrate_loaded_metadata<'ctx>(
         ));
     }
 
+    // Reusing the package must repeat its warnings. Metadata written while it
+    // compiled as a dependency has none to repeat.
+    if gcx.config.lint_warnings && loaded.payload.warnings.is_none() {
+        return Err(HydrationError::new(
+            "metadata was written without lint warnings",
+        ));
+    }
     let Some(semantic_payload) = loaded.payload.semantic_payload.as_deref() else {
         return Err(HydrationError::new("metadata missing semantic payload"));
     };
@@ -765,6 +779,18 @@ pub fn hydrate_loaded_metadata<'ctx>(
             Some(wire::mir_package_from_wire(gcx, &mir_payload, remap)),
             Some(wire::mir_package_from_wire(gcx, &inline_mir_payload, remap)),
         )
+    } else if matches!(mode, ReuseMode::SemanticDependency) {
+        let decoded_const_mir = match loaded.payload.const_fn_mir_payload.as_deref() {
+            Some(bytes) => {
+                let const_mir_payload: wire::MirPackageWire = bincode::deserialize(bytes)
+                    .map_err(|e| {
+                        HydrationError::new(format!("failed to decode const fn MIR payload: {e}"))
+                    })?;
+                Some(wire::mir_package_from_wire(gcx, &const_mir_payload, remap))
+            }
+            None => None,
+        };
+        (None, decoded_const_mir)
     } else {
         (None, None)
     };
@@ -849,6 +875,8 @@ pub fn hydrate_loaded_metadata<'ctx>(
             .map_err(HydrationError::new)?;
         crate::mir::primitive_operators::validate_declaration(gcx, definition)
             .map_err(HydrationError::new)?;
+        crate::mir::tuple_conformances::validate_declaration(gcx, definition)
+            .map_err(HydrationError::new)?;
         if definition.kind.is_instance_generated()
             && [decoded_mir.as_ref(), decoded_inline_mir.as_ref()]
                 .into_iter()
@@ -877,6 +905,7 @@ pub fn hydrate_loaded_metadata<'ctx>(
         .type_databases
         .borrow_mut()
         .insert(gcx.package_index(), type_db);
+    gcx.invalidate_lazy_callable_names();
     if let Some(mir) = decoded_mir {
         let mir = gcx.store.alloc_mir_package(mir);
         gcx.store
@@ -953,6 +982,36 @@ pub fn hydrate_loaded_metadata<'ctx>(
         gcx.store.std_provider_index.set(Some(gcx.package_index()));
     }
 
+    if gcx.config.lint_warnings {
+        for warning in loaded.payload.warnings.iter().flatten() {
+            let span = warning
+                .span
+                .as_ref()
+                .map(|span| wire::span_from_wire(span, remap));
+            let suggestion = warning.suggestion.as_ref().map(|s| crate::diagnostics::Suggestion {
+                message: s.message.clone(),
+                span: wire::span_from_wire(&s.span, remap),
+                replacement: s.replacement.clone(),
+                applicability: if s.machine_applicable {
+                    crate::diagnostics::Applicability::MachineApplicable
+                } else {
+                    crate::diagnostics::Applicability::MaybeIncorrect
+                },
+            });
+            gcx.dcx
+                .emit_warning_with_suggestion(warning.message.clone(), span, suggestion);
+        }
+    }
+
+    if gcx.explains_allocations() {
+        gcx.store
+            .allocation_report
+            .replace(loaded.payload.allocation_report.clone());
+    }
+    gcx.store
+        .embedded_inputs
+        .borrow_mut()
+        .insert(gcx.package_index(), loaded.payload.embedded_inputs.clone());
     Ok(())
 }
 
@@ -983,7 +1042,7 @@ fn build_payload_wire<'ctx>(
             None => None,
         };
 
-    let (mir, inline_mir) = match mode {
+    let (mir, inline_mir, const_fn_mir) = match mode {
         ReuseMode::CodegenDependency => {
             let mir_packages = gcx.store.mir_packages.borrow();
             let inline_packages = gcx.store.inline_mir_packages.borrow();
@@ -1016,12 +1075,33 @@ fn build_payload_wire<'ctx>(
                             inline_package,
                             |def_id, _body| inline_retained.contains(&def_id),
                         )),
+                        None,
                     )
                 }
-                _ => (None, None),
+                _ => (None, None, None),
             }
         }
-        ReuseMode::CodegenRoot | ReuseMode::SemanticDependency => (None, None),
+        ReuseMode::SemanticDependency => {
+            let inline_packages = gcx.store.inline_mir_packages.borrow();
+            let const_fn_mir = inline_packages.get(&pkg).copied().and_then(|inline_package| {
+                let const_roots: Vec<_> = inline_package
+                    .functions
+                    .keys()
+                    .copied()
+                    .filter(|def_id| gcx.definition_is_const(*def_id))
+                    .collect();
+                if const_roots.is_empty() {
+                    return None;
+                }
+                let retained = reachable_mir_defs(inline_package, const_roots);
+                Some(wire::mir_package_to_wire_filtered(
+                    inline_package,
+                    |def_id, _body| retained.contains(&def_id),
+                ))
+            });
+            (None, None, const_fn_mir)
+        }
+        ReuseMode::CodegenRoot => (None, None, None),
     };
     let mir_payload = match mir {
         Some(mir) => Some(
@@ -1035,6 +1115,12 @@ fn build_payload_wire<'ctx>(
             io::Error::other(format!(
                 "failed to serialize canonical inline MIR payload: {e}"
             ))
+        })?),
+        None => None,
+    };
+    let const_fn_mir_payload = match const_fn_mir {
+        Some(mir) => Some(bincode::serialize(&mir).map_err(|e| {
+            io::Error::other(format!("failed to serialize const fn MIR payload: {e}"))
         })?),
         None => None,
     };
@@ -1065,10 +1151,19 @@ fn build_payload_wire<'ctx>(
         .collect();
 
     Ok(wire::MetadataPayloadWire {
+        allocation_report: gcx.store.allocation_report.borrow().clone(),
+        embedded_inputs: gcx
+            .store
+            .embedded_inputs
+            .borrow()
+            .get(&pkg)
+            .cloned()
+            .unwrap_or_default(),
         file_table: wire::file_table_from_dcx(gcx),
         semantic_payload,
         mir_payload,
         inline_mir_payload,
+        const_fn_mir_payload,
         std_items,
         synthetic_definitions,
         emitted_instances,
@@ -1122,6 +1217,30 @@ fn build_payload_wire<'ctx>(
             .copied()
             .map(wire::span_to_wire)
             .collect(),
+        warnings: gcx.config.lint_warnings.then(|| {
+            let mark = gcx
+                .store
+                .warning_marks
+                .borrow()
+                .get(&pkg)
+                .copied()
+                .unwrap_or_default();
+            gcx.dcx
+                .warnings_with_suggestions_since(mark)
+                .into_iter()
+                .map(|(message, span, suggestion)| wire::WarningWire {
+                    message,
+                    span: span.map(wire::span_to_wire),
+                    suggestion: suggestion.map(|s| wire::SuggestionWire {
+                        message: s.message,
+                        span: wire::span_to_wire(s.span),
+                        replacement: s.replacement,
+                        machine_applicable: s.applicability
+                            == crate::diagnostics::Applicability::MachineApplicable,
+                    }),
+                })
+                .collect()
+        }),
     })
 }
 
@@ -1170,6 +1289,11 @@ fn should_retain_mir_root_for_metadata<'ctx>(
     // Retain them through closure aggregates reachable from retained roots.
     if gcx.get_closure_captures(def_id).is_some() {
         return false;
+    }
+
+    // Const functions may be evaluated at compile time by downstream packages.
+    if gcx.definition_is_const(def_id) {
+        return true;
     }
 
     // Method calls can resolve late during codegen (interface/default/witness paths).
@@ -1414,6 +1538,7 @@ fn harness_mode_tag(mode: HarnessMode) -> u8 {
         HarnessMode::None => 0,
         HarnessMode::Test => 1,
         HarnessMode::Bench => 2,
+        HarnessMode::Fuzz => 3,
     }
 }
 
@@ -1422,6 +1547,7 @@ fn read_harness_mode(input: &mut dyn Read) -> io::Result<HarnessMode> {
         0 => Ok(HarnessMode::None),
         1 => Ok(HarnessMode::Test),
         2 => Ok(HarnessMode::Bench),
+        3 => Ok(HarnessMode::Fuzz),
         other => Err(io::Error::other(format!(
             "invalid harness mode tag: {other}",
         ))),
@@ -1483,10 +1609,13 @@ mod tests {
 
     fn sample_payload() -> wire::MetadataPayloadWire {
         wire::MetadataPayloadWire {
+            allocation_report: None,
+            embedded_inputs: Default::default(),
             file_table: vec![],
             semantic_payload: Some(vec![1, 2, 3]),
             mir_payload: Some(vec![4, 5, 6]),
             inline_mir_payload: Some(vec![7, 8, 9]),
+            const_fn_mir_payload: None,
             std_items: None,
             synthetic_definitions: vec![],
             emitted_instances: vec![],
@@ -1495,6 +1624,7 @@ mod tests {
             erased_opening_types: vec![],
             erased_opening_calls: vec![],
             class_super_calls: vec![],
+            warnings: None,
         }
     }
 
@@ -1780,5 +1910,101 @@ mod tests {
         let mut cursor = Cursor::new(bytes);
         let err = read_envelope(&mut cursor).unwrap_err();
         assert!(err.to_string().contains("version mismatch"));
+    }
+
+    #[test]
+    fn hydrating_cached_package_refreshes_lazy_callable_names() {
+        crate::mir::test_support::with_test_gcx(|gcx| {
+            let take = gcx.intern_symbol("take");
+            // Simulate a sibling package querying eager methods before this
+            // cached dependency is hydrated into the shared CompilerStore.
+            assert!(!gcx.has_lazy_callable_named(take));
+
+            let def_id = crate::hir::DefinitionID::new(
+                gcx.package_index(),
+                crate::sema::resolve::models::DefinitionIndex::from_raw(1),
+            );
+            let root_scope = crate::utils::intern::Interned::new_unchecked(
+                gcx.store.arenas.scopes.alloc(
+                    crate::sema::resolve::models::ScopeData {
+                        parent: None,
+                        kind: crate::sema::resolve::models::ScopeKind::Definition(
+                            def_id,
+                            crate::hir::DefinitionKind::Module,
+                        ),
+                        table: Default::default(),
+                        glob_imports: Default::default(),
+                        glob_exports: Default::default(),
+                    },
+                ),
+            );
+            let mut resolution_output = crate::sema::resolve::models::ResolutionOutput {
+                resolutions: Default::default(),
+                node_to_definition: Default::default(),
+                definition_to_kind: Default::default(),
+                definition_to_parent: Default::default(),
+                definition_to_ident: Default::default(),
+                definition_to_visibility: Default::default(),
+                file_scope_mapping: Default::default(),
+                definition_scope_mapping: Default::default(),
+                block_scope_mapping: Default::default(),
+                expression_resolutions: Default::default(),
+                member_bracket_diagnostics: Default::default(),
+                break_label_resolutions: Default::default(),
+                root_scope,
+            };
+            resolution_output.definition_to_ident.insert(
+                def_id,
+                crate::span::Identifier {
+                    symbol: take,
+                    span: crate::span::Span::empty(crate::span::FileID::from_raw(0)),
+                },
+            );
+            let mut type_db = crate::compile::context::TypeDatabase::default();
+            let sig = gcx.store.arenas.function_signatures.alloc(
+                crate::sema::models::LabeledFunctionSignature {
+                    inputs: vec![crate::sema::models::LabeledFunctionParameter {
+                        label: None,
+                        name: gcx.intern_symbol("v"),
+                        ty: gcx.types.int32,
+                        is_lazy: true,
+                        default_provider: None,
+                    }],
+                    output: gcx.types.int32,
+                    is_variadic: false,
+                    abi: None,
+                },
+            );
+            type_db.def_to_fn_sig.insert(def_id, sig);
+
+            let mut symbols = wire::SymbolTableBuilder::default();
+            let resolution = wire::resolution_output_to_wire(&resolution_output, &mut symbols);
+            let type_db_wire = wire::type_database_to_wire(&type_db, &mut symbols);
+            let semantic = wire::SemanticPayloadWire {
+                package_identifier: gcx.config.identifier.to_string(),
+                package_index: gcx.package_index().raw() as u32,
+                symbol_table: symbols.finish(),
+                resolution,
+                type_db: type_db_wire,
+            };
+            let mut payload = sample_payload();
+            payload.semantic_payload = Some(bincode::serialize(&semantic).unwrap());
+            payload.mir_payload = None;
+            payload.inline_mir_payload = None;
+            payload.warnings = Some(vec![]);
+            let loaded = LoadedMetadata {
+                package_identifier: gcx.config.identifier.to_string(),
+                package_index: gcx.package_index(),
+                artifact: None,
+                payload,
+            };
+
+            hydrate_loaded_metadata(gcx, &loaded, ReuseMode::SemanticDependency)
+                .expect("cached dependency hydration should succeed");
+            assert!(
+                gcx.has_lazy_callable_named(take),
+                "hydrating a cached package must refresh the lazy callable name index"
+            );
+        });
     }
 }

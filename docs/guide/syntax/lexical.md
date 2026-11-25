@@ -97,41 +97,116 @@ Negative unsigned pattern values are rejected.
 
 ### String Literals
 
-Strings are enclosed in double quotes and support escape sequences.
+Ordinary strings use double quotes. Backslash escapes are decoded once, and
+`${expression}` inserts a value using the existing `std::sprintf` formatting
+rules. Expressions are evaluated once in argument order; formatting follows
+ordinary calls to that function. There is no `f` prefix or `$name` shorthand.
+A value whose type has `std::fmt::Display` prints its display text. Otherwise,
+if the type has `std::fmt::Debug`, it prints its debug text, so a derived
+`Debug` struct can be interpolated directly. The choice is made at compile
+time, and a type with neither is an error.
 
 ```taro
 "Hello, World!"
-"Line 1\nLine 2"           // Newline
-"Tab\there"                 // Tab
-"Quote: \"hello\""          // Escaped quote
-"Backslash: \\"             // Escaped backslash
-"Unicode: \u{1F600}"        // Unicode escape
+"Line 1\nLine 2"
+"Tab\there"
+"Quote: \"hello\""
+"Unicode: \u{1F600}"
+"Hello, ${name}"
+"sum=${score + 5}"
+"${name:<12}${price:>8.2}"
+"mask=0x${mask:x} (0b${mask:b})"
+"debug=${value:?}"
+"Cost: $${amount}"           // A dollar sign, then the interpolated amount
+"$HOME $$ {name}"            // Ordinary text; $$ and braces have no special effect
+"Write \${name} here"         // Literal interpolation marker
 ```
 
-Strings and runes also accept `\r`, `\0`, and ASCII hexadecimal escapes such as
-`\x41`. Unicode escapes must name a Unicode scalar value.
+An interpolation hole may include a format specifier after a top-level `:`:
 
-Source files accept LF and CRLF line endings. CRLF pairs are normalized to LF
-once before tokenization, so both spellings have the same token positions and
-automatic semicolon insertion. A remaining bare CR is whitespace between
-tokens, not a line break. Strings and f-strings still occupy one source line.
+```text
+[[fill]align][0][width][.precision][presentation]
+```
 
-### F-String Literals
+- `align` is `<` (left), `>` (right), or `^` (center, odd padding rune on the right). An optional single Unicode scalar `fill` precedes the alignment character (default `' '`; `:` is reserved for `::` and `}` closes the hole).
+- `0` enables sign-aware zero padding when right-aligned with the default fill (e.g. `${-7:04}` yields `-007`).
+- `width` pads the formatted text to at least that many Unicode scalar values (`runeCount()`), never splitting multi-byte UTF-8 sequences.
+- `.precision` sets fractional digits for floating-point values (rounded half-to-even from the value's shortest decimal representation) and maximum kept runes for strings. Other built-in types ignore precision unless a custom `std::fmt::Formattable` inspects `FormatState.hasPrecision` and `FormatState.precision`.
+- `presentation` selects `x` (lowercase hexadecimal, two's-complement bits for signed integers), `b` (binary), `e` (scientific notation for floats), or `?` (`Debug` formatting even when `Display` is also implemented).
+- Custom `std::fmt::Formattable` implementations receive the presentation rune (`'v'` by default, or `'x'`, `'b'`, `'e'`, `'?'`) and the populated `FormatState`. Built-in types reject incompatible presentations (`x`/`b` on non-integer primitives, `e` on non-float primitives) at compile time; dynamic or generic mismatches panic at runtime.
+- Colons inside nested parentheses, brackets, or braces (such as labeled arguments `${f(label: 1)}` or struct literals `${Point { x: 1, y: 2 }}`) remain part of the expression.
 
-F-strings are prefixed with `f` and support interpolation with `{expr}`.
+Strings and runes accept `\r`, `\0`, and ASCII hexadecimal escapes such as
+`\x41`. Unicode escapes must name a Unicode scalar value. Only strings accept
+`\${` as a literal `${`; other unrecognized backslash escapes are errors.
+Interpolation is recognized in source before escape decoding: `"\u{24}{name}"`
+is literal `${name}`, not interpolation. Inserted values are never rescanned.
+
+Quoted strings without an active interpolation remain literals, including in
+constants, patterns, attributes, ABI names and configuration predicates.
+Interpolated strings are expressions and are rejected in literal-only contexts,
+even when their expression would be constant. Braces, quoted strings and comments
+inside an interpolation use normal Taro expression rules. Empty or unfinished
+interpolations are errors. Ordinary quoted strings occupy one source line,
+including their interpolation expressions.
+
+### Raw Strings and Matching Hashes
+
+One or more matching hashes around the quotes preserve backslashes literally.
+Interpolation requires exactly the same number of hashes between `$` and `{`:
 
 ```taro
-name := "Ada"
-score := 7
-f"Hello, {name} (score={score})"
-f"sum={score + 5}"          // Full expression support
-f"{{ok}}"                   // Escaped braces -> "{ok}"
+#"C:\notes\file\"#
+#"Literal ${name}"#
+#"C:\users\$#{name}\notes"#
+##"Literal ${name} and $#{name}; inserted $##{name}"##
+##"The shorter delimiter "# is ordinary text."##
 ```
 
-Rules:
-- Use `{expr}` for interpolation.
-- Use `{{` and `}}` for literal braces.
-- F-strings are single-line, like normal strings.
+In a one-hash string, only `$#{expression}` interpolates; `${expression}` and
+`$##{expression}` are literal. Backslashes do not escape interpolation markers or
+quotes in raw text. To include an active marker literally, increase the outer
+hash count. A quote closes the string only when followed by the required hashes;
+additional hashes after a closing delimiter belong to subsequent tokens.
+Rawness applies to literal text, not expressions: an ordinary `"\n"` inside a
+raw interpolation still produces a newline.
+
+### Multiline Strings
+
+Triple quotes allow source newlines. The opening delimiter must be immediately
+followed by a newline, and the closing delimiter must be on its own line. Without
+hashes, escapes work and `${expression}` interpolates. With hashes, backslashes
+are literal and interpolation uses matching hashes.
+
+```taro
+html := """
+    <html>
+        <body>Hello, ${name}</body>
+    </html>
+    """
+
+script := #"""
+    const serverName = "$#{name}";
+    const greeting = `Hello, ${browserName}`;
+    C:\notes\file
+    """#
+```
+
+The newline after the opener and the newline before the closing delimiter are
+excluded. The closing delimiter's exact spaces/tabs prefix is removed from each
+content line; every nonblank content line must have that prefix. Blank lines may
+have less indentation. Additional indentation and trailing spaces are preserved.
+An empty multiline literal is valid. Backslash line continuations are unsupported.
+
+Interpolations may span source lines inside multiline strings. Expression lines
+are parsed as code and are not subject to the literal's indentation requirement.
+Indentation removal applies only to literal source text, never to inserted values.
+An inserted value containing newlines is copied without automatic indentation.
+
+Source files accept LF and CRLF line endings. CRLF pairs are normalized to LF
+before tokenization, including in raw text. Bare CR is whitespace between tokens
+and is rejected inside literal text. Raw multiline strings therefore preserve
+backslashes, not the source file's exact bytes or indentation.
 
 ### Rune Literals
 
@@ -177,7 +252,7 @@ stays reserved so its removal can be diagnosed.
 `get`, `set`, `address` and `subscript` are contextual accessor/declaration
 keywords. Computed properties support getters; native subscripts support all
 three capabilities. `required` and `convenience` modify initializers; `some`
-introduces an opaque return type. These words remain valid identifiers elsewhere.
+introduces an anonymous generic parameter type or an opaque return type. These words remain valid identifiers elsewhere.
 `weak` and `move` are ordinary identifiers, with no storage/capture modifier role.
 
 ---
@@ -249,7 +324,7 @@ introduces an opaque return type. These words remain valid identifiers elsewhere
 | `=>` | Fat arrow (match arms) |
 | `..` | Exclusive range |
 | `..=` | Inclusive range |
-| `...` | Variadic parameter |
+| `...` | Variadic parameter or postfix spread |
 | `?.` | Optional chaining |
 | `??` | Nil coalescing |
 | `\|>` | Pipe operator |

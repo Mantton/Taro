@@ -2,7 +2,7 @@ import monkey::ast::{Program, endsWithBinding}
 import monkey::compiler::Compiler
 import monkey::eval::Evaluator
 import monkey::lexer::Lexer
-import monkey::object::{Object, Environment}
+import monkey::object::Environment
 import monkey::parser::Parser
 import monkey::repl::{Repl, Engine}
 import monkey::vm::VM

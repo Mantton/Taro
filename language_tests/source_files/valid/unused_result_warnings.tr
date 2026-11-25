@@ -1,0 +1,60 @@
+// Every statement below drops a Result once; the program still builds and runs.
+// EXPECT_STDERR_COUNT: 13 warning: unused 'Result[
+// EXPECT_STDERR_COUNT: 1 warning: unused 'Result[usize, string]'
+// EXPECT_STDERR_COUNT: 1 warning: unused 'Result[bool, string]'
+// EXPECT_STDERR_COUNT: 1 warning: unused 'Result[Probe, string]'
+// EXPECT_STDERR_CONTAINS: unused 'Result[int32, string]'; handle it, propagate it with `!`, or discard it with `_ = ...`
+// EXPECT_STDERR_CONTAINS: unused_result_warnings.tr:34:4
+// EXPECT_STDERR_CONTAINS: unused_result_warnings.tr:35:4
+// EXPECT_STDERR_CONTAINS: unused_result_warnings.tr:36:4
+// EXPECT_STDERR_CONTAINS: unused_result_warnings.tr:37:4
+// EXPECT_STDERR_CONTAINS: unused_result_warnings.tr:38:4
+// EXPECT_STDERR_CONTAINS: unused_result_warnings.tr:39:5
+// EXPECT_STDERR_CONTAINS: unused_result_warnings.tr:40:4
+// EXPECT_STDERR_CONTAINS: unused_result_warnings.tr:41:4
+// EXPECT_STDERR_CONTAINS: unused_result_warnings.tr:46:4
+// EXPECT_STDERR_CONTAINS: unused_result_warnings.tr:51:34
+// EXPECT_STDERR_CONTAINS: unused_result_warnings.tr:52:26
+// EXPECT_STDERR_CONTAINS: unused_result_warnings.tr:53:12
+// EXPECT_STDERR_CONTAINS: unused_result_warnings.tr:59:4
+type Outcome[T] = Result[T, string]
+static var calls: int32 = 0
+func fails(_ value: int32) -> Result[int32, string] { calls += 1; .ok(value) }
+func aliased() -> Outcome[usize] { calls += 1; .ok(1) }
+func wrap[T](_ value: T) -> Result[T, string] { calls += 1; .ok(value) }
+func later() async -> Result[int32, string] { calls += 1; .ok(2) }
+
+struct Probe {}
+extend Probe {
+    func check() -> Result[int32, string] { calls += 1; .ok(3) }
+    static func make() -> Result[Probe, string] { calls += 1; .ok(Probe {}) }
+}
+
+func main() async {
+    fails(1)                         // free function
+    Probe {}.check()                 // method
+    await later()                    // awaited call
+    wrap(true)                       // generic function
+    Probe::make()                    // static method
+    (fails(2))                       // parenthesised
+    aliased()                        // alias of Result
+    if calls > 0 {
+        fails(3)
+    } else {
+        fails(4)
+    }
+    match calls {
+        case 0 => fails(5)
+        case _ => fails(6)
+    }
+    var round = 0
+    while round < 1 { round += 1; fails(7) }
+    for item in [8_i32] { fails(item) }
+    defer { fails(9) }
+    unitTail()
+    print("calls: ${calls}\n")
+}
+
+func unitTail() {
+    fails(10)
+}

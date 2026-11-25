@@ -1,4 +1,4 @@
-import std::collections::Dictionary
+import std::collections::{Dictionary, List}
 import std::hash::{Hashable, Hasher}
 import std::iter::{Iterator, Iterable}
 import std::marker::Clone
@@ -660,4 +660,133 @@ func testSwissChurnAgainstLinearModel() {
         }
         step += 1
     }
+}
+
+struct CounterPair {
+    hits: int32
+    weight: int32
+}
+
+@test
+func testDictionaryGetOrInsertAndGetOrInsertWith() {
+    map := Dictionary[string, int32]::new()
+    std::testing::assertEqual(map.getOrInsert("a", default: 10), 10, "getOrInsert inserts on miss")
+    std::testing::assertEqual(map.getOrInsert("a", default: 99), 10, "getOrInsert preserves existing value")
+    std::testing::assertEqual(map.len(), 1 as usize, "length after hit")
+
+    var calls = 0
+    v1 := map.getOrInsertWith("b", () => {
+        calls += 1
+        42
+    })
+    std::testing::assertEqual(v1, 42, "getOrInsertWith computes on miss")
+    std::testing::assertEqual(calls, 1, "callback runs once on miss")
+
+    v2 := map.getOrInsertWith("b", () => {
+        calls += 1
+        100
+    })
+    std::testing::assertEqual(v2, 42, "getOrInsertWith returns existing on hit")
+    std::testing::assertEqual(calls, 1, "callback runs zero times on hit")
+
+    // Adjacency list grouping in one line via shared List handles across resizes
+    graph := Dictionary[int32, List[int32]]::new()
+    var u: int32 = 0
+    while u < 40 {
+        graph.getOrInsertWith(u, () => List[int32]::new()).append(u * 2)
+        graph.getOrInsertWith(u, () => List[int32]::new()).append(u * 2 + 1)
+        u += 1
+    }
+    std::testing::assertEqual(graph.len(), 40 as usize, "grouped 40 nodes across resizes")
+    std::testing::assertEqual(graph[17], [34, 35], "adjacency list updated in place")
+}
+
+@test
+func testDictionaryGetOrInsertWithReentrantResizeAndSameKey() {
+    // Re-entrant callback inserts enough entries to trigger SwissTable resize
+    table := Dictionary[int32, int32]::new()
+    inserted := table.getOrInsertWith(0, () => {
+        var i: int32 = 1
+        while i <= 32 {
+            table.set(key: i, value: i * 10)
+            i += 1
+        }
+        777
+    })
+    std::testing::assertEqual(inserted, 777, "re-entrant resize insert returns default")
+    std::testing::assertEqual(table.len(), 33 as usize, "all re-entrant keys and target preserved")
+    std::testing::assertEqual(table[0], 777, "target key present after re-entrant resize")
+    std::testing::assertEqual(table[32], 320, "re-entrant key present after resize")
+
+    // Re-entrant callback inserts the same key itself
+    same := table.getOrInsertWith(100, () => {
+        table.set(key: 100, value: 555)
+        999
+    })
+    std::testing::assertEqual(same, 555, "re-entrant insert of same key preserves stored value")
+    std::testing::assertEqual(table[100], 555, "table retains consistent entry")
+}
+
+@test
+func testDictionaryModifyInlineAndStructValuesAndRetain() {
+    counts := Dictionary[string, int32]::new()
+    for word in ["hit", "miss", "hit", "hit", "miss"] {
+        counts.modify(word, default: 0) { *it += 1 }
+    }
+    std::testing::assertEqual(counts["hit"], 3, "modify increments inline int32")
+    std::testing::assertEqual(counts["miss"], 2, "modify counts miss")
+
+    pairs := Dictionary[int32, CounterPair]::new()
+    pairs.modify(7, default: CounterPair { hits: 0, weight: 10 }) {
+        it.hits += 2
+        it.weight += 5
+    }
+    pairs.modify(7, default: CounterPair { hits: 99, weight: 99 }) {
+        it.hits += 3
+    }
+    std::testing::assertEqual(pairs[7].hits, 5, "modify updates struct value across hits")
+    std::testing::assertEqual(pairs[7].weight, 15, "modify preserves existing struct fields")
+
+    // Re-entrant mutation inside modify still commits cleanly after resize
+    counts.modify("trigger", default: 1) {
+        var i: int32 = 0
+        while i < 20 {
+            counts.set(key: std::sprintf("extra_%v", i), value: i)
+            i += 1
+        }
+        *it += 41
+    }
+    std::testing::assertEqual(counts["trigger"], 42, "modify commits after re-entrant resize")
+
+    // Documented snapshot-and-write-back contract: final write-back wins even if update removes key.
+    counts.modify("writeback", default: 10) {
+        *it += 5
+        _ = counts.remove(&"writeback")
+    }
+    std::testing::assertEqual(counts["writeback"], 15, "modify write-back wins over re-entrant remove")
+
+    // Retain keeps only entries matching predicate
+    nums := Dictionary[int32, int32]::new()
+    var k: int32 = 0
+    while k < 30 {
+        nums.set(key: k, value: k * k)
+        k += 1
+    }
+    nums.retain((key, val) => (*key % 2 == 0) && (*val >= 100))
+    std::testing::assertEqual(nums.len(), 10 as usize, "retain keeps even keys >= 10")
+    std::testing::assertFalse(nums.contains(&8), "retain removes low even key")
+    std::testing::assertFalse(nums.contains(&11), "retain removes odd key")
+    std::testing::assertEqual(nums[10], 100, "retain keeps 10")
+    std::testing::assertEqual(nums[28], 784, "retain keeps 28")
+}
+
+@test
+@expectPanic("dictionary changed structurally during retain")
+func testDictionaryRetainRejectsReentrantMutation() {
+    map := Dictionary[int32, int32]::new()
+    map.set(key: 1, value: 10)
+    map.retain((_k, _v) => {
+        map.set(key: 2, value: 20)
+        true
+    })
 }

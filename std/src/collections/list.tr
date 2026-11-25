@@ -1,10 +1,10 @@
+import std::default::Default
 import std::mem::{Span, maxBufferCapacity, sizeOf}
 import std::optional::Optional
 import std::iter::{Iterator, Iterable, FromIterator}
 import std::panic::panic
-import std::cmp::{Ord, Ordering}
 import std::marker::Clone
-import std::range::{Range, ClosedRange}
+import std::range::{Range, ClosedRange, RangeFrom, RangeTo, RangeToInclusive, RangeFull}
 
 // GC managed sequences (G13). Data pointers address the first element; the
 // runtime traces only the published prefix.
@@ -119,6 +119,28 @@ extend[Element] List[Element] {
         }
     }
 
+    public subscript(range: RangeFrom[usize]) -> Self {
+        get { self.copyRange(range.start, self.len()) }
+    }
+
+    public subscript(range: RangeTo[usize]) -> Self {
+        get { self.copyRange(0 as usize, range.end) }
+    }
+
+    public subscript(range: RangeToInclusive[usize]) -> Self {
+        get {
+            if range.end >= self.len() { panic("list range out of range") }
+            self.copyRange(0 as usize, range.end + (1 as usize))
+        }
+    }
+
+    public subscript(range: RangeFull) -> Self {
+        get {
+            var _ = range
+            self.copyRange(0 as usize, self.len())
+        }
+    }
+
     func copyRange(_ start: usize, _ end: usize) -> Self {
         if start > end || end > self.len() { panic("list range out of range") }
         var result = Self::new(withCapacity: end - start)
@@ -140,6 +162,27 @@ public func __list_with_capacity[Element](_ capacity: usize) -> List[Element] {
 }
 public func __list_append[Element](_ list: &List[Element], _ value: Element) {
     list.append(value)
+}
+
+// Spread lowering instantiates these adapters with the selected Iterable
+// witness. Both calls use the same receiver semantics as a for loop.
+internal func __spread_iter[Source: Iterable](_ source: Source) -> Source::Iterator {
+    source.iter()
+}
+internal func __spread_next[Element, Cursor: Iterator[Element = Element]](_ cursor: &Cursor) -> Element? {
+    cursor.next()
+}
+
+/// Copy the fully initialized prefix into an independent inline array.
+internal func __spread_array[Element, const Size: usize](_ list: &List[Element]) -> [Element; Size] {
+    if list.len() != Size { panic("invalid spread array length") }
+    if Size == 0 {
+        // An empty array has no elements with initialization requirements.
+        return unsafe { std::mem::MaybeUninit[[Element; Size]]::zeroed().assumeInit() }
+    }
+    // The managed buffer is aligned for Element and contains exactly Size live
+    // elements. Reading the array performs ordinary by-value element copies.
+    return unsafe { *(list.asSpan().asPtr() as *const [Element; Size]) }
 }
 
 /// Copy readable bytes into a fresh list. This never adopts source storage.
@@ -273,6 +316,90 @@ extend[Element] List[Element] {
         self.removeAt(self.storage.len - (1 as usize))
     }
 
+    /// Returns a value copy of the first element, or `.none` if the list is empty.
+    @inline
+    public func first() -> Element? {
+        if self.storage.len == 0 { return .none }
+        return .some(*self.at(0 as usize))
+    }
+
+    /// Returns a value copy of the last element, or `.none` if the list is empty.
+    @inline
+    public func last() -> Element? {
+        if self.storage.len == 0 { return .none }
+        return .some(*self.at(self.storage.len - (1 as usize)))
+    }
+
+    /// Swaps the elements at indices `i` and `j`. Panics if either index is out of bounds.
+    /// A no-op when `i == j`. Preserves element-write semantics without changing length.
+    public func swap(_ i: usize, _ j: usize) {
+        length := self.storage.len
+        if i >= length || j >= length {
+            panic("list index out of range")
+        }
+        if i == j { return }
+        tmp := *self.at(i)
+        *self.at(i) = *self.at(j)
+        *self.at(j) = tmp
+    }
+
+    /// Removes and returns the element at `index` in amortized O(1) time by replacing it
+    /// with the last element. Panics if `index >= self.len()`. Clears the vacated slot
+    /// and detaches oversized tail storage so removed references are not retained.
+    public func swapRemove(_ index: usize) -> Element {
+        length := self.storage.len
+        if index >= length {
+            panic("list index out of range")
+        }
+        removed := *self.at(index)
+        last := length - (1 as usize)
+        if last == 0 {
+            self.clear()
+            return removed
+        }
+        if index != last {
+            *self.at(index) = *self.at(last)
+        }
+        // Overwrite the vacated tail slot with a surviving live element so
+        // the removed value is never retained in the published GC prefix.
+        *self.at(last) = *self.at(0 as usize)
+        self.storage.len = last
+        self.storage.version += 1
+        // Amortized O(1) shrink at <= 25% load (re-allocating to 50% load)
+        // prevents dead tail capacity from pinning references across shrinks.
+        if last * (4 as usize) <= self.storage.cap {
+            nextCap := last * (2 as usize)
+            element := listElementDescriptor[Element]()
+            next := unsafe { __gc__buffer_grow(self.data(), element, last, nextCap) }
+            if unsafe { next as usize } != 0 {
+                self.storage.data = unsafe { next as *mut Element }
+                self.storage.cap = nextCap
+            }
+        }
+        return removed
+    }
+
+    // Rebind to a tightly published buffer after in-place compaction drops
+    // elements, so removed objects are not kept alive in dead tail capacity.
+    internal func shrinkCompacted(_ newLen: usize) {
+        if newLen == self.storage.len {
+            return
+        }
+        if newLen == 0 {
+            self.clear()
+            return
+        }
+        element := listElementDescriptor[Element]()
+        next := unsafe { __gc__buffer_grow(self.data(), element, newLen, newLen) }
+        if unsafe { next as usize } == 0 {
+            listCapacityOverflow()
+        }
+        self.storage.data = unsafe { next as *mut Element }
+        self.storage.len = newLen
+        self.storage.cap = newLen
+        self.storage.version += 1
+    }
+
     /// Detach the storage so its elements are reclaimed once no element
     /// reference remains.
     public func clear() {
@@ -373,39 +500,6 @@ conform[Element] List[Element] to Clone where Element: Clone {
     }
 }
 
-extend[Element: Ord] List[Element] {
-    public func sort() {
-        length := self.storage.len
-        if length <= 1 {
-            return
-        }
-
-        var i: usize = 1
-        while i < length {
-            data := self.storage.data
-            key := unsafe { *(data.add(i) as &Element) }
-            var j = i
-            // Slots shift right while key is held here. Store it on every
-            // exit, including a comparator panic.
-            defer {
-                unsafe { data.add(j).write(key) }
-            }
-            while j > 0 {
-                prev := unsafe { (data as *const Element).add(j - (1 as usize)) as &Element }
-                match key.cmp(*prev) {
-                    case .less => {
-                        unsafe { data.add(j - (1 as usize)).copyTo(data.add(j), 1) }
-                        j -= 1
-                    }
-                    case _ => break
-                }
-            }
-
-            i += 1
-        }
-    }
-}
-
 // Shared traversal position (G14a). Copying an iterator shares the cursor;
 // a structural change of the list after the cursor starts panics on `next`.
 final class ListCursor[Element] {
@@ -468,4 +562,15 @@ conform[Element] ListIterator[Element] to Iterable {
     type Element = Element
     type Iterator = ListIterator[Element]
     public func iter() -> Self::Iterator { self }
+}
+
+// Compiler adapter for contextual &List -> Span coercion. The header captures
+// the current buffer and length; later structural changes do not retarget it.
+@inline
+internal func __list_as_span[Element](_ list: &List[Element]) -> Span[Element] {
+    list.asSpan()
+}
+
+conform[Element] List[Element] to Default {
+    public static func default() -> Self { Self::new() }
 }

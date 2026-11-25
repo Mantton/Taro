@@ -1,0 +1,4 @@
+error: unknown format specifier 'z'; expected alignment, width, precision, or presentation ('x', 'b', 'e', '?')
+ -> language_tests/source_files/invalid/interpolation_format_malformed.tr:3:20
+	    println("${mask:z}")
+	                    ^

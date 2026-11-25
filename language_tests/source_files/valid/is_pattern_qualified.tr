@@ -1,0 +1,13 @@
+enum Status { case ready; case other; case code(int32) }
+extend Status { type ready = int32; }
+func main() {
+    var boxed: any std::fmt::Display = 7_i32
+    assert(boxed is Status::ready, "existing associated type")
+    var selected: Status = .ready
+    assert(match selected { case Status::ready => true; case _ => false; }, "qualified case")
+    assert(selected is .ready, "the case with the same name as the type")
+    selected = .other
+    assert(selected is Status::other, "qualified unit case")
+    assert(!(selected is Status::code(_)), "qualified payload case")
+    println("both")
+}

@@ -1,0 +1,4 @@
+error: disallowed local binding pattern
+ -> language_tests/source_files/invalid/tuple_shorthand_refutable.tr:2:5
+	    (1, x) := (1, 2)
+	     ^

@@ -1,0 +1,7 @@
+// EXPECT_STDERR_CONTAINS: [source_location_dbg.tr:5] tick() + 2 = 9
+static var calls: int32 = 0
+func tick() -> int32 { calls += 1; 7 }
+func main() {
+    value := dbg(tick() + 2) * 2
+    println("${value} ${calls}")
+}

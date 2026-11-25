@@ -84,3 +84,48 @@ namespace TaggedNamespace {
 func testFunctionTagSyntax() {
     std::testing::assertTrue(true, "function-level @tag(\"...\") should be accepted")
 }
+
+@test
+func allocationMeasurementCountsOnlyTheSynchronousCall() {
+    values := std::collections::List[uint8]::new()
+    count := std::testing::allocations(() => {
+        values.reserve(65536)
+        values.append(1)
+        std::runtime::collect()
+    })
+    std::testing::assertTrue(count > 0, "reserve allocates managed backing storage")
+    std::testing::assertEqual(values.len(), 1, "the measured function runs once")
+    empty := std::testing::allocations(() => { values.append(2) })
+    std::testing::assertEqual(empty, 0_u64, "a reserved append allocates nothing")
+    std::testing::assertEqual(values.len(), 2, "the second operation ran")
+
+    var nested: uint64 = 0
+    grow := () => { values.reserve(1048576) }
+    outer := std::testing::allocations(() => { nested = std::testing::allocations(grow) })
+    std::testing::assertTrue(nested > 0, "the inner call allocates a larger buffer")
+    std::testing::assertEqual(outer, nested, "nested measurements preserve the outer count")
+}
+
+@test
+func subtestsSupportTableDrivenAndNestedCases() {
+    inputs := [1, 2, 3]
+    var visited: int64 = 0
+    for n in inputs {
+        std::testing::subtest("square ${n}", () => {
+            std::testing::assertEqual(n * n, n * n, "square matches")
+            visited += 1
+        })
+    }
+    std::testing::subtest("nested parent", () => {
+        std::testing::subtest("nested child", () => {
+            visited += 10
+        })
+    })
+    std::testing::assertEqual(visited, 13, "all passing subtests should execute")
+}
+
+@fuzz
+func fuzzParseInt64NeverPanics(_ data: std::mem::Span[uint8]) {
+    text := std::string::stringFromBytes(data)
+    var _ = std::convert::parse[int64](text)
+}

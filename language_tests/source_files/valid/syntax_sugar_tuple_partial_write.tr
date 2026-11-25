@@ -1,0 +1,9 @@
+// EXPECT_EXIT: 101
+// EXPECT_STDOUT_CONTAINS: earlier write: 7
+// EXPECT_STDERR_CONTAINS: panic: array index out of range
+func main() {
+    var first: int32 = 0
+    var values: [int32; 1] = [0]
+    defer { print("earlier write: ${first}\n") }
+    (first, values[2 as usize]) = (7, 9)
+}

@@ -1,0 +1,23 @@
+// An interface call on a receiver that still holds an untyped literal takes
+// its result type before the literal has its type, but the receiver's
+// conformance must still be proved: here the literal defaults to int32 and
+// only Boxed[int64] conforms. A typed receiver is rejected the same way.
+struct Boxed[T] {
+    value: T
+}
+
+interface Size {
+    func size() -> usize
+}
+
+conform Boxed[int64] to Size {
+    func size() -> usize {
+        8
+    }
+}
+
+func main() {
+    n := Boxed { value: 0 }.size() + 1
+    m := Boxed[int32] { value: 0 }.size()
+    printf("%d %d\n", n, m)
+}

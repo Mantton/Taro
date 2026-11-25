@@ -1,0 +1,4 @@
+error: ambiguous overload; unable to pick a best candidate
+ -> language_tests/source_files/invalid/lazy_argument_overload_ambiguous.tr:7:19
+	    var x: int32 = dup(1_i32)
+	                   ^^^

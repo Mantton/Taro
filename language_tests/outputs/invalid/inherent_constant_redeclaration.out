@@ -1,0 +1,16 @@
+error: invalid redeclaration of 'ID'
+ -> language_tests/source_files/invalid/inherent_constant_redeclaration.tr:3:25
+	extend[B] Box[B] { const ID: int32 = 2; }
+	                         ^^
+info: associated constant declared here
+ -> language_tests/source_files/invalid/inherent_constant_redeclaration.tr:2:25
+	extend[A] Box[A] { const ID: int32 = 1; }
+	                         ^^
+error: invalid redeclaration of 'SIZE'
+ -> language_tests/source_files/invalid/inherent_constant_redeclaration.tr:6:16
+	    static func SIZE() -> int32 { 2 }
+	                ^^^^
+info: associated constant declared here
+ -> language_tests/source_files/invalid/inherent_constant_redeclaration.tr:4:26
+	extend Box[uint8] { const SIZE: int32 = 1; }
+	                          ^^^^

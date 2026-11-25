@@ -1,0 +1,4 @@
+error: expected int32, found string
+ -> language_tests/source_files/invalid/dynamic_type_pattern_binding.tr:3:30
+	        case value as int32 | value as string => value
+	                              ^^^^^

@@ -1,0 +1,4 @@
+error: cannot mix valueless `break` and `break` with a value in the same `loop`
+ -> language_tests/source_files/invalid/loop_break_mixed_valueless.tr:4:12
+	            break
+	            ^^^^^

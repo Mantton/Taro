@@ -1,0 +1,18 @@
+@onUnsatisfied("{Other} needs a ranking")
+interface Unknown {}
+@onUnsatisfied("{Self")
+interface Unclosed {}
+@onUnsatisfied("dangling }")
+interface Closing {}
+@onUnsatisfied("   ")
+interface Empty {}
+@onUnsatisfied(flag)
+interface Nonliteral {}
+@onUnsatisfied("one", "two")
+interface Extra {}
+@onUnsatisfied("one")
+@onUnsatisfied("two")
+interface Repeated {}
+@onUnsatisfied("incorrect target")
+struct Misplaced {}
+func main() {}

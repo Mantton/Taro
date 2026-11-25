@@ -1,0 +1,36 @@
+// EXPECT_STDERR_CONTAINS: 'oldAdd' is deprecated: use newAdd instead (use 'newAdd')
+// EXPECT_STDERR_CONTAINS: 'legacyNote' is deprecated: migrate manually
+// EXPECT_STDERR_CONTAINS: 'oldStep' is deprecated: use 'newStep' instead
+@deprecated("use newAdd instead", replace = "newAdd")
+func oldAdd(_ a: int32, _ b: int32) -> int32 {
+    a + b
+}
+
+func newAdd(_ a: int32, _ b: int32) -> int32 {
+    a + b
+}
+
+@deprecated("migrate manually")
+func legacyNote() -> int32 {
+    7
+}
+
+struct Counter {
+    value: int32
+}
+
+extend Counter {
+    @deprecated(replace = "newStep")
+    func oldStep() -> int32 {
+        self.value + 1
+    }
+
+    func newStep() -> int32 {
+        self.value + 1
+    }
+}
+
+func main() {
+    c := Counter { value: 4 }
+    println("${oldAdd(2, 3)} ${legacyNote()} ${c.oldStep()}")
+}

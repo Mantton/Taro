@@ -1,0 +1,34 @@
+// The standard library's Debug text: scalars match Display, strings and runes
+// are quoted and escaped like literals, and containers use literal syntax.
+import std::collections::{Counter, Deque, Dictionary, Set}
+import std::fmt::debugString
+
+func main() {
+    println(debugString(42))
+    println(debugString(-1.25))
+    println(debugString(false))
+    println(debugString(()))
+    println(debugString("tab\there \"quoted\" \\ \${x}"))
+    println(debugString('\''))
+    println(debugString('"'))
+    var present: int32? = .some(1)
+    var absent: string? = .none
+    println(debugString((present, absent)))
+    var result: Result[[int32], string] = .ok([1, 2])
+    println(debugString(result))
+    var array: [string; 2] = ["a", "b"]
+    println(debugString(array))
+    var deque = Deque[rune]::new()
+    deque.pushBack('d')
+    println(debugString(deque))
+    var set = Set[int32]::new()
+    set.insert(7)
+    println(debugString(set))
+    var dictionary = Dictionary[string, [bool]]::new()
+    println(debugString(dictionary))
+    dictionary["k"] = [true]
+    println(debugString(dictionary))
+    var counter = Counter[string]::new()
+    var _ = counter.increment("w")
+    println(debugString(counter))
+}

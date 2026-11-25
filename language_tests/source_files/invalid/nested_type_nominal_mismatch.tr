@@ -1,0 +1,13 @@
+struct Left {}
+struct Right {}
+extend Left {
+    enum State { case first }
+}
+extend Right {
+    enum State { case first }
+}
+func accept(_ value: Left::State) {}
+func main() {
+    var right: Right::State = .first
+    accept(right)
+}

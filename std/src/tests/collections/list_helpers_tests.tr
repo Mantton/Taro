@@ -1,0 +1,340 @@
+import std::collections::List
+import std::testing::{assertEqual, assertTrue}
+import std::weak::Weak
+
+struct LabeledItem {
+    key: int32
+    order: int32
+}
+
+struct ListGcTarget {
+    id: int32
+}
+
+conform ListGcTarget to std::ops::PartialEq {
+    public func eq(_ other: ListGcTarget) -> bool {
+        self.id == other.id
+    }
+}
+
+@noinline
+func pushWeakTarget(_ list: List[&ListGcTarget], _ id: int32) -> Weak[ListGcTarget] {
+    target := ListGcTarget { id }
+    list.append(&target)
+    Weak[ListGcTarget]::new(&target)
+}
+
+@noinline
+func dropWithSwapRemove(_ list: List[&ListGcTarget], _ index: usize) {
+    var _ = list.swapRemove(index)
+}
+
+@noinline
+func dropWithRetain(_ list: List[&ListGcTarget], _ keepId: int32) {
+    list.retain((item) => item.id == keepId)
+}
+
+@noinline
+func dropWithDedup(_ list: List[&ListGcTarget]) {
+    list.dedupBy((a, b) => a.id == b.id)
+}
+
+@test
+func testListFirstLastSwapAndSwapRemove() {
+    var empty: [int32] = []
+    assertTrue(empty.first().isNone(), "empty first")
+    assertTrue(empty.last().isNone(), "empty last")
+
+    var single: [int32] = [99]
+    assertEqual(single.first(), .some(99), "singleton first")
+    assertEqual(single.last(), .some(99), "singleton last")
+    single.swap(0, 0)
+    assertEqual(single, [99], "self swap no-op")
+    assertEqual(single.swapRemove(0), 99, "swapRemove singleton")
+    assertTrue(single.isEmpty(), "singleton emptied")
+
+    var nums: [int32] = [10, 20, 30, 40, 50]
+    assertEqual(nums.first(), .some(10), "first")
+    assertEqual(nums.last(), .some(50), "last")
+    nums.swap(1, 3)
+    assertEqual(nums, [10, 40, 30, 20, 50], "swap middle")
+    nums.swap(0, 4)
+    assertEqual(nums, [50, 40, 30, 20, 10], "swap endpoints")
+
+    assertEqual(nums.swapRemove(1), 40, "swapRemove middle returns element")
+    assertEqual(nums, [50, 10, 30, 20], "swapRemove replaces with last")
+    assertEqual(nums.swapRemove(3), 20, "swapRemove last")
+    assertEqual(nums, [50, 10, 30], "swapRemove last shrinks")
+}
+
+@test
+func testListRetainDedupAndDedupBy() {
+    var empty: [int32] = []
+    empty.retain((_x) => true)
+    empty.dedup()
+    assertTrue(empty.isEmpty(), "empty retain/dedup")
+
+    var nums: [int32] = [1, 2, 3, 4, 5, 6]
+    nums.retain((x) => (*x % 2) == 0)
+    assertEqual(nums, [2, 4, 6], "retain evens")
+    nums.retain((_x) => true)
+    assertEqual(nums, [2, 4, 6], "retain all")
+    nums.retain((_x) => false)
+    assertTrue(nums.isEmpty(), "retain none")
+
+    // dedup removes only consecutive duplicates
+    var dups: [int32] = [1, 1, 2, 2, 2, 1, 3, 3, 2]
+    dups.dedup()
+    assertEqual(dups, [1, 2, 1, 3, 2], "dedup consecutive only")
+
+    var single: [int32] = [7]
+    single.dedup()
+    assertEqual(single, [7], "dedup singleton")
+
+    var allSame: [int32] = [5, 5, 5, 5]
+    allSame.dedup()
+    assertEqual(allSame, [5], "dedup all same")
+
+    // dedupBy custom equivalence (parity buckets)
+    var mixed: [int32] = [2, 4, 6, 3, 5, 8, 9]
+    mixed.dedupBy((a, b) => (*a % 2) == (*b % 2))
+    assertEqual(mixed, [2, 3, 8, 9], "dedupBy parity")
+}
+
+@test
+func testListGcSlotClearingOnSwapRemoveRetainAndDedup() {
+    // 1. swapRemove (middle, tail, and emptying)
+    list := List[&ListGcTarget]::new()
+    w0 := pushWeakTarget(list, 10)
+    w1 := pushWeakTarget(list, 20)
+    w2 := pushWeakTarget(list, 30)
+    std::runtime::collect()
+    assertTrue(w0.value().isSome() && w1.value().isSome() && w2.value().isSome(), "all live before swapRemove")
+
+    dropWithSwapRemove(list, 1 as usize) // removes 20, moves 30 into slot 1
+    std::runtime::collect()
+    assertTrue(w1.value().isNone(), "swapRemove middle must not retain dropped object")
+    assertTrue(w0.value().isSome() && w2.value().isSome(), "survivors remain live")
+
+    dropWithSwapRemove(list, 1 as usize) // removes tail (30)
+    std::runtime::collect()
+    assertTrue(w2.value().isNone(), "swapRemove tail must not retain dropped object")
+    assertTrue(w0.value().isSome(), "slot 0 still live")
+
+    dropWithSwapRemove(list, 0 as usize) // empties list
+    std::runtime::collect()
+    assertTrue(w0.value().isNone(), "swapRemove last element detaches storage")
+    assertEqual(list.len(), 0 as usize, "keep list alive across collect")
+
+    // 2. retain compaction releases dropped tail objects
+    retained := List[&ListGcTarget]::new()
+    k0 := pushWeakTarget(retained, 1)
+    k1 := pushWeakTarget(retained, 2)
+    k2 := pushWeakTarget(retained, 3)
+    dropWithRetain(retained, 1)
+    std::runtime::collect()
+    assertTrue(k0.value().isSome(), "retained element stays live")
+    assertTrue(k1.value().isNone() && k2.value().isNone(), "retain drops dead tail objects")
+    assertEqual(retained.len(), 1 as usize, "keep retained list alive")
+
+    // 3. dedup compaction releases dropped duplicate objects
+    deduped := List[&ListGcTarget]::new()
+    d0 := pushWeakTarget(deduped, 7)
+    d1 := pushWeakTarget(deduped, 7)
+    d2 := pushWeakTarget(deduped, 7)
+    dropWithDedup(deduped)
+    std::runtime::collect()
+    assertTrue(d0.value().isSome(), "first kept element stays live")
+    assertTrue(d1.value().isNone() && d2.value().isNone(), "dedup drops dead tail objects")
+    assertEqual(deduped.len(), 1 as usize, "keep deduped list alive")
+}
+
+@test
+func testListSortByKeyAndPartitionPoint() {
+    var keyCalls: usize = 0
+    var items: [LabeledItem] = [
+        LabeledItem { key: 3, order: 1 },
+        LabeledItem { key: 1, order: 2 },
+        LabeledItem { key: 3, order: 3 },
+        LabeledItem { key: 2, order: 4 },
+        LabeledItem { key: 1, order: 5 },
+    ]
+    sorted := items.sortedByKey((item) => {
+        keyCalls += 1
+        item.key
+    })
+    assertEqual(keyCalls, 5 as usize, "sortedByKey evaluates key once per element")
+    assertEqual(items[0].key, 3, "sortedByKey leaves original unchanged")
+    assertEqual(sorted[0].order, 2, "stable order for key 1 first")
+    assertEqual(sorted[1].order, 5, "stable order for key 1 second")
+    assertEqual(sorted[2].order, 4, "key 2")
+    assertEqual(sorted[3].order, 1, "stable order for key 3 first")
+    assertEqual(sorted[4].order, 3, "stable order for key 3 second")
+
+    var nums: [int32] = [-5, 2, -1, 4, -2, 0]
+    nums.sortByKey { it.abs() }
+    assertEqual(nums, [0, -1, 2, -2, 4, -5], "sortByKey by abs preserves stability")
+
+    // partitionPoint at 0, middle, len(), and empty
+    var empty: [int32] = []
+    assertEqual(empty.partitionPoint { *it < 5 }, 0 as usize, "partitionPoint empty")
+    var arr: [int32] = [1, 3, 5, 7, 9, 11]
+    assertEqual(arr.partitionPoint { *it < 0 }, 0 as usize, "partitionPoint at 0")
+    assertEqual(arr.partitionPoint { *it < 6 }, 3 as usize, "partitionPoint at middle")
+    assertEqual(arr.partitionPoint { *it < 100 }, 6 as usize, "partitionPoint at len")
+    assertEqual(arr.asSpan().partitionPoint { *it <= 7 }, 4 as usize, "Span partitionPoint")
+}
+
+@test
+func testListAndSpanWindowsAndChunks() {
+    var nums: [int32] = [1, 2, 3, 4, 5]
+    wins := nums.windows(3)
+    assertEqual(wins, [[1, 2, 3], [2, 3, 4], [3, 4, 5]], "windows(3)")
+    assertEqual(nums.windows(5), [[1, 2, 3, 4, 5]], "windows(len)")
+    assertTrue(nums.windows(6).isEmpty(), "windows(> len) empty")
+
+    // Mutating original list does not affect already returned window slices
+    nums[0] = 99
+    assertEqual(wins[0][0], 1, "windows returns independent slices")
+    nums[0] = 1
+
+    assertEqual(nums.chunks(2), [[1, 2], [3, 4], [5]], "chunks(2) with remainder")
+    assertEqual(nums.chunks(5), [[1, 2, 3, 4, 5]], "chunks(len)")
+    assertEqual(nums.chunks(10), [[1, 2, 3, 4, 5]], "chunks(> len)")
+
+    var empty: [int32] = []
+    assertTrue(empty.windows(2).isEmpty(), "empty windows")
+    assertTrue(empty.chunks(2).isEmpty(), "empty chunks")
+
+    // Span zero-copy windows & chunks + first/last
+    span := nums.asSpan()
+    assertEqual(span.first(), .some(1), "span first")
+    assertEqual(span.last(), .some(5), "span last")
+    spanWins := span.windows(2)
+    assertEqual(spanWins.len(), 4 as usize, "span windows count")
+    assertEqual(*spanWins[0].at(0), 1, "span window 0[0]")
+    assertEqual(*spanWins[3].at(1), 5, "span window 3[1]")
+    spanChunks := span.chunks(2)
+    assertEqual(spanChunks.len(), 3 as usize, "span chunks count")
+    assertEqual(spanChunks[2].len(), 1 as usize, "span final chunk len")
+    assertEqual(*spanChunks[2].at(0), 5, "span final chunk elem")
+}
+
+@test
+@expectPanic("list index out of range")
+func testListSwapOutOfBoundsPanics() {
+    var nums: [int32] = [1, 2]
+    nums.swap(0, 2)
+}
+
+@test
+@expectPanic("list index out of range")
+func testListSwapRemoveOutOfBoundsPanics() {
+    var nums: [int32] = [1, 2]
+    _ = nums.swapRemove(2)
+}
+
+@test
+@expectPanic("window size must be non-zero")
+func testListWindowsZeroPanics() {
+    var nums: [int32] = [1, 2, 3]
+    _ = nums.windows(0)
+}
+
+@test
+@expectPanic("chunk size must be non-zero")
+func testListChunksZeroPanics() {
+    var nums: [int32] = [1, 2, 3]
+    _ = nums.chunks(0)
+}
+
+@test
+@expectPanic("list changed structurally during retain")
+func testListRetainRejectsReentrantMutation() {
+    var nums: [int32] = [1, 2, 3]
+    nums.retain((_x) => {
+        nums.append(4)
+        true
+    })
+}
+
+@test
+@expectPanic("list changed structurally during dedup")
+func testListDedupRejectsReentrantMutation() {
+    var nums: [int32] = [1, 1, 2]
+    nums.dedupBy((_a, _b) => {
+        nums.append(3)
+        false
+    })
+}
+
+@test
+func testListRetainAndDedupReadOnlyAliasSeesOriginalState() {
+    var xs: [string] = ["drop", "keep1", "observe", "keep2"]
+    var observed = ""
+    xs.retain((item) => {
+        if *item == "observe" {
+            observed = std::fmt::debugString(xs)
+        }
+        *item != "drop"
+    })
+    assertEqual(
+        observed,
+        "[\"drop\", \"keep1\", \"observe\", \"keep2\"]",
+        "read-only alias during retain sees unmodified elements without duplicates",
+    )
+    assertEqual(xs, ["keep1", "observe", "keep2"], "retain commits compacted elements")
+
+    var ys: [string] = ["a", "a", "b", "observe", "observe"]
+    var dedupObserved = ""
+    ys.dedupBy((curr, prev) => {
+        if *curr == "observe" && dedupObserved == "" {
+            dedupObserved = std::fmt::debugString(ys)
+        }
+        *curr == *prev
+    })
+    assertEqual(
+        dedupObserved,
+        "[\"a\", \"a\", \"b\", \"observe\", \"observe\"]",
+        "read-only alias during dedupBy sees unmodified elements without duplicates",
+    )
+    assertEqual(ys, ["a", "b", "observe"], "dedupBy commits deduplicated elements")
+}
+
+@test
+@expectPanic("boom in retain")
+func testListRetainPanicLeavesListIntact() {
+    var xs: [string] = ["drop", "keep1", "boom", "keep2"]
+    defer {
+        assertEqual(
+            xs,
+            ["drop", "keep1", "boom", "keep2"],
+            "panic inside retain must not leave duplicated elements",
+        )
+    }
+    xs.retain((item) => {
+        if *item == "boom" {
+            std::panic::panic("boom in retain")
+        }
+        *item != "drop"
+    })
+}
+
+@test
+@expectPanic("boom in dedupBy")
+func testListDedupByPanicLeavesListIntact() {
+    var xs: [string] = ["a", "a", "b", "boom", "c"]
+    defer {
+        assertEqual(
+            xs,
+            ["a", "a", "b", "boom", "c"],
+            "panic inside dedupBy must not leave duplicated elements",
+        )
+    }
+    xs.dedupBy((curr, prev) => {
+        if *curr == "boom" {
+            std::panic::panic("boom in dedupBy")
+        }
+        *curr == *prev
+    })
+}

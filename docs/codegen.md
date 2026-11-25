@@ -9,6 +9,11 @@ instruction selection and native optimization.
 - Release builds use O2 and disable overflow checks.
 - `-O0`, `-O1`, `-O2`, `-O3`, `-Os`, and `-Oz` override LLVM optimization.
 - `--overflow-checks` and `--no-overflow-checks` override the profile default.
+- The integer `checked*`, `wrapping*` and `saturating*` methods ignore the
+  overflow policy. They use the `__intrinsic_wrapping_*` and
+  `__intrinsic_overflows_*` intrinsics, which lower to plain LLVM arithmetic or
+  an overflow flag, so their meaning survives inlining and specialization into a
+  checked package.
 
 Functions containing diagnostic stack maps use SelectionDAG. Other O0
 functions may use GlobalISel on supported AArch64 targets.

@@ -1,0 +1,4 @@
+error: expected Span[int32], found &S.Value
+ -> language_tests/source_files/invalid/collection_span_coercion_unknown_projection.tr:4:58
+	func view[S: Source](_ value: &S::Value) -> [int32; ..] { value }
+	                                                          ^^^^^

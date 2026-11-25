@@ -1,0 +1,7 @@
+interface Mark {}
+interface Count { const COUNT: int32 = 7; }
+struct Box[T] { value: T }
+struct Missing {}
+conform[T: Mark] Box[T] to Count {}
+func rejected() -> int32 { Box[Missing]::COUNT }
+func main() {}

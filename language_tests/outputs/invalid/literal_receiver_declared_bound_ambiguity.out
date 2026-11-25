@@ -1,0 +1,8 @@
+error: ambiguous overload; unable to pick a best candidate
+ -> language_tests/source_files/invalid/literal_receiver_declared_bound_ambiguity.tr:31:37
+	    Pair { first: value, second: 0 }.pick() + 1
+	                                     ^^^^
+error: ambiguous overload; unable to pick a best candidate
+ -> language_tests/source_files/invalid/literal_receiver_declared_bound_ambiguity.tr:35:47
+	    Pair[T, int32] { first: value, second: 0 }.pick() + 1
+	                                               ^^^^

@@ -51,7 +51,7 @@ pub fn apply_instance_placement<'ctx>(
                 summaries: &summaries,
             },
         )?
-        .placement()
+        .placement(gcx, body, true)
     };
 
     body.escape_locals.clear();
@@ -98,7 +98,8 @@ pub(crate) fn address_holders<'ctx>(
 /// Only address-taken local placement is applied here. Synthesized constructor,
 /// poll, and drop bodies later take the ordinary concrete-instance path.
 pub fn apply_async_bridge<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
-    let placement = EscapeGraph::build(gcx, body, AnalysisMode::AsyncBridge)?.placement();
+    let placement =
+        EscapeGraph::build(gcx, body, AnalysisMode::AsyncBridge)?.placement(gcx, body, false);
     body.escape_locals.clear();
     body.escape_locals.resize(body.locals.len(), false);
     for local in placement.heap_locals {
@@ -140,7 +141,16 @@ struct Edge {
     deref: i16,
 }
 
+/// Source of a direct edge to the graph's heap sink. Each trace needs only
+/// the first edge of its witness path to identify the retaining operation.
+#[derive(Clone, Copy)]
+struct HeapCause {
+    operation: &'static str,
+    span: crate::span::Span,
+}
+
 struct EscapeGraph {
+    heap_causes: Option<Vec<HeapCause>>,
     nodes: Vec<NodeKind>,
     edges: Vec<Vec<Edge>>,
     heap: usize,
@@ -198,6 +208,7 @@ impl EscapeGraph {
         crate::mir::analysis::liveness::LivenessResult,
     )> {
         let mut graph = Self {
+            heap_causes: gcx.explains_allocations().then(Vec::new),
             nodes: Vec::new(),
             edges: Vec::new(),
             heap: 0,
@@ -372,6 +383,7 @@ impl EscapeGraph {
         &mut self,
         gcx: Gcx<'ctx>,
         body: &Body<'ctx>,
+        span: crate::span::Span,
         function: &Operand<'ctx>,
         arguments: &[Operand<'ctx>],
         destination_value: Option<usize>,
@@ -408,9 +420,13 @@ impl EscapeGraph {
             let carries_provenance = operand_may_carry_provenance(gcx, body, argument, mode);
             if carries_provenance && let Some(deref) = effect.heap_deref {
                 self.add_operand_edge(self.heap, argument, state, i16::from(deref));
+                self.record_heap_edges("a potentially retaining call", span);
             }
             if carries_provenance && let Some(deref) = effect.return_deref {
                 self.add_operand_edge(destination, argument, state, i16::from(deref));
+                if destination == self.heap {
+                    self.record_heap_edges("a call result stored through a reference", span);
+                }
             }
         }
         Ok(())
@@ -522,6 +538,27 @@ impl EscapeGraph {
                         );
                     }
                 }
+                TerminatorKind::GeneratorYield {
+                    value: _,
+                    resume,
+                    cancel,
+                    ..
+                } => {
+                    propagate_state(
+                        *resume,
+                        &state,
+                        &mut in_states,
+                        &mut reachable,
+                        &mut worklist,
+                    );
+                    propagate_state(
+                        *cancel,
+                        &state,
+                        &mut in_states,
+                        &mut reachable,
+                        &mut worklist,
+                    );
+                }
                 _ => {
                     for successor in terminator.kind.successors() {
                         propagate_state(
@@ -605,6 +642,9 @@ impl EscapeGraph {
                         .get(&AllocationSite { block, statement })
                         .copied();
                     self.add_rvalue_edges(gcx, body, mode, sink, rvalue, &state, allocation);
+                    if sink == self.heap {
+                        self.record_heap_edges("a store through a reference", value.span);
+                    }
                     if let Some(&defined) = self.statement_values.get(&(block, statement)) {
                         self.add_edge(self.storage(destination.local), defined, 0);
                     }
@@ -619,13 +659,15 @@ impl EscapeGraph {
                 TerminatorKind::Call { func, args, .. } => self.add_call_edges(
                     gcx,
                     body,
+                    terminator.span,
                     func,
                     args,
                     self.terminator_values.get(&block).copied(),
                     &state,
                     mode,
                 )?,
-                TerminatorKind::Yield { value, .. } => {
+                TerminatorKind::Yield { value, .. }
+                | TerminatorKind::GeneratorYield { value, .. } => {
                     if operand_may_carry_provenance(gcx, body, value, mode) {
                         self.add_operand_edge(self.heap, value, &state, 0);
                     }
@@ -638,6 +680,7 @@ impl EscapeGraph {
                             }
                         }
                     }
+                    self.record_heap_edges("suspension", terminator.span);
                 }
                 TerminatorKind::Return => {
                     if local_may_carry_provenance(gcx, body, body.return_local, mode) {
@@ -679,15 +722,7 @@ impl EscapeGraph {
         liveness: &crate::mir::analysis::liveness::LivenessResult,
     ) -> FxHashSet<LocalId> {
         use crate::mir::analysis::liveness::MirLocation;
-        let addressed: FxHashSet<_> = self
-            .edges
-            .iter()
-            .flatten()
-            .filter(|edge| {
-                edge.deref < 0 && matches!(self.nodes[edge.target], NodeKind::Storage(_))
-            })
-            .map(|edge| edge.target)
-            .collect();
+        let addressed = self.addressed_storage();
         if addressed.is_empty() || self.saturated {
             return FxHashSet::default();
         }
@@ -909,7 +944,21 @@ impl EscapeGraph {
         false
     }
 
+    fn record_heap_edges(&mut self, operation: &'static str, span: crate::span::Span) {
+        if let Some(causes) = &mut self.heap_causes {
+            causes.resize(self.edges[self.heap].len(), HeapCause { operation, span });
+        }
+    }
+
     fn trace_from(&mut self, start: usize) -> Vec<Option<i16>> {
+        self.trace_edges(start, |_, _, _| {})
+    }
+
+    fn trace_edges(
+        &mut self,
+        start: usize,
+        mut improved: impl FnMut(usize, usize, usize),
+    ) -> Vec<Option<i16>> {
         let mut distance = vec![None; self.nodes.len()];
         distance[start] = Some(0);
         let mut queue = VecDeque::from([start]);
@@ -925,7 +974,7 @@ impl EscapeGraph {
             if matches!(self.nodes[node], NodeKind::Storage(_)) {
                 current = current.max(0);
             }
-            for edge in &self.edges[node] {
+            for (index, edge) in self.edges[node].iter().enumerate() {
                 let raw = current.saturating_add(edge.deref);
                 let next = raw.clamp(-MAX_DEREF, MAX_DEREF);
                 if raw != next {
@@ -933,6 +982,7 @@ impl EscapeGraph {
                 }
                 let should_update = distance[edge.target].is_none_or(|known| next < known);
                 if should_update {
+                    improved(node, index, edge.target);
                     distance[edge.target] = Some(next);
                     queue.push_back(edge.target);
                 }
@@ -973,9 +1023,57 @@ impl EscapeGraph {
         }
     }
 
-    fn placement(mut self) -> EscapePlacement {
-        let heap = self.trace_from(self.heap);
+    fn addressed_storage(&self) -> FxHashSet<usize> {
+        self.edges
+            .iter()
+            .flatten()
+            .filter(|edge| {
+                edge.deref < 0 && matches!(self.nodes[edge.target], NodeKind::Storage(_))
+            })
+            .map(|edge| edge.target)
+            .collect()
+    }
+
+    fn placement<'ctx>(
+        mut self,
+        gcx: Gcx<'ctx>,
+        body: &Body<'ctx>,
+        place_allocations: bool,
+    ) -> EscapePlacement {
+        let sink = self.heap;
+        let mut origins = Vec::new();
+        let heap = if self.heap_causes.is_some() {
+            origins.resize(self.nodes.len(), None);
+            self.trace_edges(sink, |from, edge, to| {
+                origins[to] = if from == sink {
+                    Some(edge)
+                } else {
+                    origins[from]
+                };
+            })
+        } else {
+            self.trace_from(sink)
+        };
         let returned = self.trace_from(self.returned);
+        let placement = self.classify_placement(&heap, &returned);
+        if gcx.explains_allocations() {
+            self.explain_placement(
+                gcx,
+                body,
+                place_allocations,
+                &placement,
+                &origins,
+                &returned,
+            );
+        }
+        placement
+    }
+
+    fn classify_placement(
+        &mut self,
+        heap: &[Option<i16>],
+        returned: &[Option<i16>],
+    ) -> EscapePlacement {
         let mut placement = EscapePlacement::default();
 
         if self.saturated {
@@ -1012,14 +1110,83 @@ impl EscapeGraph {
                 NodeKind::Heap | NodeKind::Return | NodeKind::Parameter(_) | NodeKind::Value => {}
             }
         }
-        placement.heap_locals.extend(self.overlapping_bindings);
+        placement.heap_locals.extend(&self.overlapping_bindings);
         placement
             .escaping_alloc_sites
-            .extend(self.overlapping_allocations);
+            .extend(&self.overlapping_allocations);
         self.allocation_live_blocks
             .retain(|site, _| !placement.escaping_alloc_sites.contains(site));
-        placement.allocation_keepalive_blocks = self.allocation_live_blocks;
+        placement.allocation_keepalive_blocks = std::mem::take(&mut self.allocation_live_blocks);
         placement
+    }
+    /// Describe the bitmap consumed by the rewrites, using the very same heap
+    /// and return traces. The async bridge only rewrites local storage.
+    fn explain_placement<'ctx>(
+        &self,
+        gcx: Gcx<'ctx>,
+        body: &Body<'ctx>,
+        place_allocations: bool,
+        placement: &EscapePlacement,
+        origins: &[Option<usize>],
+        returned: &[Option<i16>],
+    ) {
+        let addressed = self.addressed_storage();
+        for (node, kind) in self.nodes.iter().enumerate() {
+            let (subject, span, escapes) = match *kind {
+                NodeKind::Storage(local) if addressed.contains(&node) => {
+                    let declaration = &body.locals[local];
+                    let Some(name) = declaration.name else {
+                        continue;
+                    };
+                    if declaration.kind == LocalKind::Return {
+                        continue;
+                    }
+                    (
+                        format!("`{}`", name.as_str()),
+                        declaration.span,
+                        placement.heap_locals.contains(&local),
+                    )
+                }
+                NodeKind::Allocation(site) if place_allocations => {
+                    let stmt = &body.basic_blocks[site.block].statements[site.statement];
+                    let StatementKind::Assign(_, Rvalue::Alloc { ty }) = &stmt.kind else {
+                        continue;
+                    };
+                    (
+                        format!("allocation of `{}`", ty.format(gcx)),
+                        stmt.span,
+                        placement.escaping_alloc_sites.contains(&site),
+                    )
+                }
+                _ => continue,
+            };
+            let decision = if !escapes {
+                "stays on the stack because its address stays within this invocation"
+            } else if self.saturated {
+                "goes on the heap because escape analysis reached its conservative limit"
+            } else if returned[node].is_some_and(|distance| distance < 0) {
+                "escapes to the heap through the return value"
+            } else if matches!(kind, NodeKind::Storage(local) if self.overlapping_bindings.contains(local))
+                || matches!(kind, NodeKind::Allocation(site) if self.overlapping_allocations.contains(site))
+            {
+                "goes on the heap because successive lifetimes may overlap"
+            } else if let Some(cause) =
+                origins[node].and_then(|edge| self.heap_causes.as_ref()?.get(edge))
+            {
+                let location = gcx.allocation_location(cause.span);
+                gcx.record_allocation(
+                    span,
+                    format!(
+                        "{subject} escapes to the heap through {} at {location}",
+                        cause.operation
+                    ),
+                );
+                continue;
+            } else {
+                "escapes to the heap through an escaping address"
+            };
+            gcx.record_allocation(span, format!("{subject} {decision}"));
+        }
     }
 }
 
@@ -2134,6 +2301,9 @@ mod heapify_rewrite {
                 rewrite_operand(value, heapified, param_replacements);
                 rewrite_place(resume_arg, heapified, param_replacements);
             }
+            TerminatorKind::GeneratorYield { value, .. } => {
+                rewrite_operand(value, heapified, param_replacements);
+            }
             _ => {}
         }
     }
@@ -2249,7 +2419,7 @@ mod tests {
     ) -> EscapePlacement {
         EscapeGraph::build(gcx, body, AnalysisMode::FixedEffects { params })
             .unwrap_or_else(|_| panic!("escape graph"))
-            .placement()
+            .placement(gcx, body, true)
     }
 
     fn summary_with_effects<'ctx>(
@@ -3561,7 +3731,7 @@ mod tests {
 
             let placement = EscapeGraph::build(gcx, &body, AnalysisMode::AsyncBridge)
                 .unwrap_or_else(|_| panic!("async escape graph"))
-                .placement();
+                .placement(gcx, &body, false);
             assert!(placement.heap_locals.contains(&value));
         });
     }

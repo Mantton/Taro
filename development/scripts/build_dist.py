@@ -62,6 +62,30 @@ def run_command(command: list[str], cwd: Path | None = None, env: dict[str, str]
     subprocess.run(command, cwd=cwd, env=env, check=True)
 
 
+def apple_build_env(target: str | None) -> dict[str, str] | None:
+    """Give C objects in the runtime archive the deployment target rustc uses.
+
+    Without MACOSX_DEPLOYMENT_TARGET, cc-built objects (the unwind probe,
+    ring) default to the SDK version, which can be newer than the minimum
+    the link step passes, and every link then warns once per object.
+    """
+    if os.environ.get("MACOSX_DEPLOYMENT_TARGET"):
+        return None
+    if target is None:
+        if sys.platform != "darwin":
+            return None
+    elif "apple-darwin" not in target and "apple-macos" not in target:
+        return None
+    command = ["rustc", "--print", "deployment-target"]
+    if target:
+        command.extend(["--target", target])
+    output = subprocess.run(command, check=True, capture_output=True, text=True).stdout
+    key, _, value = output.strip().partition("=")
+    if key != "MACOSX_DEPLOYMENT_TARGET" or not value:
+        raise RuntimeError(f"unexpected `rustc --print deployment-target` output: {output!r}")
+    return {**os.environ, "MACOSX_DEPLOYMENT_TARGET": value}
+
+
 def release_flag(profile: str) -> list[str]:
     return ["--release"] if profile == "release" else []
 
@@ -126,7 +150,9 @@ def main():
     ]
     if target:
         runtime_command.extend(["--target", target])
-    run_command(runtime_command, cwd=repo_root)
+    # Both builds share dependencies; one environment avoids rebuilding them.
+    build_env = apple_build_env(target)
+    run_command(runtime_command, cwd=repo_root, env=build_env)
 
     # 2. Build Compiler CLI
     print("\n--- Building Compiler CLI ---")
@@ -139,6 +165,7 @@ def main():
             *release_flag(profile),
             ],
         cwd=repo_root,
+        env=build_env,
     )
 
     # Assemble every artifact before replacing the previous distribution.

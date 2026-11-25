@@ -1,0 +1,9 @@
+import std::encoding::Codable
+
+struct BothAttrs: Codable {
+    @key("x")
+    @skip
+    value: int32 = 0_i32
+}
+
+func main() {}

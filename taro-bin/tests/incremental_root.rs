@@ -158,6 +158,228 @@ fn stderr(output: &Output) -> String {
 }
 
 #[test]
+fn cached_interface_supplies_its_unsatisfied_bound_message() {
+    let dist = distribution_root();
+    let project = TempProject::new();
+    let lib = project.0.join("dep/src/lib.tr");
+    fs::write(
+        lib,
+        r#"@onUnsatisfied("{Self} needs an order ({{Self}} is a placeholder)")
+public interface Ranked { type Item; func rank() -> int32; }
+public struct Provided {}
+conform Provided to Ranked {
+    type Item = int32
+    func rank() -> int32 { 7 }
+}
+public func rank[T: Ranked](_ value: T) -> int32 { value.rank() }
+"#,
+    )
+    .unwrap();
+    let main = project.0.join("src/main.tr");
+    fs::write(&main, "import dep::{Provided, rank}\nfunc main() { assert(rank(Provided {}) == 7, \"ranked\") }\n").unwrap();
+    let check = || run_taro(&dist, &["check", &project.0.to_string_lossy(), "--timings"]);
+    assert_success(&check());
+    fs::write(
+        &main,
+        "import dep::rank\nfunc main() { value := rank(1.25) }\n",
+    )
+    .unwrap();
+    let cached = check();
+    assert!(!cached.status.success());
+    let output = stderr(&cached);
+    assert!(
+        output.contains("Reusing (metadata) – github.com/example/root-cache-dep"),
+        "{output}"
+    );
+    assert!(
+        output.contains("error: double needs an order ({Self} is a placeholder)"),
+        "{output}"
+    );
+    assert!(output.contains("src/main.tr:2:"), "{output}");
+
+    fs::write(&main, "import dep::{Ranked, Provided}\ntype Item = (Provided as Ranked).Item\nfunc main() { var value: Item = 7 }\n").unwrap();
+    let projected = check();
+    assert_success(&projected);
+    assert!(stderr(&projected).contains("Reusing (metadata) – github.com/example/root-cache-dep"));
+}
+
+#[test]
+fn allocation_report_explains_stack_heap_and_boxing_on_repeated_builds() {
+    let dist = distribution_root();
+    let project = TempProject::new();
+    let source = include_str!("../../language_tests/source_files/valid/allocation_report.tr");
+    let script = project.0.join("report.tr");
+    fs::write(&script, source).unwrap();
+    let script = script.to_string_lossy();
+    let executable = project.0.join("report");
+    let executable = executable.to_string_lossy();
+    let ordinary = ["build", &script, "-o", &executable];
+    let plain = run_taro(&dist, &ordinary);
+    assert_success(&plain);
+    assert!(!stderr(&plain).contains("allocation: "));
+
+    let reports = (0..2)
+        .map(|build| {
+            let result = run_taro(&dist, &[&ordinary[..], &["--explain-allocations"]].concat());
+            assert_success(&result);
+            if build == 1 {
+                assert!(stderr(&result).contains("Reusing (metadata+object)"));
+            }
+            stderr(&result)
+                .lines()
+                .filter(|line| line.contains("allocation: "))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        reports[0], reports[1],
+        "repeated builds must explain the same placements"
+    );
+    for (source_line, fragments) in [
+        ("var kept:", &["kept", "stack"][..]),
+        ("var escaped:", &["escaped", "heap", "return"][..]),
+        ("func boxed(", &["box", "4 bytes"][..]),
+        ("var saved:", &["saved", "heap", "store", "report.tr:"][..]),
+        ("func schedule(", &["captured", "heap", "store"][..]),
+        (
+            "jobs.pending =",
+            &["any Fn", "boxes", "closure", "bytes"][..],
+        ),
+        ("var jobs =", &["boxes", "0 bytes"][..]),
+    ] {
+        let line = 1 + source
+            .lines()
+            .position(|text| text.contains(source_line))
+            .unwrap();
+        let location = format!("report.tr:{line}:");
+        assert!(
+            reports[0].iter().any(|message| message.contains(&location)
+                && fragments.iter().all(|fragment| message.contains(fragment))),
+            "{location} {fragments:?}: {:?}",
+            reports[0]
+        );
+    }
+    let plain_again = run_taro(&dist, &ordinary);
+    assert_success(&plain_again);
+    assert!(stderr(&plain_again).contains("Reusing (metadata+object)"));
+    assert!(!stderr(&plain_again).contains("allocation: "));
+}
+
+#[test]
+fn allocation_report_replays_cached_dependency_decisions() {
+    let dist = distribution_root();
+    let project = TempProject::new();
+    let lib = project.0.join("dep/src/lib.tr");
+    fs::write(
+        lib,
+        "@noinline\npublic func make() -> &int32 { var saved: int32 = 7; &saved }\n",
+    )
+    .unwrap();
+    let app = project.0.join("src/main.tr");
+    let main = "import dep::make\nfunc main() { assert(*make() == 7, \"returned value\") }\n";
+    fs::write(&app, main).unwrap();
+    let out = project.0.join("app");
+    let build = || {
+        run_taro(
+            &dist,
+            &[
+                "build",
+                &project.0.to_string_lossy(),
+                "--explain-allocations",
+                "--timings",
+                "-o",
+                &out.to_string_lossy(),
+            ],
+        )
+    };
+    let cold = build();
+    assert_success(&cold);
+    fs::write(&app, format!("{main}\n// rebuild only the app\n")).unwrap();
+    let warm = build();
+    assert_success(&warm);
+    assert!(
+        stderr(&warm).contains("Reusing (metadata+object) – github.com/example/root-cache-dep")
+    );
+    let notes = |output: &Output| {
+        stderr(output)
+            .lines()
+            .filter(|line| {
+                line.contains("allocation: ")
+                    && line.contains("lib.tr:2:")
+                    && line.contains("saved")
+            })
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    let expected = notes(&cold);
+    assert_eq!(expected.len(), 1, "{}", stderr(&cold));
+    assert_eq!(expected, notes(&warm));
+}
+
+#[test]
+fn embedded_asset_edits_invalidate_cached_consumers() {
+    let dist = distribution_root();
+    assert!(
+        distribution_is_available(&dist),
+        "build dist before CLI integration tests"
+    );
+    let project = TempProject::new();
+    let asset = project.0.join("dep/message.txt");
+    fs::write(&asset, "one").unwrap();
+    fs::write(
+        project.0.join("dep/src/lib.tr"),
+        r#"public const MESSAGE: string = #embed("../message.txt")"#,
+    )
+    .unwrap();
+    fs::write(
+        project.0.join("src/main.tr"),
+        "import dep::MESSAGE\nfunc main() { println(MESSAGE) }\n",
+    )
+    .unwrap();
+    let out = project.0.join("app");
+    let run = || {
+        run_taro(
+            &dist,
+            &[
+                "run",
+                &project.0.to_string_lossy(),
+                "--timings",
+                "-o",
+                &out.to_string_lossy(),
+            ],
+        )
+    };
+
+    let cold = run();
+    assert_success(&cold);
+    assert_eq!(cold.stdout, b"one\n");
+    let warm = run();
+    assert_success(&warm);
+    assert!(
+        stderr(&warm).contains("Reusing (metadata+object) – github.com/example/root-cache-dep")
+    );
+
+    // A build keyed only on file length and modification time would be stale.
+    let time = fs::metadata(&asset).unwrap().modified().unwrap();
+    fs::write(&asset, "two").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&asset)
+        .unwrap()
+        .set_modified(time)
+        .unwrap();
+    let edited = run();
+    assert_success(&edited);
+    assert_eq!(edited.stdout, b"two\n");
+
+    fs::remove_file(&asset).unwrap();
+    let missing = run();
+    assert!(!missing.status.success());
+    assert!(stderr(&missing).contains("embedded asset '../message.txt' does not exist"));
+}
+
+#[test]
 fn enum_abi_round_trips_through_cached_dependency() {
     let dist = distribution_root();
     if !distribution_is_available(&dist) {
@@ -934,5 +1156,95 @@ func main() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn cross_package_const_function_evaluates_on_cold_and_warm_builds_and_checks() {
+    let dist = distribution_root();
+    assert!(
+        distribution_is_available(&dist),
+        "build dist before CLI integration tests"
+    );
+    let project = TempProject::new();
+    fs::write(
+        project.0.join("dep/src/lib.tr"),
+        r#"const func baseLen() -> usize {
+    return 2
+}
+
+public const func triple(_ x: int32) -> int32 {
+    return x * 3
+}
+
+public const func bufLen() -> usize {
+    return baseLen() * 2
+}
+"#,
+    )
+    .unwrap();
+    let main_source = r#"import dep::{bufLen, triple}
+
+const VAL: int32 = triple(14)
+
+func main() {
+    var xs: [int32; bufLen()] = [1, 2, 3, 4]
+    assert(VAL == 42, "imported const func value")
+    assert(xs.len() == 4 as usize, "imported const func array length")
+    print("PASS: cross-package const func\n")
+}
+"#;
+    for warm in [false, true] {
+        fs::write(
+            project.0.join("src/main.tr"),
+            format!("{main_source}\n// check warm={warm}\n"),
+        )
+        .unwrap();
+        let check_out = run_taro(&dist, &["check", &project.0.to_string_lossy()]);
+        assert_success(&check_out);
+    }
+    for warm in [false, true] {
+        fs::write(
+            project.0.join("src/main.tr"),
+            format!("{main_source}\n// run warm={warm}\n"),
+        )
+        .unwrap();
+        let run_out = run_taro(
+            &dist,
+            &["run", &project.0.to_string_lossy(), "--timings"],
+        );
+        assert_success(&run_out);
+        assert_eq!(
+            String::from_utf8_lossy(&run_out.stdout),
+            "PASS: cross-package const func\n"
+        );
+        if warm {
+            assert!(
+                String::from_utf8_lossy(&run_out.stderr)
+                    .contains("Reusing (metadata+object) – github.com/example/root-cache-dep"),
+                "dependency must be reused on warm run: {}",
+                String::from_utf8_lossy(&run_out.stderr)
+            );
+        }
+    }
+}
+
+#[test]
+fn library_doctests_can_import_their_own_package() {
+    let dist = distribution_root();
+    let project = TempProject::new();
+    let dep = project.0.join("dep");
+    fs::write(dep.join("package.toml"),
+        "[package]\nname = \"github.com/example/shapes\"\nkind = \"library\"\n").unwrap();
+    fs::write(dep.join("src/lib.tr"), r#"/// ```taro
+/// import shapes::area
+/// assert(area(4) == 16)
+/// ```
+public func area(_ side: int32) -> int32 { side * side }
+"#).unwrap();
+    for target in [&dep, &dep.join("src/lib.tr")] {
+        let output = run_taro(&dist, &["test", "--doc", target.to_str().unwrap()]);
+        assert_success(&output);
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
     }
 }

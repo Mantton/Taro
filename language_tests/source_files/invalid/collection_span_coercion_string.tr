@@ -1,0 +1,2 @@
+func view(_ value: &string) -> [uint8; ..] { value }
+func main() {}

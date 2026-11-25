@@ -1,0 +1,5 @@
+func main() {
+    var big: int64 = 5000000000
+    var total = 0 // A function-body local defaults to int32 at its own statement.
+    total += big
+}

@@ -1,0 +1,246 @@
+import std::cmp::{Ord, Ordering, PartialOrd}
+import std::default::Default
+import std::iter::{Iterable, Iterator}
+import std::ops::{Contains, PartialEq}
+import std::optional::Optional
+import std::panic::panic
+
+final class DequeStorage[Element] {
+    slots: List[Element?]
+    head: usize
+    count: usize
+    version: usize
+}
+
+extend[Element] DequeStorage[Element] {
+    init() {
+        self.slots = List[Element?]::new()
+        self.head = 0
+        self.count = 0
+        self.version = 0
+    }
+
+    func physical(_ index: usize) -> usize {
+        tail := self.slots.len() - self.head
+        return if index < tail { self.head + index } else { index - tail }
+    }
+}
+
+/// A shared ring-buffer deque. Assignment shares contents; copy() creates
+/// independent outer storage. Both ends support amortized O(1) insertion and
+/// O(1) removal. Removed slots are cleared so they no longer retain objects.
+public struct Deque[Element] {
+    internal storage: DequeStorage[Element]
+}
+
+extend[Element] Deque[Element] {
+    public static func new() -> Self { Self { storage: DequeStorage[Element]() } }
+    public func len() -> usize { self.storage.count }
+    public func isEmpty() -> bool { self.len() == 0 }
+    public func capacity() -> usize { self.storage.slots.len() }
+
+    /// Reserve space for at least minCapacity elements; O(n + minCapacity).
+    public func reserve(_ minCapacity: usize) {
+        if minCapacity <= self.capacity() { return }
+        slots := List[Element?]::repeating(.none, count: minCapacity)
+        var index: usize = 0
+        while index < self.len() {
+            slots[index] = self.storage.slots[self.storage.physical(index)]
+            index += 1
+        }
+        self.storage.slots = slots
+        self.storage.head = 0
+    }
+
+    func ensureRoom() {
+        if self.len() < self.capacity() { return }
+        capacity := self.capacity()
+        next := if capacity == 0 { 4 as usize } else {
+            capacity.checkedMul(2 as usize).expect("deque capacity overflow")
+        }
+        self.reserve(next)
+    }
+
+    public func pushBack(_ value: Element) {
+        self.ensureRoom()
+        self.storage.slots[self.storage.physical(self.len())] = .some(value)
+        self.storage.count += 1
+        self.storage.version += 1
+    }
+
+    public func pushFront(_ value: Element) {
+        self.ensureRoom()
+        self.storage.head = if self.storage.head == 0 { self.capacity() - 1 } else { self.storage.head - 1 }
+        self.storage.slots[self.storage.head] = .some(value)
+        self.storage.count += 1
+        self.storage.version += 1
+    }
+
+    public func popFront() -> Element? {
+        if self.isEmpty() { return .none }
+        index := self.storage.head
+        value := self.storage.slots[index]
+        self.storage.slots[index] = .none
+        self.storage.head = if index + 1 == self.capacity() { 0 as usize } else { index + 1 }
+        self.storage.count -= 1
+        self.storage.version += 1
+        return value
+    }
+
+    public func popBack() -> Element? {
+        if self.isEmpty() { return .none }
+        index := self.storage.physical(self.len() - 1)
+        value := self.storage.slots[index]
+        self.storage.slots[index] = .none
+        self.storage.count -= 1
+        self.storage.version += 1
+        return value
+    }
+
+    /// An ordinary element copy, not a reference into ring-buffer storage.
+    public func get(_ index: usize) -> Element? {
+        if index >= self.len() { return .none }
+        return self.storage.slots[self.storage.physical(index)]
+    }
+
+    public func front() -> Element? { self.get(0) }
+    public func back() -> Element? {
+        if self.isEmpty() { return .none }
+        return self.get(self.len() - 1)
+    }
+
+    /// Reads and writes ordinary element copies. Writing replaces an element
+    /// in place; it is not a structural change and keeps cursors valid.
+    public subscript(index: usize) -> Element {
+        get { self.get(index).expect("deque index out of range") }
+        set(value) {
+            if index >= self.len() { panic("deque index out of range") }
+            self.storage.slots[self.storage.physical(index)] = .some(value)
+        }
+    }
+
+    public func clear() {
+        self.storage.slots = List[Element?]::new()
+        self.storage.head = 0
+        self.storage.count = 0
+        self.storage.version += 1
+    }
+
+    public func copy() -> Self {
+        result := Self::new()
+        result.reserve(self.len())
+        var index: usize = 0
+        while index < self.len() {
+            result.pushBack(self[index])
+            index += 1
+        }
+        return result
+    }
+}
+
+/// Element-wise, front-to-back equality, like List. Capacity and the ring
+/// offset are not compared.
+conform[Element: PartialEq] Deque[Element] to PartialEq {
+    public func eq(_ other: Self) -> bool {
+        if self.len() != other.len() { return false }
+        var index: usize = 0
+        while index < self.len() {
+            if self[index] != other[index] { return false }
+            index += 1
+        }
+        return true
+    }
+}
+
+/// Lexicographical front-to-back partial ordering, then length.
+conform[Element: PartialOrd] Deque[Element] to PartialOrd {
+    public func partialCmp(_ other: Self) -> Optional[Ordering] {
+        lhsLen := self.len()
+        rhsLen := other.len()
+        shared := if lhsLen < rhsLen { lhsLen } else { rhsLen }
+        var index: usize = 0
+        while index < shared {
+            match self[index].partialCmp(other[index]) {
+                case .some(.equal) => {}
+                case otherOrder => return otherOrder
+            }
+            index += 1
+        }
+        return lhsLen.partialCmp(rhsLen)
+    }
+}
+
+/// Lexicographical front-to-back total ordering, then length.
+conform[Element: Ord] Deque[Element] to Ord {
+    public func cmp(_ other: Self) -> Ordering {
+        lhsLen := self.len()
+        rhsLen := other.len()
+        shared := if lhsLen < rhsLen { lhsLen } else { rhsLen }
+        var index: usize = 0
+        while index < shared {
+            ord := self[index].cmp(other[index])
+            if !ord.isEqual() {
+                return ord
+            }
+            index += 1
+        }
+        return lhsLen.cmp(rhsLen)
+    }
+}
+
+/// A linear scan from the front for an equal element.
+conform[Element: PartialEq] Deque[Element] to Contains[Element] {
+    public func contains(_ element: &Element) -> bool {
+        var index: usize = 0
+        while index < self.len() {
+            if self[index] == *element { return true }
+            index += 1
+        }
+        return false
+    }
+}
+
+/// A shared cursor, like ListIterator. Structural mutations invalidate it.
+public final class DequeIterator[Element] {
+    private storage: DequeStorage[Element]
+    private index: usize
+    private version: usize
+    private exhausted: bool
+}
+
+extend[Element] DequeIterator[Element] {
+    internal init(_ storage: DequeStorage[Element]) {
+        self.storage = storage
+        self.index = 0
+        self.version = storage.version
+        self.exhausted = false
+    }
+}
+
+conform[Element] DequeIterator[Element] to Iterator {
+    type Element = Element
+    public func next() -> Element? {
+        if self.exhausted { return .none }
+        if self.storage.version != self.version { panic("deque changed structurally during iteration") }
+        if self.index == self.storage.count { self.exhausted = true; return .none }
+        value := self.storage.slots[self.storage.physical(self.index)]
+        self.index += 1
+        return value
+    }
+}
+
+conform[Element] Deque[Element] to Iterable {
+    type Element = Element
+    type Iterator = DequeIterator[Element]
+    public func iter() -> Self::Iterator { DequeIterator[Element](self.storage) }
+}
+
+conform[Element] DequeIterator[Element] to Iterable {
+    type Element = Element
+    type Iterator = DequeIterator[Element]
+    public func iter() -> Self::Iterator { self }
+}
+
+conform[Element] Deque[Element] to Default {
+    public static func default() -> Self { Self::new() }
+}

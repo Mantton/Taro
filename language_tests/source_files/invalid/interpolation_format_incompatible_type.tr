@@ -1,0 +1,5 @@
+func main() {
+    name := "hi"
+    mask := 255
+    println("${name:x} ${mask:e}")
+}

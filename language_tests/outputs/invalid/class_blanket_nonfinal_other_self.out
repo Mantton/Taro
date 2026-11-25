@@ -1,3 +1,7 @@
+warning: unused variable 'wrong'; prefix it with '_' if this is intended
+ -> language_tests/source_files/invalid/class_blanket_nonfinal_other_self.tr:8:8
+	    var wrong: Base = first.choose(second) // Reject: blanket body has no dynamic-Self proof.
+	        ^^^^^
 error: a non-final class Self witness requires a checked subclass-preserving implementation; this generic body may return an unrelated class object
  -> language_tests/source_files/invalid/class_blanket_nonfinal_other_self.tr:2:31
 	conform[T] T to Factory { func choose( _ other: T) -> T { other }; }

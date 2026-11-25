@@ -61,6 +61,7 @@ fn build_link_plan(
     object_inputs: &[PathBuf],
     library_inputs: &[PathBuf],
     output: &Path,
+    coverage: bool,
 ) -> Result<LinkPlan, String> {
     let target = TargetInfo::from_triple(target_triple);
     let host = TargetInfo::from_triple(host_triple);
@@ -144,6 +145,10 @@ fn build_link_plan(
         // GNU targets, adding costly memory validation to GC stack walks.
         // Both providers remain supported by the runtime's CFA probe.
         args.extend(["-lm", "-ldl"].map(OsString::from));
+    }
+
+    if coverage {
+        args.push(OsString::from("-fprofile-instr-generate"));
     }
 
     args.push(OsString::from("-o"));
@@ -238,6 +243,7 @@ pub fn link_executable(gcx: GlobalContext) -> CompileResult<Option<PathBuf>> {
     } else {
         None
     };
+    let coverage = gcx.config.codegen.coverage;
     let plan = build_link_plan(
         &target_triple,
         &host_triple,
@@ -248,6 +254,7 @@ pub fn link_executable(gcx: GlobalContext) -> CompileResult<Option<PathBuf>> {
         &obj_inputs,
         &lib_inputs,
         &output,
+        coverage,
     )
     .map_err(|message| {
         gcx.dcx().emit_error(message, None);
@@ -258,7 +265,13 @@ pub fn link_executable(gcx: GlobalContext) -> CompileResult<Option<PathBuf>> {
     match cmd.status() {
         Ok(status) if status.success() => Ok(Some(output)),
         Ok(status) => {
-            let msg = format!("linker failed with status {status}");
+            let msg = if coverage {
+                format!(
+                    "linker failed with status {status} while linking coverage runtime (-fprofile-instr-generate); ensure clang's compiler-rt profile library is installed for `{target_triple}`"
+                )
+            } else {
+                format!("linker failed with status {status}")
+            };
             gcx.dcx().emit_error(msg.into(), None);
             Err(crate::error::ReportedError)
         }
@@ -378,6 +391,7 @@ mod tests {
             &objects,
             &libraries,
             std::path::Path::new("app"),
+            false,
         )
         .expect("same-OS Darwin cross-link plan");
         let args = args(&plan);
@@ -413,6 +427,7 @@ mod tests {
             &[PathBuf::from("main.o")],
             &[PathBuf::from("libtaro_runtime.a")],
             std::path::Path::new("app"),
+            false,
         )
         .expect("configured cross-OS Linux plan");
         let args = args(&plan);
@@ -440,6 +455,7 @@ mod tests {
             &[],
             &[],
             std::path::Path::new("app"),
+            false,
         )
         .expect_err("unconfigured cross-OS link must fail");
 
@@ -458,6 +474,7 @@ mod tests {
             &[],
             &[],
             std::path::Path::new("app"),
+            false,
         )
         .expect_err("Windows link is outside this backend");
 
@@ -476,6 +493,7 @@ mod tests {
             &[PathBuf::from("main.o")],
             &[],
             std::path::Path::new("app"),
+            false,
         )
         .expect("explicit Darwin linker should remain authoritative");
 
@@ -494,9 +512,28 @@ mod tests {
             &[PathBuf::from("main.o")],
             &[],
             std::path::Path::new("app"),
+            false,
         )
         .expect_err("Darwin linking needs an SDK-matched default linker");
 
         assert!(error.contains("requires Apple Clang from xcrun"));
+    }
+
+    #[test]
+    fn coverage_link_plan_passes_profile_instr_generate() {
+        let plan = build_link_plan(
+            "arm64-apple-darwin25.5.0",
+            "arm64-apple-darwin25.5.0",
+            None,
+            None,
+            Some(std::path::Path::new("/SDKs/MacOSX.sdk")),
+            Some(std::path::Path::new("/Xcode/usr/bin/clang")),
+            &[PathBuf::from("main.o")],
+            &[],
+            std::path::Path::new("app"),
+            true,
+        )
+        .expect("coverage link plan");
+        assert!(args(&plan).contains(&"-fprofile-instr-generate".into()));
     }
 }

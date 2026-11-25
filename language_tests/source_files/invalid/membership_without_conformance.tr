@@ -1,0 +1,10 @@
+struct Point { x: int32; y: int32 }
+
+func main() {
+    point := Point { x: 1, y: 2 }
+    var value: int32 = 1
+    _ = value in point
+    _ = "a" !in [1, 2]
+    var maybe: int32? = 1
+    _ = 1 in maybe
+}

@@ -1,13 +1,10 @@
+import std::default::Default
 import std::hash::{Hashable, Hasher}
-import std::ops::PartialEq
+import std::ops::{PartialEq, Numeric, SignedNumeric}
 import std::cmp::{Ordering, PartialOrd, Ord}
 import std::optional::Optional
 import std::convert::{Parse, ParseError, ParseErrorKind}
 import std::result::Result
-
-func usizeMax() -> usize {
-    0xffffffffffffffff_u64 as usize
-}
 
 func integerDigitValue(_ byte: uint8) -> uint32 {
     if byte >= ('0' as uint8) && byte <= ('9' as uint8) {
@@ -456,32 +453,6 @@ conform usize to Ord {
     }
 }
 
-extend usize {
-    public func checkedAdd(_ rhs: usize) -> usize? {
-        if self > usizeMax() - rhs {
-            return .none
-        }
-        return .some(self + rhs)
-    }
-
-    public func checkedSub(_ rhs: usize) -> usize? {
-        if self < rhs {
-            return .none
-        }
-        return .some(self - rhs)
-    }
-
-    public func checkedMul(_ rhs: usize) -> usize? {
-        if self == 0 || rhs == 0 {
-            return .some(0 as usize)
-        }
-        if self > usizeMax() / rhs {
-            return .none
-        }
-        return .some(self * rhs)
-    }
-}
-
 conform int8 to Parse {
     public static func parse(_ input: string) -> Result[int8, ParseError] {
         int8::parseRadix(input, 10_u32)
@@ -684,4 +655,112 @@ extend usize {
             case .err(error) => .err(error)
         }
     }
+}
+
+// Default: zero.
+conform int8 to Default {
+    public static func default() -> int8 { 0 }
+}
+
+conform int16 to Default {
+    public static func default() -> int16 { 0 }
+}
+
+conform int32 to Default {
+    public static func default() -> int32 { 0 }
+}
+
+conform int64 to Default {
+    public static func default() -> int64 { 0 }
+}
+
+conform uint8 to Default {
+    public static func default() -> uint8 { 0 }
+}
+
+conform uint16 to Default {
+    public static func default() -> uint16 { 0 }
+}
+
+conform uint32 to Default {
+    public static func default() -> uint32 { 0 }
+}
+
+conform uint64 to Default {
+    public static func default() -> uint64 { 0 }
+}
+
+conform isize to Default {
+    public static func default() -> isize { 0 }
+}
+
+conform usize to Default {
+    public static func default() -> usize { 0 }
+}
+
+// Numeric conformances for primitive integers (built on builtin operator witnesses).
+
+conform int8 to Numeric {
+    @inline public static func zero() -> int8 { 0 }
+    @inline public static func one() -> int8 { 1 }
+}
+conform int8 to SignedNumeric {
+    @inline public func abs() -> int8 { checkedInt8Abs(self) }
+}
+
+conform int16 to Numeric {
+    @inline public static func zero() -> int16 { 0 }
+    @inline public static func one() -> int16 { 1 }
+}
+conform int16 to SignedNumeric {
+    @inline public func abs() -> int16 { checkedInt16Abs(self) }
+}
+
+conform int32 to Numeric {
+    @inline public static func zero() -> int32 { 0 }
+    @inline public static func one() -> int32 { 1 }
+}
+conform int32 to SignedNumeric {
+    @inline public func abs() -> int32 { checkedInt32Abs(self) }
+}
+
+conform int64 to Numeric {
+    @inline public static func zero() -> int64 { 0 }
+    @inline public static func one() -> int64 { 1 }
+}
+conform int64 to SignedNumeric {
+    @inline public func abs() -> int64 { checkedInt64Abs(self) }
+}
+
+conform isize to Numeric {
+    @inline public static func zero() -> isize { 0 }
+    @inline public static func one() -> isize { 1 }
+}
+conform isize to SignedNumeric {
+    @inline public func abs() -> isize { checkedIsizeAbs(self) }
+}
+
+conform uint8 to Numeric {
+    @inline public static func zero() -> uint8 { 0 }
+    @inline public static func one() -> uint8 { 1 }
+}
+
+conform uint16 to Numeric {
+    @inline public static func zero() -> uint16 { 0 }
+    @inline public static func one() -> uint16 { 1 }
+}
+
+conform uint32 to Numeric {
+    @inline public static func zero() -> uint32 { 0 }
+    @inline public static func one() -> uint32 { 1 }
+}
+
+conform uint64 to Numeric {
+    @inline public static func zero() -> uint64 { 0 }
+    @inline public static func one() -> uint64 { 1 }
+}
+
+conform usize to Numeric {
+    @inline public static func zero() -> usize { 0 }
+    @inline public static func one() -> usize { 1 }
 }

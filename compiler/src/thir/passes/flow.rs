@@ -22,6 +22,25 @@ pub fn run<'ctx>(package: &mut ThirPackage<'ctx>, gcx: GlobalContext<'ctx>) -> C
     Ok(())
 }
 
+pub(crate) fn check_function<'ctx>(func: &ThirFunction<'ctx>, gcx: GlobalContext<'ctx>) {
+    let mut pass = FlowPass::new(gcx);
+    pass.check_function(func);
+}
+
+pub(crate) fn check_const_initializer<'ctx>(
+    func: &ThirFunction<'ctx>,
+    output_ty: Ty<'ctx>,
+    gcx: GlobalContext<'ctx>,
+) {
+    let Some(body) = func.body else {
+        return;
+    };
+    let mut analyzer = FunctionAnalyzer::new_with_output(gcx, func, output_ty);
+    let initial = analyzer.initialized_params();
+    let result = analyzer.analyze_block(body, &initial, 0, true);
+    analyzer.check_function_completion(body, result);
+}
+
 struct FlowPass<'ctx> {
     gcx: GlobalContext<'ctx>,
     synthetic_definitions: FxHashSet<DefinitionID>,
@@ -93,6 +112,8 @@ struct FlowResult {
     returns: Option<InitSet>,
     breaks: Option<InitSet>,
     continues: Option<InitSet>,
+    labeled_breaks: FxHashMap<Symbol, InitSet>,
+    labeled_continues: FxHashMap<Symbol, InitSet>,
     poisoned: bool,
 }
 
@@ -111,18 +132,14 @@ impl FlowResult {
         }
     }
 
-    fn with_break(initialized: InitSet) -> Self {
-        Self {
-            breaks: Some(initialized),
-            ..Default::default()
+    fn with_continue(label: Option<Symbol>, initialized: InitSet) -> Self {
+        let mut res = Self::default();
+        if let Some(label) = label {
+            res.labeled_continues.insert(label, initialized);
+        } else {
+            res.continues = Some(initialized);
         }
-    }
-
-    fn with_continue(initialized: InitSet) -> Self {
-        Self {
-            continues: Some(initialized),
-            ..Default::default()
-        }
+        res
     }
 }
 
@@ -137,6 +154,21 @@ struct FunctionAnalyzer<'ctx, 'func> {
 
 impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
     fn new(gcx: GlobalContext<'ctx>, func: &'func ThirFunction<'ctx>) -> Self {
+        let output_ty = if func.constructor_self.is_some()
+            || gcx.generator_element_ty(func.id).is_some()
+        {
+            gcx.types.void
+        } else {
+            crate::sema::tycheck::utils::normalize_aliases(gcx, gcx.function_body_output(func.id))
+        };
+        Self::new_with_output(gcx, func, output_ty)
+    }
+
+    fn new_with_output(
+        gcx: GlobalContext<'ctx>,
+        func: &'func ThirFunction<'ctx>,
+        output_ty: Ty<'ctx>,
+    ) -> Self {
         let mut local_infos = FxHashMap::default();
         for param in &func.params {
             local_infos.insert(param.id, LocalInfo { name: param.name });
@@ -145,14 +177,7 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
         Self {
             gcx,
             func,
-            output_ty: if func.constructor_self.is_some() {
-                gcx.types.void
-            } else {
-                crate::sema::tycheck::utils::normalize_aliases(
-                    gcx,
-                    gcx.function_body_output(func.id),
-                )
-            },
+            output_ty: crate::sema::tycheck::utils::normalize_aliases(gcx, output_ty),
             local_infos,
             emitted_errors: FxHashSet::default(),
             emitted_warnings: FxHashSet::default(),
@@ -229,14 +254,24 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
             match current.clone() {
                 Some(state) => {
                     let stmt = self.func.stmts[stmt_id].clone();
-                    if let StmtKind::Defer(cleanup) = stmt.kind {
-                        cleanups.push(cleanup);
+                    if let StmtKind::Defer(kind, cleanup) = stmt.kind {
+                        if kind == crate::hir::DeferKind::Always {
+                            cleanups.push(cleanup);
+                        } else {
+                            // Only MIR has the actual Result tag and panic edges. Its
+                            // initialization pass checks reads on those cleanup paths.
+                            self.analyze_block(cleanup, &state, 0, false);
+                        }
                         continue;
                     }
 
                     let mut stmt_result =
                         self.analyze_stmt(stmt_id, &state, loop_depth, check_initialization);
-                    self.apply_active_cleanups_to_exits(&mut stmt_result, &cleanups);
+                    self.apply_active_cleanups_to_exits(
+                        &mut stmt_result,
+                        &cleanups,
+                        check_initialization,
+                    );
                     self.merge_child_into(&mut result, stmt_result, &mut current);
                 }
                 None => {
@@ -252,7 +287,11 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
                 Some(state) => {
                     let mut expr_result =
                         self.analyze_expr(expr_id, &state, loop_depth, check_initialization);
-                    self.apply_active_cleanups_to_exits(&mut expr_result, &cleanups);
+                    self.apply_active_cleanups_to_exits(
+                        &mut expr_result,
+                        &cleanups,
+                        check_initialization,
+                    );
                     self.merge_child_into(&mut result, expr_result, &mut current);
                 }
                 None => {
@@ -265,8 +304,12 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
 
         result.normal = current;
         for &cleanup in cleanups.iter().rev() {
-            result.normal =
-                self.apply_cleanup_to_exit(result.normal.take(), cleanup, &mut result.poisoned);
+            result.normal = self.apply_cleanup_to_exit(
+                result.normal.take(),
+                cleanup,
+                &mut result.poisoned,
+                check_initialization,
+            );
         }
         result
     }
@@ -280,18 +323,59 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
         aggregate.returns = merge_exit_states(aggregate.returns.take(), child.returns);
         aggregate.breaks = merge_exit_states(aggregate.breaks.take(), child.breaks);
         aggregate.continues = merge_exit_states(aggregate.continues.take(), child.continues);
+        merge_labeled_exit_states(&mut aggregate.labeled_breaks, child.labeled_breaks);
+        merge_labeled_exit_states(&mut aggregate.labeled_continues, child.labeled_continues);
         aggregate.poisoned |= child.poisoned;
         *current = child.normal;
     }
 
-    fn apply_active_cleanups_to_exits(&mut self, result: &mut FlowResult, cleanups: &[BlockId]) {
+    fn apply_active_cleanups_to_exits(
+        &mut self,
+        result: &mut FlowResult,
+        cleanups: &[BlockId],
+        check_initialization: bool,
+    ) {
         for &cleanup in cleanups.iter().rev() {
-            result.returns =
-                self.apply_cleanup_to_exit(result.returns.take(), cleanup, &mut result.poisoned);
-            result.breaks =
-                self.apply_cleanup_to_exit(result.breaks.take(), cleanup, &mut result.poisoned);
-            result.continues =
-                self.apply_cleanup_to_exit(result.continues.take(), cleanup, &mut result.poisoned);
+            result.returns = self.apply_cleanup_to_exit(
+                result.returns.take(),
+                cleanup,
+                &mut result.poisoned,
+                check_initialization,
+            );
+            result.breaks = self.apply_cleanup_to_exit(
+                result.breaks.take(),
+                cleanup,
+                &mut result.poisoned,
+                check_initialization,
+            );
+            result.continues = self.apply_cleanup_to_exit(
+                result.continues.take(),
+                cleanup,
+                &mut result.poisoned,
+                check_initialization,
+            );
+            let old_breaks = std::mem::take(&mut result.labeled_breaks);
+            for (label, state) in old_breaks {
+                if let Some(next) = self.apply_cleanup_to_exit(
+                    Some(state),
+                    cleanup,
+                    &mut result.poisoned,
+                    check_initialization,
+                ) {
+                    result.labeled_breaks.insert(label, next);
+                }
+            }
+            let old_continues = std::mem::take(&mut result.labeled_continues);
+            for (label, state) in old_continues {
+                if let Some(next) = self.apply_cleanup_to_exit(
+                    Some(state),
+                    cleanup,
+                    &mut result.poisoned,
+                    check_initialization,
+                ) {
+                    result.labeled_continues.insert(label, next);
+                }
+            }
         }
     }
 
@@ -300,17 +384,20 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
         state: Option<InitSet>,
         cleanup: BlockId,
         poisoned: &mut bool,
+        check_initialization: bool,
     ) -> Option<InitSet> {
         let Some(state) = state else {
             return None;
         };
 
-        let cleanup_result = self.analyze_block(cleanup, &state, 0, true);
+        let cleanup_result = self.analyze_block(cleanup, &state, 0, check_initialization);
         *poisoned |= cleanup_result.poisoned;
 
         if cleanup_result.returns.is_some()
             || cleanup_result.breaks.is_some()
             || cleanup_result.continues.is_some()
+            || !cleanup_result.labeled_breaks.is_empty()
+            || !cleanup_result.labeled_continues.is_empty()
         {
             *poisoned = true;
         }
@@ -351,6 +438,14 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
 
                 FlowResult::normal(initialized.clone())
             }
+            StmtKind::AsyncLet { local, closure, .. } => {
+                let mut result =
+                    self.analyze_expr(closure, initialized, loop_depth, check_initialization);
+                if let Some(normal) = result.normal.as_mut() {
+                    normal.insert(local);
+                }
+                result
+            }
             StmtKind::Return { value } => self.analyze_return(
                 value,
                 stmt.span,
@@ -358,18 +453,18 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
                 loop_depth,
                 check_initialization,
             ),
-            StmtKind::Break => {
+            StmtKind::Break { label, value } => self.analyze_break(
+                label,
+                value,
+                initialized,
+                loop_depth,
+                check_initialization,
+            ),
+            StmtKind::Continue { label } => {
                 if loop_depth == 0 {
                     FlowResult::terminated(true)
                 } else {
-                    FlowResult::with_break(initialized.clone())
-                }
-            }
-            StmtKind::Continue => {
-                if loop_depth == 0 {
-                    FlowResult::terminated(true)
-                } else {
-                    FlowResult::with_continue(initialized.clone())
+                    FlowResult::with_continue(label, initialized.clone())
                 }
             }
             StmtKind::Guard {
@@ -395,13 +490,15 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
                     returns: failed.returns,
                     breaks: failed.breaks,
                     continues: failed.continues,
+                    labeled_breaks: failed.labeled_breaks,
+                    labeled_continues: failed.labeled_continues,
                     poisoned: failed.poisoned,
                 };
                 merge_results(result, branches)
             }
             StmtKind::Defer(..) => FlowResult::normal(initialized.clone()),
-            StmtKind::Loop { block } => {
-                self.analyze_loop(block, initialized, loop_depth, check_initialization)
+            StmtKind::Loop { label, block } => {
+                self.analyze_loop(label, block, initialized, loop_depth, check_initialization)
             }
             StmtKind::Expr(expr_id) => {
                 self.analyze_expr(expr_id, initialized, loop_depth, check_initialization)
@@ -409,8 +506,43 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
         }
     }
 
+    fn analyze_break(
+        &mut self,
+        label: Option<Symbol>,
+        value: Option<ExprId>,
+        initialized: &InitSet,
+        loop_depth: usize,
+        check_initialization: bool,
+    ) -> FlowResult {
+        let mut result = if let Some(value) = value {
+            self.analyze_expr(value, initialized, loop_depth, check_initialization)
+        } else {
+            FlowResult::normal(initialized.clone())
+        };
+
+        let Some(state) = result.normal.take() else {
+            return result;
+        };
+
+        if loop_depth == 0 {
+            result.poisoned = true;
+            return result;
+        }
+
+        if let Some(label) = label {
+            let entry = result.labeled_breaks.remove(&label);
+            let merged = merge_exit_states(entry, Some(state)).expect("non-empty break state");
+            result.labeled_breaks.insert(label, merged);
+        } else {
+            result.breaks = merge_exit_states(result.breaks.take(), Some(state));
+        }
+
+        result
+    }
+
     fn analyze_loop(
         &mut self,
+        label: Option<Symbol>,
         block: BlockId,
         initialized: &InitSet,
         loop_depth: usize,
@@ -419,19 +551,26 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
         let mut entry_state = initialized.clone();
 
         loop {
-            let body_result =
+            let mut body_result =
                 self.analyze_block(block, &entry_state, loop_depth + 1, check_initialization);
-            let backedge_state =
-                merge_exit_states(body_result.normal.clone(), body_result.continues.clone());
+            let labeled_continue = label.and_then(|l| body_result.labeled_continues.remove(&l));
+            let matching_continues =
+                merge_exit_states(body_result.continues.take(), labeled_continue);
+            let backedge_state = merge_exit_states(body_result.normal.clone(), matching_continues);
             let next_entry = merge_exit_states(Some(initialized.clone()), backedge_state)
                 .expect("loop entry state should always include the initial entry");
 
             if next_entry == entry_state {
+                let labeled_break = label.and_then(|l| body_result.labeled_breaks.remove(&l));
+                let matching_breaks =
+                    merge_exit_states(body_result.breaks.take(), labeled_break);
                 return FlowResult {
-                    normal: body_result.breaks,
+                    normal: matching_breaks,
                     returns: body_result.returns,
                     breaks: None,
                     continues: None,
+                    labeled_breaks: body_result.labeled_breaks,
+                    labeled_continues: body_result.labeled_continues,
                     poisoned: body_result.poisoned,
                 };
             }
@@ -468,6 +607,8 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
             returns,
             breaks: result.breaks,
             continues: result.continues,
+            labeled_breaks: result.labeled_breaks,
+            labeled_continues: result.labeled_continues,
             poisoned: result.poisoned,
         }
     }
@@ -482,7 +623,7 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
         let expr = self.func.exprs[expr_id].clone();
 
         match expr.kind {
-            ExprKind::Local(id) => {
+            ExprKind::Local(id) | ExprKind::AwaitAsyncVar { local: id } => {
                 if check_initialization && !initialized.contains(&id) {
                     self.emit_error(self.uninitialized_local_message(id), expr.span);
                 }
@@ -523,18 +664,21 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
                 loop_depth,
                 check_initialization,
             ),
-            ExprKind::Break => {
-                if loop_depth == 0 {
-                    FlowResult::terminated(true)
-                } else {
-                    FlowResult::with_break(initialized.clone())
-                }
+            ExprKind::Loop { label, body } => {
+                self.analyze_loop(label, body, initialized, loop_depth, check_initialization)
             }
-            ExprKind::Continue => {
+            ExprKind::Break { label, value } => self.analyze_break(
+                label,
+                value,
+                initialized,
+                loop_depth,
+                check_initialization,
+            ),
+            ExprKind::Continue { label } => {
                 if loop_depth == 0 {
                     FlowResult::terminated(true)
                 } else {
-                    FlowResult::with_continue(initialized.clone())
+                    FlowResult::with_continue(label, initialized.clone())
                 }
             }
             ExprKind::Assign { target, value } => {
@@ -597,6 +741,28 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
                 loop_depth,
                 check_initialization,
             ),
+            ExprKind::Select { arms } => {
+                let mut result = self.analyze_expr_sequence(
+                    arms.iter().map(|arm| arm.closure),
+                    initialized,
+                    loop_depth,
+                    check_initialization,
+                );
+                let Some(base_state) = result.normal.take() else {
+                    return result;
+                };
+                let mut combined = FlowResult::default();
+                for arm in &arms {
+                    let mut arm_init = base_state.clone();
+                    for binding_id in self.pattern_binding_ids(&arm.pattern) {
+                        arm_init.insert(binding_id);
+                    }
+                    let arm_result =
+                        self.analyze_expr(arm.body, &arm_init, loop_depth, check_initialization);
+                    combined = merge_results(combined, arm_result);
+                }
+                merge_results(result, combined)
+            }
             ExprKind::Closure { captures, .. } => self.analyze_expr_sequence(
                 captures.into_iter().map(|capture| capture.capture_expr),
                 initialized,
@@ -605,6 +771,9 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
             ),
             ExprKind::Await { future } => {
                 self.analyze_expr(future, initialized, loop_depth, check_initialization)
+            }
+            ExprKind::Yield { value } => {
+                self.analyze_expr(value, initialized, loop_depth, check_initialization)
             }
         }
     }
@@ -866,7 +1035,16 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
         seen: &mut FxHashSet<NodeID>,
     ) {
         match &pattern.kind {
-            PatternKind::Wild | PatternKind::Constant { .. } => {}
+            PatternKind::Wild | PatternKind::Constant { .. } | PatternKind::Range(_) => {}
+            PatternKind::At { binding, pattern } => {
+                self.collect_pattern_bindings(binding, binding_ids, seen);
+                self.collect_pattern_bindings(pattern, binding_ids, seen);
+            }
+            PatternKind::TypeTest { binding, .. } => {
+                if let Some(binding) = binding {
+                    self.collect_pattern_bindings(binding, binding_ids, seen);
+                }
+            }
             PatternKind::Binding { name, local, .. } => {
                 self.local_infos
                     .entry(*local)
@@ -1011,13 +1189,28 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
     }
 }
 
-fn merge_results(lhs: FlowResult, rhs: FlowResult) -> FlowResult {
+fn merge_results(mut lhs: FlowResult, rhs: FlowResult) -> FlowResult {
+    merge_labeled_exit_states(&mut lhs.labeled_breaks, rhs.labeled_breaks);
+    merge_labeled_exit_states(&mut lhs.labeled_continues, rhs.labeled_continues);
     FlowResult {
         normal: merge_exit_states(lhs.normal, rhs.normal),
         returns: merge_exit_states(lhs.returns, rhs.returns),
         breaks: merge_exit_states(lhs.breaks, rhs.breaks),
         continues: merge_exit_states(lhs.continues, rhs.continues),
+        labeled_breaks: lhs.labeled_breaks,
+        labeled_continues: lhs.labeled_continues,
         poisoned: lhs.poisoned || rhs.poisoned,
+    }
+}
+
+fn merge_labeled_exit_states(
+    lhs: &mut FxHashMap<Symbol, InitSet>,
+    rhs: FxHashMap<Symbol, InitSet>,
+) {
+    for (label, state) in rhs {
+        let existing = lhs.remove(&label);
+        let merged = merge_exit_states(existing, Some(state)).expect("non-empty exit state");
+        lhs.insert(label, merged);
     }
 }
 

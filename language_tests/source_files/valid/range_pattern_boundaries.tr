@@ -1,0 +1,23 @@
+const MAX_VALUE: uint64 = 0xffffffffffffffff_u64
+const BEFORE_MAX: uint64 = MAX_VALUE - 1
+func tail(_ n: uint64) -> bool { n is BEFORE_MAX..=MAX_VALUE }
+func signed(_ n: int8) -> int32 {
+    match n {
+        case -128..0 => -1
+        case 0 => 0
+        case 1..=127 => 1
+    }
+}
+func strict(_ n: int8, _ first: bool) -> int32 {
+    match n {
+        case -5..=4 if first => 1
+        case 0..8 => 2
+        case _ => 3
+    }
+}
+func main() {
+    assert(tail(MAX_VALUE) && tail(BEFORE_MAX) && !tail(BEFORE_MAX - 1), "uint64 upper edge")
+    assert(signed(-128) == -1 && signed(0) == 0 && signed(127) == 1, "int8 ends")
+    assert(strict(0, true) == 1 && strict(0, false) == 2 && strict(-4, false) == 3, "guard order")
+    println("boundaries")
+}

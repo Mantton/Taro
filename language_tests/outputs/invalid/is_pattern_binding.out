@@ -1,0 +1,8 @@
+error: an `is` pattern cannot introduce a binding; use `if case` or `match` to bind the value
+ -> language_tests/source_files/invalid/is_pattern_binding.tr:2:57
+	func badTuple(_ value: Shape) -> bool { value is .circle(radius) }
+	                                                         ^^^^^^
+error: an `is` pattern cannot introduce a binding; use `if case` or `match` to bind the value
+ -> language_tests/source_files/invalid/is_pattern_binding.tr:3:56
+	func badField(_ value: Shape) -> bool { value is .box { size } }
+	                                                        ^^^^

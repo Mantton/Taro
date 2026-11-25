@@ -22,6 +22,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let mut block = self
             .lower_block_statements(mir_block, statements)
             .into_block();
+        // A closure body or a branch can also write the function's return value
+        // directly. Blocks evaluated into a binding or temporary exit normally.
+        let exit = if destination == Place::return_place() {
+            super::CleanupExit::Return
+        } else {
+            super::CleanupExit::Scope
+        };
         let dest_ty = self.body.place_ty(self.gcx, &destination);
 
         if let Some(expr) = self.thir.blocks[thir_block].expr {
@@ -41,8 +48,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             let next_block = self.new_block_with_note("after cleanup".into());
             let mut cache = FxHashMap::default();
             cache.insert(saved_cleanup, next_block);
-            let cleanup_block =
-                self.ensure_cleanup_path(from_cleanup, saved_cleanup, next_block, &mut cache);
+            let cleanup_block = self.cleanup_path_for_exit(
+                from_cleanup,
+                saved_cleanup,
+                next_block,
+                &mut cache,
+                exit,
+            );
             self.goto(block, cleanup_block, cleanup_span);
             block = next_block;
         }
@@ -183,11 +195,24 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 self.current_cleanup_scope = temporary_scope;
                 return block.unit();
             }
-            thir::StmtKind::Break => {
-                return self.record_break_edge(block, stmt.span);
+            thir::StmtKind::AsyncLet {
+                local: pat_id,
+                name,
+                ty,
+                closure,
+            } => {
+                let temporary_scope = self.current_cleanup_scope;
+                self.current_cleanup_scope = binding_scope;
+                block = self
+                    .lower_async_let(block, *pat_id, *name, *ty, *closure, stmt.span)
+                    .into_block();
+                self.current_cleanup_scope = temporary_scope;
             }
-            thir::StmtKind::Continue => {
-                return self.record_continue_edge(block, stmt.span);
+            thir::StmtKind::Break { label, value } => {
+                return self.record_break_edge(*label, *value, block, stmt.span);
+            }
+            thir::StmtKind::Continue { label } => {
+                return self.record_continue_edge(*label, block, stmt.span);
             }
             thir::StmtKind::Return { value } => {
                 let place = Place::from_local(self.body.return_local);
@@ -198,28 +223,23 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 }
                 return self.record_return_edge(block, stmt.span);
             }
-            thir::StmtKind::Loop { block: node, .. } => {
+            thir::StmtKind::Loop { label, block: node } => {
                 let loop_block = self.new_block_with_note("loop block".into());
                 self.goto(block, loop_block, stmt.span);
 
-                return self.in_breakable_scope(
-                    Some(loop_block),
-                    super::BreakExit::FreshBlock,
-                    stmt.span,
-                    |this| {
-                        let body_block = this.new_block_with_note("loop body block".into());
-                        this.terminate(
-                            loop_block,
-                            stmt.span,
-                            TerminatorKind::Goto { target: body_block },
-                        );
+                return self.in_loop_scope(*label, loop_block, None, stmt.span, |this| {
+                    let body_block = this.new_block_with_note("loop body block".into());
+                    this.terminate(
+                        loop_block,
+                        stmt.span,
+                        TerminatorKind::Goto { target: body_block },
+                    );
 
-                        let unit = this.unit_temp_place(stmt.span);
-                        let block = this.lower_block(unit, body_block, *node).into_block();
-                        this.goto(block, loop_block, stmt.span);
-                        None
-                    },
-                );
+                    let unit = this.unit_temp_place(stmt.span);
+                    let block = this.lower_block(unit, body_block, *node).into_block();
+                    this.goto(block, loop_block, stmt.span);
+                    None
+                });
             }
             thir::StmtKind::Guard {
                 condition,
@@ -243,10 +263,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 self.current_cleanup_scope = temporary_scope;
                 return success.unit();
             }
-            thir::StmtKind::Defer(block_id) => {
+            thir::StmtKind::Defer(kind, block_id) => {
                 let temporary_scope = self.current_cleanup_scope;
                 self.current_cleanup_scope = binding_scope;
-                self.push_defer_action(*block_id, stmt.span);
+                self.push_defer_action(*kind, *block_id, stmt.span);
                 self.current_cleanup_scope = temporary_scope;
             }
             thir::StmtKind::Expr(expr) => {
@@ -267,6 +287,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         mutable: bool,
     ) -> BlockAnd<()> {
         match &pattern.kind {
+            thir::PatternKind::At { binding, pattern } => {
+                block = self.bind_pattern_to_place(block, binding, place, mutable).into_block();
+                self.bind_pattern_to_place(block, pattern, place, mutable)
+            }
             thir::PatternKind::Wild => block.unit(),
             thir::PatternKind::Binding {
                 local: pat_id,
@@ -292,7 +316,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 }
                 block.unit()
             }
-            thir::PatternKind::Constant { .. } => block.unit(),
+            thir::PatternKind::TypeTest { .. }
+            | thir::PatternKind::Constant { .. } | thir::PatternKind::Range(_) => block.unit(),
             thir::PatternKind::Leaf { subpatterns } => {
                 let Some(base_place) = place else {
                     return block.unit();

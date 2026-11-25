@@ -1,0 +1,12 @@
+error: associated constant 'OVERLAP' is ambiguous on type 'Box[int64]'
+ -> language_tests/source_files/invalid/inherent_constant_selection.tr:8:40
+	func ambiguous() -> int32 { Box[int64]::OVERLAP }
+	                                        ^^^^^^^
+error: unknown associated symbol named 'WIDE' on type 'Box[bool]'
+ -> language_tests/source_files/invalid/inherent_constant_selection.tr:9:36
+	func missing() -> bool { Box[bool]::WIDE }
+	                                    ^^^^
+error: associated constant 'HIDDEN' is not visible on type 'Box[int64]'
+ -> language_tests/source_files/invalid/inherent_constant_selection.tr:10:36
+	func hidden() -> bool { Box[int64]::HIDDEN }
+	                                    ^^^^^^

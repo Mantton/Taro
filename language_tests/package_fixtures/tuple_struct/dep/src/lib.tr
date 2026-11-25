@@ -1,0 +1,6 @@
+public struct Id[T](T)
+public struct Pair[A, B](A, B)
+public func unwrap[T](_ id: Id[T]) -> T {
+    var Id(value) = id
+    return value
+}

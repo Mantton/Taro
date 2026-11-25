@@ -1,0 +1,8 @@
+error: no member named 'addAssign' found on type (int32, int32)
+ -> language_tests/source_files/invalid/syntax_sugar_tuple_compound.tr:2:35
+	func main() { var (a, b) = (1, 2); (a, b) += (3, 4); }
+	                                   ^^^^^^^^^^^^^^^^
+error: left-hand side of assignment is not assignable
+ -> language_tests/source_files/invalid/syntax_sugar_tuple_compound.tr:2:35
+	func main() { var (a, b) = (1, 2); (a, b) += (3, 4); }
+	                                   ^^^^^^

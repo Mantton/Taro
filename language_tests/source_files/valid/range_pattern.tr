@@ -1,0 +1,22 @@
+const PASS: uint8 = 80
+const HIGH: uint8 = 90
+func grade(_ value: uint8) -> int32 {
+    match value {
+        case HIGH..=100 => 3
+        case PASS..HIGH => 2
+        case 0..PASS => 1
+        case _ => 0
+    }
+}
+func letter(_ c: rune) -> bool {
+    match c {
+        case 'a'..='z' | 'A'..='Z' | '_' => true
+        case _ => false
+    }
+}
+func main() {
+    assert(grade(0) == 1 && grade(79) == 1 && grade(80) == 2, "lower endpoints")
+    assert(grade(89) == 2 && grade(90) == 3 && grade(100) == 3 && grade(101) == 0, "upper endpoints")
+    assert(letter('a') && letter('Z') && letter('_') && !letter('0'), "rune alternatives")
+    println("ranges")
+}

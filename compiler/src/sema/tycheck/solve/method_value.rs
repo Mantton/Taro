@@ -39,6 +39,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 candidate_ty: data.candidate_ty,
                 call_info,
                 instantiation_args: arguments,
+                published_projections: Vec::new(),
             }),
             None => Goal::BindOverload(BindOverloadGoalData {
                 static_owner: None,
@@ -91,10 +92,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
         };
         let gcx = self.gcx();
         let generics = gcx.generics_of(data.source);
-        if explicit.arguments.len() > generics.parameters.len() {
+        if explicit.arguments.len() > generics.explicit_parameter_count() {
             return Err(TypeError::ExplicitMethodArguments(format!(
                 "excess method generic arguments: expected at most {}, provided {}",
-                generics.parameters.len(),
+                generics.explicit_parameter_count(),
                 explicit.arguments.len()
             )));
         }

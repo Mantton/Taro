@@ -1,0 +1,86 @@
+import std::testing::assertEqual
+
+enum Mode {
+    case fast
+    case safe
+}
+
+enum Entry {
+    case empty
+    case value(int32)
+}
+
+const DEFAULT_MODE: Mode = .safe
+
+const func modeCode(_ m: Mode) -> int32 {
+    return match m {
+        case .fast => 1
+        case .safe => 2
+    }
+}
+
+const func pickMode(_ fast: bool) -> Mode {
+    if fast {
+        return .fast
+    }
+    return .safe
+}
+
+const func unwrapOrDefault(_ x: int32) -> int32 {
+    entry := if x > 0 { Entry::value(x * 3) } else { Entry::empty }
+    if case .value(v) = entry {
+        return v
+    }
+    return -1
+}
+
+const func arrayLen() -> usize {
+    return 4
+}
+
+const CODE: int32 = modeCode(DEFAULT_MODE)
+const PICKED_MODE: Mode = pickMode(true)
+const PICKED_CODE: int32 = modeCode(PICKED_MODE)
+const INLINE_MATCH: int32 = match DEFAULT_MODE {
+    case .fast => 10
+    case .safe => 20
+}
+const PAYLOAD_HIT: int32 = unwrapOrDefault(5)
+const PAYLOAD_MISS: int32 = unwrapOrDefault(0)
+const COMPUTED_LEN: usize = arrayLen()
+
+struct FixedBuf {
+    data: [int32; arrayLen()]
+}
+
+struct SizedBox[const N: usize] {
+    items: [int32; N]
+}
+
+func main() {
+    assertEqual(CODE, 2, "const match on unit enum constant")
+    assertEqual(PICKED_CODE, 1, "const func returning unit enum variant")
+    assertEqual(INLINE_MATCH, 20, "const initializer match expression")
+    assertEqual(PAYLOAD_HIT, 15, "if case payload enum match in const func")
+    assertEqual(PAYLOAD_MISS, -1, "if case empty branch in const func")
+
+    var direct: [int32; arrayLen()] = [1, 2, 3, 4]
+    assertEqual(direct.len(), 4 as usize, "direct const func call in array length")
+    assertEqual(direct[3], 4, "direct array element")
+
+    var exprLen: [int32; arrayLen() + 2] = [10, 20, 30, 40, 50, 60]
+    assertEqual(exprLen.len(), 6 as usize, "const func arithmetic in array length")
+
+    var viaConst: [int32; COMPUTED_LEN] = [5, 6, 7, 8]
+    assertEqual(viaConst.len(), 4 as usize, "const from const func in array length")
+
+    buf := FixedBuf { data: [9, 8, 7, 6] }
+    assertEqual(buf.data[0], 9, "const func array length in struct field")
+
+    var repeated: [int32; arrayLen()] = [7; arrayLen()]
+    assertEqual(repeated[0], 7, "const func call in array repeat count")
+    assertEqual(repeated[3], 7, "const func call repeat last element")
+
+    var boxed: SizedBox[4] = SizedBox[4] { items: [11; COMPUTED_LEN] }
+    assertEqual(boxed.items[2], 11, "const from const func in repeat count")
+}

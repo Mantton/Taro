@@ -1,0 +1,5 @@
+enum RawOnly: RawValue[uint8] { case first }
+enum CasesOnly: CaseIterable { case first }
+func missingCases() { for item in RawOnly::ALL_CASES { println("unexpected") } }
+func missingRaw() -> uint8 { CasesOnly::first.rawValue }
+func main() {}

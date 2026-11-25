@@ -1,6 +1,47 @@
 use super::*;
 
 impl<'ctx> Checker<'ctx> {
+    pub(super) fn synth_yield_expression(
+        &self,
+        inner: &hir::Expression,
+        span: Span,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        let gcx = self.gcx();
+
+        if self.defer_depth.get() > 0 {
+            gcx.dcx().emit_error(
+                "`yield` is not allowed inside a defer block".into(),
+                Some(span),
+            );
+            let _ = self.synth_with_expectation(inner, None, cs);
+            return gcx.types.void;
+        }
+
+        let Some(element_ty) = self.generator_element_ty.get() else {
+            gcx.dcx().emit_error(
+                "`yield` is only allowed in a generator function returning `some Iterator[Element = T]`"
+                    .into(),
+                Some(span),
+            );
+            let _ = self.synth_with_expectation(inner, None, cs);
+            return Ty::error(gcx);
+        };
+
+        let val_ty = self.synth_with_expectation(inner, Some(element_ty), cs);
+        if !val_ty.is_error() && !element_ty.is_error() {
+            cs.add_goal(
+                Goal::Coerce {
+                    node_id: inner.id,
+                    from: val_ty,
+                    to: element_ty,
+                },
+                inner.span,
+            );
+        }
+        gcx.types.void
+    }
+
     pub(super) fn synth_await_expression(
         &self,
         inner: &hir::Expression,
@@ -34,8 +75,7 @@ impl<'ctx> Checker<'ctx> {
             self.await_scopes.borrow_mut().remove(&inner.id);
             return Ty::error(gcx);
         }
-        cs.solve_intermediate();
-        let future_ty = cs.infer_cx.resolve_vars_if_possible(future_ty);
+        let future_ty = cs.solve_producers(future_ty);
 
         // An async function may return a Task as an ordinary ready value.
         // Reject implicit waiting on a stored task, not such calls.
@@ -49,7 +89,12 @@ impl<'ctx> Checker<'ctx> {
                     .iter()
                     .any(|call| self.resolved_async_call_status(*call, Some(cs)) == Some(true))
             });
-        if self.task_inner_type(future_ty).is_some() && !has_async {
+        let future_ty = if has_async {
+            future_ty
+        } else {
+            cs.resolve_projection_head(future_ty)
+        };
+        if !has_async && self.task_inner_type(future_ty).is_some() {
             self.await_scopes.borrow_mut().remove(&inner.id);
             gcx.dcx().emit_error(
                 "use `await task.result()` to await a `Task[T]`".into(),
@@ -81,13 +126,28 @@ impl<'ctx> Checker<'ctx> {
         if operand_ty.is_error() {
             return Ty::error(gcx);
         }
-        cs.solve_intermediate();
-
-        // Propagation compares the concrete error contracts, not their
-        // unresolved associated-type spelling. Use the same structural
-        // normalization as coercion so conditional generic witnesses can turn
-        // `Concrete[T].Error` into the implementation's declared error type.
-        let operand_ty = cs.structurally_resolve(operand_ty);
+        // Inspect the normalized error contract while keeping unrelated
+        // literals open for the expression surrounding the propagation.
+        let operand_ty = cs.solve_for_structure(operand_ty);
+        if self.has_active_deferred_return_scope() {
+            if let Some((_, inner_ty)) = self.optional_inner_type(operand_ty) {
+                self.record_deferred_propagation_site(expression.id, None, expression.span);
+                return inner_ty;
+            }
+            if let Some((_, ok_ty, err_ty)) = self.result_inner_types(operand_ty) {
+                self.record_deferred_propagation_site(expression.id, Some(err_ty), expression.span);
+                return ok_ty;
+            }
+            gcx.dcx().emit_error(
+                format!(
+                    "postfix `!` requires an Optional or Result value, found '{}'",
+                    cs.format_rejected_operand(operand_ty)
+                )
+                .into(),
+                Some(inner.span),
+            );
+            return Ty::error(gcx);
+        }
         let Some(return_ty) = self.return_ty.get() else {
             gcx.dcx().emit_error(
                 "postfix `!` requires an enclosing Optional or Result return type".into(),
@@ -137,6 +197,44 @@ impl<'ctx> Checker<'ctx> {
                 return ok_ty;
             }
 
+            // A concrete error propagates into an existential error type such
+            // as `any Error` by boxing, exactly as returning it would. No
+            // `From` conformance can be written for an existential, so this
+            // never shadows a user-defined conversion.
+            if let TyKind::BoxedExistential { interfaces } = resolved_return_err.kind()
+                && !matches!(
+                    resolved_operand_err.kind(),
+                    TyKind::BoxedExistential { .. }
+                )
+            {
+                for interface in interfaces.iter() {
+                    let interface = crate::sema::impl_engine::ref_ops::interface_ref_with_self(
+                        gcx,
+                        resolved_operand_err,
+                        *interface,
+                    );
+                    cs.add_goal(
+                        Goal::Conforms {
+                            ty: resolved_operand_err,
+                            interface,
+                        },
+                        expression.span,
+                    );
+                }
+                self.results
+                    .borrow_mut()
+                    .record_result_propagation_conversion(
+                        expression.id,
+                        crate::sema::tycheck::results::ResultPropagationConversion {
+                            kind: crate::sema::tycheck::results::ResultPropagationConversionKind::BoxExistential {
+                                interfaces,
+                            },
+                            target_ty: resolved_return_err,
+                        },
+                    );
+                return ok_ty;
+            }
+
             let Some(from_id) = gcx.std_item_def(hir::StdItem::From) else {
                 gcx.dcx().emit_error(
                     "Result error conversion requires the standard library From interface".into(),
@@ -181,8 +279,10 @@ impl<'ctx> Checker<'ctx> {
                 .record_result_propagation_conversion(
                     expression.id,
                     crate::sema::tycheck::results::ResultPropagationConversion {
-                        method_id: from_method_id,
-                        generic_args,
+                        kind: crate::sema::tycheck::results::ResultPropagationConversionKind::From {
+                            method_id: from_method_id,
+                            generic_args,
+                        },
                         target_ty: resolved_return_err,
                     },
                 );
@@ -192,7 +292,7 @@ impl<'ctx> Checker<'ctx> {
         gcx.dcx().emit_error(
             format!(
                 "postfix `!` requires an Optional or Result value, found '{}'",
-                operand_ty.format(gcx)
+                cs.format_rejected_operand(operand_ty)
             )
             .into(),
             Some(inner.span),
@@ -366,7 +466,7 @@ impl<'ctx> Checker<'ctx> {
                     .iter()
                     .map(|call| self.resolved_async_call_status(*call, Some(cs)))
                     .collect();
-                if statuses.contains(&Some(true)) {
+                if statuses.contains(&Some(true)) || scope.suppress_unused_warning {
                     Some((*id, scope.span, true))
                 } else if statuses.iter().all(|status| *status == Some(false)) {
                     Some((*id, scope.span, false))
@@ -514,19 +614,6 @@ impl<'ctx> Checker<'ctx> {
     }
 
     pub(super) fn mk_optional_type(&self, inner: Ty<'ctx>) -> (Ty<'ctx>, GenericArguments<'ctx>) {
-        let gcx = self.gcx();
-        let opt_id = gcx
-            .std_item_def(hir::StdItem::Optional)
-            .expect("Optional type must exist");
-        let enum_def = gcx.get_enum_definition(opt_id);
-        let args = gcx
-            .store
-            .interners
-            .intern_generic_args(vec![GenericArgument::Type(inner)]);
-        let opt_ty = gcx
-            .store
-            .interners
-            .intern_ty(TyKind::Adt(enum_def.adt_def, args));
-        (opt_ty, args)
+        inner.optional(self.gcx())
     }
 }

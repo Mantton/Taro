@@ -1,0 +1,27 @@
+// A closure with inferred parameters, passed to a generic initializer of a
+// generic type, is boxed inside the initializer. The solver saw its inputs as
+// inference variables, so no call adapter was registered and the box trapped.
+final class Holder[T] { callback: any Fn(T, T) -> bool }
+extend[T] Holder[T] {
+    init[F: Fn(T, T) -> bool](wrapping f: F) { self.callback = f }
+    func compare(_ a: T, _ b: T) -> bool { self.callback(a, b) }
+}
+
+struct Boxed[T] { value: bool }
+extend[T] Boxed[T] {
+    init[F: Fn(T, T) -> bool](wrapping f: F, _ a: T, _ b: T) {
+        var boxed: any Fn(T, T) -> bool = f
+        self.value = boxed(a, b)
+    }
+}
+
+func main() {
+    holder := Holder[int32](wrapping: (a, b) => a > b)
+    assert(holder.compare(2, 1) && !holder.compare(1, 2), "class generic initializer")
+    boxed := Boxed[int32](wrapping: (a, b) => a < b, 1, 2)
+    assert(boxed.value, "struct generic initializer")
+    var calls = 0
+    counted := Holder[string](wrapping: (a, b) => { calls += 1; a.byteLen() > b.byteLen() })
+    std::runtime::collect()
+    assert(counted.compare("abc", "a") && calls == 1, "captured state survives collection")
+}

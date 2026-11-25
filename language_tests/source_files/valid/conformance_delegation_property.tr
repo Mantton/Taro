@@ -1,0 +1,11 @@
+interface Named { var name: string { get }; }
+struct Detail { name: string }
+conform Detail to Named {}
+struct Wrapper { inner: Detail }
+conform Wrapper to Named by self.inner {}
+func read[N: Named](_ named: N) -> string { named.name }
+func main() {
+    var wrapper = Wrapper { inner: Detail { name: "name" } }
+    assert(read(wrapper) == wrapper.name, "forwarded getter")
+    println("property")
+}

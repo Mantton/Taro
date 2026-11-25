@@ -1,0 +1,45 @@
+struct Box[T] { value: T, measure: () -> usize }
+
+interface Measure {
+    func measure() -> usize
+}
+conform Box[int32] to Measure {
+    func measure() -> usize { 32 }
+}
+func stored() -> usize { 64 }
+
+struct Borrowed[T] { value: T, measure: () -> usize }
+conform &Borrowed[int32] to Measure {
+    func measure() -> usize { 31 }
+}
+
+struct Shared[T] { value: T, duplicate: () -> usize }
+interface Duplicate {
+    func duplicate() -> Self
+}
+conform[T] Shared[T] to Duplicate {
+    func duplicate() -> Self { self }
+}
+
+struct Plain[T] { value: T, echo: (T) -> T }
+func echoWide(_ number: int64) -> int64 { number }
+
+func main() {
+    literal := Box { value: 0, measure: stored }.measure()
+    typed := Box[int32] { value: 0, measure: stored }.measure()
+    wide := Box[int64] { value: 0, measure: stored }.measure()
+    later := () => {
+        box := Box { value: 0, measure: stored }
+        x := box.measure()
+        var _typed: Box[int64] = box
+        x
+    }
+    field := Box[int32] { value: 0, measure: stored }.measure
+    borrowed := () => {
+        var box = Borrowed { value: 0, measure: stored }
+        box.measure()
+    }
+    var repeated: Shared[int64] = Shared { value: 5000000000, duplicate: stored }.duplicate()
+    generic := Plain { value: 5000000000, echo: echoWide }.echo(5000000000_i64)
+    println("${literal} ${typed} ${wide} ${later()} ${field()} ${generic} ${borrowed()} ${repeated.value}")
+}

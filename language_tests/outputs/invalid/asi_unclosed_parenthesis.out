@@ -1,0 +1,4 @@
+error: expected `,` or `)`, found `other`
+ -> language_tests/source_files/invalid/asi_unclosed_parenthesis.tr:7:4
+	    other := 3
+	    ^^^^^

@@ -110,12 +110,12 @@ pub(super) fn run<'ctx>(
                 else {
                     continue;
                 };
-                if !default_args.is_empty()
-                    || !matches!(function.exprs[default_callee].kind,
+                if !matches!(function.exprs[default_callee].kind,
                     ExprKind::Zst {id,..} if id==original_provider)
                 {
                     continue;
                 }
+                let mut forwarded = default_args.clone();
                 let provider = adapter_signature.inputs[index].default_provider.unwrap();
                 let opened =
                     gcx.erased_default(adapter, provider, gcx.generics_of(adapter).parent_count);
@@ -136,11 +136,12 @@ pub(super) fn run<'ctx>(
                     },
                     Ty::from_labeled_signature(gcx, &signature),
                 );
+                forwarded.insert(0, borrowed);
                 args[index] = push(
                     function,
                     ExprKind::Call {
                         callee,
-                        args: vec![borrowed],
+                        args: forwarded,
                         argument_evaluation_order: None,
                         is_async: false,
                     },

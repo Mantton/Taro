@@ -1,0 +1,2 @@
+public func repeatValue(_ value: @lazy int32) -> int32 { value() * 10 + value() }
+public func ignore(_ value: @lazy int32) -> int32 { 0 }

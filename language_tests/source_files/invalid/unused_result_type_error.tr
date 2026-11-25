@@ -1,0 +1,7 @@
+// A statement with a type error reports only the error, not an unused Result.
+// EXPECT_STDERR_NOT_CONTAINS: unused 'Result
+func fails(_ value: int32) -> Result[int32, string] { .ok(value) }
+
+func main() {
+    fails("text")
+}

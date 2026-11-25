@@ -1,0 +1,4 @@
+error: no member named 'measure' found on type Box[int32]
+ -> language_tests/source_files/invalid/specialized_property_requires_width.tr:8:8
+	    _ = Box { value: 0 }.measure
+	        ^^^^^^^^^^^^^^^^^^^^^^^^

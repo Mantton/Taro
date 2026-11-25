@@ -794,6 +794,7 @@ fn body_inline_cost(gcx: Gcx<'_>, body: &Body<'_>) -> usize {
                 | TerminatorKind::Unreachable => 1,
                 TerminatorKind::Goto { .. }
                 | TerminatorKind::Yield { .. }
+                | TerminatorKind::GeneratorYield { .. }
                 | TerminatorKind::UnresolvedGoto => 0,
             });
         }
@@ -973,6 +974,17 @@ fn remap_terminator<'ctx>(
                 CallUnwindAction::Terminate => CallUnwindAction::Terminate,
             },
         },
+        TerminatorKind::GeneratorYield {
+            value,
+            resume,
+            cancel,
+            cancel_complete,
+        } => TerminatorKind::GeneratorYield {
+            value: remap_operand(gcx, value, local_map, gen_args),
+            resume: block_map[resume.index()],
+            cancel: block_map[cancel.index()],
+            cancel_complete: block_map[cancel_complete.index()],
+        },
     };
     Terminator {
         kind,
@@ -1052,6 +1064,9 @@ fn remap_constant<'ctx>(
     let ty = instantiate_mono_ty(gcx, c.ty, gen_args);
     let value = match &c.value {
         ConstantKind::Function(..) => unreachable!("function handled in its own index space"),
+        ConstantKind::InterfaceConstant(id, args) => {
+            ConstantKind::InterfaceConstant(*id, instantiate_generic_args(gcx, *args, gen_args))
+        }
         // Const parameters need to be substituted with their concrete values
         ConstantKind::ConstParam(param) => {
             if let Some(arg) = gen_args.get(param.index) {
@@ -1096,6 +1111,8 @@ fn sema_const_value_to_mir(val: crate::sema::models::ConstValue) -> Option<Const
         ConstValue::Bool(b) => ConstantKind::Bool(b),
         ConstValue::Rune(r) => ConstantKind::Rune(r),
         ConstValue::String(s) => ConstantKind::String(s),
+        ConstValue::Bytes(s) => ConstantKind::Bytes(s),
+        ConstValue::Array(arr) => ConstantKind::ConstArray(arr),
         ConstValue::Float(f) => ConstantKind::Float(f),
         ConstValue::Unit => ConstantKind::Unit,
         ConstValue::EnumUnitVariant(_) => return None,

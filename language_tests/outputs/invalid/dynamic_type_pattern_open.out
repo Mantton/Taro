@@ -1,0 +1,8 @@
+error: non-exhaustive match, missing '_' case
+ -> language_tests/source_files/invalid/dynamic_type_pattern_open.tr:2:4
+    match boxed {
+    ^^^^^^^^^^^^^
+        case is int32 => true
+        case is string => false
+    }
+     ^

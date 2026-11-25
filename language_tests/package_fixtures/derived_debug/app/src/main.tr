@@ -1,0 +1,11 @@
+import dep::{Version, Channel, Tagged, describe}
+import std::fmt::debugString
+
+func main() {
+    println(debugString(Version { major: 1, minor: 2 }))
+    println(debugString(Channel::beta(3)))
+    println(debugString(Channel::nightly { build: 7 }))
+    println(describe(Tagged { value: Channel::stable, tag: "t" }))
+    var versions: [Version] = [Version { major: 0, minor: 9 }]
+    println(describe(versions))
+}

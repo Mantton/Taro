@@ -1,0 +1,4 @@
+error: cannot assign through a `*const` pointer
+ -> language_tests/source_files/invalid/syntax_sugar_tuple_const_pointer.tr:2:46
+	func set(_ pointer: *const int32) { unsafe { (*pointer,) = (2,); } }
+	                                              ^^^^^^^^

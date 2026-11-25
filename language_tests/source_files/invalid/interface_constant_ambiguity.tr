@@ -1,0 +1,10 @@
+interface Left { const INDEX: int32 = 1; private const HIDDEN: int32 = 0; }
+interface Right { const INDEX: int32 = 2; }
+interface Slot[T] { const ITEM: int32 = 0; }
+struct Both: Left, Right, Slot[uint8], Slot[uint16] {}
+func ambiguous[T: Left & Right](_ value: T) -> int32 { T::INDEX }
+func main() {
+    println("${Both::INDEX}")
+    println("${Both::ITEM}")
+    println("${Both::HIDDEN}")
+}

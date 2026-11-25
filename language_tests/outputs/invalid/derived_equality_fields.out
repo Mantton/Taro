@@ -1,8 +1,4 @@
-error: type 'Container' does not satisfy requirements for interface 'PartialEq[Container]'
- -> language_tests/source_files/invalid/derived_equality_fields.tr:3:18
-	struct Container: PartialEq { value: NoEquality }
-	                  ^^^^^^^^^
-info: missing required method 'eq' with signature '(Self, Rhs) -> bool'
+error: cannot derive 'PartialEq' for 'Container': field 'value' has type 'NoEquality', which does not conform to 'PartialEq'
  -> language_tests/source_files/invalid/derived_equality_fields.tr:3:18
 	struct Container: PartialEq { value: NoEquality }
 	                  ^^^^^^^^^

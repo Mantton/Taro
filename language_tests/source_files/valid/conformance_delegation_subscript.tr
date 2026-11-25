@@ -1,0 +1,15 @@
+interface Indexed {
+    subscript(index: usize) -> int32 { get }
+}
+struct Inner { value: int32 }
+conform Inner to Indexed {
+    subscript(index: usize) -> int32 { get { self.value } }
+}
+struct Outer { inner: Inner }
+conform Outer to Indexed by self.inner {}
+func read[T: Indexed](_ value: T) -> int32 { value[0 as usize] }
+func main() {
+    var outer = Outer { inner: Inner { value: 16 } }
+    assert(read(outer) == 16 && outer[0 as usize] == 16, "delegated subscript")
+    println("subscript")
+}

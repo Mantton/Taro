@@ -1,6 +1,8 @@
 import std::panic::panic
-import std::ops::Fn
+import std::ops::{Fn, PartialEq}
 import std::optional::Optional
+import std::hash::{Hashable, Hasher}
+import std::cmp::{Ord, Ordering, PartialOrd}
 
 /// A result value that represents either success or failure.
 ///
@@ -199,4 +201,51 @@ public func Ok[V, E](_ value: V) -> Result[V, E] {
 /// Convenience function to create an Err result.
 public func Err[V, E](_ error: E) -> Result[V, E] {
     .err(error)
+}
+
+conform[Value: PartialEq, Error: PartialEq] Result[Value, Error] to PartialEq {
+    public func eq(_ other: Result[Value, Error]) -> bool {
+        match (self, other) {
+            case (.ok(a), .ok(b)) => a == b
+            case (.err(a), .err(b)) => a == b
+            case _ => false
+        }
+    }
+}
+
+conform[Value: Hashable, Error: Hashable] Result[Value, Error] to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
+        match self {
+            case .ok(value) => {
+                0_u8.hash(into: hasher)
+                value.hash(into: hasher)
+            }
+            case .err(error) => {
+                1_u8.hash(into: hasher)
+                error.hash(into: hasher)
+            }
+        }
+    }
+}
+
+conform[Value: PartialOrd, Error: PartialOrd] Result[Value, Error] to PartialOrd {
+    public func partialCmp(_ other: Result[Value, Error]) -> Optional[Ordering] {
+        match (self, other) {
+            case (.ok(a), .ok(b)) => a.partialCmp(b)
+            case (.ok(_), .err(_)) => .some(.less)
+            case (.err(_), .ok(_)) => .some(.greater)
+            case (.err(a), .err(b)) => a.partialCmp(b)
+        }
+    }
+}
+
+conform[Value: Ord, Error: Ord] Result[Value, Error] to Ord {
+    public func cmp(_ other: Result[Value, Error]) -> Ordering {
+        match (self, other) {
+            case (.ok(a), .ok(b)) => a.cmp(b)
+            case (.ok(_), .err(_)) => .less
+            case (.err(_), .ok(_)) => .greater
+            case (.err(a), .err(b)) => a.cmp(b)
+        }
+    }
 }

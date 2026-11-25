@@ -1,0 +1,717 @@
+import std::cmp::{Ord, Ordering, PartialOrd}
+import std::collections::{BTreeMap, BTreeSet, Dictionary, Set}
+import std::default::Default
+import std::fmt::debugString
+import std::iter::{Iterable, Iterator}
+import std::marker::Clone
+import std::ops::PartialEq
+import std::testing::{assertEqual, assertFalse, assertTrue}
+import std::weak::Weak
+
+func btreeNextRand(_ state: &uint64) -> uint64 {
+    *state = (*state).wrappingMul(6364136223846793005_u64).wrappingAdd(1442695040888963407_u64)
+    *state
+}
+
+struct BTreeCloneValue {
+    id: int32
+}
+
+conform BTreeCloneValue to PartialEq {
+    func eq(_ other: BTreeCloneValue) -> bool { self.id == other.id }
+}
+
+conform BTreeCloneValue to Clone {
+    func clone() -> BTreeCloneValue { BTreeCloneValue { id: self.id + 1000 } }
+}
+
+struct BTreeGcValue {
+    tag: int32
+}
+
+struct BTreeGcKey {
+    id: int32
+}
+
+struct BTreeGcKeyHandle {
+    target: &BTreeGcKey
+}
+
+conform BTreeGcKeyHandle to PartialEq {
+    func eq(_ other: BTreeGcKeyHandle) -> bool { self.target.id == other.target.id }
+}
+
+conform BTreeGcKeyHandle to PartialOrd {
+    func partialCmp(_ other: BTreeGcKeyHandle) -> Ordering? { .some(self.target.id.cmp(other.target.id)) }
+}
+
+conform BTreeGcKeyHandle to Ord {
+    func cmp(_ other: BTreeGcKeyHandle) -> Ordering { self.target.id.cmp(other.target.id) }
+}
+
+@noinline
+func insertBTreeGcPair(
+    _ map: BTreeMap[BTreeGcKeyHandle, &BTreeGcValue],
+    _ id: int32,
+) -> (Weak[BTreeGcKey], Weak[BTreeGcValue]) {
+    key := BTreeGcKey { id: id }
+    keyRef := &key
+    val := BTreeGcValue { tag: id * 10 }
+    valRef := &val
+    var _ = map.insert(key: BTreeGcKeyHandle { target: keyRef }, value: valRef)
+    (Weak[BTreeGcKey]::new(keyRef), Weak[BTreeGcValue]::new(valRef))
+}
+
+@noinline
+func removeBTreeGcId(_ map: BTreeMap[BTreeGcKeyHandle, &BTreeGcValue], _ id: int32) {
+    probeVal := BTreeGcKey { id: id }
+    probe := BTreeGcKeyHandle { target: &probeVal }
+    var _ = map.remove(&probe)
+}
+
+@noinline
+func popBTreeGcEnds(_ map: BTreeMap[BTreeGcKeyHandle, &BTreeGcValue]) {
+    var _ = map.popFirst()
+    var _ = map.popLast()
+}
+
+struct BTreeMutatingKey {
+    id: int32
+    target: BTreeMap[BTreeMutatingKey, int32]?
+}
+
+conform BTreeMutatingKey to PartialEq {
+    func eq(_ other: BTreeMutatingKey) -> bool { self.id == other.id }
+}
+
+conform BTreeMutatingKey to PartialOrd {
+    func partialCmp(_ other: BTreeMutatingKey) -> Ordering? { .some(self.cmp(other)) }
+}
+
+conform BTreeMutatingKey to Ord {
+    func cmp(_ other: BTreeMutatingKey) -> Ordering {
+        match self.target {
+            case .some(m) => {
+                m.set(key: BTreeMutatingKey { id: 999, target: .none }, value: 1)
+            }
+            case .none => {}
+        }
+        match other.target {
+            case .some(m) => {
+                m.set(key: BTreeMutatingKey { id: 999, target: .none }, value: 1)
+            }
+            case .none => {}
+        }
+        self.id.cmp(other.id)
+    }
+}
+
+@test
+func testBTreeMapEmptyAndSingleton() {
+    empty := BTreeMap[int32, string]::new()
+    assertTrue(empty.isEmpty(), "new BTreeMap is empty")
+    assertEqual(empty.len(), 0 as usize, "new BTreeMap len is 0")
+    assertTrue(empty.get(&1).isNone(), "empty get returns none")
+    assertFalse(empty.contains(&1), "empty contains returns false")
+    assertFalse(1 in empty, "empty Contains returns false")
+    assertEqual(empty.getOr(&1, default: "fallback"), "fallback", "empty getOr returns default")
+    assertTrue(empty.first().isNone(), "empty first is none")
+    assertTrue(empty.last().isNone(), "empty last is none")
+    assertTrue(empty.firstKey().isNone(), "empty firstKey is none")
+    assertTrue(empty.lastKey().isNone(), "empty lastKey is none")
+    assertTrue(empty.popFirst().isNone(), "empty popFirst is none")
+    assertTrue(empty.popLast().isNone(), "empty popLast is none")
+    assertTrue(empty.lowerBound(&5).isNone(), "empty lowerBound is none")
+    assertTrue(empty.upperBound(&5).isNone(), "empty upperBound is none")
+    assertTrue(empty.lastBefore(&5).isNone(), "empty lastBefore is none")
+    assertTrue(empty.lastAtOrBefore(&5).isNone(), "empty lastAtOrBefore is none")
+    assertTrue(empty.remove(&5).isNone(), "empty remove is none")
+    assertEqual(debugString(empty), "[:]", "empty BTreeMap debug")
+    assertTrue(BTreeMap[int32, string]::default() == empty, "Default BTreeMap is empty")
+    empty.verifyInvariants()
+
+    var rangeCount: usize = 0
+    for _ in empty.range(0..10) {
+        rangeCount += 1
+    }
+    assertEqual(rangeCount, 0 as usize, "empty range yields 0 entries")
+
+    assertTrue(empty.insert(key: 7, value: "seven").isNone(), "first insert returns none")
+    assertFalse(empty.isEmpty(), "singleton is not empty")
+    assertEqual(empty.len(), 1 as usize, "singleton len is 1")
+    assertEqual(empty[7], "seven", "singleton subscript read")
+    assertTrue(7 in empty, "singleton Contains true")
+    assertEqual(empty.first().unwrap(), (7, "seven"), "singleton first")
+    assertEqual(empty.last().unwrap(), (7, "seven"), "singleton last")
+    assertEqual(empty.firstKey().unwrap(), 7, "singleton firstKey")
+    assertEqual(empty.lastKey().unwrap(), 7, "singleton lastKey")
+    assertEqual(empty.lowerBound(&6).unwrap(), (7, "seven"), "singleton lowerBound below")
+    assertEqual(empty.lowerBound(&7).unwrap(), (7, "seven"), "singleton lowerBound exact")
+    assertTrue(empty.lowerBound(&8).isNone(), "singleton lowerBound above")
+    assertEqual(empty.upperBound(&6).unwrap(), (7, "seven"), "singleton upperBound below")
+    assertTrue(empty.upperBound(&7).isNone(), "singleton upperBound exact")
+    assertTrue(empty.lastBefore(&7).isNone(), "singleton lastBefore exact")
+    assertEqual(empty.lastBefore(&8).unwrap(), (7, "seven"), "singleton lastBefore above")
+    assertTrue(empty.lastAtOrBefore(&6).isNone(), "singleton lastAtOrBefore below")
+    assertEqual(empty.lastAtOrBefore(&7).unwrap(), (7, "seven"), "singleton lastAtOrBefore exact")
+    assertEqual(debugString(empty), "[7: \"seven\"]", "singleton debug")
+    empty.verifyInvariants()
+
+    assertEqual(empty.insert(key: 7, value: "SEVEN").unwrap(), "seven", "overwrite returns old value")
+    assertEqual(empty.len(), 1 as usize, "overwrite keeps len")
+    assertEqual(empty.popFirst().unwrap(), (7, "SEVEN"), "popFirst empties singleton")
+    assertTrue(empty.isEmpty(), "empty after popFirst")
+    empty.verifyInvariants()
+}
+
+@test
+func testBTreeMapHandleSharingCopyCloneAndEntryHelpers() {
+    original := BTreeMap[int32, int32]::new()
+    alias := original
+    alias[10] = 100
+    assertEqual(original[10], 100, "assignment shares underlying BTreeMap")
+
+    independent := original.copy()
+    independent[20] = 200
+    assertFalse(20 in original, "copy creates independent tree")
+    assertEqual(independent.len(), 2 as usize, "copy contains inserted entry")
+
+    // getOrInsert and getOrInsertWith
+    assertEqual(original.getOrInsert(10, default: 999), 100, "getOrInsert keeps existing")
+    assertEqual(original.getOrInsert(5, default: 50), 50, "getOrInsert inserts missing")
+    assertEqual(original[5], 50, "getOrInsert persisted missing")
+
+    var calls: int32 = 0
+    assertEqual(
+        original.getOrInsertWith(5, () => {
+            calls += 1
+            return 777
+        }),
+        50,
+        "getOrInsertWith returns existing without invoking callback",
+    )
+    assertEqual(calls, 0, "callback not called on hit")
+
+    assertEqual(
+        original.getOrInsertWith(15, () => {
+            calls += 1
+            // Re-entrant mutation of another key during callback must remain safe.
+            original.set(key: 14, value: 140)
+            return 150
+        }),
+        150,
+        "getOrInsertWith computes and inserts on miss",
+    )
+    assertEqual(calls, 1, "callback invoked once on miss")
+    assertEqual(original[14], 140, "re-entrant insert during callback preserved")
+    assertEqual(original[15], 150, "computed value persisted")
+
+    // Re-entrant insertion of the same key during callback returns the re-entrantly inserted value.
+    assertEqual(
+        original.getOrInsertWith(30, () => {
+            original.set(key: 30, value: 301)
+            return 302
+        }),
+        301,
+        "re-entrant insertion of same key wins cleanly",
+    )
+    assertEqual(original[30], 301, "re-entrantly inserted value remains stored")
+    original.verifyInvariants()
+
+    // Clone deep-clones Clone elements
+    clonable := BTreeMap[int32, BTreeCloneValue]::new()
+    clonable.set(key: 1, value: BTreeCloneValue { id: 1 })
+    clonable.set(key: 2, value: BTreeCloneValue { id: 2 })
+    cloned := clonable.clone()
+    assertEqual(cloned[1], BTreeCloneValue { id: 1001 }, "clone invokes element clone")
+    assertEqual(cloned[2], BTreeCloneValue { id: 1002 }, "clone invokes element clone for all entries")
+    assertEqual(clonable[1], BTreeCloneValue { id: 1 }, "source untouched by clone")
+}
+
+@test
+@expectPanic
+func testBTreeMapSubscriptMissingKeyPanics() {
+    map := BTreeMap[int32, string]::new()
+    map[1] = "one"
+    var _ = map[2]
+}
+
+@test
+func testBTreeMapOrderedQueriesAndRanges() {
+    map := BTreeMap[int32, int32]::new()
+    // Insert 60 even keys in scrambled order to force multi-level splits.
+    var i: int32 = 0
+    while i < 60 {
+        k := ((i * 23) % 60) * 2
+        map.set(key: k, value: k * 10)
+        i += 1
+    }
+    map.verifyInvariants()
+    assertEqual(map.len(), 60 as usize, "60 distinct even keys")
+    assertEqual(map.first().unwrap(), (0, 0), "first entry is 0")
+    assertEqual(map.last().unwrap(), (118, 1180), "last entry is 118")
+
+    // Verify ascending iteration via entries(), keys(), values()
+    var prevKey: int32 = -1
+    var count: usize = 0
+    for (k, v) in map {
+        assertTrue(k > prevKey, "entries strictly ascending")
+        assertEqual(v, k * 10, "entry value matches key")
+        prevKey = k
+        count += 1
+    }
+    assertEqual(count, 60 as usize, "entries yields all 60 items")
+
+    var ks: [int32] = []
+    for k in map.keys() { ks.append(k) }
+    var vs: [int32] = []
+    for v in map.values() { vs.append(v) }
+    assertEqual(ks.len(), 60 as usize, "keys len")
+    assertEqual(vs.len(), 60 as usize, "values len")
+    assertEqual(ks[0 as usize], 0, "first key")
+    assertEqual(ks[59 as usize], 118, "last key")
+    assertEqual(vs[59 as usize], 1180, "last value")
+
+    // Bound queries: below min, exact hit, odd gap, exact max, above max
+    assertEqual(map.lowerBound(&-5).unwrap(), (0, 0), "lowerBound below min")
+    assertEqual(map.lowerBound(&40).unwrap(), (40, 400), "lowerBound exact")
+    assertEqual(map.lowerBound(&41).unwrap(), (42, 420), "lowerBound gap")
+    assertEqual(map.lowerBound(&118).unwrap(), (118, 1180), "lowerBound exact max")
+    assertTrue(map.lowerBound(&119).isNone(), "lowerBound above max")
+
+    assertEqual(map.upperBound(&-5).unwrap(), (0, 0), "upperBound below min")
+    assertEqual(map.upperBound(&40).unwrap(), (42, 420), "upperBound exact")
+    assertEqual(map.upperBound(&41).unwrap(), (42, 420), "upperBound gap")
+    assertTrue(map.upperBound(&118).isNone(), "upperBound exact max")
+    assertTrue(map.upperBound(&200).isNone(), "upperBound above max")
+
+    assertTrue(map.lastBefore(&0).isNone(), "lastBefore exact min")
+    assertTrue(map.lastBefore(&-10).isNone(), "lastBefore below min")
+    assertEqual(map.lastBefore(&40).unwrap(), (38, 380), "lastBefore exact")
+    assertEqual(map.lastBefore(&41).unwrap(), (40, 400), "lastBefore gap")
+    assertEqual(map.lastBefore(&200).unwrap(), (118, 1180), "lastBefore above max")
+
+    assertTrue(map.lastAtOrBefore(&-1).isNone(), "lastAtOrBefore below min")
+    assertEqual(map.lastAtOrBefore(&0).unwrap(), (0, 0), "lastAtOrBefore exact min")
+    assertEqual(map.lastAtOrBefore(&40).unwrap(), (40, 400), "lastAtOrBefore exact")
+    assertEqual(map.lastAtOrBefore(&41).unwrap(), (40, 400), "lastAtOrBefore gap")
+    assertEqual(map.lastAtOrBefore(&200).unwrap(), (118, 1180), "lastAtOrBefore above max")
+
+    // Range queries: (&lo, &hi), Range[Key], ClosedRange[Key], and empty ranges
+    var halfOpen: [int32] = []
+    for (k, _) in map.range(&10, &20) { halfOpen.append(k) }
+    var expectedHalfOpen: [int32] = [10, 12, 14, 16, 18]
+    assertTrue(halfOpen == expectedHalfOpen, "range(&10, &20) excludes upper bound")
+
+    var rangeObj: [int32] = []
+    for (k, _) in map.range(11..21) { rangeObj.append(k) }
+    var expectedRangeObj: [int32] = [12, 14, 16, 18, 20]
+    assertTrue(rangeObj == expectedRangeObj, "range(11..21) handles odd bounds")
+
+    var closedObj: [int32] = []
+    for (k, _) in map.range(10..=20) { closedObj.append(k) }
+    var expectedClosed: [int32] = [10, 12, 14, 16, 18, 20]
+    assertTrue(closedObj == expectedClosed, "range(10..=20) includes upper bound")
+
+    var emptyHalf: [int32] = []
+    for (k, _) in map.range(20..20) { emptyHalf.append(k) }
+    assertTrue(emptyHalf.isEmpty(), "empty half-open range 20..20")
+
+    var inverted: [int32] = []
+    for (k, _) in map.range(30..=10) { inverted.append(k) }
+    assertTrue(inverted.isEmpty(), "inverted closed range 30..=10")
+
+    var singletonClosed: [int32] = []
+    for (k, _) in map.range(20..=20) { singletonClosed.append(k) }
+    var expectedSingleton: [int32] = [20]
+    assertTrue(singletonClosed == expectedSingleton, "singleton closed range 20..=20")
+}
+
+@test
+func testBTreeMapEqualityOrderingFromIteratorAndNaN() {
+    a := BTreeMap[int32, string]::new()
+    b := BTreeMap[int32, string]::new()
+    // Insert same entries in opposite orders so internal B-tree splits differ.
+    var i: int32 = 0
+    while i < 40 {
+        a.set(key: i, value: "v")
+        b.set(key: 39 - i, value: "v")
+        i += 1
+    }
+    assertTrue(a == b, "maps with same entries in different tree layouts are equal")
+    assertTrue(a.cmp(b).isEqual(), "Ord::cmp equal")
+    assertEqual(a.partialCmp(b).unwrap(), Ordering::equal, "PartialOrd equal")
+
+    b[20] = "w"
+    assertTrue(a != b, "different value breaks equality")
+    assertTrue(a < b, "lexicographical comparison on values")
+
+    c := BTreeMap[int32, string]::new()
+    c.set(key: 0, value: "v")
+    assertTrue(c < a, "shorter prefix map is smaller")
+
+    // Present .none distinct from missing key
+    optA := BTreeMap[int32, int32?]::new()
+    optB := BTreeMap[int32, int32?]::new()
+    optA.set(key: 1, value: .none)
+    assertTrue(optA != optB, "present .none entry is not equal to empty map")
+    optB.set(key: 1, value: .none)
+    assertTrue(optA == optB, "matching .none entries are equal")
+
+    // NaN values break reflexivity just like Dictionary and List
+    nanMap := BTreeMap[int32, double]::new()
+    nanMap.set(key: 1, value: double::NAN)
+    assertFalse(nanMap == nanMap, "BTreeMap containing NaN is not equal to itself")
+    assertTrue(nanMap.partialCmp(nanMap).isNone(), "BTreeMap partialCmp with NaN is none")
+
+    // FromIterator
+    var pairs: [(int32, string)] = [(3, "c"), (1, "a"), (2, "b"), (1, "A")]
+    collected := pairs.iter().collect[BTreeMap[int32, string]]()
+    assertEqual(collected.len(), 3 as usize, "FromIterator deduplicates keys")
+    assertEqual(debugString(collected), "[1: \"A\", 2: \"b\", 3: \"c\"]", "FromIterator + Debug in key order")
+}
+
+@test
+func testBTreeMapDifferentialTwoThousandOps() {
+    tree := BTreeMap[int32, int32]::new()
+    model := Dictionary[int32, int32]::new()
+    var rng: uint64 = 0x9e3779b97f4a7c15_u64
+
+    var op: int32 = 0
+    while op < 2000 {
+        action := (btreeNextRand(&rng) % 100_u64) as int32
+        // Phase 1 (0..900): grow heavily to trigger multi-level splits (3+ tree levels).
+        // Phase 2 (900..2000): heavy mixed removals/pops/queries to trigger borrows & merges.
+        if (op < 900 && action < 68) || (op >= 900 && action < 35) {
+            key := (btreeNextRand(&rng) % 260_u64) as int32
+            val := (btreeNextRand(&rng) % 10000_u64) as int32
+            got := tree.insert(key: key, value: val)
+            expected := model.insert(key: key, value: val)
+            assertTrue(got == expected, "differential insert return value matches")
+        } else if action < 62 {
+            key := (btreeNextRand(&rng) % 260_u64) as int32
+            got := tree.remove(&key)
+            expected := model.remove(&key)
+            assertTrue(got == expected, "differential remove return value matches")
+        } else if action < 70 {
+            got := tree.popFirst()
+            if model.isEmpty() {
+                assertTrue(got.isNone(), "differential popFirst on empty")
+            } else {
+                var minKey: int32 = int32::MAX
+                for (k, _) in model {
+                    if k < minKey { minKey = k }
+                }
+                expectedVal := model.remove(&minKey).unwrap()
+                assertEqual(got.unwrap(), (minKey, expectedVal), "differential popFirst matches min")
+            }
+        } else if action < 78 {
+            got := tree.popLast()
+            if model.isEmpty() {
+                assertTrue(got.isNone(), "differential popLast on empty")
+            } else {
+                var maxKey: int32 = int32::MIN
+                for (k, _) in model {
+                    if k > maxKey { maxKey = k }
+                }
+                expectedVal := model.remove(&maxKey).unwrap()
+                assertEqual(got.unwrap(), (maxKey, expectedVal), "differential popLast matches max")
+            }
+        } else if action < 90 {
+            probe := ((btreeNextRand(&rng) % 280_u64) as int32) - 10
+            var expectedLb: (int32, int32)? = .none
+            var expectedUb: (int32, int32)? = .none
+            var expectedLt: (int32, int32)? = .none
+            var expectedLe: (int32, int32)? = .none
+            for (k, v) in model {
+                if k >= probe {
+                    match expectedLb {
+                        case .none => expectedLb = .some((k, v))
+                        case .some((bk, _)) => { if k < bk { expectedLb = .some((k, v)) } }
+                    }
+                }
+                if k > probe {
+                    match expectedUb {
+                        case .none => expectedUb = .some((k, v))
+                        case .some((bk, _)) => { if k < bk { expectedUb = .some((k, v)) } }
+                    }
+                }
+                if k < probe {
+                    match expectedLt {
+                        case .none => expectedLt = .some((k, v))
+                        case .some((bk, _)) => { if k > bk { expectedLt = .some((k, v)) } }
+                    }
+                }
+                if k <= probe {
+                    match expectedLe {
+                        case .none => expectedLe = .some((k, v))
+                        case .some((bk, _)) => { if k > bk { expectedLe = .some((k, v)) } }
+                    }
+                }
+            }
+            assertTrue(tree.lowerBound(&probe) == expectedLb, "differential lowerBound matches")
+            assertTrue(tree.upperBound(&probe) == expectedUb, "differential upperBound matches")
+            assertTrue(tree.lastBefore(&probe) == expectedLt, "differential lastBefore matches")
+            assertTrue(tree.lastAtOrBefore(&probe) == expectedLe, "differential lastAtOrBefore matches")
+        } else {
+            lo := ((btreeNextRand(&rng) % 280_u64) as int32) - 10
+            hi := ((btreeNextRand(&rng) % 280_u64) as int32) - 10
+            var expectedRange: [(int32, int32)] = []
+            for (k, v) in model {
+                if k >= lo && k < hi {
+                    expectedRange.append((k, v))
+                }
+            }
+            expectedRange.sort()
+            var gotRange: [(int32, int32)] = []
+            for entry in tree.range(&lo, &hi) {
+                gotRange.append(entry)
+            }
+            assertTrue(gotRange == expectedRange, "differential range matches")
+        }
+
+        assertEqual(tree.len(), model.len(), "differential len matches")
+        if op % 25 == 0 {
+            tree.verifyInvariants()
+        }
+        op += 1
+    }
+
+    tree.verifyInvariants()
+
+    // Drain every remaining element back to 0, verifying invariants on every step.
+    var step: int32 = 0
+    while !tree.isEmpty() {
+        rem := step % 3
+        if rem == 0 {
+            var (k, v) = tree.popFirst().unwrap()
+            assertEqual(model.remove(&k).unwrap(), v, "drain popFirst matches model")
+        } else if rem == 1 {
+            var (k, v) = tree.popLast().unwrap()
+            assertEqual(model.remove(&k).unwrap(), v, "drain popLast matches model")
+        } else {
+            // Remove an interior/arbitrary key from model.
+            var chosen: int32 = 0
+            for (k, _) in model {
+                chosen = k
+                break
+            }
+            assertEqual(tree.remove(&chosen).unwrap(), model.remove(&chosen).unwrap(), "drain remove matches model")
+        }
+        assertEqual(tree.len(), model.len(), "drain len matches model")
+        tree.verifyInvariants()
+        step += 1
+    }
+    assertTrue(model.isEmpty(), "model empty after full drain")
+    assertTrue(tree.first().isNone(), "tree first none after drain")
+    assertTrue(tree.last().isNone(), "tree last none after drain")
+}
+
+@test
+func testBTreeSetOperationsAndDifferential() {
+    a := BTreeSet[int32]::new()
+    assertTrue(a.isEmpty(), "empty BTreeSet")
+    assertEqual(debugString(a), "{}", "empty BTreeSet debug")
+    assertTrue(BTreeSet[int32]::default() == a, "Default BTreeSet is empty")
+
+    alias := a
+    assertTrue(alias.insert(20), "first insert true")
+    assertFalse(a.insert(20), "duplicate insert false")
+    assertTrue(a.insert(10), "insert 10")
+    assertTrue(a.insert(30), "insert 30")
+    assertTrue(20 in a, "Contains operator")
+    assertEqual(debugString(a), "{10, 20, 30}", "BTreeSet sorted debug")
+    assertEqual(a.first().unwrap(), 10, "BTreeSet first")
+    assertEqual(a.last().unwrap(), 30, "BTreeSet last")
+    assertEqual(a.lowerBound(&15).unwrap(), 20, "BTreeSet lowerBound")
+    assertEqual(a.upperBound(&20).unwrap(), 30, "BTreeSet upperBound")
+    assertEqual(a.lastBefore(&20).unwrap(), 10, "BTreeSet lastBefore")
+    assertEqual(a.lastAtOrBefore(&20).unwrap(), 20, "BTreeSet lastAtOrBefore")
+
+    var r1: [int32] = []
+    for x in a.range(10..30) { r1.append(x) }
+    var expR1: [int32] = [10, 20]
+    assertTrue(r1 == expR1, "BTreeSet half-open range")
+
+    var r2: [int32] = []
+    for x in a.range(10..=30) { r2.append(x) }
+    var expR2: [int32] = [10, 20, 30]
+    assertTrue(r2 == expR2, "BTreeSet closed range")
+
+    var bSrc: [int32] = [20, 30, 40, 20]
+    b := bSrc.iter().collect[BTreeSet[int32]]()
+    assertEqual(debugString(a.union(b)), "{10, 20, 30, 40}", "BTreeSet union")
+    assertEqual(debugString(a.intersection(b)), "{20, 30}", "BTreeSet intersection")
+    assertEqual(debugString(a.difference(b)), "{10}", "BTreeSet difference")
+    assertEqual(debugString(a.symmetricDifference(b)), "{10, 40}", "BTreeSet symmetricDifference")
+    assertTrue(a.intersection(b).isSubset(of: a), "intersection is subset")
+    assertTrue(a.union(b).isSuperset(of: b), "union is superset")
+    assertFalse(a.isSubset(of: b), "a is not subset of b")
+    assertTrue(a < b, "BTreeSet Ord comparison")
+
+    cloned := a.clone()
+    assertTrue(cloned == a, "BTreeSet clone equals source")
+    assertTrue(cloned.remove(&20), "remove from clone returns true")
+    assertTrue(20 in a, "clone is independent of source")
+
+    // 1,000-op differential test for BTreeSet against Hash Set
+    set := BTreeSet[int32]::new()
+    model := Set[int32]::new()
+    var rng: uint64 = 0x123456789abcdef1_u64
+    var step: int32 = 0
+    while step < 1000 {
+        act := (btreeNextRand(&rng) % 10_u64) as int32
+        val := (btreeNextRand(&rng) % 140_u64) as int32
+        if act < 5 {
+            wasAbsent := !model.contains(&val)
+            model.insert(val)
+            assertEqual(set.insert(val), wasAbsent, "BTreeSet diff insert")
+        } else if act < 8 {
+            assertEqual(set.remove(&val), model.remove(&val), "BTreeSet diff remove")
+        } else if act == 8 {
+            got := set.popFirst()
+            if model.isEmpty() {
+                assertTrue(got.isNone(), "BTreeSet diff popFirst empty")
+            } else {
+                var minVal: int32 = int32::MAX
+                for x in model { if x < minVal { minVal = x } }
+                var _ = model.remove(&minVal)
+                assertEqual(got.unwrap(), minVal, "BTreeSet diff popFirst")
+            }
+        } else {
+            got := set.popLast()
+            if model.isEmpty() {
+                assertTrue(got.isNone(), "BTreeSet diff popLast empty")
+            } else {
+                var maxVal: int32 = int32::MIN
+                for x in model { if x > maxVal { maxVal = x } }
+                var _ = model.remove(&maxVal)
+                assertEqual(got.unwrap(), maxVal, "BTreeSet diff popLast")
+            }
+        }
+        assertEqual(set.len(), model.len(), "BTreeSet diff len")
+        step += 1
+    }
+    var sortedModel: [int32] = []
+    for x in model { sortedModel.append(x) }
+    sortedModel.sort()
+    var gotAll: [int32] = []
+    for x in set { gotAll.append(x) }
+    assertTrue(gotAll == sortedModel, "BTreeSet full iteration matches sorted reference")
+    set.clear()
+    assertTrue(set.isEmpty(), "BTreeSet clear empties set")
+}
+
+@test
+func testBTreeMapGcSlotClearingOnRemovePopSplitMergeAndClear() {
+    map := BTreeMap[BTreeGcKeyHandle, &BTreeGcValue]::new()
+    var keyWeaks: [Weak[BTreeGcKey]] = []
+    var valWeaks: [Weak[BTreeGcValue]] = []
+
+    // Insert 30 entries to trigger multiple leaf splits and an internal root.
+    var i: int32 = 0
+    while i < 30 {
+        var (wk, wv) = insertBTreeGcPair(map, i)
+        keyWeaks.append(wk)
+        valWeaks.append(wv)
+        i += 1
+    }
+    map.verifyInvariants()
+    std::runtime::collect()
+
+    // Every live entry must keep both key and value alive.
+    var idx: usize = 0
+    while idx < (30 as usize) {
+        assertTrue(keyWeaks[idx].value().isSome(), "live entry retains key")
+        assertTrue(valWeaks[idx].value().isSome(), "live entry retains value")
+        idx += 1
+    }
+
+    // Remove interior entries (10..22) and pop both ends (0 and 29) to trigger borrows/merges.
+    var r: int32 = 10
+    while r < 22 {
+        removeBTreeGcId(map, r)
+        r += 1
+    }
+    popBTreeGcEnds(map)
+    map.verifyInvariants()
+    std::runtime::collect()
+
+    // Removed keys & values must not be retained by vacated BTreeNode array slots!
+    assertTrue(keyWeaks[0 as usize].value().isNone(), "popFirst cleared vacated key slot")
+    assertTrue(valWeaks[0 as usize].value().isNone(), "popFirst cleared vacated value slot")
+    assertTrue(keyWeaks[29 as usize].value().isNone(), "popLast cleared vacated key slot")
+    assertTrue(valWeaks[29 as usize].value().isNone(), "popLast cleared vacated value slot")
+    r = 10
+    while r < 22 {
+        assertTrue(keyWeaks[r as usize].value().isNone(), "remove/merge cleared vacated key slot")
+        assertTrue(valWeaks[r as usize].value().isNone(), "remove/merge cleared vacated value slot")
+        r += 1
+    }
+    // Surviving entries must stay alive.
+    assertTrue(keyWeaks[5 as usize].value().isSome(), "surviving key remains alive")
+    assertTrue(valWeaks[5 as usize].value().isSome(), "surviving value remains alive")
+    assertTrue(keyWeaks[25 as usize].value().isSome(), "surviving right key remains alive")
+    assertTrue(valWeaks[25 as usize].value().isSome(), "surviving right value remains alive")
+
+    // Clear releases all remaining nodes, keys, and values.
+    map.clear()
+    map.verifyInvariants()
+    std::runtime::collect()
+    idx = 0
+    while idx < (30 as usize) {
+        assertTrue(keyWeaks[idx].value().isNone(), "clear releases all keys")
+        assertTrue(valWeaks[idx].value().isNone(), "clear releases all values")
+        idx += 1
+    }
+    assertEqual(map.len(), 0 as usize, "keep map handle alive across collection")
+}
+
+@test
+@expectPanic
+func testBTreeMapStructuralMutationDuringIterationPanics() {
+    map := BTreeMap[int32, int32]::new()
+    map[1] = 10
+    map[2] = 20
+    map[3] = 30
+    for (k, _) in map {
+        if k == 1 {
+            map[4] = 40
+        }
+    }
+}
+
+@test
+@expectPanic
+func testBTreeMapReentrantMutationInComparatorPanics() {
+    map := BTreeMap[BTreeMutatingKey, int32]::new()
+    map.set(key: BTreeMutatingKey { id: 1, target: .none }, value: 1)
+    map.set(key: BTreeMutatingKey { id: 2, target: .some(map) }, value: 2)
+}
+
+@test
+@expectPanic
+func testBTreeMapRangeMutationDuringIterationPanics() {
+    map := BTreeMap[int32, int32]::new()
+    map[1] = 10
+    map[2] = 20
+    map[3] = 30
+    for (k, _) in map.range(1..=3) {
+        if k == 2 {
+            var _ = map.remove(&3)
+        }
+    }
+}
+
+@test
+@expectPanic
+func testBTreeSetMutationDuringIterationPanics() {
+    set := BTreeSet[int32]::new()
+    var _ = set.insert(1)
+    var _ = set.insert(2)
+    for x in set {
+        if x == 1 {
+            var _ = set.insert(3)
+        }
+    }
+}

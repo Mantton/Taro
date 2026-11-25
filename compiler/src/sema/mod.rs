@@ -1,3 +1,4 @@
+pub(crate) mod bound_diagnostic;
 pub mod error;
 pub mod impl_engine;
 pub(crate) mod lowering;

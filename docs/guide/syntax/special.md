@@ -9,8 +9,66 @@ Taro automatically inserts semicolons, reducing syntactic noise while maintainin
 ### How ASI Works
 
 A semicolon is inserted after certain tokens at a newline or end of file,
-unless the next line starts with a continuation token. ASI also runs inside
-parentheses and brackets.
+unless the next line starts with a continuation token or the newline is
+directly inside parentheses or brackets.
+
+### Newlines Inside Parentheses and Brackets
+
+ASI tracks the innermost open delimiter. Directly inside `( )` or `[ ]`, a
+newline never inserts a semicolon, so a multi-line list needs no comma before
+its closing delimiter:
+
+```taro
+total := sum(
+    first,
+    second          // no trailing comma needed
+)
+
+matrix := [
+    [1, 2, 3],
+    [4, 5, 6]
+]
+```
+
+Directly inside `{ }`, ASI works as usual, including braces nested inside
+parentheses or brackets: blocks, closure bodies, `match` bodies and struct
+literals. String interpolations `${ ... }` follow the same rule as braces.
+After a closing delimiter, the enclosing delimiter's rule applies again.
+
+```taro
+result := compute(
+    base
+        + offset,       // `+` continues the line
+    items.map(item => {
+        log(item)       // statements inside braces still end at newlines
+        item * 2
+    })
+)
+```
+
+Explicit semicolons inside brackets are unaffected: `[0; 20]` and
+`[uint8; 20]` keep working, but the `;` must be written.
+
+Because no semicolon separates the lines, a line that starts with `(` or `[`
+directly inside `( )` or `[ ]` continues the previous line's expression as a
+call or a subscript, and a line that starts with `&` or `*` continues it as a
+binary operator. When an element's comma is missing, that changes the
+meaning silently, so the compiler warns:
+
+```taro
+pairs := [
+    first           // missing comma
+    (second, third) // warning: this line continues the expression on the
+]                   // previous line; add a ',' if a new element was meant
+```
+
+`[first(second, third)]` is still what the list contains. The `&` and `*`
+case warns only when the operand follows without a space (`&flags`,
+`*pointer`), which reads as a new reference or dereference element; `* scale`
+is taken as a deliberate continuation. Method chains (`.name` at the start of
+a line) and lines inside braces never warn. The warning comes from the
+parser, so it is reported even when type errors follow, and only for the
+package being compiled, not its dependencies.
 
 ### Tokens That Can End a Statement
 
@@ -67,6 +125,34 @@ func process()
 }
 ```
 
+**`else` and `where`:** `else` only follows an `if` block or a `guard`
+condition, and `where` only opens a where clause or a `for` filter, so a line
+that begins with either continues the previous line:
+```taro
+if ready {
+    start()
+}
+else if retry {
+    wait()
+}
+else {
+    stop()
+}
+
+guard value > 0
+else { return }
+
+func largest[T](_ values: [T]) -> T
+    where T: Ord {
+    ...
+}
+
+for item in items
+    where item.enabled {
+    ...
+}
+```
+
 ### ASI Examples
 
 ```taro
@@ -99,20 +185,29 @@ y := value
 *ptr = y        // Two statements! *ptr is dereference
 ```
 
-`else` and `where` are not continuation starters. Keep `else` on the same
-line as the preceding `}`: `} else {` or `} else if condition {`. Likewise,
-start a function's `where` clause on the line containing its return type or
-closing parameter delimiter.
+### Important: `{` Doesn't Continue
+
+An opening brace at the start of a line is not a continuation token. Keep the
+`{` that opens a body on the line that ends its header, including after a
+`where` clause:
+
+```taro
+func f() -> int32
+{                   // Error: ASI already ended the declaration
+    1
+}
+```
 
 ---
 
 ## Trailing Commas
 
 Trailing commas are accepted in delimited argument, parameter, field, and
-literal lists. If the closing delimiter starts on a new line, the final
-element needs a comma too, because otherwise ASI inserts a semicolon.
-Enum variants within one `case` are an exception: they do not allow a trailing
-comma.
+literal lists. Inside parentheses and brackets the trailing comma is always
+optional. Inside braces, such as struct literals and import groups, a closing
+`}` on a new line needs a comma after the final element, because otherwise ASI
+inserts a semicolon. Enum variants within one `case` are an exception: they do
+not allow a trailing comma.
 
 ```taro
 // Arrays
@@ -125,7 +220,7 @@ comma.
 func foo(
     a: int32,
     b: string,
-    c: bool,    // OK
+    c: bool,    // OK, and optional
 ) { }
 
 // Function calls
@@ -138,7 +233,7 @@ foo(
 // Struct literals
 Point {
     x: 1,
-    y: 2,       // OK
+    y: 2,       // Required: `}` is on the next line
 }
 
 // Generics
@@ -244,7 +339,7 @@ if (User { isAdmin: true }).isAdmin { }   // parenthesized literal
 if check(User { isAdmin: true }) { }      // literal inside a call argument
 ```
 
-Collection literals, block expressions, and f-string interpolations also
+Collection literals, block expressions, and string interpolations also
 provide delimiters. The restriction resumes after the closing delimiter:
 `if check(true) && User { isAdmin: true }.isAdmin { }` is still rejected.
 Alternatively, bind the value first:
@@ -309,23 +404,30 @@ enum Status {
 
 ## Comma-Separated Lists and Newlines
 
-For delimited comma-separated lists, **commas are required before newlines**,
-including before a closing delimiter on the following line:
+Inside parentheses and brackets, commas separate elements and newlines are
+ignored. Inside braces, **commas are required before newlines**, including
+before a closing `}` on the following line:
 
 ```taro
-// CORRECT: Trailing comma before newline
+// CORRECT: newlines inside brackets need no comma
 arr := [
     1,
     2,
-    3,
-]
-
-// INCORRECT: ASI would insert semicolon!
-arr := [
-    1
-    2   // Error! Semicolon inserted after 1
     3
 ]
+
+// INCORRECT: the elements need separators
+arr := [
+    1
+    2   // Error: expected `,` or `]`, found `2`
+    3
+]
+
+// Braces: the final comma is required
+point := Point {
+    x: 1,
+    y: 2,
+}
 ```
 
 ---

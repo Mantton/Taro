@@ -1,9 +1,12 @@
 import std::optional::Optional
-import std::mem::Span
+import std::mem::{MaybeUninit, Span}
 import std::iter::{Iterator, Iterable}
-import std::ops::PartialEq
+import std::ops::{Contains, PartialEq}
+import std::hash::{Hashable, Hasher}
+import std::cmp::{Ord, Ordering, PartialOrd}
+import std::default::Default
 import std::panic::panic
-import std::range::{Range, ClosedRange}
+import std::range::{Range, ClosedRange, RangeFrom, RangeTo, RangeToInclusive, RangeFull}
 import std::collections::List
 
 public type Array[Element, const Size: usize] = [Element; Size]
@@ -20,6 +23,28 @@ extend[Element, const Size: usize] &Array[Element, Size] {
         get {
             if range.start > range.end || range.end >= Size { panic("array range out of range") }
             self.copyRange(range.start, range.end + (1 as usize))
+        }
+    }
+
+    public subscript(range: RangeFrom[usize]) -> List[Element] {
+        get { self.copyRange(range.start, Size) }
+    }
+
+    public subscript(range: RangeTo[usize]) -> List[Element] {
+        get { self.copyRange(0 as usize, range.end) }
+    }
+
+    public subscript(range: RangeToInclusive[usize]) -> List[Element] {
+        get {
+            if range.end >= Size { panic("array range out of range") }
+            self.copyRange(0 as usize, range.end + (1 as usize))
+        }
+    }
+
+    public subscript(range: RangeFull) -> List[Element] {
+        get {
+            var _ = range
+            self.copyRange(0 as usize, Size)
         }
     }
 
@@ -48,6 +73,72 @@ conform[Element: PartialEq[Element], const Size: usize] [Element; Size] to Parti
             index += 1
         }
         return true
+    }
+}
+
+conform[Element: Hashable, const Size: usize] [Element; Size] to Hashable {
+    public func hash[H: Hasher](into hasher: H) {
+        var index: usize = 0
+        while index < Size {
+            (*self.at(index)).hash(into: hasher)
+            index += 1
+        }
+    }
+}
+
+conform[Element: PartialOrd[Element], const Size: usize] [Element; Size] to PartialOrd[[Element; Size]] {
+    public func partialCmp(_ other: [Element; Size]) -> Optional[Ordering] {
+        var index: usize = 0
+        while index < Size {
+            match (*self.at(index)).partialCmp(*other.at(index)) {
+                case .some(.equal) => {}
+                case otherOrder => return otherOrder
+            }
+            index += 1
+        }
+        return .some(.equal)
+    }
+}
+
+conform[Element: Ord, const Size: usize] [Element; Size] to Ord {
+    public func cmp(_ other: [Element; Size]) -> Ordering {
+        var index: usize = 0
+        while index < Size {
+            ord := (*self.at(index)).cmp(*other.at(index))
+            if !ord.isEqual() {
+                return ord
+            }
+            index += 1
+        }
+        return .equal
+    }
+}
+
+conform[Element: Default, const Size: usize] [Element; Size] to Default {
+    public static func default() -> [Element; Size] {
+        var buffer = MaybeUninit[[Element; Size]]::uninit()
+        var index: usize = 0
+        while index < Size {
+            elem := Element::default()
+            unsafe {
+                ptr := (buffer.asMutPtr() as *mut Element).add(index)
+                ptr.write(elem)
+            }
+            index += 1
+        }
+        unsafe { buffer.assumeInit() }
+    }
+}
+
+/// A linear scan from the first element for an equal element.
+conform[Element: PartialEq[Element], const Size: usize] [Element; Size] to Contains[Element] {
+    public func contains(_ element: &Element) -> bool {
+        var index: usize = 0
+        while index < Size {
+            if *self.at(index) == *element { return true }
+            index += 1
+        }
+        return false
     }
 }
 
@@ -115,4 +206,11 @@ conform[Element, const Size: usize] ArrayIterator[Element, Size] to Iterable {
     type Element = Element
     type Iterator = ArrayIterator[Element, Size]
     public func iter() -> Self::Iterator { self }
+}
+
+// Compiler adapter for contextual &Array -> Span coercion. Keep view creation
+// on the reference so no intermediate array copy can become the backing owner.
+@inline
+internal func __array_as_span[Element, const Size: usize](_ array: &[Element; Size]) -> Span[Element] {
+    array.asSpan()
 }

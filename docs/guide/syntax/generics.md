@@ -53,6 +53,23 @@ struct Cache[K: Hashable, V] {
 
 ---
 
+## Custom bound diagnostics
+
+An interface can tell callers how to satisfy its bound. When a missing
+conformance causes a call to fail, the compiler displays the message at the use site.
+
+```taro
+@onUnsatisfied("{Self} has no ranking; supply a ranking function or conform it to Ranked")
+public interface Ranked {
+    func rank() -> int32;
+}
+```
+
+Write `{Self}` for the type that lacks the conformance. Write `{{` or `}}` for
+a literal brace. The attribute takes one nonempty string literal. Imported
+interfaces supply their messages to clients, including when a build reuses a
+cached library.
+
 ## Where Clauses
 
 More complex constraints using where clauses.
@@ -91,9 +108,10 @@ func combine[A, B, R](
 ```
 
 For functions, `where` follows the return type (or the parameter list when no
-return type is written). Keep it on that line: a newline before `where` can
-insert a semicolon and end the declaration. Multiline parameter lists need a
-comma before each newline, including after the final parameter.
+return type is written). It may start a new line, because a line that begins
+with `where` continues the declaration; keep the body's `{` on the `where`
+line. In multiline parameter lists the comma after the final parameter is
+optional.
 
 ---
 
@@ -109,6 +127,7 @@ struct FixedArray[T, const N: usize] {
 
 func main() {
     var arr: FixedArray[int32, 3] = FixedArray[int32, 3] { data: [1, 2, 3] }
+    println("${arr.data[0]}")
 }
 
 // Default const values
@@ -135,6 +154,7 @@ func main() {
     // Envelope means Envelope[string] when its parameter is omitted.
     var message: Envelope = Envelope { value: "hello" }
     var count: Envelope[int32] = Envelope { value: 42 }
+    println("${message.value} ${count.value}")
 }
 ```
 
@@ -163,6 +183,11 @@ func firstOrZero[C](container: C) -> int32 where C: Container, C::Element == int
     }
 }
 ```
+
+When two interfaces declare an associated type with the same name, qualify
+the projection with the interface. For example, `(T as Container).Element`
+selects `Container`'s element type when `T: Container`. A concrete conforming
+type can appear in place of `T`.
 
 The prelude's iteration protocol is `Iterator`, which declares
 `type Element` and `func next() -> Optional[Self::Element]`:
@@ -268,6 +293,8 @@ func main() {
 
     // Inferred from the parameter type in the same expression
     consumeInts(newList())
+    consumeInts(ints)
+    println("${strings.len()}")
 }
 ```
 
@@ -278,9 +305,9 @@ type annotation or explicit type argument even if a later statement appends an i
 
 ## Trailing Commas
 
-Type parameter lists and argument lists allow trailing commas. Use a comma
-before a newline that precedes the closing bracket, so automatic semicolon
-insertion does not terminate the final element.
+Type parameter lists and argument lists allow trailing commas. They are
+optional even when the closing bracket is on its own line, because newlines
+inside brackets do not insert semicolons.
 
 ```taro
 struct MultiGeneric[
@@ -295,5 +322,6 @@ func main() {
         int32,
         bool,  // Trailing comma allowed
     ] = MultiGeneric { }
+    _ = value
 }
 ```

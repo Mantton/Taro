@@ -1,0 +1,4 @@
+error: membership tests do not chain; add parentheses, as in `(a in b) == c`
+ -> language_tests/source_files/invalid/membership_chained_negated.tr:2:17
+	    _ = 1 in [1] !in [true]
+	                 ^^^

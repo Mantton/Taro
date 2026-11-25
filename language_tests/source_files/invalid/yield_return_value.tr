@@ -1,0 +1,6 @@
+func bad() -> some Iterator[Element = int32] {
+    yield 1
+    return 2
+}
+
+func main() {}

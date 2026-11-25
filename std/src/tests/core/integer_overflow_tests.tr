@@ -1,0 +1,584 @@
+// Boundary cases for the overflow-tolerant integer methods. Expected values
+// were computed independently with Python's arbitrary-precision integers.
+
+import std::ops::PartialEq
+
+func expectSome[T: PartialEq](_ actual: T?, _ expected: T, _ message: string) {
+    match actual {
+        case .some(value) => std::testing::assertEqual(value, expected, message)
+        case .none => std::testing::fail(message)
+    }
+}
+
+func expectNone[T](_ actual: T?, _ message: string) {
+    std::testing::assertTrue(actual.isNone(), message)
+}
+
+func checkInt8(
+    _ lhs: int8,
+    _ rhs: int8,
+    _ sums: (int8, int8, bool),
+    _ differences: (int8, int8, bool),
+    _ products: (int8, int8, bool),
+    _ label: string,
+) {
+    // Each tuple is (wrapping, saturating, fits).
+    std::testing::assertEqual(lhs.wrappingAdd(rhs), sums.0, label + " wrappingAdd")
+    std::testing::assertEqual(lhs.saturatingAdd(rhs), sums.1, label + " saturatingAdd")
+    if sums.2 {
+        expectSome(lhs.checkedAdd(rhs), sums.0, label + " checkedAdd")
+    } else {
+        expectNone(lhs.checkedAdd(rhs), label + " checkedAdd")
+    }
+    std::testing::assertEqual(lhs.wrappingSub(rhs), differences.0, label + " wrappingSub")
+    std::testing::assertEqual(lhs.saturatingSub(rhs), differences.1, label + " saturatingSub")
+    if differences.2 {
+        expectSome(lhs.checkedSub(rhs), differences.0, label + " checkedSub")
+    } else {
+        expectNone(lhs.checkedSub(rhs), label + " checkedSub")
+    }
+    std::testing::assertEqual(lhs.wrappingMul(rhs), products.0, label + " wrappingMul")
+    std::testing::assertEqual(lhs.saturatingMul(rhs), products.1, label + " saturatingMul")
+    if products.2 {
+        expectSome(lhs.checkedMul(rhs), products.0, label + " checkedMul")
+    } else {
+        expectNone(lhs.checkedMul(rhs), label + " checkedMul")
+    }
+}
+
+@test
+func testInt8OverflowTolerantArithmetic() {
+    checkInt8(0, 0, (0, 0, true), (0, 0, true), (0, 0, true), "int8 0, 0")
+    checkInt8(1, 2, (3, 3, true), (-1, -1, true), (2, 2, true), "int8 1, 2")
+    checkInt8(-5, 7, (2, 2, true), (-12, -12, true), (-35, -35, true), "int8 -5, 7")
+    checkInt8(7, -5, (2, 2, true), (12, 12, true), (-35, -35, true), "int8 7, -5")
+    checkInt8(-1, -1, (-2, -2, true), (0, 0, true), (1, 1, true), "int8 -1, -1")
+    checkInt8(127, 1, (-128, 127, false), (126, 126, true), (127, 127, true), "int8 127, 1")
+    checkInt8(-128, -1, (127, -128, false), (-127, -127, true), (-128, 127, false), "int8 -128, -1")
+    checkInt8(-128, 1, (-127, -127, true), (127, -128, false), (-128, -128, true), "int8 -128, 1")
+    checkInt8(127, -1, (126, 126, true), (-128, 127, false), (-127, -127, true), "int8 127, -1")
+    checkInt8(-1, -128, (127, -128, false), (127, 127, true), (-128, 127, false), "int8 -1, -128")
+    checkInt8(-128, 0, (-128, -128, true), (-128, -128, true), (0, 0, true), "int8 -128, 0")
+    checkInt8(0, -128, (-128, -128, true), (-128, 127, false), (0, 0, true), "int8 0, -128")
+    checkInt8(127, 127, (-2, 127, false), (0, 0, true), (1, 127, false), "int8 127, 127")
+    checkInt8(-128, -128, (0, -128, false), (0, 0, true), (0, 127, false), "int8 -128, -128")
+    checkInt8(-128, 127, (-1, -1, true), (1, -128, false), (-128, -128, false), "int8 -128, 127")
+    checkInt8(127, -128, (-1, -1, true), (-1, 127, false), (-128, -128, false), "int8 127, -128")
+    checkInt8(127, 2, (-127, 127, false), (125, 125, true), (-2, 127, false), "int8 127, 2")
+    checkInt8(-128, 2, (-126, -126, true), (126, -128, false), (0, -128, false), "int8 -128, 2")
+    checkInt8(127, 0, (127, 127, true), (127, 127, true), (0, 0, true), "int8 127, 0")
+    checkInt8(0, -1, (-1, -1, true), (1, 1, true), (0, 0, true), "int8 0, -1")
+    checkInt8(16, 16, (32, 32, true), (0, 0, true), (0, 127, false), "int8 16, 16")
+    checkInt8(16, -16, (0, 0, true), (32, 32, true), (0, -128, false), "int8 16, -16")
+    checkInt8(-16, 8, (-8, -8, true), (-24, -24, true), (-128, -128, true), "int8 -16, 8")
+    checkInt8(8, 16, (24, 24, true), (-8, -8, true), (-128, 127, false), "int8 8, 16")
+    checkInt8(-1, 127, (126, 126, true), (-128, -128, true), (-127, -127, true), "int8 -1, 127")
+}
+
+func checkInt16(
+    _ lhs: int16,
+    _ rhs: int16,
+    _ sums: (int16, int16, bool),
+    _ differences: (int16, int16, bool),
+    _ products: (int16, int16, bool),
+    _ label: string,
+) {
+    // Each tuple is (wrapping, saturating, fits).
+    std::testing::assertEqual(lhs.wrappingAdd(rhs), sums.0, label + " wrappingAdd")
+    std::testing::assertEqual(lhs.saturatingAdd(rhs), sums.1, label + " saturatingAdd")
+    if sums.2 {
+        expectSome(lhs.checkedAdd(rhs), sums.0, label + " checkedAdd")
+    } else {
+        expectNone(lhs.checkedAdd(rhs), label + " checkedAdd")
+    }
+    std::testing::assertEqual(lhs.wrappingSub(rhs), differences.0, label + " wrappingSub")
+    std::testing::assertEqual(lhs.saturatingSub(rhs), differences.1, label + " saturatingSub")
+    if differences.2 {
+        expectSome(lhs.checkedSub(rhs), differences.0, label + " checkedSub")
+    } else {
+        expectNone(lhs.checkedSub(rhs), label + " checkedSub")
+    }
+    std::testing::assertEqual(lhs.wrappingMul(rhs), products.0, label + " wrappingMul")
+    std::testing::assertEqual(lhs.saturatingMul(rhs), products.1, label + " saturatingMul")
+    if products.2 {
+        expectSome(lhs.checkedMul(rhs), products.0, label + " checkedMul")
+    } else {
+        expectNone(lhs.checkedMul(rhs), label + " checkedMul")
+    }
+}
+
+@test
+func testInt16OverflowTolerantArithmetic() {
+    checkInt16(0, 0, (0, 0, true), (0, 0, true), (0, 0, true), "int16 0, 0")
+    checkInt16(1, 2, (3, 3, true), (-1, -1, true), (2, 2, true), "int16 1, 2")
+    checkInt16(-5, 7, (2, 2, true), (-12, -12, true), (-35, -35, true), "int16 -5, 7")
+    checkInt16(7, -5, (2, 2, true), (12, 12, true), (-35, -35, true), "int16 7, -5")
+    checkInt16(-1, -1, (-2, -2, true), (0, 0, true), (1, 1, true), "int16 -1, -1")
+    checkInt16(32767, 1, (-32768, 32767, false), (32766, 32766, true), (32767, 32767, true), "int16 32767, 1")
+    checkInt16(-32768, -1, (32767, -32768, false), (-32767, -32767, true), (-32768, 32767, false), "int16 -32768, -1")
+    checkInt16(-32768, 1, (-32767, -32767, true), (32767, -32768, false), (-32768, -32768, true), "int16 -32768, 1")
+    checkInt16(32767, -1, (32766, 32766, true), (-32768, 32767, false), (-32767, -32767, true), "int16 32767, -1")
+    checkInt16(-1, -32768, (32767, -32768, false), (32767, 32767, true), (-32768, 32767, false), "int16 -1, -32768")
+    checkInt16(-32768, 0, (-32768, -32768, true), (-32768, -32768, true), (0, 0, true), "int16 -32768, 0")
+    checkInt16(0, -32768, (-32768, -32768, true), (-32768, 32767, false), (0, 0, true), "int16 0, -32768")
+    checkInt16(32767, 32767, (-2, 32767, false), (0, 0, true), (1, 32767, false), "int16 32767, 32767")
+    checkInt16(-32768, -32768, (0, -32768, false), (0, 0, true), (0, 32767, false), "int16 -32768, -32768")
+    checkInt16(-32768, 32767, (-1, -1, true), (1, -32768, false), (-32768, -32768, false), "int16 -32768, 32767")
+    checkInt16(32767, -32768, (-1, -1, true), (-1, 32767, false), (-32768, -32768, false), "int16 32767, -32768")
+    checkInt16(32767, 2, (-32767, 32767, false), (32765, 32765, true), (-2, 32767, false), "int16 32767, 2")
+    checkInt16(-32768, 2, (-32766, -32766, true), (32766, -32768, false), (0, -32768, false), "int16 -32768, 2")
+    checkInt16(32767, 0, (32767, 32767, true), (32767, 32767, true), (0, 0, true), "int16 32767, 0")
+    checkInt16(0, -1, (-1, -1, true), (1, 1, true), (0, 0, true), "int16 0, -1")
+    checkInt16(256, 256, (512, 512, true), (0, 0, true), (0, 32767, false), "int16 256, 256")
+    checkInt16(256, -256, (0, 0, true), (512, 512, true), (0, -32768, false), "int16 256, -256")
+    checkInt16(-256, 128, (-128, -128, true), (-384, -384, true), (-32768, -32768, true), "int16 -256, 128")
+    checkInt16(128, 256, (384, 384, true), (-128, -128, true), (-32768, 32767, false), "int16 128, 256")
+    checkInt16(-1, 32767, (32766, 32766, true), (-32768, -32768, true), (-32767, -32767, true), "int16 -1, 32767")
+}
+
+func checkInt32(
+    _ lhs: int32,
+    _ rhs: int32,
+    _ sums: (int32, int32, bool),
+    _ differences: (int32, int32, bool),
+    _ products: (int32, int32, bool),
+    _ label: string,
+) {
+    // Each tuple is (wrapping, saturating, fits).
+    std::testing::assertEqual(lhs.wrappingAdd(rhs), sums.0, label + " wrappingAdd")
+    std::testing::assertEqual(lhs.saturatingAdd(rhs), sums.1, label + " saturatingAdd")
+    if sums.2 {
+        expectSome(lhs.checkedAdd(rhs), sums.0, label + " checkedAdd")
+    } else {
+        expectNone(lhs.checkedAdd(rhs), label + " checkedAdd")
+    }
+    std::testing::assertEqual(lhs.wrappingSub(rhs), differences.0, label + " wrappingSub")
+    std::testing::assertEqual(lhs.saturatingSub(rhs), differences.1, label + " saturatingSub")
+    if differences.2 {
+        expectSome(lhs.checkedSub(rhs), differences.0, label + " checkedSub")
+    } else {
+        expectNone(lhs.checkedSub(rhs), label + " checkedSub")
+    }
+    std::testing::assertEqual(lhs.wrappingMul(rhs), products.0, label + " wrappingMul")
+    std::testing::assertEqual(lhs.saturatingMul(rhs), products.1, label + " saturatingMul")
+    if products.2 {
+        expectSome(lhs.checkedMul(rhs), products.0, label + " checkedMul")
+    } else {
+        expectNone(lhs.checkedMul(rhs), label + " checkedMul")
+    }
+}
+
+@test
+func testInt32OverflowTolerantArithmetic() {
+    checkInt32(0, 0, (0, 0, true), (0, 0, true), (0, 0, true), "int32 0, 0")
+    checkInt32(1, 2, (3, 3, true), (-1, -1, true), (2, 2, true), "int32 1, 2")
+    checkInt32(-5, 7, (2, 2, true), (-12, -12, true), (-35, -35, true), "int32 -5, 7")
+    checkInt32(7, -5, (2, 2, true), (12, 12, true), (-35, -35, true), "int32 7, -5")
+    checkInt32(-1, -1, (-2, -2, true), (0, 0, true), (1, 1, true), "int32 -1, -1")
+    checkInt32(2147483647, 1, (-2147483648, 2147483647, false), (2147483646, 2147483646, true), (2147483647, 2147483647, true), "int32 2147483647, 1")
+    checkInt32(-2147483648, -1, (2147483647, -2147483648, false), (-2147483647, -2147483647, true), (-2147483648, 2147483647, false), "int32 -2147483648, -1")
+    checkInt32(-2147483648, 1, (-2147483647, -2147483647, true), (2147483647, -2147483648, false), (-2147483648, -2147483648, true), "int32 -2147483648, 1")
+    checkInt32(2147483647, -1, (2147483646, 2147483646, true), (-2147483648, 2147483647, false), (-2147483647, -2147483647, true), "int32 2147483647, -1")
+    checkInt32(-1, -2147483648, (2147483647, -2147483648, false), (2147483647, 2147483647, true), (-2147483648, 2147483647, false), "int32 -1, -2147483648")
+    checkInt32(-2147483648, 0, (-2147483648, -2147483648, true), (-2147483648, -2147483648, true), (0, 0, true), "int32 -2147483648, 0")
+    checkInt32(0, -2147483648, (-2147483648, -2147483648, true), (-2147483648, 2147483647, false), (0, 0, true), "int32 0, -2147483648")
+    checkInt32(2147483647, 2147483647, (-2, 2147483647, false), (0, 0, true), (1, 2147483647, false), "int32 2147483647, 2147483647")
+    checkInt32(-2147483648, -2147483648, (0, -2147483648, false), (0, 0, true), (0, 2147483647, false), "int32 -2147483648, -2147483648")
+    checkInt32(-2147483648, 2147483647, (-1, -1, true), (1, -2147483648, false), (-2147483648, -2147483648, false), "int32 -2147483648, 2147483647")
+    checkInt32(2147483647, -2147483648, (-1, -1, true), (-1, 2147483647, false), (-2147483648, -2147483648, false), "int32 2147483647, -2147483648")
+    checkInt32(2147483647, 2, (-2147483647, 2147483647, false), (2147483645, 2147483645, true), (-2, 2147483647, false), "int32 2147483647, 2")
+    checkInt32(-2147483648, 2, (-2147483646, -2147483646, true), (2147483646, -2147483648, false), (0, -2147483648, false), "int32 -2147483648, 2")
+    checkInt32(2147483647, 0, (2147483647, 2147483647, true), (2147483647, 2147483647, true), (0, 0, true), "int32 2147483647, 0")
+    checkInt32(0, -1, (-1, -1, true), (1, 1, true), (0, 0, true), "int32 0, -1")
+    checkInt32(65536, 65536, (131072, 131072, true), (0, 0, true), (0, 2147483647, false), "int32 65536, 65536")
+    checkInt32(65536, -65536, (0, 0, true), (131072, 131072, true), (0, -2147483648, false), "int32 65536, -65536")
+    checkInt32(-65536, 32768, (-32768, -32768, true), (-98304, -98304, true), (-2147483648, -2147483648, true), "int32 -65536, 32768")
+    checkInt32(32768, 65536, (98304, 98304, true), (-32768, -32768, true), (-2147483648, 2147483647, false), "int32 32768, 65536")
+    checkInt32(-1, 2147483647, (2147483646, 2147483646, true), (-2147483648, -2147483648, true), (-2147483647, -2147483647, true), "int32 -1, 2147483647")
+}
+
+func checkInt64(
+    _ lhs: int64,
+    _ rhs: int64,
+    _ sums: (int64, int64, bool),
+    _ differences: (int64, int64, bool),
+    _ products: (int64, int64, bool),
+    _ label: string,
+) {
+    // Each tuple is (wrapping, saturating, fits).
+    std::testing::assertEqual(lhs.wrappingAdd(rhs), sums.0, label + " wrappingAdd")
+    std::testing::assertEqual(lhs.saturatingAdd(rhs), sums.1, label + " saturatingAdd")
+    if sums.2 {
+        expectSome(lhs.checkedAdd(rhs), sums.0, label + " checkedAdd")
+    } else {
+        expectNone(lhs.checkedAdd(rhs), label + " checkedAdd")
+    }
+    std::testing::assertEqual(lhs.wrappingSub(rhs), differences.0, label + " wrappingSub")
+    std::testing::assertEqual(lhs.saturatingSub(rhs), differences.1, label + " saturatingSub")
+    if differences.2 {
+        expectSome(lhs.checkedSub(rhs), differences.0, label + " checkedSub")
+    } else {
+        expectNone(lhs.checkedSub(rhs), label + " checkedSub")
+    }
+    std::testing::assertEqual(lhs.wrappingMul(rhs), products.0, label + " wrappingMul")
+    std::testing::assertEqual(lhs.saturatingMul(rhs), products.1, label + " saturatingMul")
+    if products.2 {
+        expectSome(lhs.checkedMul(rhs), products.0, label + " checkedMul")
+    } else {
+        expectNone(lhs.checkedMul(rhs), label + " checkedMul")
+    }
+}
+
+@test
+func testInt64OverflowTolerantArithmetic() {
+    checkInt64(0, 0, (0, 0, true), (0, 0, true), (0, 0, true), "int64 0, 0")
+    checkInt64(1, 2, (3, 3, true), (-1, -1, true), (2, 2, true), "int64 1, 2")
+    checkInt64(-5, 7, (2, 2, true), (-12, -12, true), (-35, -35, true), "int64 -5, 7")
+    checkInt64(7, -5, (2, 2, true), (12, 12, true), (-35, -35, true), "int64 7, -5")
+    checkInt64(-1, -1, (-2, -2, true), (0, 0, true), (1, 1, true), "int64 -1, -1")
+    checkInt64(9223372036854775807, 1, (-9223372036854775808, 9223372036854775807, false), (9223372036854775806, 9223372036854775806, true), (9223372036854775807, 9223372036854775807, true), "int64 9223372036854775807, 1")
+    checkInt64(-9223372036854775808, -1, (9223372036854775807, -9223372036854775808, false), (-9223372036854775807, -9223372036854775807, true), (-9223372036854775808, 9223372036854775807, false), "int64 -9223372036854775808, -1")
+    checkInt64(-9223372036854775808, 1, (-9223372036854775807, -9223372036854775807, true), (9223372036854775807, -9223372036854775808, false), (-9223372036854775808, -9223372036854775808, true), "int64 -9223372036854775808, 1")
+    checkInt64(9223372036854775807, -1, (9223372036854775806, 9223372036854775806, true), (-9223372036854775808, 9223372036854775807, false), (-9223372036854775807, -9223372036854775807, true), "int64 9223372036854775807, -1")
+    checkInt64(-1, -9223372036854775808, (9223372036854775807, -9223372036854775808, false), (9223372036854775807, 9223372036854775807, true), (-9223372036854775808, 9223372036854775807, false), "int64 -1, -9223372036854775808")
+    checkInt64(-9223372036854775808, 0, (-9223372036854775808, -9223372036854775808, true), (-9223372036854775808, -9223372036854775808, true), (0, 0, true), "int64 -9223372036854775808, 0")
+    checkInt64(0, -9223372036854775808, (-9223372036854775808, -9223372036854775808, true), (-9223372036854775808, 9223372036854775807, false), (0, 0, true), "int64 0, -9223372036854775808")
+    checkInt64(9223372036854775807, 9223372036854775807, (-2, 9223372036854775807, false), (0, 0, true), (1, 9223372036854775807, false), "int64 9223372036854775807, 9223372036854775807")
+    checkInt64(-9223372036854775808, -9223372036854775808, (0, -9223372036854775808, false), (0, 0, true), (0, 9223372036854775807, false), "int64 -9223372036854775808, -9223372036854775808")
+    checkInt64(-9223372036854775808, 9223372036854775807, (-1, -1, true), (1, -9223372036854775808, false), (-9223372036854775808, -9223372036854775808, false), "int64 -9223372036854775808, 9223372036854775807")
+    checkInt64(9223372036854775807, -9223372036854775808, (-1, -1, true), (-1, 9223372036854775807, false), (-9223372036854775808, -9223372036854775808, false), "int64 9223372036854775807, -9223372036854775808")
+    checkInt64(9223372036854775807, 2, (-9223372036854775807, 9223372036854775807, false), (9223372036854775805, 9223372036854775805, true), (-2, 9223372036854775807, false), "int64 9223372036854775807, 2")
+    checkInt64(-9223372036854775808, 2, (-9223372036854775806, -9223372036854775806, true), (9223372036854775806, -9223372036854775808, false), (0, -9223372036854775808, false), "int64 -9223372036854775808, 2")
+    checkInt64(9223372036854775807, 0, (9223372036854775807, 9223372036854775807, true), (9223372036854775807, 9223372036854775807, true), (0, 0, true), "int64 9223372036854775807, 0")
+    checkInt64(0, -1, (-1, -1, true), (1, 1, true), (0, 0, true), "int64 0, -1")
+    checkInt64(4294967296, 4294967296, (8589934592, 8589934592, true), (0, 0, true), (0, 9223372036854775807, false), "int64 4294967296, 4294967296")
+    checkInt64(4294967296, -4294967296, (0, 0, true), (8589934592, 8589934592, true), (0, -9223372036854775808, false), "int64 4294967296, -4294967296")
+    checkInt64(-4294967296, 2147483648, (-2147483648, -2147483648, true), (-6442450944, -6442450944, true), (-9223372036854775808, -9223372036854775808, true), "int64 -4294967296, 2147483648")
+    checkInt64(2147483648, 4294967296, (6442450944, 6442450944, true), (-2147483648, -2147483648, true), (-9223372036854775808, 9223372036854775807, false), "int64 2147483648, 4294967296")
+    checkInt64(-1, 9223372036854775807, (9223372036854775806, 9223372036854775806, true), (-9223372036854775808, -9223372036854775808, true), (-9223372036854775807, -9223372036854775807, true), "int64 -1, 9223372036854775807")
+}
+
+func checkIsize(
+    _ lhs: isize,
+    _ rhs: isize,
+    _ sums: (isize, isize, bool),
+    _ differences: (isize, isize, bool),
+    _ products: (isize, isize, bool),
+    _ label: string,
+) {
+    // Each tuple is (wrapping, saturating, fits).
+    std::testing::assertEqual(lhs.wrappingAdd(rhs), sums.0, label + " wrappingAdd")
+    std::testing::assertEqual(lhs.saturatingAdd(rhs), sums.1, label + " saturatingAdd")
+    if sums.2 {
+        expectSome(lhs.checkedAdd(rhs), sums.0, label + " checkedAdd")
+    } else {
+        expectNone(lhs.checkedAdd(rhs), label + " checkedAdd")
+    }
+    std::testing::assertEqual(lhs.wrappingSub(rhs), differences.0, label + " wrappingSub")
+    std::testing::assertEqual(lhs.saturatingSub(rhs), differences.1, label + " saturatingSub")
+    if differences.2 {
+        expectSome(lhs.checkedSub(rhs), differences.0, label + " checkedSub")
+    } else {
+        expectNone(lhs.checkedSub(rhs), label + " checkedSub")
+    }
+    std::testing::assertEqual(lhs.wrappingMul(rhs), products.0, label + " wrappingMul")
+    std::testing::assertEqual(lhs.saturatingMul(rhs), products.1, label + " saturatingMul")
+    if products.2 {
+        expectSome(lhs.checkedMul(rhs), products.0, label + " checkedMul")
+    } else {
+        expectNone(lhs.checkedMul(rhs), label + " checkedMul")
+    }
+}
+
+@test
+func testIsizeOverflowTolerantArithmetic() {
+    checkIsize(0, 0, (0, 0, true), (0, 0, true), (0, 0, true), "isize 0, 0")
+    checkIsize(1, 2, (3, 3, true), (-1, -1, true), (2, 2, true), "isize 1, 2")
+    checkIsize(-5, 7, (2, 2, true), (-12, -12, true), (-35, -35, true), "isize -5, 7")
+    checkIsize(7, -5, (2, 2, true), (12, 12, true), (-35, -35, true), "isize 7, -5")
+    checkIsize(-1, -1, (-2, -2, true), (0, 0, true), (1, 1, true), "isize -1, -1")
+    checkIsize(9223372036854775807, 1, (-9223372036854775808, 9223372036854775807, false), (9223372036854775806, 9223372036854775806, true), (9223372036854775807, 9223372036854775807, true), "isize 9223372036854775807, 1")
+    checkIsize(-9223372036854775808, -1, (9223372036854775807, -9223372036854775808, false), (-9223372036854775807, -9223372036854775807, true), (-9223372036854775808, 9223372036854775807, false), "isize -9223372036854775808, -1")
+    checkIsize(-9223372036854775808, 1, (-9223372036854775807, -9223372036854775807, true), (9223372036854775807, -9223372036854775808, false), (-9223372036854775808, -9223372036854775808, true), "isize -9223372036854775808, 1")
+    checkIsize(9223372036854775807, -1, (9223372036854775806, 9223372036854775806, true), (-9223372036854775808, 9223372036854775807, false), (-9223372036854775807, -9223372036854775807, true), "isize 9223372036854775807, -1")
+    checkIsize(-1, -9223372036854775808, (9223372036854775807, -9223372036854775808, false), (9223372036854775807, 9223372036854775807, true), (-9223372036854775808, 9223372036854775807, false), "isize -1, -9223372036854775808")
+    checkIsize(-9223372036854775808, 0, (-9223372036854775808, -9223372036854775808, true), (-9223372036854775808, -9223372036854775808, true), (0, 0, true), "isize -9223372036854775808, 0")
+    checkIsize(0, -9223372036854775808, (-9223372036854775808, -9223372036854775808, true), (-9223372036854775808, 9223372036854775807, false), (0, 0, true), "isize 0, -9223372036854775808")
+    checkIsize(9223372036854775807, 9223372036854775807, (-2, 9223372036854775807, false), (0, 0, true), (1, 9223372036854775807, false), "isize 9223372036854775807, 9223372036854775807")
+    checkIsize(-9223372036854775808, -9223372036854775808, (0, -9223372036854775808, false), (0, 0, true), (0, 9223372036854775807, false), "isize -9223372036854775808, -9223372036854775808")
+    checkIsize(-9223372036854775808, 9223372036854775807, (-1, -1, true), (1, -9223372036854775808, false), (-9223372036854775808, -9223372036854775808, false), "isize -9223372036854775808, 9223372036854775807")
+    checkIsize(9223372036854775807, -9223372036854775808, (-1, -1, true), (-1, 9223372036854775807, false), (-9223372036854775808, -9223372036854775808, false), "isize 9223372036854775807, -9223372036854775808")
+    checkIsize(9223372036854775807, 2, (-9223372036854775807, 9223372036854775807, false), (9223372036854775805, 9223372036854775805, true), (-2, 9223372036854775807, false), "isize 9223372036854775807, 2")
+    checkIsize(-9223372036854775808, 2, (-9223372036854775806, -9223372036854775806, true), (9223372036854775806, -9223372036854775808, false), (0, -9223372036854775808, false), "isize -9223372036854775808, 2")
+    checkIsize(9223372036854775807, 0, (9223372036854775807, 9223372036854775807, true), (9223372036854775807, 9223372036854775807, true), (0, 0, true), "isize 9223372036854775807, 0")
+    checkIsize(0, -1, (-1, -1, true), (1, 1, true), (0, 0, true), "isize 0, -1")
+    checkIsize(4294967296, 4294967296, (8589934592, 8589934592, true), (0, 0, true), (0, 9223372036854775807, false), "isize 4294967296, 4294967296")
+    checkIsize(4294967296, -4294967296, (0, 0, true), (8589934592, 8589934592, true), (0, -9223372036854775808, false), "isize 4294967296, -4294967296")
+    checkIsize(-4294967296, 2147483648, (-2147483648, -2147483648, true), (-6442450944, -6442450944, true), (-9223372036854775808, -9223372036854775808, true), "isize -4294967296, 2147483648")
+    checkIsize(2147483648, 4294967296, (6442450944, 6442450944, true), (-2147483648, -2147483648, true), (-9223372036854775808, 9223372036854775807, false), "isize 2147483648, 4294967296")
+    checkIsize(-1, 9223372036854775807, (9223372036854775806, 9223372036854775806, true), (-9223372036854775808, -9223372036854775808, true), (-9223372036854775807, -9223372036854775807, true), "isize -1, 9223372036854775807")
+}
+
+func checkUint8(
+    _ lhs: uint8,
+    _ rhs: uint8,
+    _ sums: (uint8, uint8, bool),
+    _ differences: (uint8, uint8, bool),
+    _ products: (uint8, uint8, bool),
+    _ label: string,
+) {
+    // Each tuple is (wrapping, saturating, fits).
+    std::testing::assertEqual(lhs.wrappingAdd(rhs), sums.0, label + " wrappingAdd")
+    std::testing::assertEqual(lhs.saturatingAdd(rhs), sums.1, label + " saturatingAdd")
+    if sums.2 {
+        expectSome(lhs.checkedAdd(rhs), sums.0, label + " checkedAdd")
+    } else {
+        expectNone(lhs.checkedAdd(rhs), label + " checkedAdd")
+    }
+    std::testing::assertEqual(lhs.wrappingSub(rhs), differences.0, label + " wrappingSub")
+    std::testing::assertEqual(lhs.saturatingSub(rhs), differences.1, label + " saturatingSub")
+    if differences.2 {
+        expectSome(lhs.checkedSub(rhs), differences.0, label + " checkedSub")
+    } else {
+        expectNone(lhs.checkedSub(rhs), label + " checkedSub")
+    }
+    std::testing::assertEqual(lhs.wrappingMul(rhs), products.0, label + " wrappingMul")
+    std::testing::assertEqual(lhs.saturatingMul(rhs), products.1, label + " saturatingMul")
+    if products.2 {
+        expectSome(lhs.checkedMul(rhs), products.0, label + " checkedMul")
+    } else {
+        expectNone(lhs.checkedMul(rhs), label + " checkedMul")
+    }
+}
+
+@test
+func testUint8OverflowTolerantArithmetic() {
+    checkUint8(0, 0, (0, 0, true), (0, 0, true), (0, 0, true), "uint8 0, 0")
+    checkUint8(1, 2, (3, 3, true), (255, 0, false), (2, 2, true), "uint8 1, 2")
+    checkUint8(7, 5, (12, 12, true), (2, 2, true), (35, 35, true), "uint8 7, 5")
+    checkUint8(0, 1, (1, 1, true), (255, 0, false), (0, 0, true), "uint8 0, 1")
+    checkUint8(255, 1, (0, 255, false), (254, 254, true), (255, 255, true), "uint8 255, 1")
+    checkUint8(255, 255, (254, 255, false), (0, 0, true), (1, 255, false), "uint8 255, 255")
+    checkUint8(255, 0, (255, 255, true), (255, 255, true), (0, 0, true), "uint8 255, 0")
+    checkUint8(0, 255, (255, 255, true), (1, 0, false), (0, 0, true), "uint8 0, 255")
+    checkUint8(1, 255, (0, 255, false), (2, 0, false), (255, 255, true), "uint8 1, 255")
+    checkUint8(255, 2, (1, 255, false), (253, 253, true), (254, 255, false), "uint8 255, 2")
+    checkUint8(16, 16, (32, 32, true), (0, 0, true), (0, 255, false), "uint8 16, 16")
+    checkUint8(15, 17, (32, 32, true), (254, 0, false), (255, 255, true), "uint8 15, 17")
+    checkUint8(8, 16, (24, 24, true), (248, 0, false), (128, 128, true), "uint8 8, 16")
+    checkUint8(2, 128, (130, 130, true), (130, 0, false), (0, 255, false), "uint8 2, 128")
+    checkUint8(255, 254, (253, 255, false), (1, 1, true), (2, 255, false), "uint8 255, 254")
+}
+
+func checkUint16(
+    _ lhs: uint16,
+    _ rhs: uint16,
+    _ sums: (uint16, uint16, bool),
+    _ differences: (uint16, uint16, bool),
+    _ products: (uint16, uint16, bool),
+    _ label: string,
+) {
+    // Each tuple is (wrapping, saturating, fits).
+    std::testing::assertEqual(lhs.wrappingAdd(rhs), sums.0, label + " wrappingAdd")
+    std::testing::assertEqual(lhs.saturatingAdd(rhs), sums.1, label + " saturatingAdd")
+    if sums.2 {
+        expectSome(lhs.checkedAdd(rhs), sums.0, label + " checkedAdd")
+    } else {
+        expectNone(lhs.checkedAdd(rhs), label + " checkedAdd")
+    }
+    std::testing::assertEqual(lhs.wrappingSub(rhs), differences.0, label + " wrappingSub")
+    std::testing::assertEqual(lhs.saturatingSub(rhs), differences.1, label + " saturatingSub")
+    if differences.2 {
+        expectSome(lhs.checkedSub(rhs), differences.0, label + " checkedSub")
+    } else {
+        expectNone(lhs.checkedSub(rhs), label + " checkedSub")
+    }
+    std::testing::assertEqual(lhs.wrappingMul(rhs), products.0, label + " wrappingMul")
+    std::testing::assertEqual(lhs.saturatingMul(rhs), products.1, label + " saturatingMul")
+    if products.2 {
+        expectSome(lhs.checkedMul(rhs), products.0, label + " checkedMul")
+    } else {
+        expectNone(lhs.checkedMul(rhs), label + " checkedMul")
+    }
+}
+
+@test
+func testUint16OverflowTolerantArithmetic() {
+    checkUint16(0, 0, (0, 0, true), (0, 0, true), (0, 0, true), "uint16 0, 0")
+    checkUint16(1, 2, (3, 3, true), (65535, 0, false), (2, 2, true), "uint16 1, 2")
+    checkUint16(7, 5, (12, 12, true), (2, 2, true), (35, 35, true), "uint16 7, 5")
+    checkUint16(0, 1, (1, 1, true), (65535, 0, false), (0, 0, true), "uint16 0, 1")
+    checkUint16(65535, 1, (0, 65535, false), (65534, 65534, true), (65535, 65535, true), "uint16 65535, 1")
+    checkUint16(65535, 65535, (65534, 65535, false), (0, 0, true), (1, 65535, false), "uint16 65535, 65535")
+    checkUint16(65535, 0, (65535, 65535, true), (65535, 65535, true), (0, 0, true), "uint16 65535, 0")
+    checkUint16(0, 65535, (65535, 65535, true), (1, 0, false), (0, 0, true), "uint16 0, 65535")
+    checkUint16(1, 65535, (0, 65535, false), (2, 0, false), (65535, 65535, true), "uint16 1, 65535")
+    checkUint16(65535, 2, (1, 65535, false), (65533, 65533, true), (65534, 65535, false), "uint16 65535, 2")
+    checkUint16(256, 256, (512, 512, true), (0, 0, true), (0, 65535, false), "uint16 256, 256")
+    checkUint16(255, 257, (512, 512, true), (65534, 0, false), (65535, 65535, true), "uint16 255, 257")
+    checkUint16(128, 256, (384, 384, true), (65408, 0, false), (32768, 32768, true), "uint16 128, 256")
+    checkUint16(2, 32768, (32770, 32770, true), (32770, 0, false), (0, 65535, false), "uint16 2, 32768")
+    checkUint16(65535, 65534, (65533, 65535, false), (1, 1, true), (2, 65535, false), "uint16 65535, 65534")
+}
+
+func checkUint32(
+    _ lhs: uint32,
+    _ rhs: uint32,
+    _ sums: (uint32, uint32, bool),
+    _ differences: (uint32, uint32, bool),
+    _ products: (uint32, uint32, bool),
+    _ label: string,
+) {
+    // Each tuple is (wrapping, saturating, fits).
+    std::testing::assertEqual(lhs.wrappingAdd(rhs), sums.0, label + " wrappingAdd")
+    std::testing::assertEqual(lhs.saturatingAdd(rhs), sums.1, label + " saturatingAdd")
+    if sums.2 {
+        expectSome(lhs.checkedAdd(rhs), sums.0, label + " checkedAdd")
+    } else {
+        expectNone(lhs.checkedAdd(rhs), label + " checkedAdd")
+    }
+    std::testing::assertEqual(lhs.wrappingSub(rhs), differences.0, label + " wrappingSub")
+    std::testing::assertEqual(lhs.saturatingSub(rhs), differences.1, label + " saturatingSub")
+    if differences.2 {
+        expectSome(lhs.checkedSub(rhs), differences.0, label + " checkedSub")
+    } else {
+        expectNone(lhs.checkedSub(rhs), label + " checkedSub")
+    }
+    std::testing::assertEqual(lhs.wrappingMul(rhs), products.0, label + " wrappingMul")
+    std::testing::assertEqual(lhs.saturatingMul(rhs), products.1, label + " saturatingMul")
+    if products.2 {
+        expectSome(lhs.checkedMul(rhs), products.0, label + " checkedMul")
+    } else {
+        expectNone(lhs.checkedMul(rhs), label + " checkedMul")
+    }
+}
+
+@test
+func testUint32OverflowTolerantArithmetic() {
+    checkUint32(0, 0, (0, 0, true), (0, 0, true), (0, 0, true), "uint32 0, 0")
+    checkUint32(1, 2, (3, 3, true), (4294967295, 0, false), (2, 2, true), "uint32 1, 2")
+    checkUint32(7, 5, (12, 12, true), (2, 2, true), (35, 35, true), "uint32 7, 5")
+    checkUint32(0, 1, (1, 1, true), (4294967295, 0, false), (0, 0, true), "uint32 0, 1")
+    checkUint32(4294967295, 1, (0, 4294967295, false), (4294967294, 4294967294, true), (4294967295, 4294967295, true), "uint32 4294967295, 1")
+    checkUint32(4294967295, 4294967295, (4294967294, 4294967295, false), (0, 0, true), (1, 4294967295, false), "uint32 4294967295, 4294967295")
+    checkUint32(4294967295, 0, (4294967295, 4294967295, true), (4294967295, 4294967295, true), (0, 0, true), "uint32 4294967295, 0")
+    checkUint32(0, 4294967295, (4294967295, 4294967295, true), (1, 0, false), (0, 0, true), "uint32 0, 4294967295")
+    checkUint32(1, 4294967295, (0, 4294967295, false), (2, 0, false), (4294967295, 4294967295, true), "uint32 1, 4294967295")
+    checkUint32(4294967295, 2, (1, 4294967295, false), (4294967293, 4294967293, true), (4294967294, 4294967295, false), "uint32 4294967295, 2")
+    checkUint32(65536, 65536, (131072, 131072, true), (0, 0, true), (0, 4294967295, false), "uint32 65536, 65536")
+    checkUint32(65535, 65537, (131072, 131072, true), (4294967294, 0, false), (4294967295, 4294967295, true), "uint32 65535, 65537")
+    checkUint32(32768, 65536, (98304, 98304, true), (4294934528, 0, false), (2147483648, 2147483648, true), "uint32 32768, 65536")
+    checkUint32(2, 2147483648, (2147483650, 2147483650, true), (2147483650, 0, false), (0, 4294967295, false), "uint32 2, 2147483648")
+    checkUint32(4294967295, 4294967294, (4294967293, 4294967295, false), (1, 1, true), (2, 4294967295, false), "uint32 4294967295, 4294967294")
+}
+
+func checkUint64(
+    _ lhs: uint64,
+    _ rhs: uint64,
+    _ sums: (uint64, uint64, bool),
+    _ differences: (uint64, uint64, bool),
+    _ products: (uint64, uint64, bool),
+    _ label: string,
+) {
+    // Each tuple is (wrapping, saturating, fits).
+    std::testing::assertEqual(lhs.wrappingAdd(rhs), sums.0, label + " wrappingAdd")
+    std::testing::assertEqual(lhs.saturatingAdd(rhs), sums.1, label + " saturatingAdd")
+    if sums.2 {
+        expectSome(lhs.checkedAdd(rhs), sums.0, label + " checkedAdd")
+    } else {
+        expectNone(lhs.checkedAdd(rhs), label + " checkedAdd")
+    }
+    std::testing::assertEqual(lhs.wrappingSub(rhs), differences.0, label + " wrappingSub")
+    std::testing::assertEqual(lhs.saturatingSub(rhs), differences.1, label + " saturatingSub")
+    if differences.2 {
+        expectSome(lhs.checkedSub(rhs), differences.0, label + " checkedSub")
+    } else {
+        expectNone(lhs.checkedSub(rhs), label + " checkedSub")
+    }
+    std::testing::assertEqual(lhs.wrappingMul(rhs), products.0, label + " wrappingMul")
+    std::testing::assertEqual(lhs.saturatingMul(rhs), products.1, label + " saturatingMul")
+    if products.2 {
+        expectSome(lhs.checkedMul(rhs), products.0, label + " checkedMul")
+    } else {
+        expectNone(lhs.checkedMul(rhs), label + " checkedMul")
+    }
+}
+
+@test
+func testUint64OverflowTolerantArithmetic() {
+    checkUint64(0, 0, (0, 0, true), (0, 0, true), (0, 0, true), "uint64 0, 0")
+    checkUint64(1, 2, (3, 3, true), (18446744073709551615, 0, false), (2, 2, true), "uint64 1, 2")
+    checkUint64(7, 5, (12, 12, true), (2, 2, true), (35, 35, true), "uint64 7, 5")
+    checkUint64(0, 1, (1, 1, true), (18446744073709551615, 0, false), (0, 0, true), "uint64 0, 1")
+    checkUint64(18446744073709551615, 1, (0, 18446744073709551615, false), (18446744073709551614, 18446744073709551614, true), (18446744073709551615, 18446744073709551615, true), "uint64 18446744073709551615, 1")
+    checkUint64(18446744073709551615, 18446744073709551615, (18446744073709551614, 18446744073709551615, false), (0, 0, true), (1, 18446744073709551615, false), "uint64 18446744073709551615, 18446744073709551615")
+    checkUint64(18446744073709551615, 0, (18446744073709551615, 18446744073709551615, true), (18446744073709551615, 18446744073709551615, true), (0, 0, true), "uint64 18446744073709551615, 0")
+    checkUint64(0, 18446744073709551615, (18446744073709551615, 18446744073709551615, true), (1, 0, false), (0, 0, true), "uint64 0, 18446744073709551615")
+    checkUint64(1, 18446744073709551615, (0, 18446744073709551615, false), (2, 0, false), (18446744073709551615, 18446744073709551615, true), "uint64 1, 18446744073709551615")
+    checkUint64(18446744073709551615, 2, (1, 18446744073709551615, false), (18446744073709551613, 18446744073709551613, true), (18446744073709551614, 18446744073709551615, false), "uint64 18446744073709551615, 2")
+    checkUint64(4294967296, 4294967296, (8589934592, 8589934592, true), (0, 0, true), (0, 18446744073709551615, false), "uint64 4294967296, 4294967296")
+    checkUint64(4294967295, 4294967297, (8589934592, 8589934592, true), (18446744073709551614, 0, false), (18446744073709551615, 18446744073709551615, true), "uint64 4294967295, 4294967297")
+    checkUint64(2147483648, 4294967296, (6442450944, 6442450944, true), (18446744071562067968, 0, false), (9223372036854775808, 9223372036854775808, true), "uint64 2147483648, 4294967296")
+    checkUint64(2, 9223372036854775808, (9223372036854775810, 9223372036854775810, true), (9223372036854775810, 0, false), (0, 18446744073709551615, false), "uint64 2, 9223372036854775808")
+    checkUint64(18446744073709551615, 18446744073709551614, (18446744073709551613, 18446744073709551615, false), (1, 1, true), (2, 18446744073709551615, false), "uint64 18446744073709551615, 18446744073709551614")
+}
+
+func checkUsize(
+    _ lhs: usize,
+    _ rhs: usize,
+    _ sums: (usize, usize, bool),
+    _ differences: (usize, usize, bool),
+    _ products: (usize, usize, bool),
+    _ label: string,
+) {
+    // Each tuple is (wrapping, saturating, fits).
+    std::testing::assertEqual(lhs.wrappingAdd(rhs), sums.0, label + " wrappingAdd")
+    std::testing::assertEqual(lhs.saturatingAdd(rhs), sums.1, label + " saturatingAdd")
+    if sums.2 {
+        expectSome(lhs.checkedAdd(rhs), sums.0, label + " checkedAdd")
+    } else {
+        expectNone(lhs.checkedAdd(rhs), label + " checkedAdd")
+    }
+    std::testing::assertEqual(lhs.wrappingSub(rhs), differences.0, label + " wrappingSub")
+    std::testing::assertEqual(lhs.saturatingSub(rhs), differences.1, label + " saturatingSub")
+    if differences.2 {
+        expectSome(lhs.checkedSub(rhs), differences.0, label + " checkedSub")
+    } else {
+        expectNone(lhs.checkedSub(rhs), label + " checkedSub")
+    }
+    std::testing::assertEqual(lhs.wrappingMul(rhs), products.0, label + " wrappingMul")
+    std::testing::assertEqual(lhs.saturatingMul(rhs), products.1, label + " saturatingMul")
+    if products.2 {
+        expectSome(lhs.checkedMul(rhs), products.0, label + " checkedMul")
+    } else {
+        expectNone(lhs.checkedMul(rhs), label + " checkedMul")
+    }
+}
+
+@test
+func testUsizeOverflowTolerantArithmetic() {
+    checkUsize(0, 0, (0, 0, true), (0, 0, true), (0, 0, true), "usize 0, 0")
+    checkUsize(1, 2, (3, 3, true), (18446744073709551615, 0, false), (2, 2, true), "usize 1, 2")
+    checkUsize(7, 5, (12, 12, true), (2, 2, true), (35, 35, true), "usize 7, 5")
+    checkUsize(0, 1, (1, 1, true), (18446744073709551615, 0, false), (0, 0, true), "usize 0, 1")
+    checkUsize(18446744073709551615, 1, (0, 18446744073709551615, false), (18446744073709551614, 18446744073709551614, true), (18446744073709551615, 18446744073709551615, true), "usize 18446744073709551615, 1")
+    checkUsize(18446744073709551615, 18446744073709551615, (18446744073709551614, 18446744073709551615, false), (0, 0, true), (1, 18446744073709551615, false), "usize 18446744073709551615, 18446744073709551615")
+    checkUsize(18446744073709551615, 0, (18446744073709551615, 18446744073709551615, true), (18446744073709551615, 18446744073709551615, true), (0, 0, true), "usize 18446744073709551615, 0")
+    checkUsize(0, 18446744073709551615, (18446744073709551615, 18446744073709551615, true), (1, 0, false), (0, 0, true), "usize 0, 18446744073709551615")
+    checkUsize(1, 18446744073709551615, (0, 18446744073709551615, false), (2, 0, false), (18446744073709551615, 18446744073709551615, true), "usize 1, 18446744073709551615")
+    checkUsize(18446744073709551615, 2, (1, 18446744073709551615, false), (18446744073709551613, 18446744073709551613, true), (18446744073709551614, 18446744073709551615, false), "usize 18446744073709551615, 2")
+    checkUsize(4294967296, 4294967296, (8589934592, 8589934592, true), (0, 0, true), (0, 18446744073709551615, false), "usize 4294967296, 4294967296")
+    checkUsize(4294967295, 4294967297, (8589934592, 8589934592, true), (18446744073709551614, 0, false), (18446744073709551615, 18446744073709551615, true), "usize 4294967295, 4294967297")
+    checkUsize(2147483648, 4294967296, (6442450944, 6442450944, true), (18446744071562067968, 0, false), (9223372036854775808, 9223372036854775808, true), "usize 2147483648, 4294967296")
+    checkUsize(2, 9223372036854775808, (9223372036854775810, 9223372036854775810, true), (9223372036854775810, 0, false), (0, 18446744073709551615, false), "usize 2, 9223372036854775808")
+    checkUsize(18446744073709551615, 18446744073709551614, (18446744073709551613, 18446744073709551615, false), (1, 1, true), (2, 18446744073709551615, false), "usize 18446744073709551615, 18446744073709551614")
+}
+
+@cfg(profile("debug"))
+@test
+@expectPanic("attempt to add with overflow")
+func testStdDebugOverflowTraps() {
+    lhs := std::hint::blackBox(255_u8)
+    rhs := std::hint::blackBox(1_u8)
+    var _ = lhs + rhs
+}

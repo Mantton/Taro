@@ -2,6 +2,14 @@ import std::io::Error
 import std::result::Result
 import std::mem::{Span}
 
+/// A resource that can be closed when a `using` binding leaves scope.
+/// Explicit callers can inspect the result. Scoped cleanup discards it.
+@lang("Closeable")
+public interface Closeable {
+    type CloseResult
+    public func close() -> Self::CloseResult
+}
+
 /// The `Reader` interface allows for reading bytes from a source.
 public interface Reader {
     /// Parses up to `buf.len()` bytes into the `buf` parameter, returning the

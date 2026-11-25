@@ -1,0 +1,8 @@
+error: double has no total order
+ -> language_tests/source_files/invalid/on_unsatisfied_overload.tr:6:14
+	    var one = pick(1.25)
+	              ^^^^
+error: no overload matches this call
+ -> language_tests/source_files/invalid/on_unsatisfied_overload.tr:7:14
+	    var two = pick(true, false, 0)
+	              ^^^^

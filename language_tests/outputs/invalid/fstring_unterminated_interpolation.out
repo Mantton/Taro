@@ -1,4 +1,0 @@
-error: lexer error: unterminated f-string interpolation
- -> language_tests/source_files/invalid/fstring_unterminated_interpolation.tr:2:12
-	    var _ = f"{name"
-	            ^^^^^^^^

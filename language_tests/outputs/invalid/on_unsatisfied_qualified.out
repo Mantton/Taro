@@ -1,0 +1,4 @@
+error: NotSource needs an Item witness
+ -> language_tests/source_files/invalid/on_unsatisfied_qualified.tr:4:17
+	type Projected = (NotSource as Source).Item
+	                 ^^^^^^^^^^^^^^^^^^^^^^^^^^

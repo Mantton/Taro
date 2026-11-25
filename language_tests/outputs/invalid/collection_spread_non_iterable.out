@@ -1,0 +1,8 @@
+error: type 'int32' does not conform to interface 'Iterable'
+ -> language_tests/source_files/invalid/collection_spread_non_iterable.tr:3:31
+	    var values: List[int32] = [n...]
+	                               ^^^^
+error: expected int32, found int32.Element
+ -> language_tests/source_files/invalid/collection_spread_non_iterable.tr:3:31
+	    var values: List[int32] = [n...]
+	                               ^^^^

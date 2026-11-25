@@ -1,0 +1,23 @@
+// EXPECT_STDERR_NOT_CONTAINS: error:
+// Returning `.ok` from a Result `main` exits with status 0, like falling off
+// the end of a unit `main`.
+struct Unused {}
+
+conform Unused to std::fmt::Display {
+    func display(_ into: &std::fmt::Formatter) { into.writeString("unused") }
+}
+
+conform Unused to std::error::Error {}
+
+func check(_ value: int32) -> Result[int32, any std::error::Error] {
+    if value < 0 {
+        return .err(Unused {})
+    }
+    return .ok(value * 2)
+}
+
+func main() -> Result[(), any std::error::Error] {
+    doubled := check(21)!
+    print("doubled ${doubled}\n")
+    return .ok(())
+}

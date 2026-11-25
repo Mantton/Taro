@@ -1,7 +1,8 @@
 import std::optional::Optional
 import std::panic::panic
 import std::iter::{Iterator, Iterable}
-import std::range::{Range, ClosedRange}
+import std::range::{Range, ClosedRange, RangeFrom, RangeTo, RangeToInclusive, RangeFull}
+import std::ops::{Contains, PartialEq}
 
 @lang("MaybeUninit")
 public struct MaybeUninit[T] {
@@ -121,6 +122,46 @@ extend[Element] Span[Element] {
             if range.start > range.end || range.end >= self.len { panic("span range out of range") }
             self.slice(range.start, range.end - range.start + (1 as usize))
         }
+    }
+
+    public subscript(range: RangeFrom[usize]) -> Self {
+        get {
+            if range.start > self.len { panic("span range out of range") }
+            self.slice(range.start, self.len - range.start)
+        }
+    }
+
+    public subscript(range: RangeTo[usize]) -> Self {
+        get {
+            if range.end > self.len { panic("span range out of range") }
+            self.slice(0 as usize, range.end)
+        }
+    }
+
+    public subscript(range: RangeToInclusive[usize]) -> Self {
+        get {
+            if range.end >= self.len { panic("span range out of range") }
+            self.slice(0 as usize, range.end + (1 as usize))
+        }
+    }
+
+    public subscript(range: RangeFull) -> Self {
+        get {
+            var _ = range
+            self
+        }
+    }
+}
+
+/// A linear scan from the first element for an equal element.
+conform[Element: PartialEq] Span[Element] to Contains[Element] {
+    public func contains(_ element: &Element) -> bool {
+        var index: usize = 0
+        while index < self.len {
+            if *self.at(index) == *element { return true }
+            index += 1
+        }
+        return false
     }
 }
 

@@ -40,6 +40,7 @@ class LanguageTestDirectiveTests(unittest.TestCase):
             '// VET: invalid',
             '// VET\n// TEST',
             '// OVERFLOW_CHECKS: true',
+            '// RUN_TWICE: yes',
             '// ARGS',
             '// ENV',
         ):
@@ -220,6 +221,28 @@ class LanguageTestOracleTests(unittest.TestCase):
                     "invalid/broken.tr", stderr="error: broken\n", exit_code=1,
                     directives=f"// EXPECT_EXIT: {expected}\n",
                 )[0], passes)
+
+    def test_run_twice_checks_the_second_run_and_requires_reuse(self) -> None:
+        source = self.sources / "valid/twice.tr"
+        source.parent.mkdir(parents=True)
+        source.write_text(
+            "// RUN_TWICE\n// EXPECT_STDERR_CONTAINS: replayed\n", encoding="utf-8"
+        )
+        for second, passes in (
+            ("Reusing (metadata) - twice\nwarning: replayed\n", True),
+            ("Compiling - twice\nwarning: replayed\n", False),
+            ("Reusing (metadata) - twice\n", False),
+        ):
+            with self.subTest(second=second), patch.object(
+                language_tests.subprocess, "Popen", side_effect=[
+                    completed_process([], 0, "", "Compiling - twice\nwarning: replayed\n"),
+                    completed_process([], 0, "", second),
+                ],
+            ) as run:
+                self.assertEqual(run_test(source, self.env, "debug", None)[0], passes)
+                self.assertEqual(run.call_count, 2)
+                first, again = run.call_args_list
+                self.assertEqual(first.kwargs["env"]["TMPDIR"], again.kwargs["env"]["TMPDIR"])
 
     def test_nonzero_expectation_accepts_failure_status_and_signals_only(self) -> None:
         for code in (1, 2, -6, 134, 0):

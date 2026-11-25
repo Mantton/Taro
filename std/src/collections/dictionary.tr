@@ -1,9 +1,11 @@
+import std::default::Default
 import std::optional::Optional
 import std::hash::{Hashable, DefaultHasher, Hasher}
 import std::panic::panic
 import std::iter::{Iterator, Iterable}
 import std::marker::Clone
 import std::mem::maxBufferCapacity
+import std::ops::{Contains, Fn, PartialEq}
 import std::intrinsic::{__intrinsic_align_of, __intrinsic_keep_alive, __intrinsic_size_of}
 
 extern "taro_rt" {
@@ -545,6 +547,84 @@ extend[Key: Hashable, Value] Dictionary[Key, Value] {
         }
     }
 
+    /// Returns the existing value for `key`, or inserts and returns `defaultValue` if absent.
+    /// Does not overwrite an existing entry.
+    public func getOrInsert(_ key: Key, default defaultValue: Value) -> Value {
+        hash := hashKey(&key)
+        var (slot, occupied) = self.claimSlot(&key, hash)
+        if occupied {
+            return self.storage.valueAt(slot)
+        }
+        self.fillSlot(slot, hash, key: key, value: defaultValue)
+        return defaultValue
+    }
+
+    /// Returns the existing value for `key`, or lazily computes, inserts, and returns
+    /// `makeDefault()` if absent. `makeDefault` is not called on a hit, and re-entrant
+    /// reads or mutations of `self` inside `makeDefault` leave the table consistent.
+    public func getOrInsertWith[F: Fn() -> Value](_ key: Key, _ makeDefault: F) -> Value {
+        hash := hashKey(&key)
+        match self.findHashedSlot(&key, hash) {
+            case .some(slot) => return self.storage.valueAt(slot)
+            case .none => {}
+        }
+        value := makeDefault()
+        var (slot, occupied) = self.claimSlot(&key, hash)
+        if occupied {
+            return self.storage.valueAt(slot)
+        }
+        self.fillSlot(slot, hash, key: key, value: value)
+        return value
+    }
+
+    /// Updates the entry for `key` via `update(&value)`, initializing the local
+    /// snapshot with `defaultValue` when `key` is absent.
+    ///
+    /// `update` operates on a local snapshot and the resulting value is always
+    /// written back to `key` when `update` returns. Re-entrant mutations and
+    /// table resizes inside `update` remain safe, and the final write-back wins
+    /// if `update` also inserts, overwrites, or removes `key`.
+    public func modify[F: Fn(&Value) -> ()](_ key: Key, default defaultValue: Value, _ update: F) {
+        hash := hashKey(&key)
+        var value = match self.findHashedSlot(&key, hash) {
+            case .some(slot) => self.storage.valueAt(slot)
+            case .none => defaultValue
+        }
+        update(&value)
+        var (slot, occupied) = self.claimSlot(&key, hash)
+        if occupied {
+            self.storage.groups.writeEntry(
+                slot,
+                self.storage.controlAt(slot),
+                (self.storage.keyAt(slot), value),
+            )
+        } else {
+            self.fillSlot(slot, hash, key: key, value: value)
+        }
+    }
+
+    /// Retains only entries for which `predicate(&key, &value)` returns `true`.
+    /// Panics if `predicate` structurally mutates this dictionary.
+    public func retain[F: Fn(&Key, &Value) -> bool](_ predicate: F) {
+        storage := self.storage
+        var slot: usize = 0
+        while slot < storage.capacity {
+            if swissCtrlIsFull(storage.controlAt(slot)) {
+                key := storage.keyAt(slot)
+                value := storage.valueAt(slot)
+                version := storage.version
+                keep := predicate(&key, &value)
+                if storage.version != version {
+                    panic("dictionary changed structurally during retain")
+                }
+                if !keep {
+                    var _ = self.removeSlot(slot)
+                }
+            }
+            slot += 1
+        }
+    }
+
     func rebuild(_ newCapacity: usize) {
         storage := self.storage
         fresh := DictionaryStorage[Key, Value](newCapacity)
@@ -827,5 +907,35 @@ func testSwissTombstoneBudgetRebuildsWithoutGrowing() {
         key := slot as int32
         std::testing::assertEqual(table.get(&key).unwrap(), key, "rebuild preserves every live entry")
         slot += 1
+    }
+}
+
+/// Whether the dictionary has an entry for the key.
+conform[Key: Hashable, Value] Dictionary[Key, Value] to Contains[Key] {
+    public func contains(_ key: &Key) -> bool { self.contains(key) }
+}
+
+conform[Key: Hashable, Value] Dictionary[Key, Value] to Default {
+    public static func default() -> Self { Self::new() }
+}
+
+/// Order-independent key-value equality. Present entries mapped to `.none` are
+/// distinct from absent keys when `Value` is an `Optional`.
+conform[Key: Hashable, Value: PartialEq] Dictionary[Key, Value] to PartialEq {
+    public func eq(_ other: Self) -> bool {
+        if self.len() != other.len() {
+            return false
+        }
+        for (key, value) in self {
+            match other.findSlot(&key) {
+                case .none => return false
+                case .some(slot) => {
+                    if value != other.storage.valueAt(slot) {
+                        return false
+                    }
+                }
+            }
+        }
+        return true
     }
 }

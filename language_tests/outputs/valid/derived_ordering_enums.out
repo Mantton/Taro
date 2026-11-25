@@ -1,0 +1,7 @@
+priority: true true true greater
+sorted: low low normal high
+cases: true true true equal
+positional: true greater equal
+named: true greater true true
+generic: true true less
+queue: true/1 true/2 false/3 false/1

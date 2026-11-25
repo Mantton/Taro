@@ -1,0 +1,58 @@
+// OVERFLOW_CHECKS
+// Overflow-tolerant std integer methods must not trap in a package compiled
+// with overflow checks, whether or not the std bodies are inlined. Expected
+// values were computed independently in Python.
+
+const FNV_OFFSET: uint64 = 0xcbf29ce484222325
+const FNV_PRIME: uint64 = 0x100000001b3
+
+func fnv1a(_ text: string) -> uint64 {
+    var hash = FNV_OFFSET
+    for byte in text.bytes() {
+        hash = (hash ^ (byte as uint64)).wrappingMul(FNV_PRIME)
+    }
+    return hash
+}
+
+func lcgStep(_ seed: uint32) -> uint32 {
+    seed.wrappingMul(1664525).wrappingAdd(1013904223)
+}
+
+func check(_ actual: uint64, _ expected: uint64, _ label: string) {
+    if actual != expected {
+        panic(label)
+    }
+}
+
+func main() {
+    // 0xcbf29ce484222325 * 0x100000001b3 overflows uint64, so plain `*`
+    // traps on the first byte of every non-empty input.
+    for text in ["", "a", "foobar", "hello world"] {
+        printf("%d\n", fnv1a(text))
+    }
+    check(fnv1a("a"), 12638187200555641996, "fnv1a a")
+    check(fnv1a("foobar"), 9625390261332436968, "fnv1a foobar")
+
+    // 12345 * 1664525 already exceeds uint32.
+    var seed: uint32 = 12345
+    var step = 0
+    while step < 6 {
+        seed = lcgStep(seed)
+        printf("%d\n", seed)
+        step += 1
+    }
+    check(seed as uint64, 483019191, "lcg sixth step")
+
+    var maximum: int64 = 9223372036854775807
+    var minimum: int64 = -9223372036854775808
+    var negativeOne: int64 = -1
+    check(maximum.wrappingAdd(1) as uint64, minimum as uint64, "int64 MAX + 1 wraps")
+    check(minimum.wrappingSub(1) as uint64, maximum as uint64, "int64 MIN - 1 wraps")
+    check(minimum.wrappingMul(negativeOne) as uint64, minimum as uint64, "int64 MIN * -1 wraps")
+    check(maximum.saturatingAdd(1) as uint64, maximum as uint64, "int64 saturates high")
+    check(minimum.saturatingMul(negativeOne) as uint64, maximum as uint64, "int64 MIN * -1 saturates")
+    if maximum.checkedMul(2).isSome() {
+        panic("int64 checkedMul overflow")
+    }
+    print("PASS\n")
+}

@@ -13,7 +13,7 @@ panel. The extension uses its TextMate grammar and has no build dependencies.
 ## Tree-sitter and Zed
 
 The canonical Tree-sitter grammar is in `tree-sitter-taro`. Install its locked
-development dependency and run the parser and editor-query checks:
+development dependencies and run the parser and editor-query checks:
 
 ```sh
 cd tree-sitter-taro
@@ -45,3 +45,10 @@ modifier rules and scopes are removed.
 
 The Tree-sitter grammar is an approximation for editor use, not the compiler's
 parser. Some supported language constructs still require grammar coverage.
+
+Strings use `${expression}`, with matching hashes in raw strings (`$#{...}`
+inside `#"..."#`). Both ordinary and raw multiline strings are recognized.
+Tree-sitter tracks arbitrary hash counts and nested interpolation. TextMate
+highlights interpolation exactly for zero through four hashes; larger raw
+strings retain string scopes without interpolation highlighting. This is a
+TextMate grammar limitation, not a compiler limit.

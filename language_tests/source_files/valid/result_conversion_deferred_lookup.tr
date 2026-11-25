@@ -1,0 +1,39 @@
+struct Box[T] { value: T }
+
+interface Count { func count() -> usize; }
+conform Box[int32] to Count { func count() -> usize { 7 }; }
+
+interface CheckedCount { func count() -> Result[usize, string]; }
+conform Box[int64] to CheckedCount {
+    func count() -> Result[usize, string] { .err("wide") }
+}
+
+func literal() -> Result[usize, string] { Box { value: 0 }.count() }
+func typed() -> Result[usize, string] { Box[int32] { value: 0 }.count() }
+func optional() -> Result[usize?, string] { Box { value: 0 }.count() }
+func keep[T](_ value: T) -> T { value }
+
+interface Holder[V] { func held() -> V; }
+struct Cell[V] { value: V }
+conform[V] Cell[V] to Holder[V] { func held() -> V { self.value }; }
+interface Maker {
+    func wrap[U](_ u: U) -> any Holder[U] { Cell[U] { value: u } }
+}
+conform[T] Box[T] to Maker {}
+func take(_ h: Result[any Holder[int64], string], _ n: int32) -> int64 {
+    h.unwrap().held()
+}
+
+func main() {
+    later := () => {
+        box := Box { value: 0 }
+        var result: Result[usize, string] = box.count()
+        var _wide: Box[int64] = box
+        result
+    }
+    var existing: Result[usize, string] = keep(.err("kept"))
+    println("${literal().unwrap()} ${typed().unwrap()} ${optional().unwrap() ?? 0}")
+    println("${later().unwrapErr()} ${existing.unwrapErr()}")
+    value := take(Box { value: 0 }.wrap(5), 2)
+    println("${value}")
+}

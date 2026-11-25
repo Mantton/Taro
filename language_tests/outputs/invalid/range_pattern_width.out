@@ -1,0 +1,4 @@
+error: integer literal '256' is out of range for type 'uint8'
+ -> language_tests/source_files/invalid/range_pattern_width.tr:1:45
+	func badLimit(_ n: uint8) -> bool { n is 0..=256 }
+	                                             ^^^

@@ -1,0 +1,16 @@
+import dep::{Status, ByteStatus, DEFAULT_STATUS, preferred, read, labels}
+
+const LAST: ByteStatus = ByteStatus::done
+
+func main() {
+    state := Status[bool]::from(rawValue: 747).unwrap()
+    assert(read[uint16, Status[bool]](state) == 747, "exported raw witness")
+    var erased: any RawValue[uint16] = Status[int32]::ready
+    assert(erased.rawValue == 512, "exported erased getter")
+    assert(read(DEFAULT_STATUS) == 512 && read(LAST) == 747, "exported enum constants")
+    assert(read(Status[bool]::DEFAULT) == 512 && Status[int64]::LIMIT == 747, "imported extension constants")
+    assert(read(preferred(DEFAULT_STATUS)) == 747 && read(ByteStatus::PREFERRED) == 747, "imported constant witness")
+    assert(labels(LAST) == "readydone", "imported generic case iteration")
+    assert(ByteStatus::caseAt(1).unwrap().name == "done", "imported synthesized witnesses")
+    println("PASS")
+}

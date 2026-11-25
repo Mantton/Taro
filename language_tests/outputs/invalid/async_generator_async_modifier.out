@@ -1,0 +1,8 @@
+error: async generator functions do not take the `async` modifier; return `some AsyncIterator[Element = T]` or `some AsyncIterable[Element = T]` directly
+ -> language_tests/source_files/invalid/async_generator_async_modifier.tr:1:8
+	func bad() async -> some AsyncIterator[Element = int32] {
+	        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+error: `yield` is only allowed in a generator function returning `some Iterator[Element = T]`
+ -> language_tests/source_files/invalid/async_generator_async_modifier.tr:2:4
+	    yield 1
+	    ^^^^^^^

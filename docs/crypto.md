@@ -8,7 +8,7 @@ SHA/HMAC outputs are raw fixed-size byte arrays; hexadecimal/base64 encoding is
 an explicit operation in `std::encoding`.
 
 ```taro
-import std::crypto::{aesgcm, random, sha256, hmac}
+import std::crypto::{aesgcm, sha256}
 import std::mem::Span
 
 text := "Hello, World!"

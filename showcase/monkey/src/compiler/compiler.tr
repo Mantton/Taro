@@ -1,4 +1,4 @@
-import monkey::ast::{Program, Statement, Expression, HashEntry, PrefixOperator, InfixOperator}
+import monkey::ast::{Program, Statement, Expression, InfixOperator}
 import monkey::code::{Instruction, Instructions, Opcode}
 import monkey::object::{Object, CompiledFunction, allBuiltins}
 

@@ -1,0 +1,21 @@
+import dep::{Boxed, Child, Heavy}
+
+// The literal defaults to int32, and no imported interface supplies `size`
+// or `weight` for Boxed[int32]: each call is rejected exactly as
+// `Boxed[int32] { value: 0 }.size()` is, although the int64 box reaches the
+// requirement through an imported interface.
+func size() -> usize {
+    Boxed { value: 0 }.size() + 1
+}
+
+func weight() -> usize {
+    Boxed { value: 0 }.weight() + 1
+}
+
+func typed() -> usize {
+    Boxed[int64] { value: 0 }.size() + Boxed[int64] { value: 0 }.weight()
+}
+
+func main() {
+    println("${size()} ${weight()} ${typed()}")
+}

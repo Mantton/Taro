@@ -1,0 +1,5 @@
+// PACKAGE: unused_result
+// Only the app's own dropped Result warns; the dependency's attributes apply.
+// EXPECT_STDERR_COUNT: 1 warning: unused 'Result[
+// EXPECT_STDERR_CONTAINS: app/src/main.tr:18:4
+// EXPECT_STDERR_NOT_CONTAINS: dep/src/lib.tr

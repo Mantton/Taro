@@ -1,0 +1,6 @@
+interface Weighted { func weight() -> int32; }
+struct Unweighted {}
+func weigh(_ value: some Weighted) -> int32 { value.weight() }
+func main() {
+    weigh(Unweighted {})
+}

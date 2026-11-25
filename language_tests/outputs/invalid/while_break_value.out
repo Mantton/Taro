@@ -1,0 +1,4 @@
+error: `break` with a value is only allowed in an unconditional `loop`
+ -> language_tests/source_files/invalid/while_break_value.tr:5:8
+	        break 42
+	        ^^^^^^^^

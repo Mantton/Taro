@@ -1,0 +1,102 @@
+import std::task
+
+struct Point: Debug {
+    x: int32
+    y: int32
+}
+
+struct Empty: Debug {}
+
+struct Box: Debug {
+    value: int32
+}
+
+func run(_ action: () -> int32) -> int32 {
+    action()
+}
+
+func runLabeled(body: () -> int32) -> int32 {
+    body()
+}
+
+func transform(_ value: int32, _ f: (int32) -> int32) -> int32 {
+    f(value)
+}
+
+func withConfig(base: int32, bonus: int32 = 10, combine: (int32, int32) -> int32) -> int32 {
+    combine(base, bonus)
+}
+
+func combinePair(_ f: (int32, int32) -> int32) -> int32 {
+    f(3, 4)
+}
+
+func runAsyncCallback(_ f: any AsyncFn() -> int32) async -> int32 {
+    await f()
+}
+
+func mapAsync[F: AsyncFn(int32) -> int32](_ value: int32, _ f: F) async -> int32 {
+    await f(value)
+}
+
+func asyncDouble(_ x: int32) async -> int32 {
+    await std::task::yieldNow()
+    x * 2
+}
+
+static var zeroCalls: int32 = 0
+func doZero() {
+    zeroCalls += 1
+}
+
+func main() async {
+    numbers := [1, 2, 3, 4, 5, 6]
+
+    // Compare explicit and trailing forms for identical output and captures.
+    var explicitHits: int32 = 0
+    explicitEvens := numbers.filter((n) => {
+        explicitHits += 1
+        n % 2 == 0
+    })
+
+    var trailingHits: int32 = 0
+    trailingEvens := numbers.filter {
+        trailingHits += 1
+        it % 2 == 0
+    }
+    println("explicit=${explicitEvens:?} hits=${explicitHits}")
+    println("trailing=${trailingEvens:?} hits=${trailingHits}")
+
+    // Trailing closure after normal arguments and with dropped final label / defaults.
+    println("transform=${transform(10) { it * 3 }}")
+    println("config=${withConfig(base: 5) { a, b => a * 100 + b }}")
+    println("pair=${combinePair { a, b => a * 10 + b }}")
+    println("run=${run { 40 + 2 }} labeled=${runLabeled { 7 * 6 }}")
+
+    // Named struct initializers remain recognized alongside trailing closures.
+    value := 99
+    p := Point { x: 1, y: 2 }
+    e := Empty {}
+    b := Box { value }
+    println("structs=${p:?} ${e:?} ${b:?}")
+
+    // Same-line vs next-line brace: next-line `{` starts an independent block, not a trailing closure.
+    var nextLineBlock: int32 = 0
+    doZero()
+    {
+        nextLineBlock += 1
+    }
+    println("zero=${zeroCalls} nextLine=${nextLineBlock}")
+
+    // Bare trailing closures are excluded from control-flow heads; parenthesized ones work.
+    var foundBig = false
+    if (numbers.filter { it > 4 }.len() == 2) {
+        foundBig = true
+    }
+    println("foundBig=${foundBig}")
+
+    // Async trailing closure infers async from the receiving parameter.
+    a1 := await runAsyncCallback { await asyncDouble(21) }
+    a2 := await mapAsync(15) { await asyncDouble(it) + 1 }
+    println("async=${a1},${a2}")
+}

@@ -1,0 +1,20 @@
+// Derived Debug conformances declared in a dependency.
+public struct Version: Debug {
+    public major: int32
+    public minor: int32
+}
+
+public enum Channel: Debug {
+    case stable
+    case beta(int32)
+    case nightly { build: int32 }
+}
+
+public struct Tagged[T]: Debug {
+    public value: T
+    public tag: string
+}
+
+public func describe[T: Debug](_ value: T) -> string {
+    std::fmt::debugString(value)
+}

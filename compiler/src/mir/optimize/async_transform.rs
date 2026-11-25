@@ -120,18 +120,21 @@ fn register_async_poll_definition<'ctx>(
                 name: gcx.intern_symbol("frame"),
                 ty: ptr_u8_mut,
                 label: None,
+                is_lazy: false,
                 default_provider: None,
             },
             LabeledFunctionParameter {
                 name: gcx.intern_symbol("ctx"),
                 ty: ptr_u8_mut,
                 label: None,
+                is_lazy: false,
                 default_provider: None,
             },
             LabeledFunctionParameter {
                 name: gcx.intern_symbol("out"),
                 ty: ptr_u8_mut,
                 label: None,
+                is_lazy: false,
                 default_provider: None,
             },
         ],
@@ -432,6 +435,9 @@ fn rewrite_resident_local_places<'ctx>(
             } => {
                 remap_resident_operand(value, &remaps);
                 remap_resident_place(resume_arg, &remaps);
+            }
+            TerminatorKind::GeneratorYield { value, .. } => {
+                remap_resident_operand(value, &remaps);
             }
             TerminatorKind::Goto { .. }
             | TerminatorKind::UnresolvedGoto
@@ -1218,6 +1224,7 @@ fn build_async_constructor<'ctx>(
         return_local: LocalId::from_raw(0),
         phase: original.phase,
         is_async: false,
+        generator_element_ty: None,
     };
 
     let async_return_local = push_local(
@@ -1441,6 +1448,7 @@ fn register_async_drop_definition<'ctx>(
             name: gcx.intern_symbol("frame"),
             ty: ptr_u8_mut,
             label: None,
+            is_lazy: false,
             default_provider: None,
         }],
         output: gcx.types.void,
@@ -1489,6 +1497,7 @@ fn build_async_drop_body<'ctx>(
         return_local: LocalId::from_raw(0),
         phase: poll_body.phase,
         is_async: false,
+        generator_element_ty: None,
     };
     body.return_local = push_local(
         &mut body,
@@ -1786,6 +1795,7 @@ pub(crate) fn find_or_register_runtime_function<'ctx>(
                 name: gcx.intern_symbol(&format!("arg{index}")),
                 ty,
                 label: None,
+                is_lazy: false,
                 default_provider: None,
             })
             .collect(),

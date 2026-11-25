@@ -95,6 +95,7 @@ impl<'ctx> Checker<'ctx> {
             resolution.definition_id(),
             cs,
         );
+        let may_be_lazy = self.resolution_may_select_lazy(&resolution);
         let arguments = cs.with_deferred_callee(receiver.id, |cs| {
             arguments
                 .iter()
@@ -104,31 +105,10 @@ impl<'ctx> Checker<'ctx> {
                         .as_ref()
                         .and_then(|items| items.get(index))
                         .and_then(|item| *item);
-                    let ty = if let Some(expected) = expected {
-                        if matches!(argument.expression.kind, hir::ExpressionKind::Closure(_)) {
-                            self.with_closure_argument_context(
-                                argument.expression.id,
-                                expected.expects_async_callable,
-                                || {
-                                    self.synth_with_expectation(
-                                        &argument.expression,
-                                        Some(expected.ty),
-                                        cs,
-                                    )
-                                },
-                            )
-                        } else {
-                            self.synth_with_expectation(&argument.expression, Some(expected.ty), cs)
-                        }
-                    } else {
-                        self.synth(&argument.expression, cs)
-                    };
-                    ApplyArgument {
-                        id: argument.expression.id,
-                        label: argument.label.map(|label| label.identifier),
-                        ty,
-                        span: argument.expression.span,
-                    }
+                    let arg_may_be_lazy = may_be_lazy
+                        && !(resolution.definition_id().is_some()
+                            && expected.is_some_and(|e| !e.is_lazy));
+                    self.synth_call_argument(argument, expected, arg_may_be_lazy, cs)
                 })
                 .collect()
         });

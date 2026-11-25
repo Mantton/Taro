@@ -1,0 +1,20 @@
+range: true false true
+closed: true false true
+list: true false true
+array: true false
+span: true false
+literal: true false
+set: 4 true false
+dictionary: true false
+counter: true false
+deque: true false
+string: true false true true
+precedence: false true false true true
+bang: true true true
+names: true 1
+continued: true
+10 30 
+grid: true false
+word: true false
+generic: 3 0
+order: true ec

@@ -1,0 +1,4 @@
+error: expected Left::State, found Right::State
+ -> language_tests/source_files/invalid/nested_type_nominal_mismatch.tr:12:11
+	    accept(right)
+	           ^^^^^

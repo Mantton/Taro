@@ -1,0 +1,7 @@
+struct Point { x: int32 }
+func main() {
+    point := Point { x: 7 }
+    match point {
+        case x @ Point { x } => x
+    }
+}

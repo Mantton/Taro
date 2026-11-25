@@ -1,0 +1,62 @@
+// Each unused import warns once, at the name it binds. Everything else below
+// is used in one way: as a type, a value, a path prefix, a conformance, a
+// bound, inside an interpolation, through methods an imported interface makes
+// callable, or by a declaration this target removes.
+// EXPECT_STDERR_COUNT: 5 warning: unused import
+// EXPECT_STDERR_COUNT: 1 warning: unused import 'PI'
+// EXPECT_STDERR_COUNT: 1 warning: unused import 'root'
+// EXPECT_STDERR_COUNT: 1 warning: unused import 'fs'
+// EXPECT_STDERR_COUNT: 1 warning: unused import 'Instant'
+// EXPECT_STDERR_COUNT: 1 warning: unused import 'TAU'
+// EXPECT_STDERR_CONTAINS: unused_imports.tr:22:22
+// EXPECT_STDERR_CONTAINS: unused_imports.tr:23:26
+// EXPECT_STDERR_CONTAINS: unused_imports.tr:26:12
+// EXPECT_STDERR_CONTAINS: unused_imports.tr:27:29
+// EXPECT_STDERR_CONTAINS: unused_imports.tr:56:22
+// EXPECT_STDERR_NOT_CONTAINS: unused import 'E'
+// EXPECT_STDERR_NOT_CONTAINS: unused import 'max'
+// EXPECT_STDERR_NOT_CONTAINS: unused import 'min'
+// EXPECT_STDERR_NOT_CONTAINS: unused import 'Hash
+// EXPECT_STDERR_NOT_CONTAINS: unused import 'Default'
+// EXPECT_STDERR_NOT_CONTAINS: unused import 'Ord'
+import std::math::{E, PI}
+import std::math::sqrt as root
+import std::math::{max, min}
+import std::time
+import std::fs
+import std::time::{Duration, Instant}
+import std::hash::{Hashable, Hasher, SipHasher13}
+import std::default::Default
+import std::cmp::Ord
+import std::encoding::*
+
+struct Origin {
+    x: int32
+}
+
+conform Origin to Default {
+    static func default() -> Self { Origin { x: 0 } }
+}
+
+func largest[T: Ord](_ a: T, _ b: T) -> T {
+    max(a, b)
+}
+
+@cfg(os("plan9"))
+func elsewhere() -> int32 {
+    min(1, 2)
+}
+
+func wait() -> Duration {
+    time::Duration::fromMillis(1500)
+}
+
+func main() {
+    import std::math::abs
+    import std::math::TAU
+    var hasher = SipHasher13::new(1, 2)
+    var value: int32 = 7
+    value.hash(into: &hasher)
+    println("${hasher.finish() != 0} ${E > 2.0} ${abs(E) > 1.0}")
+    println("${largest(3, 4)} ${Origin::default().x} ${wait().seconds()}")
+}

@@ -1,0 +1,4 @@
+error: cannot take a reference to an optional chain
+ -> language_tests/source_files/invalid/optional_chaining_subscript_ref.tr:3:9
+	    _ = &items?.[0]
+	         ^^^^^^^^^^

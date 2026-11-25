@@ -25,6 +25,10 @@ use index_vec::IndexVec;
 use rustc_hash::FxHashMap;
 
 mod codable;
+mod debug_text;
+mod default_value;
+mod enum_cases;
+mod ordering;
 
 /// Generate THIR functions for all registered synthetic methods.
 pub fn synthesize_all<'ctx>(gcx: GlobalContext<'ctx>) -> Vec<ThirFunction<'ctx>> {
@@ -34,10 +38,11 @@ pub fn synthesize_all<'ctx>(gcx: GlobalContext<'ctx>) -> Vec<ThirFunction<'ctx>>
     let adapters: Vec<_> = gcx.store.synthetic_definitions.borrow().iter()
         .filter_map(|(id, definition)| (id.package() == gcx.package_index()
             && matches!(definition.kind, crate::sema::models::SyntheticDefinitionKind::AdoptedClassDefault { .. }
+                | crate::sema::models::SyntheticDefinitionKind::DelegatedMethod { .. }
                 | crate::sema::models::SyntheticDefinitionKind::AdoptedClassDefaultArgument { .. }))
             .then_some((*id, definition.kind))).collect();
     for (id, kind) in adapters {
-        functions.push(synthesize_class_default(gcx, id, kind));
+        functions.push(synthesize_conformance_adapter(gcx, id, kind));
     }
 
     let erased: Vec<_> = gcx
@@ -142,12 +147,22 @@ pub(crate) fn synthesize_opened_defaults<'ctx>(
                     arguments,
                 );
             let mut builder = ThirBuilder::new(gcx, span);
-            let parameter = Param {
-                id: synthetic_node_id(id, 0),
-                name: signature.inputs[0].name,
-                ty: signature.inputs[0].ty,
-                span,
-            };
+            let params: Vec<_> = signature
+                .inputs
+                .iter()
+                .enumerate()
+                .map(|(index, input)| Param {
+                    id: synthetic_node_id(id, index as u32),
+                    name: input.name,
+                    ty: input.ty,
+                    span,
+                })
+                .collect();
+            let args = params
+                .iter()
+                .skip(1)
+                .map(|p| builder.push_expr(ExprKind::Local(p.id), p.ty))
+                .collect();
             let callee = builder.push_expr(
                 ExprKind::Zst {
                     id: provider,
@@ -158,7 +173,7 @@ pub(crate) fn synthesize_opened_defaults<'ctx>(
             let result = builder.push_expr(
                 ExprKind::Call {
                     callee,
-                    args: vec![],
+                    args,
                     is_async: false,
                     argument_evaluation_order: None,
                 },
@@ -170,7 +185,7 @@ pub(crate) fn synthesize_opened_defaults<'ctx>(
                 span,
                 body: Some(body),
                 constructor_self: None,
-                params: vec![parameter],
+                params,
                 stmts: builder.stmts,
                 blocks: builder.blocks,
                 exprs: builder.exprs,
@@ -184,7 +199,7 @@ pub(crate) fn synthesize_opened_defaults<'ctx>(
 
 /// These are ordinary managed functions. Borrow forwarding, panic cleanup and
 /// suspension use the same source-MIR/Native pipeline as handwritten methods.
-fn synthesize_class_default<'ctx>(
+fn synthesize_conformance_adapter<'ctx>(
     gcx: GlobalContext<'ctx>,
     id: DefinitionID,
     kind: crate::sema::models::SyntheticDefinitionKind,
@@ -196,10 +211,11 @@ fn synthesize_class_default<'ctx>(
     let span = gcx.definition_ident(id).span;
     let signature = gcx.get_signature(id);
     let identity = GenericsBuilder::identity_for_item(gcx, id);
+    let mut delegate = None;
     let (target, arguments) = match kind {
         SyntheticDefinitionKind::AdoptedClassDefault { .. } => {
             let (source, arguments) = gcx
-                .adopted_default_target(id, identity)
+                .adapter_source_arguments(id, identity)
                 .expect("adopted method environment");
             (
                 gcx.class_default_body(source)
@@ -207,9 +223,49 @@ fn synthesize_class_default<'ctx>(
                 arguments,
             )
         }
+        SyntheticDefinitionKind::DelegatedMethod {
+            conformance,
+            field,
+            borrow_field,
+            ..
+        } => {
+            let (source, arguments) = gcx
+                .adapter_source_arguments(id, identity)
+                .expect("delegated method environment");
+            let wrapper = gcx
+                .conformance_record(conformance)
+                .unwrap()
+                .interface
+                .self_ty()
+                .unwrap();
+            let wrapper = crate::sema::tycheck::utils::normalize_aliases(gcx, wrapper);
+            let owner = crate::sema::tycheck::utils::normalize_aliases(
+                gcx,
+                match wrapper.kind() {
+                    TyKind::Reference(inner) => inner,
+                    _ => wrapper,
+                },
+            );
+            let TyKind::Adt(definition, owner_args) = owner.kind() else {
+                unreachable!()
+            };
+            let storage = crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args(
+                gcx,
+                gcx.get_struct_definition(definition.id).fields[field as usize].ty,
+                owner_args,
+            );
+            let mut arguments = arguments.to_vec();
+            arguments[0] = GenericArgument::Type(if borrow_field {
+                Ty::new(TyKind::Reference(storage), gcx)
+            } else {
+                storage
+            });
+            delegate = Some((owner, field, storage));
+            (source, gcx.store.interners.intern_generic_args(arguments))
+        }
         SyntheticDefinitionKind::AdoptedClassDefaultArgument { method, provider } => {
             let (_, arguments) = gcx
-                .adopted_default_target(method, identity)
+                .adapter_source_arguments(method, identity)
                 .expect("adopted argument environment");
             (provider, arguments)
         }
@@ -231,8 +287,40 @@ fn synthesize_class_default<'ctx>(
         .collect();
     let args = params
         .iter()
-        .map(|parameter| {
+        .enumerate()
+        .map(|(index, parameter)| {
             let value = builder.push_expr(ExprKind::Local(parameter.id), parameter.ty);
+            if index == 0
+                && let Some((owner, field, storage)) = delegate
+            {
+                let mut base = value;
+                let mut base_ty = parameter.ty;
+                while let TyKind::Reference(inner) = base_ty.kind() {
+                    base = builder.push_expr(ExprKind::Deref(base), inner);
+                    base_ty = inner;
+                }
+                debug_assert_eq!(base_ty, owner);
+                let mut receiver = builder.push_expr(
+                    ExprKind::Field {
+                        lhs: base,
+                        index: FieldIndex::from_raw(field),
+                    },
+                    storage,
+                );
+                let mut borrows = Vec::new();
+                let mut ty = target_signature.inputs[0].ty;
+                while ty != storage {
+                    let TyKind::Reference(inner) = ty.kind() else {
+                        unreachable!("checked delegation receiver")
+                    };
+                    borrows.push(ty);
+                    ty = inner;
+                }
+                for ty in borrows.into_iter().rev() {
+                    receiver = builder.push_expr(ExprKind::Reference { expr: receiver }, ty);
+                }
+                return receiver;
+            }
             // Forward the referent without duplicating a mutable-reference token.
             if let TyKind::Reference(inner) = parameter.ty.kind() {
                 let place = builder.push_expr(ExprKind::Deref(value), inner);
@@ -566,12 +654,14 @@ pub(crate) fn register_definition<'ctx>(
                         name: gcx.intern_symbol("self"),
                         ty: self_ty,
                         label: None,
+                        is_lazy: false,
                         default_provider: None,
                     },
                     crate::sema::models::LabeledFunctionParameter {
                         name: gcx.intern_symbol("args"),
                         ty: args_ty,
                         label: None,
+                        is_lazy: false,
                         default_provider: None,
                     },
                 ],
@@ -594,6 +684,7 @@ pub(crate) fn register_definition<'ctx>(
                     name: gcx.intern_symbol("self"),
                     ty: self_ref_ty,
                     label: None,
+                    is_lazy: false,
                     default_provider: None,
                 }],
                 output: info.self_ty,
@@ -619,12 +710,14 @@ pub(crate) fn register_definition<'ctx>(
                         name: gcx.intern_symbol("self"),
                         ty: self_ref_ty,
                         label: None,
+                        is_lazy: false,
                         default_provider: None,
                     },
                     crate::sema::models::LabeledFunctionParameter {
                         name: gcx.intern_symbol("other"),
                         ty: rhs_ty,
                         label: None,
+                        is_lazy: false,
                         default_provider: None,
                     },
                 ],
@@ -664,12 +757,14 @@ pub(crate) fn register_definition<'ctx>(
                         name: gcx.intern_symbol("self"),
                         ty: self_ref_ty,
                         label: None,
+                        is_lazy: false,
                         default_provider: None,
                     },
                     crate::sema::models::LabeledFunctionParameter {
                         name: gcx.intern_symbol("hasher"),
                         ty: hasher_ref_ty,
                         label: Some(gcx.intern_symbol("into")),
+                        is_lazy: false,
                         default_provider: None,
                     },
                 ],
@@ -681,6 +776,56 @@ pub(crate) fn register_definition<'ctx>(
         }
         SyntheticMethodKind::MemberwiseEncode | SyntheticMethodKind::MemberwiseDecode => {
             let (generics, signature) = codable::register_signature(gcx, info);
+            (generics, signature, None)
+        }
+        SyntheticMethodKind::MemberwisePartialOrder | SyntheticMethodKind::MemberwiseTotalOrder => {
+            let generics = self_type_generics(gcx, info.self_ty);
+            let parameter = |name: &str| crate::sema::models::LabeledFunctionParameter {
+                name: gcx.intern_symbol(name),
+                ty: info.self_ty,
+                label: None,
+                is_lazy: false,
+                default_provider: None,
+            };
+            let signature = crate::sema::models::LabeledFunctionSignature {
+                inputs: vec![parameter("self"), parameter("other")],
+                output: crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args(
+                    gcx,
+                    gcx.get_signature(info.method_id).output,
+                    info.interface_args,
+                ),
+                is_variadic: false,
+                abi: None,
+            };
+            (generics, signature, None)
+        }
+        SyntheticMethodKind::EnumRawValue | SyntheticMethodKind::EnumFromRawValue => {
+            let (generics, signature) = enum_cases::raw_signature(gcx, info);
+            (generics, signature, None)
+        }
+        SyntheticMethodKind::MemberwiseDebug
+        | SyntheticMethodKind::EnumCaseName
+        | SyntheticMethodKind::EnumCaseAt => {
+            let generics = self_type_generics(gcx, info.self_ty);
+            let arguments = gcx
+                .store
+                .interners
+                .intern_generic_args(vec![GenericArgument::Type(info.self_ty)]);
+            let signature = crate::sema::tycheck::utils::instantiate::instantiate_signature_with_args(
+                gcx,
+                gcx.get_signature(info.method_id),
+                arguments,
+            );
+            (generics, signature, None)
+        }
+        SyntheticMethodKind::MemberwiseDefault => {
+            let generics = self_type_generics(gcx, info.self_ty);
+            let signature = crate::sema::models::LabeledFunctionSignature {
+                inputs: vec![],
+                output: info.self_ty,
+                is_variadic: false,
+                abi: None,
+            };
             (generics, signature, None)
         }
         SyntheticMethodKind::PropertyFieldGetter(_) => {
@@ -697,6 +842,7 @@ pub(crate) fn register_definition<'ctx>(
                         info.interface_args,
                     ),
                     label: input.label,
+                    is_lazy: input.is_lazy,
                     default_provider: None,
                 })
                 .collect();
@@ -803,6 +949,17 @@ fn synthesize_method<'ctx>(
             synthesize_memberwise_equality(gcx, type_head, method_id, info, syn_id)
         }
         SyntheticMethodKind::ClosureCall => synthesize_closure_call(gcx, info, syn_id),
+        SyntheticMethodKind::MemberwisePartialOrder | SyntheticMethodKind::MemberwiseTotalOrder => {
+            ordering::synthesize(gcx, type_head, info, syn_id)
+        }
+        SyntheticMethodKind::MemberwiseDefault => {
+            default_value::synthesize(gcx, type_head, info, syn_id)
+        }
+        SyntheticMethodKind::EnumRawValue
+        | SyntheticMethodKind::EnumFromRawValue
+        | SyntheticMethodKind::EnumCaseName
+        | SyntheticMethodKind::EnumCaseAt => enum_cases::synthesize(gcx, type_head, info, syn_id),
+        SyntheticMethodKind::MemberwiseDebug => debug_text::synthesize(gcx, type_head, info, syn_id),
         SyntheticMethodKind::MemberwiseEncode | SyntheticMethodKind::MemberwiseDecode => {
             codable::synthesize(gcx, info, syn_id)
         }

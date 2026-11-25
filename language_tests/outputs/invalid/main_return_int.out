@@ -1,0 +1,4 @@
+error: entry point `main` must return `()` or `Result[(), E]`, found 'int32'; expected `func main()` or `func main() -> Result[(), E]`, either of which may be `async`
+ -> language_tests/source_files/invalid/main_return_int.tr:2:5
+	func main() -> int32 {
+	     ^^^^

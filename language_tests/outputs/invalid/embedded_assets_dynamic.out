@@ -1,0 +1,4 @@
+error: expected a string literal for the embedded asset path
+ -> language_tests/source_files/invalid/embedded_assets_dynamic.tr:3:19
+	    data := #embed(name)
+	                   ^^^^

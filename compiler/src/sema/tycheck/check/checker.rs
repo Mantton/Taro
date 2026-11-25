@@ -28,6 +28,7 @@ pub(super) struct AwaitScope {
     pub span: Span,
     pub calls: Vec<NodeID>,
     pub complete: bool,
+    pub suppress_unused_warning: bool,
 }
 
 pub struct Checker<'arena> {
@@ -48,14 +49,20 @@ pub struct Checker<'arena> {
     /// Keep only index roots and projection type IDs, not cloned syntax trees.
     pub(super) receiver_index_roots: RefCell<FxHashMap<NodeID, Vec<(NodeID, Vec<NodeID>)>>>,
     pub return_ty: Cell<Option<Ty<'arena>>>,
+    pub(super) deferred_return_scope:
+        RefCell<Option<crate::sema::tycheck::solve::DeferredReturnScope<'arena>>>,
     pub(super) constructor_self: Cell<Option<NodeID>>,
     pub(super) constructor_payload: Cell<Option<Ty<'arena>>>,
     pub(super) constructor_convenience: Cell<bool>,
     pub(super) opaque_return_candidates: RefCell<Vec<OpaqueReturnCandidate<'arena>>>,
     pub(super) loop_depth: Cell<usize>,
+    pub(super) loop_stack: RefCell<Vec<LoopContext<'arena>>>,
     pub(super) unsafe_depth: Cell<usize>,
     pub(super) defer_depth: Cell<usize>,
+    pub(super) generator_element_ty: Cell<Option<Ty<'arena>>>,
     pub(super) async_depth: Cell<usize>,
+    pub(super) closure_depth: Cell<usize>,
+    pub(super) async_var_closure_depths: RefCell<FxHashMap<NodeID, usize>>,
     pub(super) await_scope: Cell<Option<NodeID>>,
     pub(super) resolved_call_effects: RefCell<FxHashMap<NodeID, bool>>,
     pub(super) await_scopes: RefCell<FxHashMap<NodeID, AwaitScope>>,
@@ -75,6 +82,20 @@ pub(super) struct OpaqueReturnCandidate<'arena> {
     pub span: Span,
 }
 
+pub(super) struct LoopBreakSite<'arena> {
+    pub node_id: Option<NodeID>,
+    pub ty: Ty<'arena>,
+    pub span: Span,
+}
+
+pub(super) struct LoopContext<'arena> {
+    pub label: Option<crate::span::Symbol>,
+    pub allows_value_break: bool,
+    pub expected_ty: Option<Ty<'arena>>,
+    pub result_ty: Option<Ty<'arena>>,
+    pub breaks: Vec<LoopBreakSite<'arena>>,
+}
+
 #[derive(Clone, Copy)]
 pub struct LocalBinding<'arena> {
     pub ty: Ty<'arena>,
@@ -91,6 +112,7 @@ impl<'arena> Checker<'arena> {
         Checker {
             context,
             return_ty: Cell::new(None),
+            deferred_return_scope: RefCell::new(None),
             constructor_self: Cell::new(None),
             constructor_payload: Cell::new(None),
             constructor_convenience: Cell::new(false),
@@ -105,9 +127,13 @@ impl<'arena> Checker<'arena> {
             index_place_requests: Default::default(),
             receiver_index_roots: Default::default(),
             loop_depth: Cell::new(0),
+            loop_stack: RefCell::new(Vec::new()),
             unsafe_depth: Cell::new(0),
             defer_depth: Cell::new(0),
+            generator_element_ty: Cell::new(None),
             async_depth: Cell::new(0),
+            closure_depth: Cell::new(0),
+            async_var_closure_depths: Default::default(),
             await_scope: Cell::new(None),
             await_scopes: Default::default(),
             resolved_call_effects: Default::default(),
@@ -202,10 +228,97 @@ impl<'arena> Checker<'arena> {
         self.infer_cx.borrow().clone()
     }
 
+    pub(super) fn with_deferred_return_scope<R>(
+        &self,
+        active: bool,
+        f: impl FnOnce() -> R,
+    ) -> (R, Option<crate::sema::tycheck::solve::DeferredReturnScope<'arena>>) {
+        if !active {
+            return (f(), None);
+        }
+        let previous = self
+            .deferred_return_scope
+            .borrow_mut()
+            .replace(crate::sema::tycheck::solve::DeferredReturnScope::default());
+        let result = f();
+        let scope = std::mem::replace(&mut *self.deferred_return_scope.borrow_mut(), previous);
+        (result, scope.filter(|scope| !scope.is_empty()))
+    }
+
+    pub(super) fn without_deferred_return_scope<R>(&self, f: impl FnOnce() -> R) -> R {
+        let previous = self.deferred_return_scope.borrow_mut().take();
+        let result = f();
+        *self.deferred_return_scope.borrow_mut() = previous;
+        result
+    }
+
+    pub(super) fn has_active_deferred_return_scope(&self) -> bool {
+        self.deferred_return_scope.borrow().is_some()
+    }
+
+    pub(super) fn deferred_return_hint(
+        &self,
+        cs: &mut crate::sema::tycheck::solve::ConstraintSystem<'arena>,
+        span: Span,
+    ) -> Option<Ty<'arena>> {
+        let mut slot = self.deferred_return_scope.borrow_mut();
+        let scope = slot.as_mut()?;
+        Some(*scope.return_var.get_or_insert_with(|| cs.infer_cx.next_ty_var(span)))
+    }
+
+    pub(super) fn record_deferred_return_site(
+        &self,
+        node_id: Option<NodeID>,
+        ty: Ty<'arena>,
+        span: Span,
+    ) {
+        if let Some(scope) = self.deferred_return_scope.borrow_mut().as_mut() {
+            scope
+                .returns
+                .push(crate::sema::tycheck::solve::DeferredReturnSite { node_id, ty, span });
+        }
+    }
+
+    pub(super) fn record_deferred_propagation_site(
+        &self,
+        node_id: NodeID,
+        err_ty: Option<Ty<'arena>>,
+        span: Span,
+    ) {
+        if let Some(scope) = self.deferred_return_scope.borrow_mut().as_mut() {
+            scope
+                .propagations
+                .push(crate::sema::tycheck::solve::DeferredPropagationSite {
+                    node_id,
+                    err_ty,
+                    span,
+                });
+        }
+    }
+
     pub(super) fn with_await_scope<T>(
         &self,
         node_id: NodeID,
         span: Span,
+        f: impl FnOnce() -> T,
+    ) -> T {
+        self.with_await_scope_inner(node_id, span, false, f)
+    }
+
+    pub(super) fn with_implicit_await_scope<T>(
+        &self,
+        node_id: NodeID,
+        span: Span,
+        f: impl FnOnce() -> T,
+    ) -> T {
+        self.with_await_scope_inner(node_id, span, true, f)
+    }
+
+    fn with_await_scope_inner<T>(
+        &self,
+        node_id: NodeID,
+        span: Span,
+        suppress_unused_warning: bool,
         f: impl FnOnce() -> T,
     ) -> T {
         self.await_scopes.borrow_mut().insert(
@@ -214,6 +327,7 @@ impl<'arena> Checker<'arena> {
                 span,
                 calls: Vec::new(),
                 complete: false,
+                suppress_unused_warning,
             },
         );
         let prev = self.await_scope.replace(Some(node_id));

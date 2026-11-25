@@ -1,0 +1,19 @@
+interface Read { func read() -> int32; }
+struct Box { x: int32 }
+conform Box to Read {
+    func read() -> int32 { self.x }
+}
+struct Eager {}
+extend Eager {
+    func choose(_ value: int32) -> int32 { value }
+}
+struct Other {}
+extend Other {
+    func choose(_ value: @lazy bool) -> int32 { 0 }
+}
+func make(_ flag: bool) -> some Read {
+    e := Eager {}
+    n := e.choose(if flag { return Box { x: 41 } } else { 7_i32 })
+    return Box { x: n }
+}
+func main() { println("${make(true).read()} ${make(false).read()}") }

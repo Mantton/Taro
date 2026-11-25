@@ -1,0 +1,30 @@
+enum Event { case idle; case amount(int32); case info { tag: int32; payload: string } }
+func next(_ calls: &int32, _ value: Event) -> Event {
+    *calls += 1
+    return value
+}
+func isSuccess[T, E](_ result: Result[T, E]) -> bool {
+    result is .ok(_)
+}
+func main() {
+    var calls = 0
+    var events: List[Event] = [.idle, .amount(7), .info { tag: 3, payload: "taro" }]
+    if events[0] is .idle { calls += 1 }
+    assert(calls == 1, "unit case before a block")
+    assert(next(&calls, events[1]) is .amount(7) || next(&calls, events[0]) is .idle, "short circuit")
+    assert(calls == 2, "only one operand evaluated")
+    selected := events.filter(item => item is .amount(_))
+    assert(selected.len() == 1, "predicate")
+    assert(!(events[1] is .idle), "negation")
+    if events[2] is .info { tag: 3, .. } { calls += 1 }
+    assert(calls == 3, "named pattern before a block")
+    var ok: Result[int64, string] = .ok(8)
+    assert(isSuccess(ok), "generic Result")
+    var nested: Optional[Result[int64, string]] = .some(ok)
+    assert(nested is .some(.ok(8)), "nested payload")
+    pair := (events[0], 42_i32)
+    assert(pair is (.idle, 42), "tuple pattern")
+    var boxed: any std::fmt::Display = 42_i32
+    assert(boxed is int32 && !(boxed is int64), "existing type tests")
+    println("match coverage")
+}

@@ -1,0 +1,24 @@
+error: interface 'Ord' requires type 'Grade' to conform to 'PartialEq[Grade]'
+ -> language_tests/source_files/invalid/derived_ord_without_partial_ord.tr:4:26
+	struct Grade: PartialOrd, Ord { value: int32 }
+	                          ^^^
+info: add 'PartialEq' to the conformance list of 'Grade', or implement it in a conformance
+ -> language_tests/source_files/invalid/derived_ord_without_partial_ord.tr:4:26
+	struct Grade: PartialOrd, Ord { value: int32 }
+	                          ^^^
+error: interface 'Ord' requires type 'Score' to conform to 'PartialOrd[Score]'
+ -> language_tests/source_files/invalid/derived_ord_without_partial_ord.tr:3:14
+	struct Score: Ord { value: int32 }
+	              ^^^
+info: add 'PartialOrd' to the conformance list of 'Score', or implement it in a conformance
+ -> language_tests/source_files/invalid/derived_ord_without_partial_ord.tr:3:14
+	struct Score: Ord { value: int32 }
+	              ^^^
+error: interface 'Ord' requires type 'Score' to conform to 'PartialEq[Score]'
+ -> language_tests/source_files/invalid/derived_ord_without_partial_ord.tr:3:14
+	struct Score: Ord { value: int32 }
+	              ^^^
+info: add 'PartialEq' to the conformance list of 'Score', or implement it in a conformance
+ -> language_tests/source_files/invalid/derived_ord_without_partial_ord.tr:3:14
+	struct Score: Ord { value: int32 }
+	              ^^^

@@ -1,5 +1,3 @@
-import std::time
-
 func durationToNanos(_ d: std::time::Duration) -> uint64 {
     return (d.seconds() * 1000000000_u64) + (d.subsecNanos() as uint64)
 }

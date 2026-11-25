@@ -4,7 +4,6 @@ import std::encoding::Codable
 import std::http::{Body, Error, Request, Response, Server}
 import std::net::SocketAddress
 import std::result::Result
-import std::convert::Parse
 
 struct Post: Codable {
     id: int32
@@ -33,7 +32,16 @@ func app(_ request: &Request) async -> Result[Response, Error] {
         case "/" => {
             var response = Response::new(200)
             response.headers.add("content-type", "text/html; charset=utf-8")!
-            response.body = Body::fromString("<!doctype html><html><head><title>Taro Notes</title></head><body><h1>Taro Notes</h1><a href='/posts'>Posts as JSON</a></body></html>")
+            response.body = Body::fromString("""
+                <!doctype html>
+                <html>
+                    <head><title>Taro Notes</title></head>
+                    <body>
+                        <h1>Taro Notes</h1>
+                        <a href='/posts'>Posts as JSON</a>
+                    </body>
+                </html>
+                """)
             return response
         }
         case "/posts" => {

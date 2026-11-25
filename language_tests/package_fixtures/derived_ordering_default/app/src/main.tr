@@ -1,0 +1,26 @@
+import dep::{Version, Channel, Tagged, Settings, newest}
+
+func main() {
+    var versions: [Version] = [
+        Version { major: 2, minor: 0 },
+        Version { major: 1, minor: 9 },
+        Version { major: 1, minor: 10 },
+    ]
+    versions.sort()
+    assert(versions[0].minor == 9 && versions[2].major == 2, "imported derived Ord sorts")
+    assert(versions[0] < versions[1] && !(versions[2] <= versions[1]), "imported derived PartialOrd")
+    assert(newest(versions).major == 2, "imported derived Ord in a dependency generic")
+
+    assert(Channel::stable < Channel::beta(1), "imported enum case order")
+    assert(Channel::beta(2) > Channel::beta(1), "imported enum payload order")
+    assert(Channel::nightly { build: 1 } > Channel::beta(9), "imported enum named payload")
+    assert(newest([Channel::beta(4), Channel::nightly { build: 0 }, Channel::stable]) == Channel::nightly { build: 0 }, "imported enum Ord")
+
+    tagged := Tagged[int32]::default()
+    assert(tagged.value == 0 && tagged.tag == "untagged", "imported generic derived Default")
+    assert(Tagged[int32] { value: 1, tag: "a" } < Tagged[int32] { value: 1, tag: "b" }, "imported generic derived ordering")
+
+    settings := Settings::default()
+    assert(settings.retries == 3 && settings.name == "" && settings.versions.isEmpty(), "imported derived Default")
+    println("ok")
+}

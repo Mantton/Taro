@@ -1,0 +1,16 @@
+error: no overload matches this call: the candidate that accepts these arguments requires type 'Point' to conform to interface 'Ord'
+ -> language_tests/source_files/invalid/overload_missing_ord.tr:8:11
+	    points.sort()
+	           ^^^^
+error: no overload matches this call: the candidate that accepts these arguments requires type 'Point' to conform to interface 'Ord'
+ -> language_tests/source_files/invalid/overload_missing_ord.tr:9:13
+	    queue := PriorityQueue[Point]::new()
+	             ^^^^^^^^^^^^^^^^^^^^^^^^^
+error: no overload matches this call: the candidate that accepts these arguments requires type 'double' to conform to interface 'Ord'
+ -> language_tests/source_files/invalid/overload_missing_ord.tr:11:10
+	    reals.sort()
+	          ^^^^
+error: no overload matches this call
+ -> language_tests/source_files/invalid/overload_missing_ord.tr:13:10
+	    reals.sort(1, 2)
+	          ^^^^

@@ -1,0 +1,544 @@
+import std::cmp::{Ord, Ordering, PartialOrd}
+import std::mem::Span
+import std::ops::{Contains, Fn, PartialEq}
+import std::optional::Optional
+import std::panic::panic
+
+/// Runs of this many elements are insertion-sorted before merging.
+const SORT_RUN_LENGTH: usize = 32
+
+func checkSortVersion(_ current: usize, _ expected: usize) {
+    if current != expected { panic("list changed structurally during sort") }
+}
+
+/// Merge passes write each position once, in ascending order.
+@inline
+func storeSorted[Element](_ list: List[Element], _ index: usize, _ value: Element) {
+    if index < list.len() { list[index] = value } else { list.append(value) }
+}
+
+extend[Element] List[Element] {
+    /// Construct count ordinary copies of value. Nested handles remain shared.
+    public static func repeating(_ value: Element, count: usize) -> Self {
+        var result = Self::new(withCapacity: count)
+        var index: usize = 0
+        while index < count { result.append(value); index += 1 }
+        return result
+    }
+
+    /// Call the factory once per index, in ascending order. Use this for
+    /// independent nested lists; an empty list never calls the factory.
+    public static func generate[F: Fn(usize) -> Element](count: usize, by factory: F) -> Self {
+        var result = Self::new(withCapacity: count)
+        var index: usize = 0
+        while index < count { result.append(factory(index)); index += 1 }
+        return result
+    }
+
+    /// Stable O(n log n) sorting with O(n) auxiliary storage. before(a, b)
+    /// means a precedes b and must define a strict weak ordering (not <=).
+    /// Copies share the reordered list; existing cursors are invalidated.
+    /// Comparisons run on scratch storage before committing, so a comparator
+    /// panic leaves the original order intact unless the callback itself
+    /// mutated it. Callbacks must not mutate this list or ordering fields.
+    /// Structural mutation is detected; writes through escaped references
+    /// are not.
+    public func sort[F: Fn(Element, Element) -> bool](by before: F) {
+        length := self.len()
+        if length < 2 { return }
+        self.storage.version += 1
+        ordered := self.mergeSorted(by: before, self.storage.version)
+        var index: usize = 0
+        while index < length {
+            self[index] = ordered[index]
+            index += 1
+        }
+    }
+
+    /// A stable sorted shallow copy. Nested handles still share their targets.
+    public func sorted[F: Fn(Element, Element) -> bool](by before: F) -> Self {
+        if self.len() < 2 { return self.copy() }
+        return self.mergeSorted(by: before, self.storage.version)
+    }
+
+    /// The elements in stable sorted order, in new storage. Reads this list
+    /// but never writes it. The first pass binary-insertion-sorts runs of
+    /// SORT_RUN_LENGTH while copying them out of this list, so a short list
+    /// needs one buffer and no merge; longer lists merge between two buffers.
+    func mergeSorted[F: Fn(Element, Element) -> bool](by before: F, _ version: usize) -> Self {
+        length := self.len()
+        var source = Self::new(withCapacity: length)
+        var runStart: usize = 0
+        while runStart < length {
+            runEnd := runStart + std::math::min(SORT_RUN_LENGTH, length - runStart)
+            var next = runStart
+            while next < runEnd {
+                value := self[next]
+                // Upper bound: insert after every element value does not
+                // precede, which keeps equal elements in input order.
+                var low = runStart
+                var high = next
+                while low < high {
+                    middle := low + (high - low) / 2
+                    valueFirst := before(value, source[middle])
+                    checkSortVersion(self.storage.version, version)
+                    if valueFirst { high = middle } else { low = middle + 1 }
+                }
+                source.append(value)
+                var hole = next
+                while hole > low {
+                    source[hole] = source[hole - 1]
+                    hole -= 1
+                }
+                source[low] = value
+                next += 1
+            }
+            runStart = runEnd
+        }
+        if length <= SORT_RUN_LENGTH { return source }
+
+        // Bottom-up merge sort. Every pass writes destination positions in
+        // ascending order, so the first pass fills new storage by appending.
+        var destination = Self::new(withCapacity: length)
+        var width = SORT_RUN_LENGTH
+        while width < length {
+            var start: usize = 0
+            while start < length {
+                middle := start + std::math::min(width, length - start)
+                end := middle + std::math::min(width, length - middle)
+                var left = start
+                var right = middle
+                var output = start
+                while left < middle && right < end {
+                    rightFirst := before(source[right], source[left])
+                    checkSortVersion(self.storage.version, version)
+                    // Left wins ties: stability does not depend on equality.
+                    if rightFirst {
+                        storeSorted(destination, output, source[right])
+                        right += 1
+                    } else {
+                        storeSorted(destination, output, source[left])
+                        left += 1
+                    }
+                    output += 1
+                }
+                while left < middle {
+                    storeSorted(destination, output, source[left])
+                    left += 1
+                    output += 1
+                }
+                while right < end {
+                    storeSorted(destination, output, source[right])
+                    right += 1
+                    output += 1
+                }
+                start = end
+            }
+            previous := source
+            source = destination
+            destination = previous
+            // Avoid overflow even for theoretical maximum-sized lists.
+            if width >= length - width { break }
+            width += width
+        }
+        return source
+    }
+
+    /// Reverse the shared list in place without allocating. O(n). Like
+    /// sort(), reversing two or more elements invalidates existing cursors.
+    public func reverse() {
+        length := self.len()
+        if length < 2 { return }
+        self.storage.version += 1
+        var low: usize = 0
+        var high = length - 1
+        while low < high {
+            value := self[low]
+            self[low] = self[high]
+            self[high] = value
+            low += 1
+            high -= 1
+        }
+    }
+
+    /// A shallow copy in reverse order. Nested handles still share their
+    /// targets; this list is unchanged. O(n).
+    public func reversed() -> Self {
+        var result = Self::new(withCapacity: self.len())
+        var index = self.len()
+        while index > 0 {
+            index -= 1
+            result.append(self[index])
+        }
+        return result
+    }
+
+    /// First position where element does not precede value, or len().
+    /// Requires a list sorted by the same strict weak ordering. O(log n).
+    public func lowerBound[F: Fn(Element, Element) -> bool](_ value: Element, by before: F) -> usize {
+        var low: usize = 0
+        var high = self.len()
+        while low < high {
+            middle := low + (high - low) / 2
+            if before(self[middle], value) { low = middle + 1 } else { high = middle }
+        }
+        return low
+    }
+
+    /// First position where value precedes element, or len(). O(log n).
+    /// Requires a list sorted by the same strict weak ordering.
+    public func upperBound[F: Fn(Element, Element) -> bool](_ value: Element, by before: F) -> usize {
+        var low: usize = 0
+        var high = self.len()
+        while low < high {
+            middle := low + (high - low) / 2
+            if before(value, self[middle]) { high = middle } else { low = middle + 1 }
+        }
+        return low
+    }
+
+    /// First ordering-equivalent element, not necessarily PartialEq-equal.
+    /// Requires the same ordering used to sort the list. O(log n).
+    public func binarySearch[F: Fn(Element, Element) -> bool](_ value: Element, by before: F) -> usize? {
+        index := self.lowerBound(value, by: before)
+        if index < self.len() && !before(value, self[index]) { return .some(index) }
+        return .none
+    }
+
+    /// Retains only elements for which `keep(&element)` returns `true`, in O(n) time.
+    /// Leaves the list unmodified during callbacks and if `keep` panics.
+    /// Panics if `keep` structurally mutates this list.
+    public func retain[F: Fn(&Element) -> bool](_ keep: F) {
+        length := self.storage.len
+        if length == 0 { return }
+        version := self.storage.version
+        var kept = List[usize]::new(withCapacity: length)
+        var read: usize = 0
+        while read < length {
+            shouldKeep := keep(self.at(read))
+            if self.storage.version != version {
+                panic("list changed structurally during retain")
+            }
+            if shouldKeep {
+                kept.append(read)
+            }
+            read += 1
+        }
+        write := kept.len()
+        if write == length { return }
+        var index: usize = 0
+        while index < write {
+            src := kept[index]
+            if index != src {
+                *self.at(index) = *self.at(src)
+            }
+            index += 1
+        }
+        self.shrinkCompacted(write)
+    }
+
+    /// Removes consecutive elements for which `sameBucket(&current, &previous)` returns `true`
+    /// in O(n) time. Leaves the list unmodified during callbacks and if `sameBucket` panics.
+    /// Panics if `sameBucket` structurally mutates this list.
+    public func dedupBy[F: Fn(&Element, &Element) -> bool](_ sameBucket: F) {
+        length := self.storage.len
+        if length < 2 { return }
+        version := self.storage.version
+        var kept = List[usize]::new(withCapacity: length)
+        kept.append(0 as usize)
+        var lastKept: usize = 0
+        var read: usize = 1
+        while read < length {
+            duplicate := sameBucket(self.at(read), self.at(lastKept))
+            if self.storage.version != version {
+                panic("list changed structurally during dedup")
+            }
+            if !duplicate {
+                kept.append(read)
+                lastKept = read
+            }
+            read += 1
+        }
+        write := kept.len()
+        if write == length { return }
+        var index: usize = 1
+        while index < write {
+            src := kept[index]
+            if index != src {
+                *self.at(index) = *self.at(src)
+            }
+            index += 1
+        }
+        self.shrinkCompacted(write)
+    }
+
+    /// Stable in-place sort by key extracted once per element.
+    /// Panics if `key` structurally mutates this list.
+    public func sortByKey[K: Ord, F: Fn(&Element) -> K](_ key: F) {
+        length := self.len()
+        if length < 2 { return }
+        self.storage.version += 1
+        version := self.storage.version
+        var pairs = List[(K, Element)]::new(withCapacity: length)
+        var index: usize = 0
+        while index < length {
+            k := key(self.at(index))
+            checkSortVersion(self.storage.version, version)
+            pairs.append((k, *self.at(index)))
+            index += 1
+        }
+        pairs.sort(by: (a: (K, Element), b: (K, Element)) => {
+            less := a.0.cmp(b.0).isLess()
+            checkSortVersion(self.storage.version, version)
+            less
+        })
+        index = 0
+        while index < length {
+            self[index] = pairs[index].1
+            index += 1
+        }
+    }
+
+    /// Stable sorted shallow copy by key extracted once per element.
+    /// Panics if `key` structurally mutates this list.
+    public func sortedByKey[K: Ord, F: Fn(&Element) -> K](_ key: F) -> Self {
+        length := self.len()
+        if length < 2 { return self.copy() }
+        version := self.storage.version
+        var pairs = List[(K, Element)]::new(withCapacity: length)
+        var index: usize = 0
+        while index < length {
+            k := key(self.at(index))
+            checkSortVersion(self.storage.version, version)
+            pairs.append((k, *self.at(index)))
+            index += 1
+        }
+        pairs.sort(by: (a: (K, Element), b: (K, Element)) => {
+            less := a.0.cmp(b.0).isLess()
+            checkSortVersion(self.storage.version, version)
+            less
+        })
+        var result = Self::new(withCapacity: length)
+        index = 0
+        while index < length {
+            result.append(pairs[index].1)
+            index += 1
+        }
+        return result
+    }
+
+    /// Binary search for the first index in `0..=self.len()` where `predicate(&element)`
+    /// returns `false`, assuming all `true` elements precede all `false` elements. O(log n).
+    public func partitionPoint[F: Fn(&Element) -> bool](_ predicate: F) -> usize {
+        var low: usize = 0
+        var high = self.len()
+        while low < high {
+            middle := low + (high - low) / (2 as usize)
+            if predicate(self.at(middle)) {
+                low = middle + (1 as usize)
+            } else {
+                high = middle
+            }
+        }
+        return low
+    }
+
+    /// Returns all contiguous overlapping windows of length `size` as independent shallow lists.
+    /// Returns an empty list if `size > self.len()`. Panics if `size == 0`.
+    public func windows(_ size: usize) -> List[List[Element]] {
+        if size == 0 {
+            panic("window size must be non-zero")
+        }
+        length := self.len()
+        if size > length {
+            return List[List[Element]]::new()
+        }
+        count := length - size + (1 as usize)
+        var result = List[List[Element]]::new(withCapacity: count)
+        var start: usize = 0
+        while start < count {
+            result.append(self.copyRange(start, start + size))
+            start += 1
+        }
+        return result
+    }
+
+    /// Returns contiguous non-overlapping chunks of up to `size` elements as independent shallow lists.
+    /// The final chunk may be shorter than `size`. Panics if `size == 0`.
+    public func chunks(_ size: usize) -> List[List[Element]] {
+        if size == 0 {
+            panic("chunk size must be non-zero")
+        }
+        length := self.len()
+        if length == 0 {
+            return List[List[Element]]::new()
+        }
+        count := (length - (1 as usize)) / size + (1 as usize)
+        var result = List[List[Element]]::new(withCapacity: count)
+        var start: usize = 0
+        while start < length {
+            rem := length - start
+            chunkLen := if rem < size { rem } else { size }
+            result.append(self.copyRange(start, start + chunkLen))
+            start += chunkLen
+        }
+        return result
+    }
+}
+
+extend[Element: PartialEq] List[Element] {
+    /// Removes consecutive equal elements in place in O(n) time.
+    public func dedup() {
+        self.dedupBy((a: &Element, b: &Element) => *a == *b)
+    }
+}
+
+extend[Element] Span[Element] {
+    /// Returns a value copy of the first element, or `.none` if the span is empty.
+    @inline
+    public func first() -> Element? {
+        if self.isEmpty() { return .none }
+        return .some(*self.at(0 as usize))
+    }
+
+    /// Returns a value copy of the last element, or `.none` if the span is empty.
+    @inline
+    public func last() -> Element? {
+        if self.isEmpty() { return .none }
+        return .some(*self.at(self.len() - (1 as usize)))
+    }
+
+    /// Binary search for the first index in `0..=self.len()` where `predicate(&element)`
+    /// returns `false`, assuming all `true` elements precede all `false` elements.
+    public func partitionPoint[F: Fn(&Element) -> bool](_ predicate: F) -> usize {
+        var low: usize = 0
+        var high = self.len()
+        while low < high {
+            middle := low + (high - low) / (2 as usize)
+            if predicate(self.at(middle)) {
+                low = middle + (1 as usize)
+            } else {
+                high = middle
+            }
+        }
+        return low
+    }
+
+    /// Returns all contiguous overlapping windows of length `size` as zero-copy sub-spans.
+    /// Panics if `size == 0`.
+    public func windows(_ size: usize) -> List[Span[Element]] {
+        if size == 0 {
+            panic("window size must be non-zero")
+        }
+        length := self.len()
+        if size > length {
+            return List[Span[Element]]::new()
+        }
+        count := length - size + (1 as usize)
+        var result = List[Span[Element]]::new(withCapacity: count)
+        var start: usize = 0
+        while start < count {
+            result.append(self.slice(start, size))
+            start += 1
+        }
+        return result
+    }
+
+    /// Returns contiguous non-overlapping chunks of up to `size` elements as zero-copy sub-spans.
+    /// Panics if `size == 0`.
+    public func chunks(_ size: usize) -> List[Span[Element]] {
+        if size == 0 {
+            panic("chunk size must be non-zero")
+        }
+        length := self.len()
+        if length == 0 {
+            return List[Span[Element]]::new()
+        }
+        count := (length - (1 as usize)) / size + (1 as usize)
+        var result = List[Span[Element]]::new(withCapacity: count)
+        var start: usize = 0
+        while start < length {
+            rem := length - start
+            chunkLen := if rem < size { rem } else { size }
+            result.append(self.slice(start, chunkLen))
+            start += chunkLen
+        }
+        return result
+    }
+}
+
+extend[Element: Ord] List[Element] {
+    /// Stable ascending sort. See sort(by:) for sharing and panic semantics.
+    public func sort() { self.sort(by: (a: Element, b: Element) => a.cmp(b).isLess()) }
+    public func sorted() -> Self { self.sorted(by: (a: Element, b: Element) => a.cmp(b).isLess()) }
+    public func lowerBound(_ value: Element) -> usize {
+        self.lowerBound(value, by: (a: Element, b: Element) => a.cmp(b).isLess())
+    }
+    public func upperBound(_ value: Element) -> usize {
+        self.upperBound(value, by: (a: Element, b: Element) => a.cmp(b).isLess())
+    }
+    public func binarySearch(_ value: Element) -> usize? {
+        self.binarySearch(value, by: (a: Element, b: Element) => a.cmp(b).isLess())
+    }
+}
+
+/// A linear scan from the front for an equal element.
+conform[Element: PartialEq] List[Element] to Contains[Element] {
+    public func contains(_ element: &Element) -> bool {
+        var index: usize = 0
+        while index < self.len() {
+            if self[index] == *element { return true }
+            index += 1
+        }
+        return false
+    }
+}
+
+/// Element-wise, ordered equality. Does not detect cycles in nested handles.
+conform[Element: PartialEq] List[Element] to PartialEq {
+    public func eq(_ other: Self) -> bool {
+        if self.len() != other.len() { return false }
+        var index: usize = 0
+        while index < self.len() {
+            if self[index] != other[index] { return false }
+            index += 1
+        }
+        return true
+    }
+}
+
+/// Lexicographical partial ordering over elements, then length.
+conform[Element: PartialOrd] List[Element] to PartialOrd {
+    public func partialCmp(_ other: Self) -> Optional[Ordering] {
+        lhsLen := self.len()
+        rhsLen := other.len()
+        shared := if lhsLen < rhsLen { lhsLen } else { rhsLen }
+        var index: usize = 0
+        while index < shared {
+            match self[index].partialCmp(other[index]) {
+                case .some(.equal) => {}
+                case otherOrder => return otherOrder
+            }
+            index += 1
+        }
+        return lhsLen.partialCmp(rhsLen)
+    }
+}
+
+/// Lexicographical total ordering over elements, then length.
+conform[Element: Ord] List[Element] to Ord {
+    public func cmp(_ other: Self) -> Ordering {
+        lhsLen := self.len()
+        rhsLen := other.len()
+        shared := if lhsLen < rhsLen { lhsLen } else { rhsLen }
+        var index: usize = 0
+        while index < shared {
+            ord := self[index].cmp(other[index])
+            if !ord.isEqual() {
+                return ord
+            }
+            index += 1
+        }
+        return lhsLen.cmp(rhsLen)
+    }
+}

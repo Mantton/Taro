@@ -1,0 +1,12 @@
+// BENCH
+// EXPECT_EXIT: 101
+// EXPECT_STDOUT_CONTAINS: "error": "benchmark returned without calling benchmark.next()"
+// EXPECT_STDOUT_CONTAINS: "error": "benchmark stopped before measurement completed"
+
+@bench
+func benchmarkMissingNext(_ benchmark: &std::bench::Benchmark) {}
+
+@bench
+func benchmarkIncomplete(benchmark: &std::bench::Benchmark) {
+    var _ = benchmark.next()
+}

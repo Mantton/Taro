@@ -1,0 +1,9 @@
+import dep::Sender::Status
+func main() {
+    var value: dep::Sender::Status = dep::status()
+    var imported: Status = value
+    match imported {
+        case .open => println("imported state")
+        case .closed => println("closed")
+    }
+}

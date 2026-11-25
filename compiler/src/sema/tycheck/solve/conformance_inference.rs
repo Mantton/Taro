@@ -25,7 +25,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
         let gcx = self.gcx();
         let head = type_head_from_value_ty(ty);
-        let mut roots = self.bounds_for_type_in_scope(ty);
+        let mut roots = self.bounds_for_type(ty, &self.param_env);
         // Primitive operator conformances have no source impl record. Their
         // declared contract fixes operand types to this same primitive type.
         for &item in crate::mir::primitive_operators::ITEMS {

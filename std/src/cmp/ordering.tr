@@ -1,5 +1,6 @@
 import std::optional::Optional
 import std::ops::PartialEq
+import std::panic::panic
 
 /// Represents the result of a comparison between two values.
 public enum Ordering {
@@ -57,6 +58,18 @@ extend Ordering {
     }
 }
 
+conform Ordering to PartialEq {
+    @inline
+    public func eq(_ other: Ordering) -> bool {
+        match (self, other) {
+            case (.less, .less) => true
+            case (.equal, .equal) => true
+            case (.greater, .greater) => true
+            case _ => false
+        }
+    }
+}
+
 /// Types that have a partial ordering.
 ///
 /// A partial ordering means some values may not be comparable.
@@ -107,7 +120,31 @@ public interface PartialOrd[Rhs = Self]: PartialEq[Rhs] {
 ///
 /// A total ordering means all values are comparable.
 /// Every pair of values has a defined ordering relationship.
+@lang("Ord")
 public interface Ord: PartialOrd {
     /// Compare two values, returning their ordering.
     func cmp(_ other: Self) -> Ordering
+
+    /// Restrict `self` to the inclusive range `[low, high]`.
+    /// Panics if `low > high`.
+    @inline
+    func clamp(_ low: Self, _ high: Self) -> Self {
+        if low.cmp(high).isGreater() {
+            panic("clamp: low bound cannot be greater than high bound")
+        }
+        if self.cmp(low).isLess() {
+            low
+        } else if self.cmp(high).isGreater() {
+            high
+        } else {
+            self
+        }
+    }
 }
+
+/// Equality together with a total ordering.
+///
+/// Listing `Comparable` on a struct or enum derives `eq`, `partialCmp` and
+/// `cmp`: fields compare in declaration order, enum cases in declaration
+/// order and then by payload.
+public type Comparable = PartialEq & PartialOrd & Ord

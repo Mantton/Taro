@@ -1,0 +1,49 @@
+// End-to-end prelude ergonomics for BTreeMap, BTreeSet, and BitSet.
+
+func main() {
+    events := BTreeMap[int32, string]::new()
+    var _ = events.insert(key: 25, value: "end")
+    var _ = events.insert(key: 10, value: "start")
+    var _ = events.insert(key: 18, value: "mid")
+    assert(events.first() == .some((10, "start")))
+    assert(events.last() == .some((25, "end")))
+    assert(events.lowerBound(&15) == .some((18, "mid")))
+    assert(events.upperBound(&18) == .some((25, "end")))
+    assert(events.lastBefore(&18) == .some((10, "start")))
+    assert(events.lastAtOrBefore(&18) == .some((18, "mid")))
+    assert(18 in events && !(19 in events))
+
+    var window: [string] = []
+    for (_, label) in events.range(10..=18) {
+        window.append(label)
+    }
+    var expectedWindow: [string] = ["start", "mid"]
+    assert(window == expectedWindow)
+    assert(events.popFirst() == .some((10, "start")))
+    assert(events.popLast() == .some((25, "end")))
+    assert(events.len() == (1 as usize))
+
+    var raw: [int32] = [30, 10, 20, 10]
+    ordered := raw.iter().collect[BTreeSet[int32]]()
+    assert(ordered.first() == .some(10))
+    assert(ordered.last() == .some(30))
+    assert(20 in ordered)
+    assert(std::fmt::debugString(ordered) == "{10, 20, 30}")
+
+    seen := BitSet::new(withCapacity: 256 as usize)
+    var _ = seen.insert(42 as usize)
+    var _ = seen.insert(199 as usize)
+    assert((42 as usize) in seen && seen.countOnes() == (2 as usize))
+
+    other := BitSet::new()
+    var _ = other.insert(199 as usize)
+    var _ = other.insert(300 as usize)
+    combined := seen.union(other)
+    var bits: [usize] = []
+    for b in combined {
+        bits.append(b)
+    }
+    var expectedBits: [usize] = [42, 199, 300]
+    assert(bits == expectedBits)
+    assert(std::fmt::debugString(seen.intersection(other)) == "{199}")
+}

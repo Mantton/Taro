@@ -1,0 +1,7 @@
+error: non-exhaustive match, missing 'safe' case
+ -> language_tests/source_files/invalid/const_fn_nonexhaustive_match.tr:7:11
+    return match m {
+           ^^^^^^^^^
+        case .fast => 1
+    }
+     ^

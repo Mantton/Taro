@@ -1,0 +1,5 @@
+func main() {
+    labeled := (low: 1, high: 3)
+    var plain: (int32, int32) = labeled
+    println(plain.low)
+}

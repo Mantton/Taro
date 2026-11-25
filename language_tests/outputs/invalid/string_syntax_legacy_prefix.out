@@ -1,0 +1,4 @@
+error: lexer error: the f string prefix is no longer supported; use ${expression} inside an ordinary string
+ -> language_tests/source_files/invalid/string_syntax_legacy_prefix.tr:1:22
+	func main() { var _ = f"old" }
+	                      ^

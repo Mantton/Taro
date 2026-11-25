@@ -1,5 +1,9 @@
 func main() {
     count := 1
+    _ := count
+    var (left, right) = (1, 2);
+    (left, right) = (right, left);
+    (left, (right, _)) = (3, (4, false))
     if var value = maybe && value > 0 {
         count += value
     }

@@ -1,0 +1,9 @@
+// `Greeter` is never named: importing it makes `greet` callable on int32.
+import dep::{Greeter, Unused}
+
+func main() {
+    var value: int32 = 5
+    println(value.greet())
+    extra := dep::helper()
+    println("${dep::firstOf([7])}")
+}

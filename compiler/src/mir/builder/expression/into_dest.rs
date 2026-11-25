@@ -138,8 +138,28 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 }
                 self.record_return_edge(block, expr.span)
             }
-            ExprKind::Break => self.record_break_edge(block, expr.span),
-            ExprKind::Continue => self.record_continue_edge(block, expr.span),
+            ExprKind::Loop { label, body } => {
+                let loop_block = self.new_block_with_note("loop block".into());
+                self.goto(block, loop_block, expr.span);
+                let break_dest =
+                    (!matches!(expr.ty.kind(), TyKind::Never)).then_some(destination);
+                self.in_loop_scope(*label, loop_block, break_dest, expr.span, |this| {
+                    let body_block = this.new_block_with_note("loop body block".into());
+                    this.terminate(
+                        loop_block,
+                        expr.span,
+                        TerminatorKind::Goto { target: body_block },
+                    );
+                    let unit = this.unit_temp_place(expr.span);
+                    let end = this.lower_block(unit, body_block, *body).into_block();
+                    this.goto(end, loop_block, expr.span);
+                    None
+                })
+            }
+            ExprKind::Break { label, value } => {
+                self.record_break_edge(*label, *value, block, expr.span)
+            }
+            ExprKind::Continue { label } => self.record_continue_edge(*label, block, expr.span),
             ExprKind::Assign { .. } | ExprKind::AssignOp { .. } => {
                 block = self.lower_statement_expression(block, expr_id).into_block();
                 self.push_assign_unit(block, expr.span, destination, self.gcx);
@@ -314,6 +334,29 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
                 self.push_assign(block, destination, rvalue, expr.span);
                 block.unit()
+            }
+            ExprKind::Yield { value } => {
+                let BlockAnd(block, operand) = self.as_operand(block, *value);
+                let resume = self.new_block_with_note("generator-yield-resume".into());
+                let (cancel, cancel_complete) = self.async_cancel_cleanup_target(expr.span);
+                self.terminate(
+                    block,
+                    expr.span,
+                    TerminatorKind::GeneratorYield {
+                        value: operand,
+                        resume,
+                        cancel,
+                        cancel_complete,
+                    },
+                );
+                self.push_assign_unit(resume, expr.span, destination, self.gcx);
+                resume.unit()
+            }
+            ExprKind::AwaitAsyncVar { local } => {
+                self.lower_await_async_var(destination, block, *local, expr.span)
+            }
+            ExprKind::Select { arms } => {
+                self.lower_select_expression(destination, block, arms, expr.span)
             }
             ExprKind::Await { future } => {
                 if let ExprKind::Call {
@@ -517,6 +560,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         }
         if self.is_hidden_sleep_intrinsic(callee) {
             return self.lower_sleep_call(destination, block, args, span);
+        }
+        if self.is_hidden_intrinsic_named(callee, "__intrinsic_async_generator_next") {
+            return self.lower_async_generator_next_call(destination, block, args, span);
         }
         if self.is_hidden_is_task_cancelled_intrinsic(callee) {
             return self.lower_is_task_cancelled_call(destination, block, args, span);
@@ -882,6 +928,824 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         after_spawn.unit()
     }
 
+    pub(in crate::mir::builder) fn lower_async_let(
+        &mut self,
+        block: BasicBlockId,
+        pat_id: crate::hir::NodeID,
+        name: crate::span::Symbol,
+        value_ty: Ty<'ctx>,
+        closure: ExprId,
+        span: Span,
+    ) -> BlockAnd<()> {
+        let token_local = self.push_local(
+            task_handle_ty(self.gcx),
+            mir::LocalKind::User,
+            true,
+            Some(name),
+            span,
+        );
+        self.push_storage_live(block, token_local, span);
+        self.register_storage_cleanup(token_local, span);
+
+        let awaited_local =
+            self.push_local(self.gcx.types.bool, mir::LocalKind::Temp, true, None, span);
+        self.push_storage_live(block, awaited_local, span);
+        self.register_storage_cleanup(awaited_local, span);
+        self.push_assign(
+            block,
+            Place::from_local(awaited_local),
+            Rvalue::Use(Operand::Constant(Constant {
+                ty: self.gcx.types.bool,
+                value: mir::ConstantKind::Bool(false),
+            })),
+            span,
+        );
+
+        let (after_spawn, spawned_token) =
+            self.lower_spawn_to_token(block, closure, value_ty, span);
+        self.push_assign(
+            after_spawn,
+            Place::from_local(token_local),
+            Rvalue::Use(Operand::Copy(Place::from_local(spawned_token))),
+            span,
+        );
+
+        let scope_id = find_or_register_async_runtime_function(
+            self.gcx,
+            AsyncRuntimeFn::TaskScopeToCurrent,
+            span,
+        );
+        let scope_ty = self.gcx.get_type(scope_id);
+        let after_scope = self.new_block();
+        let unit = self.unit_temp_place(span);
+        self.terminate(
+            after_spawn,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: scope_ty,
+                    value: mir::ConstantKind::Function(
+                        scope_id,
+                        GenericArguments::empty(),
+                        scope_ty,
+                    ),
+                }),
+                args: vec![Operand::Copy(Place::from_local(token_local))],
+                destination: unit,
+                target: after_scope,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+
+        let info = crate::mir::builder::ScopedTaskCleanup {
+            token_local,
+            awaited_local,
+            value_ty,
+        };
+        self.async_var_locals.insert(pat_id, info);
+        self.push_scoped_task_action(info, span);
+        after_scope.unit()
+    }
+
+    fn lower_await_async_var(
+        &mut self,
+        destination: Place<'ctx>,
+        block: BasicBlockId,
+        pat_id: crate::hir::NodeID,
+        span: Span,
+    ) -> BlockAnd<()> {
+        let info = *self
+            .async_var_locals
+            .get(&pat_id)
+            .expect("ICE: async var binding missing from MirBuilder");
+        self.lower_await_scoped_task_value(destination, block, info, span)
+    }
+
+    fn lower_await_scoped_task_value(
+        &mut self,
+        destination: Place<'ctx>,
+        block: BasicBlockId,
+        info: crate::mir::builder::ScopedTaskCleanup<'ctx>,
+        span: Span,
+    ) -> BlockAnd<()> {
+        let ready_is_never = matches!(info.value_ty.kind(), TyKind::Never);
+
+        let handle_local = self.new_temp_with_ty(self.gcx.async_handle_ty(), span);
+        let from_spawned_id = find_or_register_async_runtime_function(
+            self.gcx,
+            AsyncRuntimeFn::FromSpawnedChecked,
+            span,
+        );
+        let from_spawned_ty = self.gcx.get_type(from_spawned_id);
+        let after_handle = self.new_block();
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: from_spawned_ty,
+                    value: mir::ConstantKind::Function(
+                        from_spawned_id,
+                        GenericArguments::empty(),
+                        from_spawned_ty,
+                    ),
+                }),
+                args: vec![Operand::Copy(Place::from_local(info.token_local))],
+                destination: Place::from_local(handle_local),
+                target: after_handle,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+
+        let resume_place = if ready_is_never {
+            Place::from_local(self.new_temp_with_ty(self.gcx.types.uint8, span))
+        } else {
+            destination
+        };
+
+        let resume = self.new_block_with_note("async-var-resume".into());
+        let no_result = self.new_block_with_note("async-var-no-result".into());
+        let (cancel, cancel_complete) = self.async_cancel_cleanup_target(span);
+        let unwind = self.call_unwind_action(span);
+        self.terminate(
+            after_handle,
+            span,
+            TerminatorKind::Yield {
+                value: Operand::Copy(Place::from_local(handle_local)),
+                resume,
+                resume_arg: resume_place,
+                no_result: Some(no_result),
+                cancel,
+                cancel_complete,
+                unwind,
+            },
+        );
+
+        let set_awaited = |this: &mut Self, bb: BasicBlockId| {
+            this.push_assign(
+                bb,
+                Place::from_local(info.awaited_local),
+                Rvalue::Use(Operand::Constant(Constant {
+                    ty: this.gcx.types.bool,
+                    value: mir::ConstantKind::Bool(true),
+                })),
+                span,
+            );
+        };
+
+        set_awaited(self, resume);
+        let join = self.new_block_with_note("async-var-join".into());
+        if ready_is_never {
+            self.terminate(resume, span, TerminatorKind::Unreachable);
+        } else {
+            self.goto(resume, join, span);
+        }
+
+        set_awaited(self, no_result);
+        let status_local = self.new_temp_with_ty(self.gcx.types.uint8, span);
+        let status_id = find_or_register_async_runtime_function(
+            self.gcx,
+            AsyncRuntimeFn::TaskCompletionStatus,
+            span,
+        );
+        let status_ty = self.gcx.get_type(status_id);
+        let after_status = self.new_block();
+        self.terminate(
+            no_result,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: status_ty,
+                    value: mir::ConstantKind::Function(
+                        status_id,
+                        GenericArguments::empty(),
+                        status_ty,
+                    ),
+                }),
+                args: vec![Operand::Copy(Place::from_local(info.token_local))],
+                destination: Place::from_local(status_local),
+                target: after_status,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+
+        let panicked = self.new_block_with_note("async-var-panicked".into());
+        let cancelled = self.new_block_with_note("async-var-cancelled".into());
+        self.terminate(
+            after_status,
+            span,
+            TerminatorKind::SwitchInt {
+                discr: Operand::Copy(Place::from_local(status_local)),
+                targets: vec![(3, panicked)],
+                otherwise: cancelled,
+            },
+        );
+
+        self.lower_rethrow_task_panic(panicked, info.token_local, span);
+
+        let empty_str = Operand::Constant(Constant {
+            ty: self.gcx.types.string,
+            value: mir::ConstantKind::String(self.gcx.intern_symbol("")),
+        });
+        let rethrow_id = find_or_register_async_runtime_function(
+            self.gcx,
+            AsyncRuntimeFn::PanicPayloadRethrow,
+            span,
+        );
+        let rethrow_ty = self.gcx.get_type(rethrow_id);
+        let after_cancelled = self.new_block();
+        let never_dest =
+            Place::from_local(self.new_temp_with_ty(Ty::new(TyKind::Never, self.gcx), span));
+        let cancel_unwind = self.call_unwind_action(span);
+        self.terminate(
+            cancelled,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: rethrow_ty,
+                    value: mir::ConstantKind::Function(
+                        rethrow_id,
+                        GenericArguments::empty(),
+                        rethrow_ty,
+                    ),
+                }),
+                args: vec![empty_str],
+                destination: never_dest,
+                target: after_cancelled,
+                unwind: cancel_unwind,
+            },
+        );
+        self.terminate(after_cancelled, span, TerminatorKind::Unreachable);
+
+        join.unit()
+    }
+
+    pub(in crate::mir::builder) fn lower_scoped_task_cleanup(
+        &mut self,
+        start: BasicBlockId,
+        info: crate::mir::builder::ScopedTaskCleanup<'ctx>,
+        drain: bool,
+        next_block: BasicBlockId,
+        span: Span,
+    ) {
+        let not_awaited = self.new_block_with_note("scoped-task-cancel".into());
+        self.terminate(
+            start,
+            span,
+            TerminatorKind::SwitchInt {
+                discr: Operand::Copy(Place::from_local(info.awaited_local)),
+                targets: vec![(0, not_awaited)],
+                otherwise: next_block,
+            },
+        );
+
+        let cancel_id =
+            find_or_register_async_runtime_function(self.gcx, AsyncRuntimeFn::CancelTask, span);
+        let cancel_ty = self.gcx.get_type(cancel_id);
+        let after_cancel = self.new_block();
+        let unit = self.unit_temp_place(span);
+        self.terminate(
+            not_awaited,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: cancel_ty,
+                    value: mir::ConstantKind::Function(
+                        cancel_id,
+                        GenericArguments::empty(),
+                        cancel_ty,
+                    ),
+                }),
+                args: vec![Operand::Copy(Place::from_local(info.token_local))],
+                destination: unit,
+                target: after_cancel,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+
+        if !drain {
+            self.goto(after_cancel, next_block, span);
+            return;
+        }
+
+        let handle_local = self.new_temp_with_ty(self.gcx.async_handle_ty(), span);
+        let from_spawned_id = find_or_register_async_runtime_function(
+            self.gcx,
+            AsyncRuntimeFn::FromSpawnedChecked,
+            span,
+        );
+        let from_spawned_ty = self.gcx.get_type(from_spawned_id);
+        let after_handle = self.new_block();
+        self.terminate(
+            after_cancel,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: from_spawned_ty,
+                    value: mir::ConstantKind::Function(
+                        from_spawned_id,
+                        GenericArguments::empty(),
+                        from_spawned_ty,
+                    ),
+                }),
+                args: vec![Operand::Copy(Place::from_local(info.token_local))],
+                destination: Place::from_local(handle_local),
+                target: after_handle,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+
+        let resume_ty = if matches!(info.value_ty.kind(), TyKind::Never) {
+            self.gcx.types.uint8
+        } else {
+            info.value_ty
+        };
+        let discard_local = self.new_temp_with_ty(resume_ty, span);
+        let resume = self.new_block_with_note("scoped-task-drain-ok".into());
+        let no_result = self.new_block_with_note("scoped-task-drain-no-result".into());
+        let (cancel, cancel_complete) = self.async_cancel_cleanup_target(span);
+        let unwind = self.call_unwind_action(span);
+        self.terminate(
+            after_handle,
+            span,
+            TerminatorKind::Yield {
+                value: Operand::Copy(Place::from_local(handle_local)),
+                resume,
+                resume_arg: Place::from_local(discard_local),
+                no_result: Some(no_result),
+                cancel,
+                cancel_complete,
+                unwind,
+            },
+        );
+
+        self.push_assign(
+            resume,
+            Place::from_local(info.awaited_local),
+            Rvalue::Use(Operand::Constant(Constant {
+                ty: self.gcx.types.bool,
+                value: mir::ConstantKind::Bool(true),
+            })),
+            span,
+        );
+        self.goto(resume, next_block, span);
+
+        self.push_assign(
+            no_result,
+            Place::from_local(info.awaited_local),
+            Rvalue::Use(Operand::Constant(Constant {
+                ty: self.gcx.types.bool,
+                value: mir::ConstantKind::Bool(true),
+            })),
+            span,
+        );
+        let status_local = self.new_temp_with_ty(self.gcx.types.uint8, span);
+        let status_id = find_or_register_async_runtime_function(
+            self.gcx,
+            AsyncRuntimeFn::TaskCompletionStatus,
+            span,
+        );
+        let status_ty = self.gcx.get_type(status_id);
+        let after_status = self.new_block();
+        self.terminate(
+            no_result,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: status_ty,
+                    value: mir::ConstantKind::Function(
+                        status_id,
+                        GenericArguments::empty(),
+                        status_ty,
+                    ),
+                }),
+                args: vec![Operand::Copy(Place::from_local(info.token_local))],
+                destination: Place::from_local(status_local),
+                target: after_status,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+
+        let panicked = self.new_block_with_note("scoped-task-drain-panicked".into());
+        self.terminate(
+            after_status,
+            span,
+            TerminatorKind::SwitchInt {
+                discr: Operand::Copy(Place::from_local(status_local)),
+                targets: vec![(3, panicked)],
+                otherwise: next_block,
+            },
+        );
+        self.lower_rethrow_task_panic(panicked, info.token_local, span);
+    }
+
+    fn lower_rethrow_task_panic(
+        &mut self,
+        block: BasicBlockId,
+        token_local: LocalId,
+        span: Span,
+    ) {
+        let payload_local = self.new_temp_with_ty(self.gcx.types.string, span);
+        let take_panic_id = find_or_register_async_runtime_function(
+            self.gcx,
+            AsyncRuntimeFn::TakeTaskPanicPayload,
+            span,
+        );
+        let take_panic_ty = self.gcx.get_type(take_panic_id);
+        let after_take = self.new_block();
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: take_panic_ty,
+                    value: mir::ConstantKind::Function(
+                        take_panic_id,
+                        GenericArguments::empty(),
+                        take_panic_ty,
+                    ),
+                }),
+                args: vec![Operand::Copy(Place::from_local(token_local))],
+                destination: Place::from_local(payload_local),
+                target: after_take,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+
+        let rethrow_id = find_or_register_async_runtime_function(
+            self.gcx,
+            AsyncRuntimeFn::PanicPayloadRethrow,
+            span,
+        );
+        let rethrow_ty = self.gcx.get_type(rethrow_id);
+        let after_rethrow = self.new_block();
+        let never_dest =
+            Place::from_local(self.new_temp_with_ty(Ty::new(TyKind::Never, self.gcx), span));
+        let unwind = self.call_unwind_action(span);
+        self.terminate(
+            after_take,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: rethrow_ty,
+                    value: mir::ConstantKind::Function(
+                        rethrow_id,
+                        GenericArguments::empty(),
+                        rethrow_ty,
+                    ),
+                }),
+                args: vec![Operand::Copy(Place::from_local(payload_local))],
+                destination: never_dest,
+                target: after_rethrow,
+                unwind,
+            },
+        );
+        self.terminate(after_rethrow, span, TerminatorKind::Unreachable);
+    }
+
+    fn lower_select_expression(
+        &mut self,
+        destination: Place<'ctx>,
+        mut block: BasicBlockId,
+        arms: &[crate::thir::SelectArm<'ctx>],
+        span: Span,
+    ) -> BlockAnd<()> {
+        assert!(!arms.is_empty(), "ICE: select requires at least one arm");
+
+        let saved_cleanup = self.current_cleanup;
+        let saved_scope = self.current_cleanup_scope;
+        let select_scope = self.fresh_cleanup_scope();
+        self.current_cleanup_scope = select_scope;
+
+        let handle_ty = task_handle_ty(self.gcx);
+        let mut arm_infos = Vec::with_capacity(arms.len());
+
+        // 1. Spawn all arm operations once in source order and scope them to the current task.
+        for arm in arms {
+            let token_local = self.push_local(handle_ty, mir::LocalKind::Temp, true, None, arm.span);
+            self.push_storage_live(block, token_local, arm.span);
+            self.register_storage_cleanup(token_local, arm.span);
+
+            let awaited_local =
+                self.push_local(self.gcx.types.bool, mir::LocalKind::Temp, true, None, arm.span);
+            self.push_storage_live(block, awaited_local, arm.span);
+            self.register_storage_cleanup(awaited_local, arm.span);
+            self.push_assign(
+                block,
+                Place::from_local(awaited_local),
+                Rvalue::Use(Operand::Constant(Constant {
+                    ty: self.gcx.types.bool,
+                    value: mir::ConstantKind::Bool(false),
+                })),
+                arm.span,
+            );
+
+            let hold_id = find_or_register_async_runtime_function(
+                self.gcx,
+                AsyncRuntimeFn::HoldNextSpawn,
+                arm.span,
+            );
+            let hold_ty = self.gcx.get_type(hold_id);
+            let after_hold = self.new_block();
+            let hold_unit = self.unit_temp_place(arm.span);
+            self.terminate(
+                block,
+                arm.span,
+                TerminatorKind::Call {
+                    func: Operand::Constant(Constant {
+                        ty: hold_ty,
+                        value: mir::ConstantKind::Function(
+                            hold_id,
+                            GenericArguments::empty(),
+                            hold_ty,
+                        ),
+                    }),
+                    args: vec![],
+                    destination: hold_unit,
+                    target: after_hold,
+                    unwind: mir::CallUnwindAction::Terminate,
+                },
+            );
+
+            let (after_spawn, spawned_token) =
+                self.lower_spawn_to_token(after_hold, arm.closure, arm.value_ty, arm.span);
+            self.push_assign(
+                after_spawn,
+                Place::from_local(token_local),
+                Rvalue::Use(Operand::Copy(Place::from_local(spawned_token))),
+                arm.span,
+            );
+
+            let scope_id = find_or_register_async_runtime_function(
+                self.gcx,
+                AsyncRuntimeFn::TaskScopeToCurrent,
+                arm.span,
+            );
+            let scope_ty = self.gcx.get_type(scope_id);
+            let after_scope = self.new_block();
+            let unit = self.unit_temp_place(arm.span);
+            self.terminate(
+                after_spawn,
+                arm.span,
+                TerminatorKind::Call {
+                    func: Operand::Constant(Constant {
+                        ty: scope_ty,
+                        value: mir::ConstantKind::Function(
+                            scope_id,
+                            GenericArguments::empty(),
+                            scope_ty,
+                        ),
+                    }),
+                    args: vec![Operand::Copy(Place::from_local(token_local))],
+                    destination: unit,
+                    target: after_scope,
+                    unwind: mir::CallUnwindAction::Terminate,
+                },
+            );
+
+            let info = crate::mir::builder::ScopedTaskCleanup {
+                token_local,
+                awaited_local,
+                value_ty: arm.value_ty,
+            };
+            self.push_scoped_task_action(info, arm.span);
+            arm_infos.push(info);
+            block = after_scope;
+        }
+
+        // 2. Pack all task handles into a fixed-size stack array and wait for the first completion.
+        let arr_ty = self.variadic_pack_ty(handle_ty, arms.len());
+        let arr_local = self.push_local(arr_ty, mir::LocalKind::Temp, true, None, span);
+        self.push_storage_live(block, arr_local, span);
+        self.register_storage_cleanup(arr_local, span);
+        let arr_fields: IndexVec<crate::thir::FieldIndex, Operand<'ctx>> = arm_infos
+            .iter()
+            .map(|info| Operand::Copy(Place::from_local(info.token_local)))
+            .collect();
+        self.push_assign(
+            block,
+            Place::from_local(arr_local),
+            Rvalue::Aggregate {
+                kind: AggregateKind::Array {
+                    element: handle_ty,
+                    len: arms.len(),
+                },
+                fields: arr_fields,
+            },
+            span,
+        );
+
+        let arr_ref_ty = Ty::new(TyKind::Reference(arr_ty), self.gcx);
+        let arr_ref_local = self.new_temp_with_ty(arr_ref_ty, span);
+        self.push_assign(
+            block,
+            Place::from_local(arr_ref_local),
+            Rvalue::Ref {
+                place: Place::from_local(arr_local),
+            },
+            span,
+        );
+        let const_u8_ptr = crate::mir::optimize::async_transform::raw_ptr_ty(
+            self.gcx,
+            self.gcx.types.uint8,
+            crate::hir::Mutability::Immutable,
+        );
+        let arr_ptr_local = self.new_temp_with_ty(const_u8_ptr, span);
+        self.push_assign(
+            block,
+            Place::from_local(arr_ptr_local),
+            Rvalue::Cast {
+                operand: Operand::Copy(Place::from_local(arr_ref_local)),
+                ty: const_u8_ptr,
+                kind: CastKind::Pointer,
+            },
+            span,
+        );
+
+        let select_handle_local = self.new_temp_with_ty(self.gcx.async_handle_ty(), span);
+        let select_id = find_or_register_async_runtime_function(
+            self.gcx,
+            AsyncRuntimeFn::SelectManyTasks,
+            span,
+        );
+        let select_ty = self.gcx.get_type(select_id);
+        let after_select_create = self.new_block();
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: select_ty,
+                    value: mir::ConstantKind::Function(
+                        select_id,
+                        GenericArguments::empty(),
+                        select_ty,
+                    ),
+                }),
+                args: vec![
+                    Operand::Copy(Place::from_local(arr_ptr_local)),
+                    Operand::Constant(Constant {
+                        ty: self.gcx.types.uint,
+                        value: mir::ConstantKind::Integer(arms.len() as u64),
+                    }),
+                ],
+                destination: Place::from_local(select_handle_local),
+                target: after_select_create,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+
+        let winner_local = self.new_temp_with_ty(self.gcx.types.uint, span);
+        let after_wait = self.new_block_with_note("select-winner".into());
+        let (cancel, cancel_complete) = self.async_cancel_cleanup_target(span);
+        let unwind = self.call_unwind_action(span);
+        self.terminate(
+            after_select_create,
+            span,
+            TerminatorKind::Yield {
+                value: Operand::Copy(Place::from_local(select_handle_local)),
+                resume: after_wait,
+                resume_arg: Place::from_local(winner_local),
+                no_result: None,
+                cancel,
+                cancel_complete,
+                unwind,
+            },
+        );
+
+        // 3. Dispatch on the winning arm index (source order breaks ties).
+        let join_block = self.new_block_with_note("select-join".into());
+        let invalid_arm = self.new_block_with_note("select-unreachable".into());
+        self.terminate(invalid_arm, span, TerminatorKind::Unreachable);
+
+        let mut switch_targets = Vec::with_capacity(arms.len());
+        let mut arm_entry_blocks = Vec::with_capacity(arms.len());
+        for i in 0..arms.len() {
+            let entry = self.new_block_with_note(format!("select-arm-{i}"));
+            switch_targets.push((i as u128, entry));
+            arm_entry_blocks.push(entry);
+        }
+        self.terminate(
+            after_wait,
+            span,
+            TerminatorKind::SwitchInt {
+                discr: Operand::Copy(Place::from_local(winner_local)),
+                targets: switch_targets,
+                otherwise: invalid_arm,
+            },
+        );
+
+        let cancel_fn_id =
+            find_or_register_async_runtime_function(self.gcx, AsyncRuntimeFn::CancelTask, span);
+        let cancel_fn_ty = self.gcx.get_type(cancel_fn_id);
+
+        let select_cleanup_head = self.current_cleanup;
+        for (i, arm) in arms.iter().enumerate() {
+            let mut arm_block = arm_entry_blocks[i];
+
+            // 3a. Cancel every losing arm immediately before awaiting/draining.
+            for (j, loser) in arm_infos.iter().enumerate() {
+                if j == i {
+                    continue;
+                }
+                let next = self.new_block();
+                let unit = self.unit_temp_place(arm.span);
+                self.terminate(
+                    arm_block,
+                    arm.span,
+                    TerminatorKind::Call {
+                        func: Operand::Constant(Constant {
+                            ty: cancel_fn_ty,
+                            value: mir::ConstantKind::Function(
+                                cancel_fn_id,
+                                GenericArguments::empty(),
+                                cancel_fn_ty,
+                            ),
+                        }),
+                        args: vec![Operand::Copy(Place::from_local(loser.token_local))],
+                        destination: unit,
+                        target: next,
+                        unwind: mir::CallUnwindAction::Terminate,
+                    },
+                );
+                arm_block = next;
+            }
+
+            // 3b. Retrieve the winning arm's result at its own type T_i.
+            let win_is_never = matches!(arm.value_ty.kind(), TyKind::Never);
+            let win_val_local = if win_is_never {
+                None
+            } else {
+                let local = self.new_temp_with_ty(arm.value_ty, arm.span);
+                Some(local)
+            };
+            let win_dest = match win_val_local {
+                Some(local) => Place::from_local(local),
+                None => Place::from_local(self.new_temp_with_ty(self.gcx.types.uint8, arm.span)),
+            };
+            arm_block = self
+                .lower_await_scoped_task_value(win_dest, arm_block, arm_infos[i], arm.span)
+                .into_block();
+
+            // 3c. Drain every losing arm cleanly before running the winner body.
+            for (j, loser) in arm_infos.iter().enumerate() {
+                if j == i {
+                    continue;
+                }
+                let after_drain = self.new_block_with_note(format!("select-drained-{i}-{j}"));
+                self.lower_scoped_task_cleanup(arm_block, *loser, true, after_drain, arm.span);
+                arm_block = after_drain;
+            }
+
+            // 3d. Bind winning result and execute winner body once in its own scope.
+            let arm_scope = self.fresh_cleanup_scope();
+            self.current_cleanup_scope = arm_scope;
+            if let Some(win_local) = win_val_local {
+                arm_block = self
+                    .bind_pattern_to_place(
+                        arm_block,
+                        &arm.pattern,
+                        Some(&Place::from_local(win_local)),
+                        false,
+                    )
+                    .into_block();
+            }
+            arm_block = self
+                .expr_into_dest(destination.clone(), arm_block, arm.body)
+                .into_block();
+
+            if self.body.basic_blocks[arm_block].terminator.is_none() {
+                if self.current_cleanup != select_cleanup_head {
+                    let mut cache = FxHashMap::default();
+                    cache.insert(select_cleanup_head, join_block);
+                    let cleanup_entry = self.ensure_cleanup_path(
+                        self.current_cleanup,
+                        select_cleanup_head,
+                        join_block,
+                        &mut cache,
+                    );
+                    self.goto(arm_block, cleanup_entry, arm.span);
+                } else {
+                    self.goto(arm_block, join_block, arm.span);
+                }
+            }
+            self.current_cleanup = select_cleanup_head;
+            self.current_cleanup_scope = select_scope;
+        }
+
+        // 4. Exit select_scope cleanly (all tasks already have awaited == true).
+        let after_select = self.new_block_with_note("select-after".into());
+        let mut cache = FxHashMap::default();
+        cache.insert(saved_cleanup, after_select);
+        let cleanup_entry =
+            self.ensure_cleanup_path(select_cleanup_head, saved_cleanup, after_select, &mut cache);
+        self.goto(join_block, cleanup_entry, span);
+
+        self.current_cleanup = saved_cleanup;
+        self.current_cleanup_scope = saved_scope;
+        after_select.unit()
+    }
+
     fn lower_detached_spawn_call(
         &mut self,
         destination: Place<'ctx>,
@@ -1118,6 +1982,83 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             },
         );
 
+        next.unit()
+    }
+
+    fn lower_async_generator_next_call(
+        &mut self,
+        destination: Place<'ctx>,
+        mut block: BasicBlockId,
+        args: &[ExprId],
+        span: Span,
+    ) -> BlockAnd<()> {
+        let [frame_expr, poll_expr] = args else {
+            panic!("ICE: __intrinsic_async_generator_next expects (frame, poll)");
+        };
+
+        let destination_ty = self.body.place_ty(self.gcx, &destination);
+        assert_eq!(
+            destination_ty,
+            self.gcx.async_handle_ty(),
+            "ICE: __intrinsic_async_generator_next must lower into an async handle destination"
+        );
+
+        let frame_op = unpack!(block = self.as_operand(block, *frame_expr));
+        let poll_op = unpack!(block = self.as_operand(block, *poll_expr));
+
+        let const_u8_ptr = self.gcx.store.interners.intern_ty(TyKind::Pointer(
+            self.gcx.types.uint8,
+            crate::hir::Mutability::Immutable,
+        ));
+        let poll_ptr_local = self.new_temp_with_ty(const_u8_ptr, span);
+        self.push_assign(
+            block,
+            Place::from_local(poll_ptr_local),
+            Rvalue::Cast {
+                operand: poll_op,
+                ty: const_u8_ptr,
+                kind: mir::CastKind::Pointer,
+            },
+            span,
+        );
+        let null_drop_local = self.new_temp_with_ty(const_u8_ptr, span);
+        self.push_assign(
+            block,
+            Place::from_local(null_drop_local),
+            Rvalue::Zeroed { ty: const_u8_ptr },
+            span,
+        );
+
+        let create_id =
+            find_or_register_async_runtime_function(self.gcx, AsyncRuntimeFn::Create, span);
+        let create_ty = self.gcx.get_type(create_id);
+        let next = self.new_block();
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: create_ty,
+                    value: mir::ConstantKind::Function(
+                        create_id,
+                        GenericArguments::empty(),
+                        create_ty,
+                    ),
+                }),
+                args: vec![
+                    frame_op,
+                    Operand::Copy(Place::from_local(poll_ptr_local)),
+                    Operand::Copy(Place::from_local(null_drop_local)),
+                    Operand::Constant(Constant {
+                        ty: self.gcx.types.uint8,
+                        value: mir::ConstantKind::Integer(1),
+                    }),
+                ],
+                destination,
+                target: next,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
         next.unit()
     }
 
@@ -2800,100 +3741,104 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 );
             }
             thir::match_tree::Decision::Success(body) => {
-                let arm = &self.thir.arms[body.arm];
-                let arm_block = self.new_block_with_note(format!("match-arm-{}", body.arm.index()));
-                if !self.goto_if_fallthrough(block, arm_block, span) {
-                    return;
-                }
-                if let Some((if_true, if_false)) = condition_targets {
-                    let arm_block = self
-                        .bind_match_bindings(arm_block, body.arm, &body.bindings, var_places)
-                        .into_block();
-                    let ExprKind::Literal(thir::Constant {
-                        value: thir::ConstantKind::Bool(value),
-                        ..
-                    }) = &self.thir.exprs[arm.body].kind
-                    else {
-                        panic!("binding-condition decision must end in a boolean literal");
-                    };
-                    self.goto(arm_block, if *value { if_true } else { if_false }, arm.span);
-                    return;
-                }
-                self.lower_match_arm(
-                    arm_block,
-                    body,
-                    destination,
-                    join_block,
-                    join_has_incoming,
-                    var_places,
-                    None,
+                self.lower_successful_match(
+                    block, body, destination, join_block, join_has_incoming,
+                    var_places, span, condition_targets,
                 );
             }
             thir::match_tree::Decision::Failure => {
                 self.terminate(block, span, TerminatorKind::Unreachable);
             }
-            thir::match_tree::Decision::Guard(guard_expr, body, fallback) => {
-                assert!(
-                    condition_targets.is_none(),
-                    "binding conditions have no guarded arms"
-                );
-                let arm = &self.thir.arms[body.arm];
-                let guard_block =
-                    self.new_block_with_note(format!("match-guard-{}", body.arm.index()));
-                if !self.goto_if_fallthrough(block, guard_block, span) {
-                    return;
-                }
-                // Guard and body share one set of writable binding copies.
-                // Failed candidates discard those copies before the fallback.
-                let saved_cleanup = self.current_cleanup;
-                let saved_scope = self.current_cleanup_scope;
-                self.current_cleanup_scope = self.fresh_cleanup_scope();
-                block = self
-                    .bind_match_bindings(guard_block, body.arm, &body.bindings, var_places)
-                    .into_block();
-                let guard_operand = unpack!(block = self.as_operand(block, *guard_expr));
-                let candidate_cleanup = self.current_cleanup;
-                let candidate_scope = self.current_cleanup_scope;
-                let then_block =
-                    self.new_block_with_note(format!("match-arm-{}", body.arm.index()));
-                let discard_block = self.new_block_with_note("match-guard-discard".into());
-                let else_block = self.new_block_with_note("match-guard-fallback".into());
-                self.terminate(
-                    block,
-                    arm.span,
-                    TerminatorKind::if_(guard_operand, then_block, discard_block),
-                );
-                self.lower_match_arm(
-                    then_block,
-                    body,
-                    destination,
-                    join_block,
-                    join_has_incoming,
-                    var_places,
-                    Some((saved_cleanup, saved_scope)),
-                );
-                self.current_cleanup = candidate_cleanup;
-                self.current_cleanup_scope = candidate_scope;
-                let mut cache = FxHashMap::default();
-                cache.insert(saved_cleanup, else_block);
-                let cleanup = self.ensure_cleanup_path(
-                    candidate_cleanup,
-                    saved_cleanup,
-                    else_block,
-                    &mut cache,
-                );
-                self.goto(discard_block, cleanup, arm.span);
-                self.current_cleanup = saved_cleanup;
-                self.current_cleanup_scope = saved_scope;
+            thir::match_tree::Decision::Guard { prepare, tests, guard: guard_expr, body, fallback } => {
+                let mut saved_places;
+                let var_places = if prepare.is_empty() {
+                    var_places
+                } else {
+                    saved_places = var_places.clone();
+                    for probe in prepare {
+                        let value = self.match_type_value(block, &var_places[&probe.source.id],
+                            probe.target, probe.result.ty, span);
+                        saved_places.insert(probe.result.id, value);
+                    }
+                    &saved_places
+                };
+                let mut converted_places = None;
+                let type_fallback = if tests.is_empty() {
+                    None
+                } else {
+                    let mismatch = self.new_block_with_note("type-pattern-fallback".into());
+                    let places = converted_places.insert(var_places.clone());
+                    for test in tests {
+                        block = self.lower_match_type_test(block, test, places, mismatch, span);
+                    }
+                    Some(mismatch)
+                };
+                let success_places = converted_places.as_ref().unwrap_or(var_places);
+                let else_block = if let Some(guard_expr) = guard_expr {
+                    assert!(
+                        condition_targets.is_none(),
+                        "binding conditions have no guarded arms"
+                    );
+                    let arm = &self.thir.arms[body.arm];
+                    let guard_block =
+                        self.new_block_with_note(format!("match-guard-{}", body.arm.index()));
+                    if !self.goto_if_fallthrough(block, guard_block, span) {
+                        return;
+                    }
+                    // Guard and body share one set of writable binding copies.
+                    // Failed candidates discard those copies before the fallback.
+                    let saved_cleanup = self.current_cleanup;
+                    let saved_scope = self.current_cleanup_scope;
+                    self.current_cleanup_scope = self.fresh_cleanup_scope();
+                    block = self
+                        .bind_match_bindings(guard_block, body.arm, &body.bindings, success_places)
+                        .into_block();
+                    let guard_operand = unpack!(block = self.as_operand(block, *guard_expr));
+                    let candidate_cleanup = self.current_cleanup;
+                    let candidate_scope = self.current_cleanup_scope;
+                    let then_block =
+                        self.new_block_with_note(format!("match-arm-{}", body.arm.index()));
+                    let discard_block = self.new_block_with_note("match-guard-discard".into());
+                    let else_block = type_fallback.unwrap_or_else(|| self.new_block_with_note("match-guard-fallback".into()));
+                    self.terminate(
+                        block,
+                        arm.span,
+                        TerminatorKind::if_(guard_operand, then_block, discard_block),
+                    );
+                    self.lower_match_arm(
+                        then_block,
+                        body,
+                        destination,
+                        join_block,
+                        join_has_incoming,
+                        success_places,
+                        Some((saved_cleanup, saved_scope)),
+                    );
+                    self.current_cleanup = candidate_cleanup;
+                    self.current_cleanup_scope = candidate_scope;
+                    let mut cache = FxHashMap::default();
+                    cache.insert(saved_cleanup, else_block);
+                    let cleanup = self.ensure_cleanup_path(
+                        candidate_cleanup,
+                        saved_cleanup,
+                        else_block,
+                        &mut cache,
+                    );
+                    self.goto(discard_block, cleanup, arm.span);
+                    self.current_cleanup = saved_cleanup;
+                    self.current_cleanup_scope = saved_scope;
+                    else_block
+                } else {
+                    self.lower_successful_match(
+                        block, body,
+                        destination, join_block, join_has_incoming, success_places, span,
+                        condition_targets,
+                    );
+                    type_fallback.expect("conditional arm requires a guard or type test")
+                };
                 self.lower_match_decision(
-                    else_block,
-                    fallback,
-                    destination,
-                    join_block,
-                    join_has_incoming,
-                    var_places,
-                    span,
-                    condition_targets,
+                    else_block, fallback, destination, join_block, join_has_incoming,
+                    var_places, span, condition_targets,
                 );
             }
             thir::match_tree::Decision::Switch(branch_var, cases, fallback) => {
@@ -2941,7 +3886,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                             condition_targets,
                         );
                     }
-                    thir::match_tree::Constructor::Literal(
+                    thir::match_tree::Constructor::Interval(_)
+                    | thir::match_tree::Constructor::Literal(
                         thir::match_tree::LiteralKey::Float(_),
                     )
                     | thir::match_tree::Constructor::Literal(
@@ -3008,6 +3954,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                                 | thir::match_tree::Constructor::Literal(
                                     thir::match_tree::LiteralKey::String(_),
                                 )
+                                | thir::match_tree::Constructor::Interval(_)
                                 | thir::match_tree::Constructor::Tuple(_)
                                 | thir::match_tree::Constructor::Struct(_) => {
                                     self.terminate(block, span, TerminatorKind::Unreachable);
@@ -3060,6 +4007,107 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 }
             }
         }
+    }
+
+    fn lower_successful_match(
+        &mut self,
+        block: BasicBlockId,
+        body: &thir::match_tree::Body<'ctx>,
+        destination: &Place<'ctx>,
+        join_block: BasicBlockId,
+        join_has_incoming: &mut bool,
+        var_places: &FxHashMap<usize, Place<'ctx>>,
+        span: Span,
+        condition_targets: Option<(BasicBlockId, BasicBlockId)>,
+    ) {
+        let arm = &self.thir.arms[body.arm];
+        let arm_block = self.new_block_with_note(format!("match-arm-{}", body.arm.index()));
+        if !self.goto_if_fallthrough(block, arm_block, span) {
+            return;
+        }
+        if let Some((if_true, if_false)) = condition_targets {
+            let arm_block = self
+                .bind_match_bindings(arm_block, body.arm, &body.bindings, var_places)
+                .into_block();
+            let ExprKind::Literal(thir::Constant {
+                value: thir::ConstantKind::Bool(value),
+                ..
+            }) = &self.thir.exprs[arm.body].kind
+            else {
+                panic!("binding-condition decision must end in a boolean literal");
+            };
+            self.goto(arm_block, if *value { if_true } else { if_false }, arm.span);
+            return;
+        }
+        self.lower_match_arm(
+            arm_block,
+            body,
+            destination,
+            join_block,
+            join_has_incoming,
+            var_places,
+            None,
+        );
+    }
+
+    /// Use the checked cast's success tag for a bound test. A tag-only test
+    /// needs no converted storage. All mismatches share the next arm.
+    fn lower_match_type_test(
+        &mut self,
+        mut block: BasicBlockId,
+        test: &thir::match_tree::TypeTest<'ctx>,
+        places: &mut FxHashMap<usize, Place<'ctx>>,
+        mismatch: BasicBlockId,
+        span: Span,
+    ) -> BasicBlockId {
+        let success = self.new_block_with_note("type-pattern-success".into());
+        let (place, ty) = if let Some(result) = test.prepared {
+            (places[&result.id].clone(), result.ty)
+        } else {
+            let ty = if test.converted.is_some() {
+                test.target.optional(self.gcx).0
+            } else {
+                self.gcx.types.bool
+            };
+            (self.match_type_value(block, &places[&test.source.id], test.target, ty, span), ty)
+        };
+        if ty == self.gcx.types.bool {
+            self.terminate(block, span, TerminatorKind::if_(Operand::Copy(place), success, mismatch));
+        } else {
+            let TyKind::Adt(adt, _) = ty.kind() else { unreachable!("checked cast returns Optional") };
+            let def = self.gcx.get_enum_definition(adt.id);
+            let some = def.variants.iter().position(|v| self.gcx.symbol_eq(v.name, "some"))
+                .expect("Optional.some");
+            if let Some(var) = test.converted {
+                self.add_variant_case_places(places, &place, def.variants[some].name,
+                    thir::VariantIndex::from_usize(some), &[var]);
+            }
+            let discr = unpack!(block = self.enum_discriminant_operand(block, &place, span));
+            self.terminate(block, span, TerminatorKind::SwitchInt {
+                discr, targets: vec![(some as u128, success)], otherwise: mismatch,
+            });
+        }
+        success
+    }
+
+    fn match_type_value(
+        &mut self,
+        block: BasicBlockId,
+        source: &Place<'ctx>,
+        target: Ty<'ctx>,
+        ty: Ty<'ctx>,
+        span: Span,
+    ) -> Place<'ctx> {
+        let result = Place::from_local(self.new_temp_with_ty(ty, span));
+        let kind = if ty == self.gcx.types.bool {
+            CastKind::ExistentialTypeIs { target }
+        } else {
+            CastKind::ExistentialTryCast { target }
+        };
+        self.push_assign(block, result.clone(), Rvalue::Cast {
+            operand: Operand::Copy(source.clone()), ty, kind,
+        }, span);
+        result
     }
 
     fn lower_match_literal_chain(
@@ -3123,7 +4171,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
             let case_block = self.new_block_with_note("match-case".into());
             let cond = unpack!(
-                block = self.build_literal_eq_operand(
+                block = self.build_match_test_operand(
                     block,
                     branch_place,
                     branch_ty,
@@ -3153,7 +4201,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         }
     }
 
-    fn build_literal_eq_operand(
+    fn build_match_test_operand(
         &mut self,
         mut block: BasicBlockId,
         branch_place: &Place<'ctx>,
@@ -3161,6 +4209,23 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         constructor: &thir::match_tree::Constructor,
         span: Span,
     ) -> BlockAnd<Operand<'ctx>> {
+        if let thir::match_tree::Constructor::Interval(interval) = constructor {
+            // Cases partition the entire domain in ascending order. Earlier
+            // tests have already excluded every value below this interval.
+            let upper = *interval.end();
+            let value = if matches!(branch_ty.kind(), TyKind::Rune) {
+                mir::ConstantKind::Rune(char::from_u32(upper as u32).unwrap())
+            } else {
+                mir::ConstantKind::Integer(upper as u64)
+            };
+            let test = Place::from_local(self.new_temp_with_ty(self.gcx.types.bool, span));
+            self.push_assign(block, test.clone(), Rvalue::BinaryOp {
+                op: BinaryOperator::Leq,
+                lhs: Operand::Copy(branch_place.clone()),
+                rhs: Operand::Constant(Constant { ty: branch_ty, value }),
+            }, span);
+            return block.and(Operand::Copy(test));
+        }
         let literal = match constructor {
             thir::match_tree::Constructor::Literal(key) => key,
             _ => {
@@ -3513,7 +4578,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         )
     }
 
-    fn enum_discriminant_operand(
+    pub(in crate::mir::builder) fn enum_discriminant_operand(
         &mut self,
         block: BasicBlockId,
         place: &Place<'ctx>,
