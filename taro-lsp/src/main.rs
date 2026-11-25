@@ -33,13 +33,15 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     while let Some(argument) = arguments.next() {
         if argument == "--worker" {
             child = true;
+        } else if argument == "--stdio" {
+            // Editor clients can select the default transport explicitly.
         } else if argument == "--target-facts" {
             target = Some(path_argument(arguments.next(), "--target-facts")?);
         } else if argument == "--bundle" {
             installed = Some(path_argument(arguments.next(), "--bundle")?);
         } else if argument == "--help" {
             println!(
-                "Usage: taro-lsp [--bundle <directory>]\n       taro-lsp --prepare-bundle <new-directory> <std-source> <target-facts.toml>..."
+                "Usage: taro-lsp [--stdio] [--bundle <directory>]\n       taro-lsp --prepare-bundle <new-directory> <std-source> <target-facts.toml>..."
             );
             return Ok(());
         } else {

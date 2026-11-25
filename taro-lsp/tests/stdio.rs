@@ -461,7 +461,7 @@ fn registered_file_events_invalidate_cached_disk_sources() {
 #[test]
 fn stdio_reserves_stdout_for_lsp_messages_and_exits_on_shutdown() {
     let fixture = Fixture::new();
-    let mut server = Session::spawn(&mut fixture.command(), Message::read);
+    let mut server = Session::spawn(fixture.command().arg("--stdio"), Message::read);
     Message::Request(Request::new(
         1.into(),
         "initialize".into(),
