@@ -17,6 +17,10 @@ pub struct TargetInfo {
     pub bench_mode: bool,
 }
 
+fn is_macos(os: &str) -> bool {
+    os.starts_with("darwin") || os.starts_with("macos")
+}
+
 impl TargetInfo {
     /// Parse target information from a triple string.
     /// Format: arch-vendor-os or arch-vendor-os-env
@@ -31,7 +35,7 @@ impl TargetInfo {
 
         // Determine family from OS
         let family = match os.as_str() {
-            s if s.contains("darwin") || s == "macos" => "unix",
+            s if is_macos(s) => "unix",
             "linux" | "freebsd" | "openbsd" | "netbsd" | "dragonfly" => "unix",
             s if s.contains("windows") || s == "win32" => "windows",
             _ => "unknown",
@@ -51,7 +55,7 @@ impl TargetInfo {
     /// Check if this matches an os predicate.
     pub fn matches_os(&self, value: &str) -> bool {
         match value {
-            "macos" | "darwin" => self.os.contains("darwin") || self.os == "macos",
+            "macos" | "macosx" | "darwin" => is_macos(&self.os),
             "linux" => self.os == "linux",
             "windows" => self.os.contains("windows") || self.os == "win32",
             _ => self.os == value,
@@ -378,12 +382,14 @@ mod tests {
 
     #[test]
     fn test_target_info_unix() {
-        let target = TargetInfo::from_triple("aarch64-apple-darwin");
-        assert!(target.matches_os("macos"));
-        assert!(target.matches_os("darwin"));
-        assert!(target.matches_arch("aarch64"));
-        assert!(target.matches_arch("arm64"));
-        assert!(target.matches_family("unix"));
+        for triple in ["aarch64-apple-darwin", "arm64-apple-macosx27.0"] {
+            let target = TargetInfo::from_triple(triple);
+            assert!(target.matches_os("macos"));
+            assert!(target.matches_os("darwin"));
+            assert!(target.matches_arch("aarch64"));
+            assert!(target.matches_arch("arm64"));
+            assert!(target.matches_family("unix"));
+        }
     }
 
     #[test]

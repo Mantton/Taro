@@ -74,6 +74,15 @@ def verify_editor(sdk, app, source, env):
                 server.kill()
 
 
+def run_native(taro, *arguments, cwd, env):
+    result = subprocess.run([taro, *arguments], cwd=cwd, env=env, capture_output=True, text=True)
+    if result.returncode:
+        raise RuntimeError(f"taro {arguments[0]} exited with {result.returncode}:\n{result.stderr}")
+    if "was built for newer 'macOS' version" in result.stderr:
+        raise RuntimeError(f"macOS deployment target mismatch:\n{result.stderr}")
+    return result.stdout
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("archive", type=Path)
@@ -111,12 +120,11 @@ def main():
             subprocess.run([binary, "--version"], cwd=app, env=env, check=True)
         hello = root / "hello.tr"
         hello.write_text('func main() { print("Hello from the relocated SDK") }\n')
-        run = subprocess.run([taro, "run", hello], cwd=app, env=env, check=True,
-                             stdout=subprocess.PIPE, text=True)
-        if run.stdout.strip() != "Hello from the relocated SDK":
-            raise RuntimeError(f"unexpected output: {run.stdout}")
+        output = run_native(taro, "run", hello, cwd=app, env=env)
+        if output.strip() != "Hello from the relocated SDK":
+            raise RuntimeError(f"unexpected output: {output}")
         executable = root / "hello"
-        subprocess.run([taro, "build", hello, "-o", executable], cwd=app, env=env, check=True)
+        run_native(taro, "build", hello, "-o", executable, cwd=app, env=env)
         verify_macos_linkage(executable)
 
         fixture = scratch.parent / "language_tests/source_files/invalid/conversion_bridge_overlap.tr"

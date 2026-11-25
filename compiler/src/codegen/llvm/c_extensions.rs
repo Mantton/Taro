@@ -1,7 +1,7 @@
 //! C scalar extension attributes are ABI contracts, including on invokes and
 //! compiler-generated wire facades. Linux AArch64 deliberately provides none.
 use super::*;
-use crate::sema::models::{IntTy, UIntTy};
+use crate::{cfg::TargetInfo, sema::models::{IntTy, UIntTy}};
 use inkwell::values::{AsValueRef, InstructionOpcode, InstructionValue};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -12,10 +12,10 @@ pub(super) struct Extension {
 }
 
 fn target_requires_extensions(triple: &str) -> bool {
-    (triple.starts_with("x86_64-")
-        && (triple.contains("apple-darwin") || triple.contains("-linux-")))
-        || ((triple.starts_with("aarch64-") || triple.starts_with("arm64-"))
-            && triple.contains("apple-darwin"))
+    let target = TargetInfo::from_triple(triple);
+    let macos = target.matches_os("macos");
+    (target.matches_arch("x86_64") && (macos || target.matches_os("linux")))
+        || (target.matches_arch("aarch64") && macos)
 }
 
 fn narrow(ty: &str, location: AttributeLoc) -> Option<Extension> {
@@ -297,6 +297,8 @@ mod tests {
             "arm64-apple-darwin",
             "aarch64-apple-darwin",
             "x86_64-apple-darwin",
+            "arm64-apple-macosx27.0",
+            "x86_64-apple-macosx15.0",
             "x86_64-unknown-linux-gnu",
         ] {
             assert!(target_requires_extensions(triple));

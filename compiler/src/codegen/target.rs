@@ -42,6 +42,53 @@ fn uses_global_isel(target_machine: &TargetMachine) -> bool {
     unsafe { taro_target_machine_uses_global_isel(target_machine.as_mut_ptr().cast()) }
 }
 
+fn native_target_triple() -> Result<TargetTriple, String> {
+    let triple = TargetMachine::get_default_triple();
+    #[cfg(target_os = "macos")]
+    {
+        // The LLVM backend and Apple Clang can translate Darwin kernel
+        // versions differently. Give both the macOS product version directly.
+        let host = triple.as_str().to_string_lossy();
+        let arch = host.split('-').next().expect("host triple architecture");
+        return Ok(TargetTriple::create(&format!(
+            "{arch}-apple-macosx{}",
+            macos_product_version()?
+        )));
+    }
+    #[cfg(not(target_os = "macos"))]
+    Ok(triple)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_product_version() -> Result<&'static str, String> {
+    use std::{process::Command, sync::OnceLock};
+
+    static VERSION: OnceLock<Result<String, String>> = OnceLock::new();
+    VERSION
+        .get_or_init(|| {
+            let output = Command::new("/usr/bin/sw_vers")
+                .arg("-productVersion")
+                .env("SYSTEM_VERSION_COMPAT", "0")
+                .output()
+                .map_err(|error| format!("failed to run sw_vers: {error}"))?;
+            if !output.status.success() {
+                return Err(format!("sw_vers exited with {}", output.status));
+            }
+            let version = String::from_utf8_lossy(&output.stdout);
+            let version = version.trim();
+            if version.split('.').count() > 3
+                || !version.split('.').all(|part| {
+                    !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
+                })
+            {
+                return Err(format!("invalid macOS product version '{version}'"));
+            }
+            Ok(version.to_owned())
+        })
+        .as_deref()
+        .map_err(Clone::clone)
+}
+
 /// Wrapper around LLVM target information for layout computation.
 ///
 /// Created early in the compilation pipeline and shared between MIR and Codegen.
@@ -76,7 +123,10 @@ impl TargetLayout {
 
         let triple = match target_override {
             Some(t) => TargetTriple::create(t),
-            None => TargetMachine::get_default_triple(),
+            None => native_target_triple().map_err(|error| {
+                dcx.emit_error(format!("failed to determine native target: {error}"), None);
+                crate::error::ReportedError
+            })?,
         };
 
         let target = Target::from_triple(&triple).map_err(|e| {
@@ -382,6 +432,17 @@ mod tests {
             let object = emit_smoke_object(&layout, "host-object-smoke");
             assert!(!object.is_empty());
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_macos_target_uses_the_product_version() {
+        let dcx = diagnostics();
+        let layout = TargetLayout::new(&dcx, None, BuildProfile::Debug)
+            .unwrap_or_else(|_| panic!("native macOS target layout should initialize"));
+        let expected = format!("-apple-macosx{}", super::macos_product_version().unwrap());
+        assert!(layout.triple_string().ends_with(&expected));
+        assert_eq!(layout.requested_triple(), None);
     }
 
     #[test]

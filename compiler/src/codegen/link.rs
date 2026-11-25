@@ -235,9 +235,7 @@ pub fn link_executable(gcx: GlobalContext) -> CompileResult<Option<PathBuf>> {
     } else {
         None
     };
-    // A random `clang` earlier in PATH may be too old to map the host Darwin
-    // version to the matching macOS deployment target. The SDK's Apple Clang
-    // and linker are versioned together, so use that pair by default.
+    // Use Apple Clang and its matching linker from the selected developer tools.
     let darwin_linker = if target_info.matches_os("macos") && linker.is_none() {
         macos_clang_path()
     } else {

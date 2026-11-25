@@ -5,7 +5,7 @@
 //! string must use `byval`, leaving the last register for the following scalar.
 
 use super::*;
-use crate::sema::models::Ty;
+use crate::{cfg::TargetInfo, sema::models::Ty};
 use inkwell::types::AnyType;
 
 #[derive(Clone, Copy)]
@@ -38,9 +38,9 @@ fn stack_strings(arguments: &[Argument]) -> Vec<bool> {
 impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     pub(super) fn classify_native_string_arguments(&self, fn_abi: &mut abi::FnAbi<'gcx>) {
         let triple = self.target_machine.get_triple();
-        let triple = triple.as_str().to_str().unwrap_or("");
-        if !triple.starts_with("x86_64-")
-            || !(triple.contains("linux") || triple.contains("darwin"))
+        let target = TargetInfo::from_triple(triple.as_str().to_str().unwrap_or(""));
+        if !target.matches_arch("x86_64")
+            || !(target.matches_os("linux") || target.matches_os("macos"))
         {
             return;
         }
