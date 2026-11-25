@@ -12,11 +12,12 @@ use crossbeam_channel::RecvTimeoutError;
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::{
     CompletionOptions, CompletionParams, DidChangeTextDocumentParams, DidChangeWatchedFilesParams,
-    DidChangeWorkspaceFoldersParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    GotoDefinitionParams, HoverParams, HoverProviderCapability, InitializeParams, MessageType,
-    OneOf, PublishDiagnosticsParams, ServerCapabilities, TextDocumentPositionParams,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, Uri,
-    WorkspaceFoldersServerCapabilities, WorkspaceServerCapabilities,
+    DidChangeWatchedFilesRegistrationOptions, DidChangeWorkspaceFoldersParams,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, FileSystemWatcher, GotoDefinitionParams,
+    HoverParams, HoverProviderCapability, InitializeParams, MessageType, OneOf,
+    PublishDiagnosticsParams, Registration, RegistrationParams, ServerCapabilities,
+    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncOptions, Uri, WorkspaceFoldersServerCapabilities, WorkspaceServerCapabilities,
     notification::{self, Notification as _},
     request::{self, Request as _},
 };
@@ -25,14 +26,16 @@ use url::Url;
 
 use crate::{
     features,
+    protocol::AnalysisMode,
     supervisor::{Launch, Notice, Policy, Supervisor},
 };
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_WAITING_REQUESTS: usize = 32;
+const FILE_WATCH_REGISTRATION: &str = "taro-file-watchers";
 
-pub fn run(launch: Launch) -> Result<()> {
+pub fn run(launch: Launch, installed_std: Option<PathBuf>) -> Result<()> {
     let (connection, io) = Connection::stdio();
     let (initialize_id, params) = connection.initialize_start()?;
     let init: InitializeParams = serde_json::from_value(params)?;
@@ -66,10 +69,22 @@ pub fn run(launch: Launch) -> Result<()> {
             "serverInfo": { "name": "taro-lsp", "version": env!("CARGO_PKG_VERSION") },
         }),
     )?;
+    if init
+        .capabilities
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.did_change_watched_files)
+        .is_some_and(|files| files.dynamic_registration == Some(true))
+    {
+        register_watchers(&connection)?;
+    }
     let mut server = Server {
         launch,
+        installed_std,
+        watching_files: false,
         workspaces: BTreeMap::new(),
         waiting: Vec::new(),
+        trace_analysis: std::env::var_os("TARO_LSP_TRACE_ANALYSIS").is_some(),
     };
     if let Some(folders) = init.workspace_folders {
         for folder in folders {
@@ -90,8 +105,11 @@ pub fn run(launch: Launch) -> Result<()> {
 
 struct Server {
     launch: Launch,
+    installed_std: Option<PathBuf>,
+    watching_files: bool,
     workspaces: BTreeMap<PathBuf, Supervisor>,
     waiting: Vec<EditorQuery>,
+    trace_analysis: bool,
 }
 
 enum QueryKind {
@@ -111,14 +129,25 @@ struct EditorQuery {
 }
 
 impl Server {
+    fn is_installed_std(&self, path: &Path) -> bool {
+        self.installed_std
+            .as_ref()
+            .is_some_and(|root| path.starts_with(root))
+    }
+
     fn add_workspace(&mut self, uri: &Uri) {
-        let Some(path) = file_path(uri) else { return };
+        let Some(path) = file_path(uri).filter(|path| !self.is_installed_std(path)) else {
+            return;
+        };
         self.workspaces
             .entry(path.clone())
             .or_insert_with(|| Supervisor::new(path, self.launch.clone(), Policy::default()));
     }
 
     fn lookup(&mut self, path: &Path) -> Option<&mut Supervisor> {
+        if self.is_installed_std(path) {
+            return None;
+        }
         let root = self
             .workspaces
             .keys()
@@ -147,15 +176,31 @@ impl Server {
                         log_warning(connection, error.to_string())?;
                     }
                 }
-                Ok(Message::Response(_)) | Err(RecvTimeoutError::Timeout) => {}
+                Ok(Message::Response(response)) => {
+                    if response.id == RequestId::from(FILE_WATCH_REGISTRATION.to_owned()) {
+                        match response.response_result {
+                            Ok(_) => self.watching_files = true,
+                            Err(error) => log_warning(
+                                connection,
+                                format!("could not register file watchers: {}", error.message),
+                            )?,
+                        }
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return Ok(()),
             }
             let now = Instant::now();
             for supervisor in self.workspaces.values_mut() {
                 match supervisor.drive(now) {
-                    Some(Notice::Current(product)) => {
+                    Some(Notice::Current(mode, product)) => {
                         let diagnostics = features::diagnostics(supervisor, &product);
-                        publish(connection, supervisor, diagnostics)?;
+                        publish(
+                            connection,
+                            supervisor,
+                            diagnostics,
+                            self.trace_analysis.then_some(mode),
+                        )?;
                         for diagnostic in product
                             .diagnostics
                             .iter()
@@ -166,7 +211,7 @@ impl Server {
                         supervisor.install(product);
                     }
                     Some(Notice::Unavailable(error)) => {
-                        publish(connection, supervisor, BTreeMap::new())?;
+                        publish(connection, supervisor, BTreeMap::new(), None)?;
                         log_warning(connection, error)?;
                     }
                     None => {}
@@ -322,7 +367,9 @@ impl Server {
             notification::DidOpenTextDocument::METHOD => {
                 let params: DidOpenTextDocumentParams = serde_json::from_value(note.params)?;
                 let doc = params.text_document;
-                if let Some(path) = file_path(&doc.uri).filter(|path| is_taro_source(path)) {
+                if let Some(path) = file_path(&doc.uri)
+                    .filter(|path| is_taro_source(path) && !self.is_installed_std(path))
+                {
                     if self.lookup(&path).is_none() {
                         self.workspaces.insert(
                             path.clone(),
@@ -338,6 +385,7 @@ impl Server {
             notification::DidChangeTextDocument::METHOD => {
                 let params: DidChangeTextDocumentParams = serde_json::from_value(note.params)?;
                 let doc = params.text_document;
+                let refresh_disk = !self.watching_files;
                 if params
                     .content_changes
                     .iter()
@@ -348,8 +396,10 @@ impl Server {
                 if let Some(path) = file_path(&doc.uri)
                     && let Some(supervisor) = self.lookup(&path)
                     && let Some(change) = params.content_changes.into_iter().last()
+                    && supervisor.set_document(path, doc.version, change.text)
+                    && refresh_disk
                 {
-                    supervisor.set_document(path, doc.version, change.text);
+                    supervisor.discard_disk_view();
                 }
             }
             notification::DidCloseTextDocument::METHOD => {
@@ -389,6 +439,33 @@ impl Server {
     }
 }
 
+fn register_watchers(connection: &Connection) -> Result<()> {
+    let watchers =
+        ["**/*.tr", "**/package.toml", "**/package.lock"].map(|glob| FileSystemWatcher {
+            glob_pattern: glob.to_owned().into(),
+            kind: None,
+        });
+    let options = DidChangeWatchedFilesRegistrationOptions {
+        watchers: watchers.into(),
+    };
+    let params = RegistrationParams {
+        registrations: vec![Registration {
+            id: FILE_WATCH_REGISTRATION.into(),
+            method: notification::DidChangeWatchedFiles::METHOD.into(),
+            register_options: Some(serde_json::to_value(options)?),
+        }],
+    };
+    connection.sender.send(
+        Request::new(
+            FILE_WATCH_REGISTRATION.to_owned().into(),
+            request::RegisterCapability::METHOD.into(),
+            params,
+        )
+        .into(),
+    )?;
+    Ok(())
+}
+
 fn is_taro_source(path: &Path) -> bool {
     path.extension().is_some_and(|extension| extension == "tr")
 }
@@ -402,6 +479,7 @@ fn publish(
     connection: &Connection,
     workspace: &mut Supervisor,
     mut diagnostics: BTreeMap<Uri, Vec<lsp_types::Diagnostic>>,
+    trace: Option<AnalysisMode>,
 ) -> Result<()> {
     for uri in workspace.open_document_uris() {
         diagnostics.entry(uri).or_default();
@@ -412,6 +490,9 @@ fn publish(
     }
     for (uri, diagnostics) in diagnostics {
         let version = file_path(&uri).and_then(|path| workspace.document_version(&path));
+        if let (Some(version), Some(mode)) = (version, &trace) {
+            eprintln!("taro-lsp analysis {version} {mode:?} {}", uri.as_str());
+        }
         let payload = PublishDiagnosticsParams::new(uri, diagnostics, version);
         connection.sender.send(
             Notification::new(notification::PublishDiagnostics::METHOD.into(), payload).into(),

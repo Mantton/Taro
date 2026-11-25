@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use lsp_server::{Message, Notification, Request};
+use lsp_server::{Message, Notification, Request, Response};
 use serde_json::{Value, json};
 
 struct Fixture {
@@ -111,7 +111,7 @@ fn read_worker(input: &mut impl Read) -> io::Result<Option<Value>> {
 }
 
 fn send_worker(input: &mut impl Write, data: Value) {
-    let frame = serde_json::to_vec(&json!({"schema": 1, "data": data})).unwrap();
+    let frame = serde_json::to_vec(&json!({"schema": 2, "data": data})).unwrap();
     input
         .write_all(&(frame.len() as u32).to_be_bytes())
         .unwrap();
@@ -236,6 +236,7 @@ fn worker_checks_unsaved_siblings_then_updates_only_one_buffer() {
         }),
     );
     let second_reply = worker.next();
+    assert_eq!(second_reply["Finished"]["mode"], "Package");
     let product = &second_reply["Finished"]["result"]["Ok"];
     assert_eq!(product["complete"], true, "{second_reply}");
     assert_eq!(product["revision"], 2);
@@ -247,6 +248,214 @@ fn worker_checks_unsaved_siblings_then_updates_only_one_buffer() {
             .iter()
             .any(|entry| entry["ty"] == "Bool")
     );
+}
+
+#[test]
+fn worker_merges_clean_body_edits_and_falls_back_for_import_warnings_or_moved_ranges() {
+    let fixture = Fixture::new();
+    let root = fixture.root.canonicalize().unwrap();
+    let path = root.join("src/main.tr");
+    fs::write(
+        root.join("package.toml"),
+        "[package]\nname = 'github.com/test/project'\nkind = 'library'\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("src/helpers")).unwrap();
+    fs::write(
+        root.join("src/helpers/count.tr"),
+        "public func count() -> int32 { 12 }",
+    )
+    .unwrap();
+    let mut worker = Session::spawn(fixture.command().arg("--worker"), read_worker);
+    let mut oracle = Session::spawn(fixture.command().arg("--worker"), read_worker);
+    let request = |revision, inputs| json!({"Analyze": {"stamp": {"generation": 1, "revision": revision}, "inputs": inputs}});
+    let reset = |revision, text| {
+        request(
+            revision,
+            json!({"Reset": {"root": root, "documents": {path.to_str().unwrap(): text}}}),
+        )
+    };
+    let original = r#"import project::helpers::count
+func changed() -> int32 {
+    // Leave room for a nested declaration without shifting later ranges.
+    value := count()
+    value
+}
+func later() -> int32 { 42 }
+func caller() -> int32 { changed() + later() }
+"#;
+    let rename = original.replace("value", "renamedLocal");
+    let warning = rename.replace("count()", "13");
+    let shifted = rename.replace("    renamedLocal\n", "\n    renamedLocal\n");
+    let two_bodies = rename.replace("42", "43");
+    let nested = rename
+        .replace(
+            "// Leave room for a nested declaration without shifting later ranges.",
+            "func localCount() -> int32 { count() }",
+        )
+        .replace("renamedLocal := count()", "renamedLocal := localCount()");
+    let local_const = rename
+        .replace(
+            "// Leave room for a nested declaration without shifting later ranges.",
+            "const LOCAL: int32 = 9",
+        )
+        .replace("renamedLocal := count()", "renamedLocal := count() + LOCAL");
+    send_worker(&mut worker.input, reset(1, original));
+    let initial = worker.next();
+    assert_eq!(
+        initial["Finished"]["result"]["Ok"]["complete"], true,
+        "{initial}"
+    );
+    assert_eq!(
+        initial["Finished"]["result"]["Ok"]["diagnostics"],
+        json!([])
+    );
+
+    let compare = |reply: &Value, expected: &Value| {
+        let normalized = |reply: &Value| {
+            let mut product = reply["Finished"]["result"]["Ok"].clone();
+            assert_eq!(product["complete"], true, "{reply}");
+            product["declarations"]
+                .as_array_mut()
+                .unwrap()
+                .sort_by_key(Value::to_string);
+            product
+        };
+        assert_eq!(normalized(reply), normalized(expected));
+    };
+    for (revision, text, mode) in [
+        (2, rename.as_str(), "Body"),
+        (3, warning.as_str(), "Package"),
+        (4, rename.as_str(), "Package"),
+        (5, shifted.as_str(), "Package"),
+        (6, rename.as_str(), "Package"),
+        (7, original, "Body"),
+        (8, two_bodies.as_str(), "Package"),
+        (9, nested.as_str(), "Package"),
+        (10, rename.as_str(), "Package"),
+        (11, local_const.as_str(), "Package"),
+        (12, rename.as_str(), "Package"),
+    ] {
+        send_worker(
+            &mut worker.input,
+            request(revision, json!({"Delta": {path.to_str().unwrap(): text}})),
+        );
+        let reply = worker.next();
+        assert_eq!(reply["Finished"]["mode"], mode, "revision {revision}");
+        send_worker(&mut oracle.input, reset(revision, text));
+        compare(&reply, &oracle.next());
+        if revision == 3 {
+            let warning = &reply["Finished"]["result"]["Ok"]["diagnostics"][0];
+            assert_eq!(warning["message"], "unused import 'count'");
+            assert_eq!(warning["source"]["start"]["line"], 0);
+        }
+    }
+}
+
+#[test]
+fn worker_observes_asset_changes_on_the_next_edit_without_a_file_event() {
+    let fixture = Fixture::new();
+    let root = fixture.root.canonicalize().unwrap();
+    let path = root.join("src/main.tr");
+    let asset = root.join("src/note.txt");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        root.join("src/asset.tr"),
+        "func note() -> string { #embed(\"note.txt\") }",
+    )
+    .unwrap();
+    fs::write(&asset, "initial").unwrap();
+    let source = "func inspect() {\n    _ = note()\n}";
+    let mut worker = Session::spawn(fixture.command().arg("--worker"), read_worker);
+    send_worker(
+        &mut worker.input,
+        json!({
+            "Analyze": {
+                "stamp": {"generation": 1, "revision": 1},
+                "inputs": {"Reset": {"root": root, "documents": {path.to_str().unwrap(): source}}},
+            },
+        }),
+    );
+    let original = worker.next();
+    assert_eq!(
+        original["Finished"]["result"]["Ok"]["complete"], true,
+        "{original}"
+    );
+
+    fs::write(&asset, [0xff]).unwrap();
+    let replacement = source.replace("_ = note()", "_ = note(); _ = 1");
+    send_worker(
+        &mut worker.input,
+        json!({
+            "Analyze": {
+                "stamp": {"generation": 1, "revision": 2},
+                "inputs": {"Delta": {path.to_str().unwrap(): replacement}},
+            },
+        }),
+    );
+    let changed = worker.next();
+    let product = &changed["Finished"]["result"]["Ok"];
+    assert_eq!(changed["Finished"]["mode"], "Package");
+    assert_eq!(product["complete"], false, "{changed}");
+    assert!(
+        product["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| {
+                diagnostic["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("not valid UTF-8")
+            }),
+        "{changed}"
+    );
+}
+
+#[test]
+fn registered_file_events_invalidate_cached_disk_sources() {
+    let fixture = Fixture::new();
+    let mut server = Session::spawn(&mut fixture.command(), Message::read);
+    let definitions = fixture.root.join("src/definitions.tr");
+    fs::create_dir_all(definitions.parent().unwrap()).unwrap();
+    fs::write(&definitions, "func selected() -> int32 { 15 }").unwrap();
+    server.request(
+        1,
+        "initialize",
+        json!({
+            "capabilities": {"workspace": {"didChangeWatchedFiles": {"dynamicRegistration": true}}},
+            "workspaceFolders": [{"name": "test", "uri": as_uri(&fixture.root).as_str()}],
+        }),
+    );
+    server.response(1);
+    server.notify("initialized", json!({}));
+    let Message::Request(registration) = server.next() else {
+        panic!("expected watcher registration");
+    };
+    assert_eq!(registration.method, "client/registerCapability");
+    let watch = &registration.params["registrations"][0];
+    assert_eq!(watch["method"], "workspace/didChangeWatchedFiles");
+    assert_eq!(
+        watch["registerOptions"]["watchers"][0]["globPattern"],
+        "**/*.tr"
+    );
+    Message::Response(Response::new_ok(registration.id, Value::Null))
+        .write(&mut server.input)
+        .unwrap();
+
+    let active = as_uri(&fixture.root.join("src/main.tr"));
+    let text = "func inspect() { result := selected(); _ = result }";
+    server.open(active.as_str(), text);
+    server.request(2, "textDocument/hover", at(active.as_str(), text, "result"));
+    assert_eq!(server.response(2)["contents"]["value"], "int32");
+
+    fs::write(&definitions, "func selected() -> bool { true }").unwrap();
+    server.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": as_uri(&definitions).as_str(), "type": 2}]}),
+    );
+    server.request(3, "textDocument/hover", at(active.as_str(), text, "result"));
+    assert_eq!(server.response(3)["contents"]["value"], "bool");
 }
 
 #[test]
@@ -321,11 +530,11 @@ fn installed_bundle_resolves_std_sources_and_rebuilds_for_target_changes() {
         "triple = 'aarch64-unknown-linux-gnu'\npointer_bits = 64\n",
     )
     .unwrap();
-    let bundle = fixture.root.join("bundle");
+    let staging = fixture.root.join("staging");
     assert!(
         Command::new(env!("CARGO_BIN_EXE_taro-lsp"))
             .arg("--prepare-bundle")
-            .arg(&bundle)
+            .arg(&staging)
             .arg(&std)
             .arg(&fixture.facts)
             .arg(&arm)
@@ -333,6 +542,8 @@ fn installed_bundle_resolves_std_sources_and_rebuilds_for_target_changes() {
             .unwrap()
             .success()
     );
+    let bundle = fixture.root.join("installed-bundle");
+    fs::rename(staging, &bundle).unwrap();
 
     let project = fixture.root.join("project");
     fs::create_dir_all(project.join("src")).unwrap();
@@ -403,6 +614,9 @@ fn installed_bundle_resolves_std_sources_and_rebuilds_for_target_changes() {
         format!("{package}\n[language_server]\ntarget = 'aarch64-unknown-linux-gnu'\n"),
     )
     .unwrap();
+    let arm_snapshot = bundle.join("targets/aarch64-unknown-linux-gnu.std");
+    assert!(fs::metadata(&arm_snapshot).unwrap().len() > 32);
+    fs::write(arm_snapshot, b"invalid snapshot").unwrap();
     send_worker(&mut worker.input, reset(4));
     let switched = worker.next();
     let second = &switched["Finished"]["result"]["Ok"];

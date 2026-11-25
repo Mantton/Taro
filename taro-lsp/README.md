@@ -14,7 +14,7 @@ cp "$CARGO_TARGET_DIR/release/taro-lsp" "$lsp_install/bin/"
 "$lsp_install/bin/taro-lsp" --prepare-bundle "$lsp_install/share/taro-lsp" "$PWD/std" "$target_descriptor"
 ```
 
-The bundle contains readable standard-library sources, target descriptors and the compiler build identity. The worker keeps one byte-bounded standard-library snapshot in memory and rebuilds it when the source view or target changes. Definitions in the standard library resolve into the installed copy.
+The bundle contains readable standard-library sources, target descriptors and a prechecked std snapshot for each target. The manifest binds them to the compiler build identity and records their content hashes. Workers verify the sources and load the matching snapshot when starting, resetting the source view or switching targets. If the snapshot is missing or damaged, the worker rebuilds it from verified sources. The worker keeps one snapshot of at most 128 MiB in memory. Bundles can move after packaging, and std definitions resolve into the installed copy.
 
 A package can select one of the installed targets and pin the standard-library digest from `bundle.toml` in its `package.toml`.
 
@@ -30,6 +30,8 @@ The pilot reports typed analysis as unavailable when that target or source ident
 
 The Taro extension launches the installed server for local `.tr` documents. Set `taro.languageServer.path` in user settings when `taro-lsp` is outside the editor's executable search path. The pilot provides live diagnostics, inferred-type hover, go-to-definition and member completion after a dot.
 
+The server registers file watchers with supporting clients. Without watch registration it refreshes disk sources on each text edit and uses a full package check. It refreshes embedded assets on the next analysis. Installed std files opened from a definition are browsable source, and replacing an installed bundle requires restarting the server.
+
 From the checkout root, use its shared, ignored Cargo target directory.
 
 ```sh
@@ -40,7 +42,7 @@ The tests cover stdio lifecycle, unsaved inputs in the actual compiler worker, c
 
 ## Release checks
 
-Run the measurements on an otherwise idle machine with one release build and matching bundle. The current development server uses full package checks. The compiler example measures the closed-body path separately and reports when the Iris fixture requires a package check.
+Run the measurements on an otherwise idle machine with one release build and matching bundle. The stdio trace reports how often the worker checks a selected body or the full package. The worker tries a selected-body check after an edit inside one clean function when text and scalar coordinates outside it are unchanged. Syntax or semantic errors, warnings, header changes and displaced source ranges use the full package checker. The selected-body check still prepares package declarations. The compiler example measures it separately from the closed-body path, which only reads the edited file for functions that meet its narrower rules.
 
 ```sh
 export CARGO_TARGET_DIR="$PWD/target"

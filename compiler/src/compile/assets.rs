@@ -60,7 +60,7 @@ impl Gcx<'_> {
             io::ErrorKind::InvalidInput => format!("embedded asset '{name}' is not a regular file"),
             _ => format!("could not read embedded asset '{name}': {error}"),
         };
-        let data = sources.read_file(&root.join(&relative)).map_err(failed)?;
+        let data = sources.read_asset(&root.join(&relative)).map_err(failed)?;
         Ok((relative, data))
     }
 
@@ -136,7 +136,7 @@ pub(crate) fn validate_inputs(
         }
         let changed = || format!("embedded asset '{}' changed", path.display());
         let digest = sources
-            .digest_file(&root.join(path))
+            .digest_asset(&root.join(path))
             .map_err(|_| changed())?;
         if digest.as_bytes() != expected {
             return Err(changed());

@@ -2,6 +2,7 @@
 """Measure the packaged Taro editor path on Iris without changing its files."""
 
 import argparse
+from collections import Counter
 import hashlib
 import json
 import math
@@ -13,6 +14,7 @@ import select
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 from lsp_reclamation import rss
@@ -33,10 +35,13 @@ class Client:
         if request:
             header["id"] = self.next_id
             self.next_id += 1
-        body = json.dumps(header, separators=(",", ":")).encode()
+        self.write(header)
+        return header.get("id")
+
+    def write(self, message):
+        body = json.dumps(message, separators=(",", ":")).encode()
         self.process.stdin.write(f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
         self.process.stdin.flush()
-        return header.get("id")
 
     def receive(self, deadline):
         pipe = self.process.stdout
@@ -54,6 +59,9 @@ class Client:
                 if end <= len(self.buffer):
                     message = json.loads(self.buffer[body_start:end])
                     del self.buffer[:end]
+                    if message.get("method") == "client/registerCapability":
+                        self.write({"jsonrpc": "2.0", "id": message["id"], "result": None})
+                        continue
                     return message
             remaining = deadline - time.perf_counter()
             if remaining <= 0 or not select.select([pipe], [], [], remaining)[0]:
@@ -79,7 +87,7 @@ def latest_child(parent):
 def initialize(client, workspace):
     started = time.perf_counter()
     request = client.send("initialize", {
-        "capabilities": {},
+        "capabilities": {"workspace": {"didChangeWatchedFiles": {"dynamicRegistration": True}}},
         "workspaceFolders": [{"uri": workspace.as_uri(), "name": "Iris"}],
     }, request=True)
     result = client.receive(started + 5)
@@ -91,6 +99,8 @@ def initialize(client, workspace):
 def wait_for_diagnostics(client, uri, version, started, timeout):
     while (message := client.receive(started + timeout)) is not None:
         if is_diagnostics(message, uri, version):
+            if not clean_diagnostics(message):
+                raise RuntimeError(f"unexpected Iris diagnostics: {message['params']}")
             return (time.perf_counter() - started) * 1000
     return None
 
@@ -101,6 +111,12 @@ def is_diagnostics(message, uri, version):
         and message["params"].get("uri") == uri
         and message["params"].get("version") == version
     )
+
+
+def clean_diagnostics(message):
+    # This Iris fixture checks cleanly. The trace only renames a local,
+    # changes its indentation or adds a valid top-level function.
+    return message["params"].get("diagnostics") == []
 
 
 def text_for(source, tag, header=False):
@@ -147,7 +163,13 @@ def edit_and_query(
             break
         elapsed = (time.perf_counter() - started) * 1000
         if text is not None and is_diagnostics(message, uri, version):
-            arrivals["diagnostics_ms"] = elapsed
+            if clean_diagnostics(message):
+                arrivals["diagnostics_ms"] = elapsed
+            else:
+                wrong.append({
+                    "request": "diagnostics_ms",
+                    "answer": message["params"].get("diagnostics"),
+                })
             continue
         identifier = message.get("id")
         if identifier not in (hover, definition):
@@ -191,17 +213,33 @@ def resident_bytes(server, worker):
     return {"server_bytes": rss(server), "worker_bytes": rss(worker)}
 
 
+def read_analysis_trace(pipe, uri, modes):
+    for line in pipe:
+        if match := re.fullmatch(rb"taro-lsp analysis (\d+) (Body|Package) (.*)\n", line):
+            if match[3].decode() == uri:
+                modes[int(match[1])] = match[2].decode()
+        else:
+            sys.stderr.buffer.write(line)
+
+
 def run(args):
     workspace = args.iris.resolve()
     main = workspace / "src/main.tr"
     original = main.read_text()
     uri = main.as_uri()
+    analysis_modes = {}
     with subprocess.Popen(
         [args.bin.resolve(), "--bundle", args.bundle.resolve()],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env={**os.environ, "TARO_LSP_TRACE_ANALYSIS": "1"},
     ) as process:
         client = Client(process)
+        trace_reader = threading.Thread(
+            target=read_analysis_trace, args=(process.stderr, uri, analysis_modes), daemon=True,
+        )
+        trace_reader.start()
         try:
             initialize(client, workspace)
             started = time.perf_counter()
@@ -272,14 +310,23 @@ def run(args):
             burst["total_elapsed_ms"] = (time.perf_counter() - burst_started) * 1000
             warm = {field: summarize(samples, field) for field in ("hover_ms", "definition_ms", "diagnostics_ms")}
             incorrect = sum(len(sample["incorrect"]) for sample in samples)
+            incorrect += sum(
+                len(sample["incorrect"])
+                for sample in [warmup, header, burst]
+            )
+            for attempt in recovery:
+                first = attempt["first_queries"]
+                final = attempt["current_queries"]
+                incorrect += len(first["incorrect"])
+                if final is not first:
+                    incorrect += len(final["incorrect"])
             peak_rss = max(point["server_bytes"] + point["worker_bytes"] for point in quiescent)
-            return {
+            result = {
                 "system": platform.platform(),
                 "machine": platform.machine(),
                 "workspace": str(workspace),
                 "bundle_identity": (args.bundle / "bundle.toml").read_text(),
                 "source_sha256": hashlib.sha256(original.encode()).hexdigest(),
-                "mode": "stdio with full package checks",
                 "cold_diagnostics_ms": cold,
                 "warm_reopen_diagnostics_ms": reopen,
                 "warmup": warmup,
@@ -302,6 +349,7 @@ def run(args):
                     "combined_sampled_rss_under_1_gib": peak_rss < 1024 ** 3,
                     "recovery_within_2_seconds": bool(recovery) and all(
                         attempt["worker_replaced"]
+                        and attempt["first_queries"]["diagnostics_ms"] is not None
                         and attempt["current_queries"]["hover_ms"] is not None
                         and attempt["current_queries"]["definition_ms"] is not None
                         and attempt["elapsed_ms"] <= 2_000
@@ -320,6 +368,15 @@ def run(args):
                 process.wait(timeout=3)
             except (OSError, EOFError, subprocess.TimeoutExpired):
                 process.kill()
+                process.wait()
+            trace_reader.join()
+    result["warm_analysis_modes"] = dict(Counter(
+        analysis_modes.get(sample["version"], "unobserved") for sample in samples
+    ))
+    result["gates"]["all_warm_iris_edits_used_body_checks"] = (
+        result["warm_analysis_modes"] == {"Body": len(samples)}
+    )
+    return result
 
 
 def main():

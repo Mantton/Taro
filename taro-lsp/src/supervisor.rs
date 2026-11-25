@@ -21,7 +21,7 @@ use compiler::compile::{
 use crossbeam_channel::{Receiver, Sender, TryRecvError, bounded};
 use lsp_types::Uri;
 
-use crate::protocol::{self, AnalysisRequest, FromWorker, Inputs, Stamp, ToWorker};
+use crate::protocol::{self, AnalysisMode, AnalysisRequest, FromWorker, Inputs, Stamp, ToWorker};
 
 const MAX_PENDING_FILES: usize = 256;
 
@@ -49,7 +49,7 @@ impl Default for Policy {
 }
 
 pub enum Notice {
-    Current(Box<AnalysisProduct>),
+    Current(AnalysisMode, Arc<AnalysisProduct>),
     Unavailable(String),
 }
 
@@ -63,7 +63,7 @@ pub struct Supervisor {
     revision: u64,
     flight: Option<Flight>,
     documents: BTreeMap<PathBuf, Document>,
-    current: Option<Box<AnalysisProduct>>,
+    current: Option<Arc<AnalysisProduct>>,
     published: BTreeSet<Uri>,
     pending: BTreeSet<PathBuf>,
     reset: bool,
@@ -119,7 +119,7 @@ impl Supervisor {
         self.current.as_deref()
     }
 
-    pub fn install(&mut self, product: Box<AnalysisProduct>) {
+    pub fn install(&mut self, product: Arc<AnalysisProduct>) {
         if product.revision == self.revision {
             self.current = Some(product);
         }
@@ -193,6 +193,10 @@ impl Supervisor {
 
     pub fn filesystem_changed(&mut self) {
         self.advance();
+        self.discard_disk_view();
+    }
+
+    pub fn discard_disk_view(&mut self) {
         self.reset = true;
         self.pending.clear();
     }
@@ -329,16 +333,22 @@ impl Supervisor {
             return None;
         }
         self.flight = None;
+        if let FromWorker::Rejected { error, .. } = reply {
+            // No delta can be trusted until all current buffers are replayed,
+            // even if this particular request has since become stale.
+            return Some(self.failed(now, format!("worker rejected its source update: {error}")));
+        }
         if stamp.revision != self.revision {
             return None;
         }
         match reply {
             FromWorker::Finished {
+                mode,
                 result: Ok(product),
                 ..
             } if product.revision == stamp.revision => {
                 self.failures = 0;
-                Some(Notice::Current(product))
+                Some(Notice::Current(mode, product))
             }
             FromWorker::Finished {
                 result: Err(error), ..
@@ -349,6 +359,7 @@ impl Supervisor {
             FromWorker::Cancelled(_) => {
                 Some(self.failed(now, "worker cancelled the current revision".into()))
             }
+            FromWorker::Rejected { .. } => unreachable!(),
         }
     }
 
@@ -358,12 +369,15 @@ impl Supervisor {
         self.flight = None;
         self.reset = true;
         self.pending.clear();
-        let multiplier = 2u32.pow(self.failures.min(8));
-        let delay = self
-            .policy
-            .restart_delay
-            .saturating_mul(multiplier)
-            .min(self.policy.restart_limit);
+        let delay = if self.failures == 0 {
+            Duration::ZERO
+        } else {
+            let multiplier = 2u32.pow((self.failures - 1).min(8));
+            self.policy
+                .restart_delay
+                .saturating_mul(multiplier)
+                .min(self.policy.restart_limit)
+        };
         self.restart_at = now + delay;
         self.failures = self.failures.saturating_add(1);
         Notice::Unavailable(error)
@@ -486,7 +500,7 @@ mod tests {
                             "updated sibling".into(),
                         );
                     }
-                    Some(Notice::Current(product)) => {
+                    Some(Notice::Current(_, product)) => {
                         assert!(unavailable);
                         assert_eq!(supervisor.generation, 2);
                         assert_eq!(
@@ -522,7 +536,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(7);
         while Instant::now() < deadline {
             match supervisor.drive(Instant::now()) {
-                Some(Notice::Current(product)) => {
+                Some(Notice::Current(_, product)) => {
                     assert!(product.revision > original_revision);
                     assert_eq!(product.revision, supervisor.revision);
                     assert_eq!(product.diagnostics[0].message, "edited 300\nsecond buffer");
@@ -534,5 +548,30 @@ mod tests {
             }
         }
         panic!("never received the current revision");
+    }
+
+    #[test]
+    fn a_rejected_stale_update_replays_all_current_buffers() {
+        let mut supervisor = supervisor(Duration::from_secs(3));
+        supervisor.set_document("/workspace/src/a.tr".into(), 1, "reject update".into());
+        supervisor.drive(Instant::now());
+        supervisor.set_document("/workspace/src/b.tr".into(), 1, "latest sibling".into());
+        let deadline = Instant::now() + Duration::from_secs(7);
+        while Instant::now() < deadline {
+            match supervisor.drive(Instant::now()) {
+                Some(Notice::Current(_, product)) => {
+                    assert_eq!(supervisor.generation, 2);
+                    assert_eq!(product.revision, supervisor.revision);
+                    assert_eq!(
+                        product.diagnostics[0].message,
+                        "reject update\nlatest sibling"
+                    );
+                    return;
+                }
+                Some(Notice::Unavailable(message)) => assert!(message.contains("rejected")),
+                None => thread::sleep(Duration::from_millis(4)),
+            }
+        }
+        panic!("never received current buffers after the rejected update");
     }
 }

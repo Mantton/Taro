@@ -475,16 +475,33 @@ impl Compiler<'_> {
     /// Analyze one revision in a fresh scratch session and copy out its facts.
     /// The returned product can be delivered after the scratch session drops.
     pub fn analyze_owned(&mut self, revision: u64) -> AnalysisProduct {
-        self.capture_analysis(revision, false)
+        self.capture_analysis(revision, false, None)
     }
 
     /// Recover syntax for editor requests. Semantic answers carry the damage
     /// information needed to invalidate affected declarations conservatively.
     pub fn analyze_partial_owned(&mut self, revision: u64) -> AnalysisProduct {
-        self.capture_analysis(revision, true)
+        self.capture_analysis(revision, true, None)
     }
 
-    fn capture_analysis(&mut self, revision: u64, recover_syntax: bool) -> AnalysisProduct {
+    /// Record the configured package inputs that a later selected-body check
+    /// must reproduce before reusing facts from this check.
+    pub fn analyze_partial_owned_with_fingerprint(
+        &mut self,
+        revision: u64,
+    ) -> (AnalysisProduct, Option<blake3::Hash>) {
+        let mut fingerprint = None;
+        let product = self.capture_analysis(revision, true, Some(&mut fingerprint));
+        let fingerprint = if product.complete { fingerprint } else { None };
+        (product, fingerprint)
+    }
+
+    fn capture_analysis(
+        &mut self,
+        revision: u64,
+        recover_syntax: bool,
+        fingerprint: Option<&mut Option<blake3::Hash>>,
+    ) -> AnalysisProduct {
         let gcx = self.context;
         let diagnostics = gcx.dcx();
         let revision = diagnostics
@@ -493,7 +510,7 @@ impl Compiler<'_> {
             .unwrap_or(revision);
         diagnostics.enable_recording();
         let (result, syntax_diagnostics) = if recover_syntax {
-            self.analyze_recovering()
+            self.analyze_recovering(fingerprint)
         } else {
             (self.analyze(), Vec::new())
         };

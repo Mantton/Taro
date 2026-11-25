@@ -15,7 +15,7 @@ def read():
 
 
 def send(reply):
-    payload = json.dumps({"schema": 1, "data": reply}).encode()
+    payload = json.dumps({"schema": 2, "data": reply}).encode()
     sys.stdout.buffer.write(struct.pack(">I", len(payload)) + payload)
     sys.stdout.buffer.flush()
 
@@ -41,6 +41,10 @@ while message := read():
             sys.exit(17)
         if "force hang" in text:
             time.sleep(60)
+        if "reject update" in text:
+            time.sleep(0.08)
+            send({"Rejected": {"stamp": stamp, "error": "rejected test update"}})
+            continue
         if "delay reply" in text:
             time.sleep(0.08)
     product = {
@@ -56,4 +60,4 @@ while message := read():
             "code": None, "notes": [], "suggestion": None,
         }],
     }
-    send({"Finished": {"stamp": stamp, "result": {"Ok": product}}})
+    send({"Finished": {"stamp": stamp, "mode": "Package", "result": {"Ok": product}}})

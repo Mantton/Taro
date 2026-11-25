@@ -3,17 +3,22 @@
 use std::{
     collections::BTreeMap,
     fs::{self, File},
-    io,
+    io::{self, Read},
     path::{Path, PathBuf},
 };
 
 use compiler::{
-    compile::{frozen_dependencies::SEMANTIC_BUILD_ID, target_facts::TargetFacts},
+    compile::{
+        frozen_dependencies::{FrozenDependency, SEMANTIC_BUILD_ID},
+        target_facts::TargetFacts,
+    },
     constants::{MANIFEST_FILE, SOURCE_DIRECTORY},
 };
 use serde::{Deserialize, Serialize};
 
-const SCHEMA: u32 = 1;
+use crate::standard_library::{MAX_FROZEN_STD_BYTES, freeze, std_config};
+
+const SCHEMA: u32 = 2;
 const BUNDLE_FILE: &str = "bundle.toml";
 const STD_PATH: &str = "std";
 const TARGETS_PATH: &str = "targets";
@@ -25,7 +30,14 @@ struct Manifest {
     frontend: String,
     std_digest: String,
     default_target: String,
-    targets: BTreeMap<String, String>,
+    targets: BTreeMap<String, BundledTarget>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct BundledTarget {
+    descriptor: String,
+    std_snapshot: String,
 }
 
 pub struct Bundle {
@@ -57,9 +69,9 @@ impl Bundle {
                 format!("no analysis descriptor for target '{triple}'"),
             )
         })?;
-        let descriptor = self.root.join(TARGETS_PATH).join(target_file_name(triple)?);
+        let descriptor = self.target_path(triple, "toml")?;
         let text = fs::read_to_string(descriptor)?;
-        if blake3::hash(text.as_bytes()).to_hex().as_str() != expected {
+        if blake3::hash(text.as_bytes()).to_hex().as_str() != expected.descriptor {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "analysis target descriptor has changed",
@@ -80,7 +92,7 @@ impl Bundle {
     }
 
     pub fn verify_std_sources(&self) -> io::Result<PathBuf> {
-        let root = self.root.join(STD_PATH);
+        let root = std_path(&self.root);
         if std_digest(&root)?.as_str() != self.std_digest() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -89,27 +101,62 @@ impl Bundle {
         }
         Ok(root)
     }
+
+    pub(crate) fn frozen_std(&self, target: &TargetFacts) -> io::Result<FrozenDependency> {
+        let triple = target.triple();
+        let expected = self.manifest.targets.get(triple).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "target has no bundled std snapshot",
+            )
+        })?;
+        let path = self.target_path(triple, "std")?;
+        let max_file_size = MAX_FROZEN_STD_BYTES + 32;
+        let mut bytes = Vec::new();
+        File::open(path)?
+            .take((max_file_size + 1) as u64)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > max_file_size
+            || blake3::hash(&bytes).to_hex().as_str() != expected.std_snapshot
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "bad standard-library snapshot",
+            ));
+        }
+        FrozenDependency::from_relocatable_bytes(bytes)
+    }
+
+    fn target_path(&self, triple: &str, extension: &str) -> io::Result<PathBuf> {
+        Ok(self
+            .root
+            .join(TARGETS_PATH)
+            .join(target_file_name(triple, extension)?))
+    }
 }
 
-/// Create a fresh bundle containing only the source tree and target data. All
-/// descriptor paths supplied here are produced by the native target tool.
+pub(crate) fn std_path(bundle_root: &Path) -> PathBuf {
+    bundle_root.join(STD_PATH)
+}
+
+/// Create a fresh bundle with browseable sources and prechecked std metadata
+/// for each descriptor produced by the native target tool.
 pub fn create(output: &Path, std_source: &Path, descriptors: &[PathBuf]) -> io::Result<()> {
     let mut targets = BTreeMap::new();
-    let mut files = Vec::new();
+    let mut files = BTreeMap::new();
     let mut default_target = None;
     for path in descriptors {
         let source = fs::read_to_string(path)?;
         let target: TargetFacts = toml::from_str(&source).map_err(io::Error::other)?;
-        let file = target_file_name(target.triple())?;
-        let digest = blake3::hash(source.as_bytes()).to_hex().to_string();
-        if targets.insert(target.triple().to_owned(), digest).is_some() {
+        let triple = target.triple().to_owned();
+        target_file_name(&triple, "toml")?;
+        default_target.get_or_insert_with(|| triple.clone());
+        if files.insert(triple, (target, source)).is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "duplicate bundled target",
             ));
         }
-        default_target.get_or_insert_with(|| target.triple().to_owned());
-        files.push((file, source));
     }
     let default_target = default_target.ok_or_else(|| {
         io::Error::new(
@@ -122,7 +169,7 @@ pub fn create(output: &Path, std_source: &Path, descriptors: &[PathBuf]) -> io::
     fs::create_dir(output)?;
     // A failed assembly stays unpublished. The manifest is always written
     // last, after all source and descriptor files have arrived.
-    let lib = output.join(STD_PATH);
+    let lib = std_path(output);
     fs::create_dir(&lib)?;
     fs::copy(std_source.join(MANIFEST_FILE), lib.join(MANIFEST_FILE))?;
     copy_tree(
@@ -131,8 +178,22 @@ pub fn create(output: &Path, std_source: &Path, descriptors: &[PathBuf]) -> io::
     )?;
     let targets_root = output.join(TARGETS_PATH);
     fs::create_dir(&targets_root)?;
-    for (name, text) in files {
-        fs::write(targets_root.join(name), text)?;
+    let config = std_config(lib.canonicalize()?);
+    for (triple, (target, text)) in files {
+        let descriptor = blake3::hash(text.as_bytes()).to_hex().to_string();
+        let snapshot = freeze(&config, &target, || false)?;
+        let mut bytes = Vec::new();
+        snapshot.write_relocatable(&mut bytes)?;
+        let std_snapshot = blake3::hash(&bytes).to_hex().to_string();
+        fs::write(targets_root.join(target_file_name(&triple, "toml")?), text)?;
+        fs::write(targets_root.join(target_file_name(&triple, "std")?), bytes)?;
+        targets.insert(
+            triple,
+            BundledTarget {
+                descriptor,
+                std_snapshot,
+            },
+        );
     }
     if std_digest(&lib)? != std_hash {
         return Err(io::Error::new(
@@ -151,7 +212,7 @@ pub fn create(output: &Path, std_source: &Path, descriptors: &[PathBuf]) -> io::
     fs::write(output.join(BUNDLE_FILE), text)
 }
 
-fn target_file_name(triple: &str) -> io::Result<String> {
+fn target_file_name(triple: &str, extension: &str) -> io::Result<String> {
     if triple.is_empty()
         || !triple
             .bytes()
@@ -162,7 +223,7 @@ fn target_file_name(triple: &str) -> io::Result<String> {
             "invalid bundled target name",
         ));
     }
-    Ok(format!("{triple}.toml"))
+    Ok(format!("{triple}.{extension}"))
 }
 
 pub(crate) fn std_digest(root: &Path) -> io::Result<String> {

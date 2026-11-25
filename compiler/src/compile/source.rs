@@ -183,6 +183,15 @@ pub trait SourceProvider {
     fn read_directory(&self, path: &Path) -> io::Result<Vec<DirectoryEntry>>;
     fn read_file(&self, path: &Path) -> io::Result<FileContents>;
 
+    /// Embedded inputs may change outside the set of watched source files.
+    fn read_asset(&self, path: &Path) -> io::Result<FileContents> {
+        self.read_file(path)
+    }
+
+    fn digest_asset(&self, path: &Path) -> io::Result<blake3::Hash> {
+        Ok(blake3::hash(self.read_asset(path)?.as_bytes()))
+    }
+
     fn workspace_revision(&self) -> Option<u64> {
         None
     }
@@ -250,6 +259,10 @@ impl SourceProvider for DiskSources {
         io::copy(&mut file, &mut hash)?;
         Ok(hash.finalize())
     }
+
+    fn digest_asset(&self, path: &Path) -> io::Result<blake3::Hash> {
+        self.digest_file(path)
+    }
 }
 
 fn open_regular_file(path: &Path) -> io::Result<fs::File> {
@@ -280,6 +293,7 @@ pub struct WorkspaceSources {
     virtual_entries: BTreeMap<PathBuf, BTreeMap<PathBuf, EntryKind>>,
     paths: ReadCache<DiskPath>,
     source_reads: ReadCache<FileContents>,
+    asset_reads: ReadCache<FileContents>,
     directory_reads: ReadCache<Vec<DirectoryEntry>>,
 }
 
@@ -340,6 +354,7 @@ impl WorkspaceSources {
             virtual_entries,
             paths,
             source_reads: ReadCache::default(),
+            asset_reads: ReadCache::default(),
             directory_reads: ReadCache::default(),
         })
     }
@@ -371,13 +386,17 @@ impl WorkspaceSources {
             ));
         };
         *current = source;
-        self.single_file_edit = Some(SingleFileEdit {
+        // An asset is stable within a revision, but editor file watchers
+        // are scoped to source and manifests. A new edit may see new bytes.
+        let assets = self.asset_reads.get_mut();
+        self.single_file_edit = assets.is_empty().then(|| SingleFileEdit {
             previous: SourceVersion {
                 owner: self.owner,
                 revision: self.revision,
             },
             path,
         });
+        assets.clear();
         self.revision = revision;
         Ok(())
     }
@@ -447,6 +466,17 @@ impl SourceProvider for WorkspaceSources {
         }
         read_once(&self.source_reads, &canonical, || {
             DiskSources.read_file(&canonical)
+        })
+    }
+
+    fn read_asset(&self, path: &Path) -> io::Result<FileContents> {
+        read_once(&self.asset_reads, path, || {
+            let disk = resolve_disk_path(path)?;
+            match self.files.get(&disk.canonical) {
+                Some(FileOverlay::Contents(contents)) => Ok(contents.clone()),
+                Some(FileOverlay::Deleted) => Err(missing_file()),
+                None => DiskSources.read_file(&disk.canonical),
+            }
         })
     }
 }

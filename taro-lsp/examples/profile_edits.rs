@@ -142,18 +142,17 @@ fn iris(root: &Path, bundle: &Bundle) -> io::Result<serde_json::Value> {
     let project = Project::read(root, &*sources, true)?;
     let target = bundle.target(project.prefs.target.as_deref())?;
     let mut cache = StdCache::default();
-    let prepared = cache.prepare(
-        bundle,
-        &target,
-        project.prefs.std_digest.as_deref(),
-        sources.clone(),
-        || false,
-    )?;
+    let prepared = cache.prepare(bundle, &target, project.prefs.std_digest.as_deref(), || {
+        false
+    })?;
     let mut hydrate_ms = Vec::new();
     let mut analysis_ms = Vec::new();
     let mut semantic_ms = Vec::new();
+    let mut selected_body_ms = Vec::new();
+    let mut selected_body_fallback = None;
     let mut setup_ms = Vec::new();
     let mut result = None;
+    let position = Position { line, offset: 0 };
     for _ in 0..16 {
         let ((product, measured), setup, hydrate) =
             with_compiler(root, sources.clone(), &target, Some(prepared), |compiler| {
@@ -172,10 +171,20 @@ fn iris(root: &Path, bundle: &Bundle) -> io::Result<serde_json::Value> {
                 now.elapsed()
             })?;
         semantic_ms.push(millis(semantic));
+        let ((selected, duration), _, _) =
+            with_compiler(root, sources.clone(), &target, Some(prepared), |compiler| {
+                let now = Instant::now();
+                let result = compiler.check_body_owned(&path, position, None);
+                (result, now.elapsed())
+            })?;
+        match selected {
+            Ok(_) => selected_body_ms.push(millis(duration)),
+            Err(reason) => selected_body_fallback = Some(format!("{reason:?}")),
+        }
     }
     let result = result.unwrap();
     let (candidate, _, _) = with_compiler(root, sources, &target, Some(prepared), |compiler| {
-        compiler.prepare_closed_body_edit(&path, Position { line, offset: 0 }, &result)
+        compiler.prepare_closed_body_edit(&path, position, &result)
     })?;
     Ok(json!({
         "target": target.triple(),
@@ -184,6 +193,9 @@ fn iris(root: &Path, bundle: &Bundle) -> io::Result<serde_json::Value> {
         "hydrate_std_p95_ms": p95(&mut hydrate_ms),
         "semantic_check_p95_ms": p95(&mut semantic_ms),
         "package_analysis_p95_ms": p95(&mut analysis_ms),
+        "selected_body_samples": selected_body_ms.len(),
+        "selected_body_p95_ms": (!selected_body_ms.is_empty()).then(|| p95(&mut selected_body_ms)),
+        "selected_body_fallback": selected_body_fallback,
         "projection": candidate.err().map_or_else(|| "eligible".into(), |fallback| format!("{fallback:?}")),
     }))
 }

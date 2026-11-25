@@ -327,6 +327,7 @@ impl<'state> Compiler<'state> {
 
     fn analyze_recovering(
         &mut self,
+        mut fingerprint: Option<&mut Option<blake3::Hash>>,
     ) -> (
         CompileResult<(
             hir::Package,
@@ -345,7 +346,16 @@ impl<'state> Compiler<'state> {
             .iter()
             .any(|diagnostic| diagnostic.level == crate::diagnostics::DiagnosticLevel::Error);
         let result = parsed
-            .and_then(|package| self.lower_parsed_package(package, &mut timings, false))
+            .and_then(|mut package| {
+                self.filter_parsed_package(&mut package, &mut timings);
+                if check_entry
+                    && !dcx.has_error()
+                    && let Some(slot) = fingerprint.take()
+                {
+                    *slot = body_check::configured_package_fingerprint(self.context, &package).ok();
+                }
+                self.lower_configured_package(package, &mut timings, false)
+            })
             .and_then(|package| self.analyze_hir_with_timings(package, &mut timings, check_entry));
         (result, syntax_diagnostics)
     }

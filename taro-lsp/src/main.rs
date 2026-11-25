@@ -70,6 +70,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         };
         worker::run(environment)?;
     } else {
+        let installed_std = (flag == "--bundle").then(|| bundle::std_path(&source));
         let launch = supervisor::Launch {
             program: executable,
             arguments: vec![
@@ -78,7 +79,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 source.into_os_string(),
             ],
         };
-        server::run(launch)?;
+        server::run(launch, installed_std)?;
     }
     Ok(())
 }

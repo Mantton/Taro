@@ -1,6 +1,9 @@
 //! Immutable dependency data that can be reused by independent checks.
 
-use std::io;
+use std::{
+    io::{self, Write},
+    path::{Component, Path},
+};
 
 use crate::metadata::{self, LoadedMetadata, ReuseMode};
 
@@ -16,6 +19,7 @@ pub const SEMANTIC_BUILD_ID: &str = env!("TARO_COMPILER_ID");
 /// Callers bind the snapshot to the dependency inputs for their workspace
 /// revision and hydrate dependencies in topological order.
 pub struct FrozenDependency {
+    relocatable: bool,
     configuration: blake3::Hash,
     fingerprint: blake3::Hash,
     payload: Box<[u8]>,
@@ -25,23 +29,104 @@ impl Compiler<'_> {
     /// Check a dependency and freeze its semantic data, including the MIR
     /// needed to evaluate calls to imported constant functions.
     pub fn freeze_dependency(&mut self) -> io::Result<FrozenDependency> {
+        self.freeze_dependency_with_paths(false)
+    }
+
+    /// Freeze a standalone source library for a trusted, matching frontend
+    /// installation. The caller must bind the file to the exact source tree
+    /// and target descriptor before hydrating it.
+    pub fn freeze_relocatable_dependency(&mut self) -> io::Result<FrozenDependency> {
+        let config = self.context.config;
+        if config.is_script || !config.dependencies.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "relocatable snapshots require a standalone source package",
+            ));
+        }
+        self.freeze_dependency_with_paths(true)
+    }
+
+    fn freeze_dependency_with_paths(&mut self, relocatable: bool) -> io::Result<FrozenDependency> {
         self.check()
             .map_err(|_| io::Error::other("dependency check failed"))?;
-        let configuration = configuration_key(self.context)?;
-        let payload = metadata::build_payload_wire(self.context, ReuseMode::SemanticDependency)?;
+        let configuration = configuration_key(self.context, relocatable)?;
+        let mut payload =
+            metadata::build_payload_wire(self.context, ReuseMode::SemanticDependency)?;
+        if relocatable {
+            let root = self
+                .context
+                .dcx()
+                .sources()
+                .resolve(&self.context.config.src)?;
+            for entry in &mut payload.file_table {
+                let relative = Path::new(&entry.path)
+                    .strip_prefix(&root)
+                    .map_err(|_| invalid_path())?;
+                if !package_relative(relative) {
+                    return Err(invalid_path());
+                }
+                // Use the same separator in distributed bundles on every host.
+                entry.path = relative
+                    .components()
+                    .map(|part| part.as_os_str().to_str().ok_or_else(invalid_path))
+                    .collect::<io::Result<Vec<_>>>()?
+                    .join("/");
+            }
+            if !payload
+                .embedded_inputs
+                .keys()
+                .all(|path| package_relative(path))
+            {
+                return Err(invalid_path());
+            }
+        }
         let payload = bincode::serialize(&payload).map_err(io::Error::other)?;
-        let mut fingerprint = blake3::Hasher::new();
-        fingerprint.update(configuration.as_bytes());
-        fingerprint.update(&payload);
-        Ok(FrozenDependency {
+        Ok(FrozenDependency::new(
+            relocatable,
             configuration,
-            fingerprint: fingerprint.finalize(),
-            payload: payload.into_boxed_slice(),
-        })
+            payload.into_boxed_slice(),
+        ))
     }
 }
 
 impl FrozenDependency {
+    fn new(relocatable: bool, configuration: blake3::Hash, payload: Box<[u8]>) -> Self {
+        let mut fingerprint = blake3::Hasher::new();
+        fingerprint.update(configuration.as_bytes());
+        fingerprint.update(&payload);
+        Self {
+            relocatable,
+            configuration,
+            fingerprint: fingerprint.finalize(),
+            payload,
+        }
+    }
+
+    /// Write a relocatable snapshot for this exact semantic frontend build.
+    pub fn write_relocatable(&self, mut output: impl Write) -> io::Result<()> {
+        if !self.relocatable {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "snapshot is tied to its original source path",
+            ));
+        }
+        output.write_all(self.configuration.as_bytes())?;
+        output.write_all(&self.payload)
+    }
+
+    /// Load bytes verified by a trusted same-build bundle manifest.
+    pub fn from_relocatable_bytes(mut bytes: Vec<u8>) -> io::Result<Self> {
+        let (header, _) = bytes
+            .split_at_checked(32)
+            .filter(|(_, payload)| !payload.is_empty())
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "truncated dependency snapshot")
+            })?;
+        let configuration = blake3::Hash::from_bytes(header.try_into().unwrap());
+        bytes.drain(..32);
+        Ok(Self::new(true, configuration, bytes.into_boxed_slice()))
+    }
+
     /// Heap bytes retained for this snapshot's payload.
     pub fn retained_bytes(&self) -> usize {
         self.payload.len()
@@ -49,7 +134,7 @@ impl FrozenDependency {
 
     /// Load this dependency into the context for its package in a fresh check.
     pub fn hydrate(&self, gcx: Gcx<'_>) -> io::Result<()> {
-        if self.configuration != configuration_key(gcx)? {
+        if self.configuration != configuration_key(gcx, self.relocatable)? {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "frozen dependency configuration mismatch",
@@ -61,12 +146,31 @@ impl FrozenDependency {
                 "a package with this index is already loaded",
             ));
         }
-        let loaded = LoadedMetadata {
+        let mut loaded = LoadedMetadata {
             package_identifier: gcx.config.identifier.to_string(),
             package_index: gcx.package_index(),
             artifact: None,
             payload: bincode::deserialize(&self.payload).map_err(io::Error::other)?,
         };
+        if self.relocatable {
+            let root = gcx.dcx().sources().resolve(&gcx.config.src)?;
+            for entry in &mut loaded.payload.file_table {
+                let relative = Path::new(&entry.path);
+                if !package_relative(relative) {
+                    return Err(invalid_path());
+                }
+                let absolute = root.join(relative);
+                entry.path = absolute.to_str().ok_or_else(invalid_path)?.into();
+            }
+            if !loaded
+                .payload
+                .embedded_inputs
+                .keys()
+                .all(|path| package_relative(path))
+            {
+                return Err(invalid_path());
+            }
+        }
         super::assets::validate_inputs(
             gcx.config,
             gcx.dcx().sources(),
@@ -83,7 +187,21 @@ impl FrozenDependency {
     }
 }
 
-fn configuration_key(gcx: Gcx<'_>) -> io::Result<blake3::Hash> {
+fn package_relative(path: &Path) -> bool {
+    !path.as_os_str().is_empty()
+        && path
+            .components()
+            .all(|part| matches!(part, Component::Normal(_)))
+}
+
+fn invalid_path() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "snapshot path is outside the package",
+    )
+}
+
+fn configuration_key(gcx: Gcx<'_>, relocatable: bool) -> io::Result<blake3::Hash> {
     let config = gcx.config;
     let mut dependencies = config
         .dependencies
@@ -104,7 +222,7 @@ fn configuration_key(gcx: Gcx<'_>) -> io::Result<blake3::Hash> {
     let inputs = (
         &gcx.store.target_facts,
         config.identifier.as_str(),
-        config.src.as_os_str().as_encoded_bytes(),
+        (!relocatable).then(|| config.src.as_os_str().as_encoded_bytes()),
         config.index.raw(),
         dependencies,
         package_indices,

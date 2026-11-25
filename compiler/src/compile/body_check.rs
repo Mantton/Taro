@@ -42,6 +42,7 @@ pub enum RequiresFullCheck {
     DeferredPackageValidation,
     BodyCheckFailed,
     DifferentialMismatch,
+    DiagnosticsRequirePackageCheck,
 }
 
 struct CheckedBody {
@@ -66,6 +67,32 @@ impl Compiler<'_> {
     ) -> Result<BodyProduct, RequiresFullCheck> {
         self.check_body_recording(path, position, expected_fingerprint, false)
             .map(|checked| checked.product)
+    }
+
+    /// Check a body in an otherwise unchanged, clean package revision.
+    /// Refuse to merge any diagnostics. Ordinary import usage is resolved for
+    /// the entire package, so removing its last use can invalidate an import
+    /// outside the checked body. Interface imports require the full solver and
+    /// are rejected earlier by the body check.
+    pub fn recheck_clean_body_owned(
+        &mut self,
+        path: &Path,
+        position: Position,
+        expected_fingerprint: blake3::Hash,
+    ) -> Result<BodyProduct, RequiresFullCheck> {
+        let gcx = self.context;
+        let dcx = gcx.dcx();
+        dcx.enable_recording();
+        let selected = self.check_body(path, position, Some(expected_fingerprint), false);
+        if selected.is_ok() {
+            validate::unused_names::run(gcx);
+        }
+        let diagnostics = dcx.take_recorded_diagnostics();
+        let checked = selected?;
+        if !diagnostics.is_empty() {
+            return Err(RequiresFullCheck::DiagnosticsRequirePackageCheck);
+        }
+        Ok(checked.product)
     }
 
     /// Establish the first locally reusable body against a clean package
@@ -201,6 +228,9 @@ impl Compiler<'_> {
         super::entry::validate_entry_point(&package, gcx).map_err(|_| PackagePreparationFailed)?;
 
         let declaration = package.root.declarations.swap_remove(index);
+        if hir::walk_declaration(&mut NestedDeclaration, &declaration).is_break() {
+            return Err(UnsupportedDeclaration);
+        }
         let selected_package = hir::Package {
             root: hir::Module {
                 id: package.root.id,
@@ -226,6 +256,19 @@ impl Compiler<'_> {
             span,
             closed_revision,
         })
+    }
+}
+
+struct NestedDeclaration;
+
+impl HirVisitor for NestedDeclaration {
+    type Result = ControlFlow<()>;
+
+    fn visit_statement(&mut self, statement: &hir::Statement) -> Self::Result {
+        if matches!(&statement.kind, hir::StatementKind::Declaration(_)) {
+            return ControlFlow::Break(());
+        }
+        hir::walk_statement(self, statement)
     }
 }
 
@@ -283,6 +326,19 @@ pub(super) fn loaded_dependency_keys(
         frozen.insert(name.to_string(), *identity);
     }
     Ok(frozen)
+}
+
+pub(super) fn configured_package_fingerprint(
+    gcx: Gcx<'_>,
+    package: &crate::ast::Package,
+) -> Result<blake3::Hash, RequiresFullCheck> {
+    let summary = semantic_revision::summarize(gcx, package)
+        .map_err(|_| RequiresFullCheck::UnavailablePackageInputs)?;
+    fingerprint_with_loaded_dependencies(
+        gcx.config.identifier.as_str(),
+        summary,
+        &loaded_dependency_keys(gcx)?,
+    )
 }
 
 fn fingerprint_with_loaded_dependencies(

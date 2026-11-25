@@ -4,13 +4,20 @@ use std::{
     collections::BTreeMap,
     io::{self, Read, Write},
     path::PathBuf,
+    sync::Arc,
 };
 
 use compiler::compile::analysis_products::AnalysisProduct;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-const SCHEMA: u16 = 1;
+const SCHEMA: u16 = 2;
 const MAX_FRAME: usize = 128 * 1024 * 1024;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum AnalysisMode {
+    Package,
+    Body,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Stamp {
@@ -43,15 +50,22 @@ pub enum Inputs {
 pub enum FromWorker {
     Finished {
         stamp: Stamp,
-        result: Result<Box<AnalysisProduct>, String>,
+        mode: AnalysisMode,
+        result: Result<Arc<AnalysisProduct>, String>,
     },
     Cancelled(Stamp),
+    Rejected {
+        stamp: Stamp,
+        error: String,
+    },
 }
 
 impl FromWorker {
     pub fn stamp(&self) -> Stamp {
         match self {
-            Self::Finished { stamp, .. } | Self::Cancelled(stamp) => *stamp,
+            Self::Finished { stamp, .. }
+            | Self::Rejected { stamp, .. }
+            | Self::Cancelled(stamp) => *stamp,
         }
     }
 }
@@ -136,7 +150,7 @@ mod tests {
         .unwrap();
         let version = wrong
             .windows(10)
-            .position(|window| window == b"\"schema\":1")
+            .position(|window| window == b"\"schema\":2")
             .unwrap()
             + 9;
         wrong[version] = b'9';
