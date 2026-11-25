@@ -1795,6 +1795,12 @@ impl Actor<'_, '_> {
             ast::ExpressionKind::InferredMember { name } => {
                 hir::ExpressionKind::InferredMember { name }
             }
+            ast::ExpressionKind::MissingMember { target, insertion } => {
+                hir::ExpressionKind::MissingMember {
+                    target: self.lower_expression(target),
+                    insertion,
+                }
+            }
             ast::ExpressionKind::Member { target, name, .. } => {
                 match self
                     .resolutions
@@ -3383,7 +3389,8 @@ impl Actor<'_, '_> {
 
         match &expr.kind {
             ast::ExpressionKind::OptionalEvaluation(_) => None,
-            ast::ExpressionKind::Member { target, .. } => {
+            ast::ExpressionKind::Member { target, .. }
+            | ast::ExpressionKind::MissingMember { target, .. } => {
                 self.find_outer_optional_unwrap(target, skip_id)
             }
             ast::ExpressionKind::TupleAccess(target, _) => {

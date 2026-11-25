@@ -1,9 +1,9 @@
 //! Semantic values that can leave the compiler session.
 
-use std::path::PathBuf;
+use std::{collections::BTreeSet, path::PathBuf};
 
 use crate::{
-    diagnostics::DiagnosticLevel,
+    diagnostics::{Applicability, Diagnostic, DiagnosticLevel},
     hir::{self, DefinitionID, ExpressionKind, HirVisitor, Mutability},
     sema::{
         models::{
@@ -312,8 +312,49 @@ impl ConstantArgument {
 pub struct AnalysisProduct {
     pub revision: u64,
     pub complete: bool,
+    pub syntax_uncertainty: SyntaxUncertainty,
     pub occurrences: Vec<TypedOccurrence>,
+    pub missing_members: Vec<MissingMember>,
     pub diagnostics: Vec<AnalysisDiagnostic>,
+}
+
+/// Syntax damage that may conceal declaration boundaries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyntaxUncertainty {
+    None,
+    Files(Box<[PathBuf]>),
+    Package,
+}
+
+impl SyntaxUncertainty {
+    fn capture(gcx: Gcx<'_>, diagnostics: &[Diagnostic]) -> Self {
+        let mut files = BTreeSet::new();
+        for diagnostic in diagnostics {
+            if diagnostic.level != DiagnosticLevel::Error
+                || diagnostic.code == Some(crate::parse::MISSING_MEMBER_NAME_DIAGNOSTIC)
+            {
+                continue;
+            }
+            let Some(path) = diagnostic
+                .span
+                .and_then(|span| gcx.dcx().file_path(span.file))
+            else {
+                return Self::Package;
+            };
+            files.insert(path);
+        }
+        if files.is_empty() {
+            Self::None
+        } else {
+            Self::Files(files.into_iter().collect())
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingMember {
+    pub insertion: SourceRange,
+    pub receiver: TypeShape,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -328,12 +369,59 @@ pub struct AnalysisDiagnostic {
     pub source: Option<SourceRange>,
     pub level: DiagnosticLevel,
     pub message: String,
+    pub code: Option<usize>,
+    pub notes: Vec<AnalysisDiagnostic>,
+    pub suggestion: Option<AnalysisSuggestion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnalysisSuggestion {
+    pub source: SourceRange,
+    pub message: String,
+    pub replacement: String,
+    pub applicability: Applicability,
+}
+
+impl AnalysisDiagnostic {
+    fn capture(gcx: Gcx<'_>, diagnostic: Diagnostic) -> Self {
+        Self {
+            source: diagnostic
+                .span
+                .and_then(|span| SourceRange::capture(gcx, span)),
+            level: diagnostic.level,
+            message: diagnostic.message,
+            code: diagnostic.code,
+            notes: diagnostic
+                .children
+                .into_iter()
+                .map(|note| Self::capture(gcx, note))
+                .collect(),
+            suggestion: diagnostic.suggestion.and_then(|suggestion| {
+                Some(AnalysisSuggestion {
+                    source: SourceRange::capture(gcx, suggestion.span)?,
+                    message: suggestion.message,
+                    replacement: suggestion.replacement,
+                    applicability: suggestion.applicability,
+                })
+            }),
+        }
+    }
 }
 
 impl Compiler<'_> {
     /// Analyze one revision in a fresh scratch session and copy out its facts.
     /// The returned product can be delivered after the scratch session drops.
     pub fn analyze_owned(&mut self, revision: u64) -> AnalysisProduct {
+        self.capture_analysis(revision, false)
+    }
+
+    /// Recover syntax for editor requests. Semantic answers carry the damage
+    /// information needed to invalidate affected declarations conservatively.
+    pub fn analyze_partial_owned(&mut self, revision: u64) -> AnalysisProduct {
+        self.capture_analysis(revision, true)
+    }
+
+    fn capture_analysis(&mut self, revision: u64, recover_syntax: bool) -> AnalysisProduct {
         let gcx = self.context;
         let diagnostics = gcx.dcx();
         let revision = diagnostics
@@ -341,30 +429,38 @@ impl Compiler<'_> {
             .workspace_revision()
             .unwrap_or(revision);
         diagnostics.enable_recording();
-        let result = self.analyze();
+        let (result, syntax_diagnostics) = if recover_syntax {
+            self.analyze_recovering()
+        } else {
+            (self.analyze(), Vec::new())
+        };
+        let syntax_uncertainty = SyntaxUncertainty::capture(gcx, &syntax_diagnostics);
+        for diagnostic in syntax_diagnostics {
+            diagnostics.emit(diagnostic);
+        }
         let mut occurrences = Vec::new();
+        let mut missing_members = Vec::new();
         if let Ok((package, types)) = &result {
             hir::walk_package(
                 &mut OccurrenceCollector {
                     gcx,
                     types,
                     occurrences: &mut occurrences,
+                    missing_members: &mut missing_members,
                 },
                 package,
             );
         }
         AnalysisProduct {
             revision,
-            complete: result.is_ok(),
+            complete: result.is_ok() && !diagnostics.has_error(),
+            syntax_uncertainty,
             occurrences,
+            missing_members,
             diagnostics: diagnostics
                 .take_recorded_diagnostics()
                 .into_iter()
-                .map(|record| AnalysisDiagnostic {
-                    source: record.span.and_then(|span| SourceRange::capture(gcx, span)),
-                    level: record.level,
-                    message: record.message,
-                })
+                .map(|diagnostic| AnalysisDiagnostic::capture(gcx, diagnostic))
                 .collect(),
         }
     }
@@ -374,6 +470,7 @@ struct OccurrenceCollector<'result, 'ctx> {
     gcx: Gcx<'ctx>,
     types: &'result TypeCheckResults<'ctx>,
     occurrences: &'result mut Vec<TypedOccurrence>,
+    missing_members: &'result mut Vec<MissingMember>,
 }
 
 impl OccurrenceCollector<'_, '_> {
@@ -393,6 +490,20 @@ impl OccurrenceCollector<'_, '_> {
 
 impl HirVisitor for OccurrenceCollector<'_, '_> {
     fn visit_expression(&mut self, expression: &hir::Expression) {
+        if let ExpressionKind::MissingMember { target, insertion } = &expression.kind {
+            if let Some(receiver) = self.types.try_node_type(target.id)
+                && !receiver.is_error()
+                && !receiver.is_infer()
+                && let Some(insertion) = SourceRange::capture(self.gcx, *insertion)
+            {
+                self.missing_members.push(MissingMember {
+                    insertion,
+                    receiver: TypeShape::capture(self.gcx, receiver),
+                });
+            }
+            hir::walk_expression(self, expression);
+            return;
+        }
         let target = match &expression.kind {
             ExpressionKind::Call { callee, .. } => callee,
             _ => expression,
@@ -431,7 +542,9 @@ impl HirVisitor for OccurrenceCollector<'_, '_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AnalysisProduct, DiagnosticLevel, IntTy, OwnedConstant, TypeShape};
+    use super::{
+        AnalysisProduct, DiagnosticLevel, IntTy, OwnedConstant, SyntaxUncertainty, TypeShape,
+    };
     use crate::{
         compile::config::HarnessMode, hir::DeclarationKind, sema::models::ConstValue,
         test_support::with_source_compiler,
@@ -568,5 +681,257 @@ mod tests {
                     .as_ref()
                     .is_some_and(|source| source.path.ends_with("src/calls.tr"))
         }));
+    }
+
+    #[test]
+    fn incomplete_members_keep_receiver_types_and_sibling_answers() {
+        let damaged = "struct Board { value: int32 }\n\
+                       func edit(_ board: Board) -> int32 { board. }";
+        let sibling = "func helper() -> int32 { 1 }\nfunc caller() -> int32 { helper() }";
+        let check = |source: &str, partial| {
+            with_source_compiler(
+                &[("edit.tr", source), ("sibling.tr", sibling)],
+                false,
+                HarnessMode::None,
+                |compiler| {
+                    if partial {
+                        compiler.analyze_partial_owned(7)
+                    } else {
+                        compiler.analyze_owned(7)
+                    }
+                },
+            )
+        };
+
+        let result = check(damaged, true);
+        assert!(!result.complete);
+        assert_eq!(result.syntax_uncertainty, SyntaxUncertainty::None);
+        let [member] = result.missing_members.as_slice() else {
+            panic!("missing receiver facts: {:?}", result.diagnostics);
+        };
+        assert!(member.insertion.path.ends_with("src/edit.tr"));
+        assert_eq!(member.insertion.start.line, 1);
+        assert_eq!(member.insertion.start, member.insertion.end);
+        assert!(matches!(&member.receiver,
+            TypeShape::Nominal { declaration: Some(declaration), .. }
+                if declaration.name == "Board"));
+        assert!(result.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == Some(crate::parse::MISSING_MEMBER_NAME_DIAGNOSTIC)
+                && diagnostic.source.as_ref() == Some(&member.insertion)
+        }));
+        assert!(result.occurrences.iter().any(|occurrence| {
+            occurrence.source.path.ends_with("src/sibling.tr")
+                && occurrence
+                    .declaration
+                    .as_ref()
+                    .is_some_and(|declaration| declaration.name == "helper")
+        }));
+
+        let strict = check(damaged, false);
+        assert!(!strict.complete);
+        assert!(strict.occurrences.is_empty());
+        assert!(strict.missing_members.is_empty());
+        let repaired = check(&damaged.replace("board. ", "board.value "), true);
+        assert!(repaired.complete, "{:?}", repaired.diagnostics);
+        assert!(repaired.missing_members.is_empty());
+        assert!(repaired.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn incomplete_optional_members_keep_the_unwrapped_receiver_type() {
+        use crate::{
+            PackageIndex,
+            compile::Compiler,
+            hir::StdItem,
+            sema::std_items::{StdItemEntry, StdItemRegistry},
+            test_support::TempDir,
+        };
+        use std::fs;
+
+        let std_root = TempDir::new("optional-recovery");
+        fs::create_dir(std_root.join("src")).unwrap();
+        fs::write(
+            std_root.join("src/lib.tr"),
+            "public enum Optional[T] { case none, some(T) }",
+        )
+        .unwrap();
+
+        with_source_compiler(
+            &[(
+                "main.tr",
+                "struct Board { value: int32 }\n\
+                 func edit(_ board: Board?) -> int32? { board?. }",
+            )],
+            false,
+            HarnessMode::None,
+            |compiler| {
+                let gcx = compiler.context;
+                let mut config = gcx.config.clone();
+                config.src = std_root.to_path_buf();
+                config.index = PackageIndex::new(0);
+                config.identifier = "std".into();
+                let config = gcx.store.arenas.configs.alloc(config);
+                let mut std = Compiler::new(*gcx, config);
+                let (package, _) = std.analyze().unwrap_or_else(|_| {
+                    panic!(
+                        "optional fixture: {:?}",
+                        gcx.dcx().take_recorded_diagnostics()
+                    )
+                });
+                let declaration = &package.root.declarations[0];
+                let DeclarationKind::Enum(optional) = &declaration.kind else {
+                    panic!("expected an enum");
+                };
+                let none = &optional.variants[0];
+                let some = &optional.variants[1];
+                let entries = [
+                    (StdItem::Optional, declaration.id),
+                    (StdItem::OptionalNoneVariant, none.def_id),
+                    (StdItem::OptionalNoneCtor, none.ctor_def_id),
+                    (StdItem::OptionalSomeVariant, some.def_id),
+                    (StdItem::OptionalSomeCtor, some.ctor_def_id),
+                ];
+                let registry = StdItemRegistry::from_entries(entries.map(|(item, id)| {
+                    (
+                        item,
+                        StdItemEntry {
+                            def_id: id,
+                            def_kind: gcx.definition_kind(id),
+                            span: gcx.definition_ident(id).span,
+                        },
+                    )
+                }));
+                gcx.store.std_provider_index.set(Some(config.index));
+                gcx.store
+                    .std_items
+                    .borrow_mut()
+                    .replace((config.index, registry));
+
+                let result = compiler.analyze_partial_owned(1);
+                assert!(!result.complete);
+                let [member] = result.missing_members.as_slice() else {
+                    panic!("missing receiver facts: {:?}", result.diagnostics);
+                };
+                assert!(matches!(&member.receiver,
+                    TypeShape::Nominal { declaration: Some(declaration), .. }
+                        if declaration.name == "Board"));
+                assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+                assert_eq!(
+                    result.diagnostics[0].code,
+                    Some(crate::parse::MISSING_MEMBER_NAME_DIAGNOSTIC)
+                );
+            },
+        )
+    }
+
+    #[test]
+    fn syntax_damage_without_a_declaration_boundary_is_marked_uncertain() {
+        for damaged in ["this is not a declaration", "\"unterminated"] {
+            with_source_compiler(
+                &[
+                    ("bad.tr", damaged),
+                    ("healthy.tr", "func healthy() -> int32 { 42 }"),
+                ],
+                false,
+                HarnessMode::None,
+                |compiler| {
+                    let result = compiler.analyze_partial_owned(12);
+                    assert!(!result.complete);
+                    let SyntaxUncertainty::Files(files) = result.syntax_uncertainty else {
+                        panic!("expected uncertainty for bad.tr: {:?}", result.diagnostics);
+                    };
+                    assert_eq!(files.len(), 1);
+                    assert!(files[0].ends_with("src/bad.tr"));
+                    assert!(
+                        result.occurrences.iter().any(|occurrence| {
+                            occurrence.source.path.ends_with("src/healthy.tr")
+                                && occurrence.ty == TypeShape::Int(IntTy::I32)
+                        }),
+                        "{:?}",
+                        result.diagnostics
+                    );
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn an_incomplete_const_function_cannot_send_a_recovery_hole_to_mir() {
+        with_source_compiler(
+            &[(
+                "const.tr",
+                "const func broken(_ value: int32) -> int32 { value. }\n\
+                 const RESULT: int32 = broken(1)",
+            )],
+            false,
+            HarnessMode::None,
+            |compiler| {
+                let result = compiler.analyze_partial_owned(13);
+                assert!(!result.complete);
+                assert!(result.missing_members.is_empty());
+                assert!(matches!(
+                    result.syntax_uncertainty,
+                    SyntaxUncertainty::Files(_)
+                ));
+                assert!(
+                    result
+                        .diagnostics
+                        .iter()
+                        .any(|diagnostic| { diagnostic.message.contains("expected identifier") })
+                );
+            },
+        )
+    }
+
+    #[test]
+    fn exported_diagnostics_keep_notes_and_suggestions() {
+        use crate::diagnostics::{Applicability, Diagnostic, Suggestion};
+        use crate::span::{Position, Span};
+
+        with_source_compiler(
+            &[("source.tr", "func read() -> int32 { 42 }")],
+            false,
+            HarnessMode::None,
+            |compiler| {
+                let gcx = compiler.context;
+                let source = gcx.config.src.join("src/source.tr");
+                let file = gcx.dcx().add_file_mapping(source.clone());
+                let span = Span {
+                    file,
+                    start: Position { line: 0, offset: 5 },
+                    end: Position { line: 0, offset: 9 },
+                };
+                let mut diagnostic =
+                    Diagnostic::new("example warning".into(), Some(span), DiagnosticLevel::Warn);
+                diagnostic.code = Some(17);
+                diagnostic.children.push(Diagnostic::new(
+                    "name declared here".into(),
+                    Some(span),
+                    DiagnosticLevel::Info,
+                ));
+                diagnostic.suggestion = Some(Suggestion {
+                    message: "use a clearer name".into(),
+                    span,
+                    replacement: "readValue".into(),
+                    applicability: Applicability::MachineApplicable,
+                });
+                gcx.dcx().emit(diagnostic);
+
+                let result = compiler.analyze_partial_owned(14);
+                assert!(result.complete, "{:?}", result.diagnostics);
+                let [diagnostic] = result.diagnostics.as_slice() else {
+                    panic!("expected one warning");
+                };
+                assert_eq!(diagnostic.code, Some(17));
+                assert_eq!(diagnostic.level, DiagnosticLevel::Warn);
+                assert_eq!(diagnostic.notes[0].message, "name declared here");
+                assert_eq!(diagnostic.notes[0].source.as_ref().unwrap().path, source);
+                let suggestion = diagnostic.suggestion.as_ref().unwrap();
+                assert_eq!(suggestion.replacement, "readValue");
+                assert_eq!(suggestion.applicability, Applicability::MachineApplicable);
+                assert_eq!(suggestion.source.start, span.start);
+                assert_eq!(suggestion.source.end, span.end);
+            },
+        )
     }
 }

@@ -521,14 +521,11 @@ mod borrowed_callable_tests {
         assert!(errors.is_empty(), "{errors:?}");
     }
 
-    fn diagnostics(body: &str) -> Vec<crate::diagnostics::DiagnosticRecord> {
+    fn diagnostics(body: &str) -> Vec<crate::diagnostics::Diagnostic> {
         diagnostics_with_mir(body, false)
     }
 
-    fn diagnostics_with_mir(
-        body: &str,
-        build_mir: bool,
-    ) -> Vec<crate::diagnostics::DiagnosticRecord> {
+    fn diagnostics_with_mir(body: &str, build_mir: bool) -> Vec<crate::diagnostics::Diagnostic> {
         let source = format!(
             r#"
 interface Tuple {{}}
@@ -778,10 +775,7 @@ func main() { var x = apply(secret) }
 mod lazy_overload_tests {
     use crate::{hir::StdItem, test_support::analyze_language_item_script};
 
-    fn diagnostics_with_mir(
-        body: &str,
-        build_mir: bool,
-    ) -> Vec<crate::diagnostics::DiagnosticRecord> {
+    fn diagnostics_with_mir(body: &str, build_mir: bool) -> Vec<crate::diagnostics::Diagnostic> {
         let source = format!(
             r#"
 interface Tuple {{}}

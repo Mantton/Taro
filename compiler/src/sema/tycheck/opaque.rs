@@ -146,7 +146,7 @@ conform Second to Named {
 }
 "#;
 
-    fn diagnostics_for(body: &str) -> Vec<crate::diagnostics::DiagnosticRecord> {
+    fn diagnostics_for(body: &str) -> Vec<crate::diagnostics::Diagnostic> {
         analyze_script_diagnostics(&format!("{PRELUDE}\n{body}"))
     }
 

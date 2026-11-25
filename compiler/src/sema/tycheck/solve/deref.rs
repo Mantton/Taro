@@ -206,7 +206,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
 mod tests {
     use crate::{hir::StdItem, test_support::analyze_language_item_script};
     const INTERFACE: &str = "interface Deref { type Target; func deref() -> &Self::Target; }";
-    fn diagnostics(source: &str) -> Vec<crate::diagnostics::DiagnosticRecord> {
+    fn diagnostics(source: &str) -> Vec<crate::diagnostics::Diagnostic> {
         analyze_language_item_script(
             &format!("{INTERFACE}\n{source}"),
             true,

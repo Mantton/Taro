@@ -1328,6 +1328,12 @@ impl<'a, 'ctx> ComptimeCloner<'a, 'ctx> {
                 target: Box::new(self.clone_expression(target)),
                 name: *name,
             },
+            hir::ExpressionKind::MissingMember { target, insertion } => {
+                hir::ExpressionKind::MissingMember {
+                    target: Box::new(self.clone_expression(target)),
+                    insertion: *insertion,
+                }
+            }
             hir::ExpressionKind::MemberBrackets {
                 member,
                 type_arguments,

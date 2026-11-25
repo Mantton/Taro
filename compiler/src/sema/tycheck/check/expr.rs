@@ -81,6 +81,10 @@ impl<'ctx> Checker<'ctx> {
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         match &expression.kind {
+            hir::ExpressionKind::MissingMember { target, .. } => {
+                self.synth(target, cs);
+                self.gcx().types.error
+            }
             hir::ExpressionKind::MemberBrackets {
                 member,
                 type_arguments,
@@ -3271,6 +3275,12 @@ impl<'ctx> Checker<'ctx> {
                 optional
             }
         };
+
+        // The synthetic nil arm has no type to infer when the receiver's
+        // operation failed or contains an editor recovery hole.
+        if result_ty.is_error() {
+            return result_ty;
+        }
 
         if let Some(expectation) = expectation {
             cs.equal(result_ty, expectation, expression.span);

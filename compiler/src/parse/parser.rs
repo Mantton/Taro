@@ -16,10 +16,10 @@ use crate::{
         UseTreeKind, UseTreeNestedItem, UseTreePath, Variant, VariantKind, Visibility,
         VisibilityLevel,
     },
-    diagnostics::DiagCtx,
+    diagnostics::{DiagCtx, Diagnostic},
     error::ReportedError,
     interner::SessionInterner,
-    parse::{Base, lexer, token::Token},
+    parse::{Base, SyntaxMode, lexer, token::Token},
     span::{Position, Span, Spanned, Symbol},
 };
 use std::{cell::RefCell, fmt::Display, rc::Rc};
@@ -45,13 +45,17 @@ impl NodeTagger {
 /// `lint_warnings` enables the parser's advisory warnings for the package
 /// being compiled (see `ParserError::ContinuedLine`); dependencies parse
 /// without them.
-pub fn parse_package(
+pub(crate) fn parse_package(
     package: lexer::Pacakge,
     dcx: &DiagCtx,
     lint_warnings: bool,
+    mode: SyntaxMode,
 ) -> Result<ast::Package, ReportedError> {
     let next: NextNode = Default::default();
-    let options = ParseOptions { lint_warnings };
+    let options = ParseOptions {
+        lint_warnings,
+        mode,
+    };
     let root = parse_module(package.root, next, dcx, options, true)?;
     Ok(ast::Package { root })
 }
@@ -59,6 +63,7 @@ pub fn parse_package(
 #[derive(Clone, Copy)]
 struct ParseOptions {
     lint_warnings: bool,
+    mode: SyntaxMode,
 }
 
 fn parse_module(
@@ -84,8 +89,11 @@ fn parse_module(
         submodules.push(module);
     }
 
-    let module_decl =
-        pick_module_decl(&module.name, is_root, module_decls, dcx).map_err(|_| ReportedError)?;
+    let module_decl = match pick_module_decl(&module.name, is_root, module_decls, dcx) {
+        Ok(declaration) => declaration,
+        Err(_) if options.mode == SyntaxMode::Recover => None,
+        Err(error) => return Err(error),
+    };
 
     Ok(ast::Module {
         id: next.borrow_mut().next(),
@@ -158,23 +166,24 @@ fn parse_file(
     dcx.analysis_work.parsed_files.update(|count| count + 1);
     let id = file.id;
     let mut parser = Parser::new(file, next.clone(), dcx.symbols.clone());
+    parser.mode = options.mode;
     if options.lint_warnings {
         parser.enable_lint_warnings();
     }
-    let (declarations, module_decls, warnings) = match parser.parse() {
-        Ok(items) => items,
-        Err((errors, warnings)) => {
-            for warning in warnings {
-                dcx.emit_warning(warning.value.to_string(), Some(warning.span));
-            }
-            for err in errors {
-                dcx.emit_error(err.value.to_string(), Some(err.span));
-            }
-            return Err(ReportedError);
-        }
-    };
-    for warning in warnings {
+    let (declarations, module_decls) = parser.parse_module_declarations();
+    for warning in parser.warnings {
         dcx.emit_warning(warning.value.to_string(), Some(warning.span));
+    }
+    let has_error = !parser.errors.is_empty();
+    for error in parser.errors {
+        let mut diagnostic = Diagnostic::error(error.value.to_string(), Some(error.span));
+        if matches!(error.value, ParserError::ExpectedMemberName) {
+            diagnostic.code = Some(crate::parse::MISSING_MEMBER_NAME_DIAGNOSTIC);
+        }
+        dcx.emit(diagnostic);
+    }
+    if has_error && options.mode == SyntaxMode::Strict {
+        return Err(ReportedError);
     }
 
     Ok((ast::File { id, declarations }, module_decls))
@@ -193,6 +202,8 @@ struct ParserCheckpoint {
 
 struct Parser {
     symbols: Rc<SessionInterner>,
+    mode: SyntaxMode,
+    recover_members: bool,
     file: lexer::File,
     cursor: usize,
     restrictions: Restrictions,
@@ -211,6 +222,8 @@ impl Parser {
     fn new(file: lexer::File, next: NextNode, symbols: Rc<SessionInterner>) -> Parser {
         Parser {
             symbols,
+            mode: SyntaxMode::Strict,
+            recover_members: false,
             file,
             cursor: 0,
             restrictions: Restrictions::empty(),
@@ -267,20 +280,18 @@ impl Parser {
 }
 
 impl Parser {
+    #[cfg(test)]
     fn parse(
         mut self,
     ) -> Result<
         (Vec<Declaration>, Vec<ModuleDecl>, Vec<Spanned<ParserError>>),
         (Vec<Spanned<ParserError>>, Vec<Spanned<ParserError>>),
     > {
-        let result = self.parse_module_declarations();
-        match result {
-            Ok(_) if !self.errors.is_empty() => Err((self.errors, self.warnings)),
-            Ok((declarations, module_decls)) => Ok((declarations, module_decls, self.warnings)),
-            Err(error) => {
-                self.errors.push(error);
-                Err((self.errors, self.warnings))
-            }
+        let (declarations, module_decls) = self.parse_module_declarations();
+        if self.errors.is_empty() {
+            Ok((declarations, module_decls, self.warnings))
+        } else {
+            Err((self.errors, self.warnings))
         }
     }
 }
@@ -625,7 +636,7 @@ impl Parser {
         }
     }
 
-    fn parse_module_declarations(&mut self) -> R<(Vec<Declaration>, Vec<ModuleDecl>)> {
+    fn parse_module_declarations(&mut self) -> (Vec<Declaration>, Vec<ModuleDecl>) {
         let mut items = vec![];
         let mut module_decls = vec![];
         loop {
@@ -653,7 +664,7 @@ impl Parser {
             }
         }
 
-        return Ok((items, module_decls));
+        (items, module_decls)
     }
 
     fn parse_top_level_item(&mut self) -> R<Option<TopLevelItem>> {
@@ -945,7 +956,7 @@ impl Parser {
             visibility
         };
         let kind = {
-            let mut function = self.parse_fn(FnParseMode { req_body: true }, false)?;
+            let mut function = self.parse_fn(FnParseMode { req_body: true }, false, false)?;
             if function.is_async {
                 self.emit_error(
                     ParserError::InvalidInitializerSignature,
@@ -1251,11 +1262,7 @@ impl Parser {
             return Err(self.err_at_current(ParserError::UnsafeModifierRequiresFunction));
         }
 
-        let (ident, mut kind) = self.parse_function(mode, is_unsafe)?;
-        if is_const && let DeclarationKind::Function(func) = &mut kind {
-            func.is_const = true;
-        }
-        Ok((ident, kind))
+        self.parse_function(mode, is_unsafe, is_const)
     }
 
     fn parse_extern_declaration(&mut self) -> R<(Identifier, DeclarationKind)> {
@@ -3942,9 +3949,20 @@ impl Parser {
     }
 
     fn parse_anon_const(&mut self) -> R<AnonConst> {
-        let value = self.parse_expression()?;
+        let value = self.with_member_recovery(false, Self::parse_expression)?;
         let a = AnonConst { value };
         Ok(a)
+    }
+
+    fn with_member_recovery<T>(
+        &mut self,
+        enabled: bool,
+        parse: impl FnOnce(&mut Self) -> R<T>,
+    ) -> R<T> {
+        let previous = std::mem::replace(&mut self.recover_members, enabled);
+        let result = parse(self);
+        self.recover_members = previous;
+        result
     }
 }
 
@@ -4583,9 +4601,25 @@ impl Parser {
 
                 // field access: `foo.<ident>`
                 let lo = expr.span;
+                let operator = self.previous().expect("member operator").span;
+                let name = match self.parse_member_identifier() {
+                    Ok(name) => name,
+                    Err(_) if !qualified && self.recover_members => {
+                        let insertion = Span {
+                            file: operator.file,
+                            start: operator.end,
+                            end: operator.end,
+                        };
+                        self.emit_error(ParserError::ExpectedMemberName, insertion);
+                        let kind = ExpressionKind::MissingMember { target: expr, insertion };
+                        expr = self.build_expr(kind, lo.to(operator));
+                        break;
+                    }
+                    Err(error) => return Err(error),
+                };
                 let kind = ExpressionKind::Member {
                     target: expr,
-                    name: self.parse_member_identifier()?,
+                    name,
                     qualified,
                 };
                 let span = lo.to(self.hi_span());
@@ -5837,15 +5871,16 @@ impl Parser {
         &mut self,
         mode: FnParseMode,
         is_unsafe: bool,
+        is_const: bool,
     ) -> R<(Identifier, DeclarationKind)> {
         // func <name> <type_parameters>? (<parameter list>) <async?> -> <return_type>? <where_clause>?
         self.expect(Token::Function)?;
         let identifier = self.parse_identifier()?;
-        let func = self.parse_fn(mode, is_unsafe)?;
+        let func = self.parse_fn(mode, is_unsafe, is_const)?;
         Ok((identifier, DeclarationKind::Function(func)))
     }
 
-    fn parse_fn(&mut self, mode: FnParseMode, is_unsafe: bool) -> R<Function> {
+    fn parse_fn(&mut self, mode: FnParseMode, is_unsafe: bool, is_const: bool) -> R<Function> {
         let lo = self.lo_span();
         let mut type_parameters = self.parse_type_parameters()?;
         let mut parameters = self.parse_function_parameters()?;
@@ -5883,7 +5918,10 @@ impl Parser {
         };
 
         let block = if self.matches(Token::LBrace) {
-            Some(self.parse_block()?)
+            // Compile-time bodies and anonymous consts can reach MIR during
+            // semantic analysis. Member recovery holes stay in runtime bodies.
+            let recover = self.mode == SyntaxMode::Recover && !is_const;
+            Some(self.with_member_recovery(recover, Self::parse_block)?)
         } else {
             if mode.req_body {
                 self.emit_error(
@@ -5904,7 +5942,7 @@ impl Parser {
             block,
             generics,
             is_unsafe,
-            is_const: false,
+            is_const,
             is_async,
             is_final: false,
             is_override: false,
@@ -6781,6 +6819,7 @@ pub(crate) enum ParserError {    Expected(Token, Token),
         found: Token,
     },
     ExpectedIdentifier,
+    ExpectedMemberName,
     UnknownDirective(ecow::EcoString),
     ExpectedAssetPath,
     ExpectedSemiColon,
@@ -6890,6 +6929,7 @@ impl Display for ParserError {
                 write!(f, "expected `{separator}` or `{close}`, found `{found}`")
             }
             ExpectedIdentifier => f.write_str("expected identifier"),
+            ExpectedMemberName => f.write_str("expected member name"),
             ExpectedAssetPath => f.write_str("expected a string literal for the embedded asset path"),
             UnknownDirective(name) => write!(f, "unknown compiler directive #{name}"),
             ExpectedSemiColon => f.write_str("expected ';'"),
@@ -11225,9 +11265,7 @@ mod tests {
 
     fn parse_decls_with_recovery(input: &str) -> (Vec<Declaration>, Vec<Spanned<ParserError>>) {
         let mut parser = parser(input);
-        let (decls, _module_decls) = parser
-            .parse_module_declarations()
-            .expect("recoverable declarations");
+        let (decls, _module_decls) = parser.parse_module_declarations();
         (decls, parser.errors)
     }
 

@@ -272,7 +272,7 @@ impl<'ctx> HirVisitor for Actor<'ctx, '_> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{diagnostics::DiagnosticRecord, hir::StdItem};
+    use crate::{diagnostics::Diagnostic, hir::StdItem};
 
     const PRELUDE: &str = r#"
 enum Result[T, E] {
@@ -292,7 +292,7 @@ extend Probe {
 }
 "#;
 
-    fn diagnostics(body: &str) -> Vec<DiagnosticRecord> {
+    fn diagnostics(body: &str) -> Vec<Diagnostic> {
         crate::test_support::with_lint_warnings(|| {
             crate::test_support::analyze_language_item_script(
                 &format!("{PRELUDE}{body}"),
@@ -302,7 +302,7 @@ extend Probe {
         })
     }
 
-    fn unused(diagnostics: &[DiagnosticRecord]) -> usize {
+    fn unused(diagnostics: &[Diagnostic]) -> usize {
         diagnostics
             .iter()
             .filter(|diagnostic| diagnostic.message.starts_with("unused 'Result["))

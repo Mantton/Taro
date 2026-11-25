@@ -3866,7 +3866,9 @@ impl<'ctx> FunctionLower<'ctx> {
                     value: ConstantKind::String(symbol),
                 })
             }
-            hir::ExpressionKind::Discard | hir::ExpressionKind::Malformed => {
+            hir::ExpressionKind::Discard
+            | hir::ExpressionKind::Malformed
+            | hir::ExpressionKind::MissingMember { .. } => {
                 unreachable!("malformed expression should not reach THIR lowering");
             }
         };

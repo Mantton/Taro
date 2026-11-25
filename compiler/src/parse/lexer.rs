@@ -4,7 +4,10 @@ use crate::{
     constants::{FILE_EXTENSION, ROOT_MODULE_NAME, SOURCE_DIRECTORY},
     diagnostics::DiagCtx,
     error::ReportedError,
-    parse::token::{Base, IntegerTypeSuffix, Token},
+    parse::{
+        SyntaxMode,
+        token::{Base, IntegerTypeSuffix, Token},
+    },
     span::{FileID, Position, Span, Spanned},
 };
 use std::{ffi::OsStr, path::PathBuf};
@@ -24,13 +27,14 @@ pub struct File {
     pub tokens: Vec<Spanned<Token>>,
 }
 
-pub fn tokenize_package(
+pub(crate) fn tokenize_package(
     path: PathBuf,
     dcx: &DiagCtx,
     target_triple: Option<&str>,
+    mode: SyntaxMode,
 ) -> Result<Pacakge, ReportedError> {
     let source = path.join(SOURCE_DIRECTORY);
-    let mut root = tokenize_module(source, dcx, target_triple)?;
+    let mut root = tokenize_module(source, dcx, target_triple, mode)?;
     root.name = ROOT_MODULE_NAME.into();
 
     Ok(Pacakge { root })
@@ -38,10 +42,11 @@ pub fn tokenize_package(
 
 /// Tokenize a single source file as a virtual package.
 /// The file becomes the root module with name "main".
-pub fn tokenize_single_file(
+pub(crate) fn tokenize_single_file(
     path: PathBuf,
     dcx: &DiagCtx,
     target_triple: Option<&str>,
+    mode: SyntaxMode,
 ) -> Result<Pacakge, ReportedError> {
     let file_path = match dcx.sources().resolve(&path) {
         Ok(path) => path,
@@ -71,7 +76,7 @@ pub fn tokenize_single_file(
     }
 
     let id = dcx.add_file_mapping(file_path.clone());
-    let file = match tokenize_file(id, file_path.clone(), dcx, target_triple) {
+    let file = match tokenize_file(id, file_path.clone(), dcx, target_triple, mode) {
         Ok(file) => file,
         Err(_) => {
             return Err(ReportedError);
@@ -87,10 +92,11 @@ pub fn tokenize_single_file(
     Ok(Pacakge { root })
 }
 
-pub fn tokenize_module(
+fn tokenize_module(
     path: PathBuf,
     dcx: &DiagCtx,
     target_triple: Option<&str>,
+    mode: SyntaxMode,
 ) -> Result<Module, ReportedError> {
     let directory = match dcx.sources().resolve(&path) {
         Ok(path) => path,
@@ -139,9 +145,9 @@ pub fn tokenize_module(
                     continue;
                 }
                 let id = dcx.add_file_mapping(path.clone());
-                files.push(tokenize_file(id, path, dcx, target_triple)?);
+                files.push(tokenize_file(id, path, dcx, target_triple, mode)?);
             }
-            EntryKind::Directory => submodules.push(tokenize_module(path, dcx, target_triple)?),
+            EntryKind::Directory => submodules.push(tokenize_module(path, dcx, target_triple, mode)?),
         }
     }
 
@@ -152,17 +158,22 @@ pub fn tokenize_module(
     })
 }
 
-pub fn tokenize_file(
+fn tokenize_file(
     file: FileID,
     path: PathBuf,
     dcx: &DiagCtx,
     target_triple: Option<&str>,
+    mode: SyntaxMode,
 ) -> Result<File, ReportedError> {
     let source = match dcx.sources().read_text(&path) {
         Ok(source) => source,
         Err(e) => {
             let message = format!("failed to read file '{}': {}", path.display(), e);
-            dcx.emit_error(message.clone(), None);
+            if mode == SyntaxMode::Recover {
+                dcx.emit_error(message, Some(Span::empty(file)));
+                return Ok(empty_file(file));
+            }
+            dcx.emit_error(message, None);
             return Err(ReportedError);
         }
     };
@@ -171,10 +182,7 @@ pub fn tokenize_file(
     if let Some(triple) = target_triple {
         if !cfg::evaluate_file_cfg(source.text(), triple) {
             // File is excluded by cfg - return empty file with just EOF
-            return Ok(File {
-                id: file,
-                tokens: vec![Spanned::new(Token::EOF, Span::empty(file))],
-            });
+            return Ok(empty_file(file));
         }
     }
 
@@ -185,8 +193,18 @@ pub fn tokenize_file(
         Err(err) => {
             let message = format!("lexer error: {}", err.value);
             dcx.emit_error(message, Some(err.span));
+            if mode == SyntaxMode::Recover {
+                return Ok(empty_file(file));
+            }
             Err(ReportedError)
         }
+    }
+}
+
+fn empty_file(id: FileID) -> File {
+    File {
+        id,
+        tokens: vec![Spanned::new(Token::EOF, Span::empty(id))],
     }
 }
 

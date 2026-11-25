@@ -245,7 +245,7 @@ fn g30_equal_boxings_stay_ambiguous() {
     );
 }
 
-fn analyze_optional_script(source: &str) -> Vec<crate::diagnostics::DiagnosticRecord> {
+fn analyze_optional_script(source: &str) -> Vec<crate::diagnostics::Diagnostic> {
     crate::test_support::analyze_language_item_script(
         source,
         false,

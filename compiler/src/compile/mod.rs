@@ -4,6 +4,7 @@ use crate::{
         config::Config,
         context::{CompilerContext, GlobalContext},
     },
+    diagnostics::Diagnostic,
     error::CompileResult,
     hir, mir, parse, sema, thir,
 };
@@ -13,6 +14,7 @@ use crate::{
     compile::config::ModuleArtifactKind,
     specialize,
 };
+use parse::SyntaxMode;
 use std::time::{Duration, Instant};
 
 pub(crate) mod allocation_report;
@@ -315,7 +317,43 @@ impl<'state> Compiler<'state> {
         sema::tycheck::results::TypeCheckResults<'state>,
     )> {
         let package = self.lower_to_hir_with_timings(timings, false)?;
+        self.analyze_hir_with_timings(package, timings, true)
+    }
 
+    fn analyze_recovering(
+        &mut self,
+    ) -> (
+        CompileResult<(
+            hir::Package,
+            sema::tycheck::results::TypeCheckResults<'state>,
+        )>,
+        Vec<Diagnostic>,
+    ) {
+        let dcx = self.context.dcx();
+        let mut timings = TimingReport::default();
+        // Recoverable syntax diagnostics are published after the semantic
+        // pipeline. Its existing error gates still apply to semantic failures.
+        let (parsed, syntax_diagnostics) = dcx.with_deferred_diagnostics(|| {
+            self.parse_source_package(&mut timings, SyntaxMode::Recover)
+        });
+        let check_entry = !syntax_diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.level == crate::diagnostics::DiagnosticLevel::Error);
+        let result = parsed
+            .and_then(|package| self.lower_parsed_package(package, &mut timings, false))
+            .and_then(|package| self.analyze_hir_with_timings(package, &mut timings, check_entry));
+        (result, syntax_diagnostics)
+    }
+
+    fn analyze_hir_with_timings(
+        &mut self,
+        package: hir::Package,
+        timings: &mut TimingReport,
+        check_entry: bool,
+    ) -> CompileResult<(
+        hir::Package,
+        sema::tycheck::results::TypeCheckResults<'state>,
+    )> {
         self.context.dcx().ok()?;
 
         let phase_started_at = Instant::now();
@@ -335,7 +373,7 @@ impl<'state> Compiler<'state> {
         sema::validate::validate_post_typecheck(&package, self.context, &results)?;
         timings.push_elapsed("sema.validate_post", phase_started_at);
 
-        if !self.context.config.harness_mode.is_enabled() {
+        if check_entry && !self.context.config.harness_mode.is_enabled() {
             let phase_started_at = Instant::now();
             let _ = entry::validate_entry_point(&package, self.context)?;
             timings.push_elapsed("entry.validate", phase_started_at);
@@ -518,6 +556,15 @@ impl<'state> Compiler<'state> {
         timings: &mut TimingReport,
         tolerate_std_item_errors: bool,
     ) -> CompileResult<hir::Package> {
+        let package = self.parse_source_package(timings, SyntaxMode::Strict)?;
+        self.lower_parsed_package(package, timings, tolerate_std_item_errors)
+    }
+
+    fn parse_source_package(
+        &self,
+        timings: &mut TimingReport,
+        mode: SyntaxMode,
+    ) -> CompileResult<crate::ast::Package> {
         self.context
             .store
             .embedded_inputs
@@ -556,26 +603,36 @@ impl<'state> Compiler<'state> {
                 self.context.config.src.clone(),
                 &self.context.dcx,
                 Some(triple),
+                mode,
             )?
         } else {
             parse::lexer::tokenize_package(
                 self.context.config.src.clone(),
                 &self.context.dcx,
                 Some(triple),
+                mode,
             )?
         };
         timings.push_elapsed("parse.tokenize", phase_started_at);
 
-        let target = cfg_eval::target_info(self.context);
-
         let phase_started_at = Instant::now();
-        let mut package = parse::parser::parse_package(
+        let package = parse::parser::parse_package(
             package,
             &self.context.dcx,
             self.context.config.lint_warnings,
+            mode,
         )?;
         timings.push_elapsed("parse.ast", phase_started_at);
+        Ok(package)
+    }
 
+    fn lower_parsed_package(
+        &mut self,
+        mut package: crate::ast::Package,
+        timings: &mut TimingReport,
+        tolerate_std_item_errors: bool,
+    ) -> CompileResult<hir::Package> {
+        let target = cfg_eval::target_info(self.context);
         // AST passes
         let phase_started_at = Instant::now();
         cfg_eval::filter_package(&mut package, &target, self.context);

@@ -298,12 +298,12 @@ fn class_handle_layout_is_valid(
 mod tests {
     use super::*;
     use crate::{
-        diagnostics::DiagnosticRecord,
+        diagnostics::Diagnostic,
         hir::DeclarationKind,
         test_support::{analyze_script, analyze_script_diagnostics},
     };
 
-    fn has_error_message(diagnostics: &[DiagnosticRecord], needle: &str) -> bool {
+    fn has_error_message(diagnostics: &[Diagnostic], needle: &str) -> bool {
         diagnostics.iter().any(|diag| diag.message.contains(needle))
     }
 

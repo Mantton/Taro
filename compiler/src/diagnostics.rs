@@ -231,11 +231,7 @@ impl DiagCtx {
 
         let recording = self.inner.borrow().recording;
         if recording {
-            self.inner.borrow_mut().recorded.push(DiagnosticRecord {
-                message: diagnostic.message.clone(),
-                span: diagnostic.span,
-                level: diagnostic.level,
-            });
+            self.inner.borrow_mut().recorded.push(diagnostic);
         } else {
             if let Some(message) = self.format(&diagnostic, false) {
                 eprintln!("{}", message);
@@ -382,7 +378,7 @@ struct DiagCtxInner {
     file_content_mappings: FxHashMap<FileID, Arc<SourceText>>,
     emitted_diagnostic_keys: FxHashSet<String>,
     recording: bool,
-    recorded: Vec<DiagnosticRecord>,
+    recorded: Vec<Diagnostic>,
     deferred: Vec<Vec<Diagnostic>>,
     /// Every warning emitted, in order, so a package's warnings can be stored
     /// with its cached metadata and replayed when the cache is reused.
@@ -469,19 +465,12 @@ impl std::fmt::Display for DiagnosticLevel {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct DiagnosticRecord {
-    pub message: String,
-    pub span: Option<Span>,
-    pub level: DiagnosticLevel,
-}
-
 impl DiagCtx {
     pub fn enable_recording(&self) {
         self.inner.borrow_mut().recording = true;
     }
 
-    pub fn take_recorded_diagnostics(&self) -> Vec<DiagnosticRecord> {
+    pub fn take_recorded_diagnostics(&self) -> Vec<Diagnostic> {
         std::mem::take(&mut self.inner.borrow_mut().recorded)
     }
 }

@@ -69,7 +69,7 @@ mod tests {
     const TYPES: &str = "struct Span[T] {}\nstruct List[T] {}\n";
     const ITEMS: &[(StdItem, &str)] = &[(StdItem::Span, "Span"), (StdItem::List, "List")];
 
-    fn errors(source: &str) -> Vec<crate::diagnostics::DiagnosticRecord> {
+    fn errors(source: &str) -> Vec<crate::diagnostics::Diagnostic> {
         analyze_language_item_script(&format!("{TYPES}{source}"), false, ITEMS)
     }
 

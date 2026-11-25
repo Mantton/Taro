@@ -1,6 +1,6 @@
 use crate::{hir::StdItem, test_support::analyze_language_item_script};
 
-fn diagnostics(body: &str, mir: bool) -> Vec<crate::diagnostics::DiagnosticRecord> {
+fn diagnostics(body: &str, mir: bool) -> Vec<crate::diagnostics::Diagnostic> {
     analyze_language_item_script(
         &format!(
             r#"

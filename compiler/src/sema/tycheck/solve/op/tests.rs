@@ -1,9 +1,9 @@
-use crate::{diagnostics::DiagnosticRecord, hir::StdItem};
+use crate::{diagnostics::Diagnostic, hir::StdItem};
 
 const INTERFACES: &str = "interface Add[Rhs=Self] { type Output = Self; func add(_ rhs: Rhs) -> Self::Output; }\ninterface AddAssign[Rhs=Self] { func addAssign(_ rhs: Rhs); }\n";
 const COUNTER: &str = "struct Counter { value: int32 }\nconform Counter to Add { func add(_ rhs: Self) -> Self { Counter { value: self.value + rhs.value } }\n}\nconform &Counter to AddAssign[Counter] { func addAssign(_ rhs: Counter) { self.value += rhs.value }\n}\n";
 
-fn diagnostics(body: &str) -> Vec<DiagnosticRecord> {
+fn diagnostics(body: &str) -> Vec<Diagnostic> {
     crate::test_support::analyze_language_item_script(
         &format!("{INTERFACES}{COUNTER}{body}"),
         true,

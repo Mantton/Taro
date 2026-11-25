@@ -1072,7 +1072,8 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
             hir::ExpressionKind::Path(path) => {
                 self.maybe_capture(path);
             }
-            hir::ExpressionKind::Member { target, .. } => {
+            hir::ExpressionKind::Member { target, .. }
+            | hir::ExpressionKind::MissingMember { target, .. } => {
                 self.collect_expr(target);
             }
             hir::ExpressionKind::Index { target, index, .. } => {
@@ -1214,8 +1215,6 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
     fn collect_pattern_bindings(&mut self, pattern: &hir::Pattern) {
         pattern.for_each_binding(&mut |id, _| { self.local_decls.insert(id); });
     }
-
-
 }
 
 fn closure_self_ty<'ctx>(_gcx: Gcx<'ctx>, closure_ty: Ty<'ctx>, _kind: ClosureKind) -> Ty<'ctx> {

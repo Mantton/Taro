@@ -1,4 +1,4 @@
-use crate::{diagnostics::DiagnosticRecord, hir::StdItem};
+use crate::{diagnostics::Diagnostic, hir::StdItem};
 
 const TYPES: &str = r#"
 interface Access[I] { type Element; subscript(key: I) -> Self::Element { address } }
@@ -12,7 +12,7 @@ conform &Cell to Access[int32] {
     subscript(key: int32) -> Item { address { &self.item } }
 }
 "#;
-fn diagnostics(body: &str) -> Vec<DiagnosticRecord> {
+fn diagnostics(body: &str) -> Vec<Diagnostic> {
     let main = if body.contains("func main(") {
         ""
     } else {

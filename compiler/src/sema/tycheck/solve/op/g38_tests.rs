@@ -1,8 +1,8 @@
 //! Operators select their language interface with ordinary receiver/value rules.
-use crate::{diagnostics::DiagnosticRecord, hir::StdItem};
+use crate::{diagnostics::Diagnostic, hir::StdItem};
 
 const INTERFACES: &str = "interface Add[Rhs = Self] { type Output = Self; func add(_ rhs: Rhs) -> Self::Output; }\ninterface AddAssign[Rhs = Self] { func addAssign(_ rhs: Rhs); }\ninterface Neg { type Output = Self; func neg() -> Self::Output; }\n";
-fn diagnostics(source: &str) -> Vec<DiagnosticRecord> {
+fn diagnostics(source: &str) -> Vec<Diagnostic> {
     crate::test_support::analyze_language_item_script(
         &format!("{INTERFACES}{source}"),
         false,

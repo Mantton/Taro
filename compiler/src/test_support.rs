@@ -6,7 +6,7 @@ use crate::{
         context::{CompilerArenas, CompilerContext, CompilerStore, Gcx},
         source::SourceProvider,
     },
-    diagnostics::{DiagCtx, DiagnosticRecord},
+    diagnostics::{DiagCtx, Diagnostic},
     hir,
 };
 use std::{cell::Cell, fs, path::Path, rc::Rc};
@@ -183,7 +183,7 @@ pub(crate) fn analyze_script<R>(
     )
 }
 
-pub(crate) fn analyze_script_diagnostics(source: &str) -> Vec<DiagnosticRecord> {
+pub(crate) fn analyze_script_diagnostics(source: &str) -> Vec<Diagnostic> {
     analyze_diagnostics(&[("main.tr", source)], true, false, HarnessMode::Test)
 }
 
@@ -191,7 +191,7 @@ pub(crate) fn analyze_language_item_script(
     source: &str,
     build_mir: bool,
     items: &[(hir::StdItem, &str)],
-) -> Vec<DiagnosticRecord> {
+) -> Vec<Diagnostic> {
     with_source_compiler(
         &[("main.tr", source)],
         true,
@@ -303,19 +303,17 @@ pub(crate) fn analyze_script_built_mir_with_items<R>(
     )
 }
 
-pub(crate) fn analyze_script_mir_diagnostics(source: &str) -> Vec<DiagnosticRecord> {
+pub(crate) fn analyze_script_mir_diagnostics(source: &str) -> Vec<Diagnostic> {
     analyze_diagnostics(&[("main.tr", source)], true, true, HarnessMode::Test)
 }
 
-pub(crate) fn analyze_package_diagnostics(files: &[(&str, &str)]) -> Vec<DiagnosticRecord> {
+pub(crate) fn analyze_package_diagnostics(files: &[(&str, &str)]) -> Vec<Diagnostic> {
     analyze_diagnostics(files, false, false, HarnessMode::Test)
 }
 
 /// Like `analyze_package_diagnostics`, but compiled as `check` or `build`
 /// would: `@test` declarations are dropped before type checking.
-pub(crate) fn analyze_package_diagnostics_outside_tests(
-    files: &[(&str, &str)],
-) -> Vec<DiagnosticRecord> {
+pub(crate) fn analyze_package_diagnostics_outside_tests(files: &[(&str, &str)]) -> Vec<Diagnostic> {
     analyze_diagnostics(files, false, false, HarnessMode::None)
 }
 
@@ -324,7 +322,7 @@ fn analyze_diagnostics(
     is_script: bool,
     build_mir: bool,
     harness: HarnessMode,
-) -> Vec<DiagnosticRecord> {
+) -> Vec<Diagnostic> {
     with_source_compiler(files, is_script, harness, |compiler| {
         let result = compiler.analyze_for_diagnostics(build_mir);
         let dcx = compiler.context.dcx();

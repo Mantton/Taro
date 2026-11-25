@@ -465,8 +465,7 @@ pub struct AnonConst {
 }
 
 #[derive(Debug, Clone)]
-pub enum ExpressionKind {
-    /// Runes, Bools, Integers, Floats, Strings
+pub enum ExpressionKind {    /// Runes, Bools, Integers, Floats, Strings
     Literal(Literal),
 
     /// `foo`
@@ -479,6 +478,11 @@ pub enum ExpressionKind {
         target: Box<Expression>,
         name: Identifier,
         qualified: bool,
+    },
+    /// A member access whose name has not been typed yet.
+    MissingMember {
+        target: Box<Expression>,
+        insertion: Span,
     },
     /// `.bar`
     InferredMember {
@@ -1892,6 +1896,9 @@ pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::
         ExpressionKind::Member { target, name, .. } => {
             try_visit!(visitor.visit_expression(target));
             try_visit!(visitor.visit_identifier(name));
+        }
+        ExpressionKind::MissingMember { target, .. } => {
+            try_visit!(visitor.visit_expression(target));
         }
         ExpressionKind::InferredMember { name } => {
             try_visit!(visitor.visit_identifier(name));

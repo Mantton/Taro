@@ -736,8 +736,7 @@ pub struct IndexCallNodes {
 }
 
 #[derive(Debug, Clone)]
-pub enum ExpressionKind {
-    /// Runes, Bools, Integers, Floats, Strings
+pub enum ExpressionKind {    /// Runes, Bools, Integers, Floats, Strings
     Literal(Literal),
 
     /// A qualified path in expression position.
@@ -751,6 +750,11 @@ pub enum ExpressionKind {
     Member {
         target: Box<Expression>,
         name: Identifier,
+    },
+    /// A source recovery hole. The receiver still has semantic information.
+    MissingMember {
+        target: Box<Expression>,
+        insertion: Span,
     },
     /// A value member followed by brackets can specialize a method or index a
     /// stored/computed value. The parses have disjoint IDs for their arguments;
@@ -2532,6 +2536,9 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, node: &Expression) -> V::
         ExpressionKind::Member { target, name } => {
             try_visit!(visitor.visit_expression(target));
             try_visit!(visitor.visit_identifier(name));
+        }
+        ExpressionKind::MissingMember { target, .. } => {
+            try_visit!(visitor.visit_expression(target));
         }
         ExpressionKind::MemberBrackets {
             member,

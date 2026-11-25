@@ -252,7 +252,7 @@ impl<'ctx> Checker<'ctx> {
 mod tests {
     use crate::test_support::analyze_language_item_script;
 
-    fn analyze_script_mir_diagnostics(source: &str) -> Vec<crate::diagnostics::DiagnosticRecord> {
+    fn analyze_script_mir_diagnostics(source: &str) -> Vec<crate::diagnostics::Diagnostic> {
         analyze_language_item_script(source, true, &[])
     }
 

@@ -1175,7 +1175,7 @@ pub(crate) fn conditional_fields<'ctx>(
 mod tests {
     use crate::{hir::StdItem, test_support::analyze_language_item_script};
 
-    fn codec_diagnostics(body: &str) -> Vec<crate::diagnostics::DiagnosticRecord> {
+    fn codec_diagnostics(body: &str) -> Vec<crate::diagnostics::Diagnostic> {
         analyze_language_item_script(
             &format!(
                 r#"
@@ -1298,7 +1298,7 @@ func main() {{}}
         );
     }
 
-    fn diagnostics(body: &str) -> Vec<crate::diagnostics::DiagnosticRecord> {
+    fn diagnostics(body: &str) -> Vec<crate::diagnostics::Diagnostic> {
         analyze_language_item_script(
             &format!("interface Clone {{\nfunc clone() -> Self\n}}\n{body}\nfunc main() {{}}\n"),
             true,
@@ -1306,7 +1306,7 @@ func main() {{}}
         )
     }
 
-    fn class_clone_diagnostics(body: &str) -> Vec<crate::diagnostics::DiagnosticRecord> {
+    fn class_clone_diagnostics(body: &str) -> Vec<crate::diagnostics::Diagnostic> {
         analyze_language_item_script(
             &format!("interface Clone {{ func clone() -> Self; }}\n{body}\nfunc main() {{}}"),
             false,
@@ -1495,7 +1495,7 @@ func main() {{}}
             analyze_language_item_script(source, true, &[(StdItem::PartialEq, "PartialEq")]);
         assert!(errors.is_empty(), "{errors:?}");
     }
-    fn equality_capability_diagnostics(body: &str) -> Vec<crate::diagnostics::DiagnosticRecord> {
+    fn equality_capability_diagnostics(body: &str) -> Vec<crate::diagnostics::Diagnostic> {
         let source = format!(
             r#"
 interface PartialEq[Rhs = Self] {{
@@ -1582,7 +1582,7 @@ func main() {{}}
         );
     }
 
-    fn ordering_diagnostics(body: &str) -> Vec<crate::diagnostics::DiagnosticRecord> {
+    fn ordering_diagnostics(body: &str) -> Vec<crate::diagnostics::Diagnostic> {
         let source = format!(
             r#"
 enum Ordering {{ case less; case equal; case greater; }}
@@ -1799,7 +1799,7 @@ func main() {{}}
         );
     }
 
-    fn debug_diagnostics(body: &str) -> Vec<crate::diagnostics::DiagnosticRecord> {
+    fn debug_diagnostics(body: &str) -> Vec<crate::diagnostics::Diagnostic> {
         let source = format!(
             r#"
 struct Formatter {{}}
