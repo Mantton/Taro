@@ -10,6 +10,7 @@ use index_vec::IndexVec;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::{
     cell::{Cell, RefCell},
+    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     path::PathBuf,
     rc::Rc,
     sync::Arc,
@@ -19,10 +20,23 @@ use unicode_width::UnicodeWidthChar;
 pub struct DiagCtx {
     cwd: PathBuf,
     sources: Rc<dyn SourceProvider>,
+    cancelled: Option<Box<dyn Fn() -> bool>>,
     inner: RefCell<DiagCtxInner>,
     pub(crate) symbols: Rc<SessionInterner>,
     #[cfg(test)]
     pub(crate) analysis_work: AnalysisWork,
+}
+
+struct AnalysisCancelled;
+
+/// Catch cancellation at the boundary of one disposable analysis session.
+/// Other unwinds propagate so the caller can handle a failed worker.
+pub fn run_cancellable<T>(analyze: impl FnOnce() -> T) -> Option<T> {
+    match catch_unwind(AssertUnwindSafe(analyze)) {
+        Ok(value) => Some(value),
+        Err(payload) if payload.is::<AnalysisCancelled>() => None,
+        Err(payload) => resume_unwind(payload),
+    }
 }
 
 /// Work counters at the pass entry points used by the full-analysis oracle.
@@ -48,6 +62,7 @@ impl DiagCtx {
         DiagCtx {
             cwd,
             sources,
+            cancelled: None,
             inner: RefCell::new(Default::default()),
             symbols: Rc::default(),
             #[cfg(test)]
@@ -57,6 +72,20 @@ impl DiagCtx {
 
     pub fn sources(&self) -> &dyn SourceProvider {
         &*self.sources
+    }
+
+    /// Use only in a disposable session wrapped by `run_cancellable`.
+    pub fn with_cancellation(mut self, cancelled: impl Fn() -> bool + 'static) -> Self {
+        self.cancelled = Some(Box::new(cancelled));
+        self
+    }
+
+    pub(crate) fn cancellation_point(&self) {
+        if self.cancelled.as_ref().is_some_and(|cancelled| cancelled()) {
+            // Solver frames contain partially computed types. Unwind them all
+            // and release the scratch session before giving control back.
+            resume_unwind(Box::new(AnalysisCancelled));
+        }
     }
     pub fn add_file_mapping(&self, path: PathBuf) -> FileID {
         self.inner.borrow_mut().file_mappings.push(path)
@@ -106,6 +135,7 @@ impl DiagCtx {
     }
 
     pub fn ok(&self) -> Result<(), ReportedError> {
+        self.cancellation_point();
         if self.has_error() {
             return Err(ReportedError);
         } else {
@@ -593,6 +623,35 @@ fn display_width_between(line: &str, start: usize, end: usize) -> usize {
 mod tests {
     use super::{DiagnosticLevel, caret_prefix, display_width_between, print_span_error};
     use crate::span::{FileID, Position, Span};
+
+    #[test]
+    fn cancellation_drops_scratch_and_other_panics_propagate() {
+        use super::{DiagCtx, run_cancellable};
+        use std::{
+            cell::RefCell,
+            panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
+            rc::Rc,
+        };
+
+        let symbols = RefCell::new(None);
+        let cancelled = run_cancellable(|| {
+            let diagnostics = DiagCtx::new(std::env::temp_dir()).with_cancellation(|| true);
+            symbols.replace(Some(Rc::downgrade(&diagnostics.symbols)));
+            assert!(diagnostics.ok().is_ok());
+        });
+        assert_eq!(cancelled, None);
+        assert!(symbols.into_inner().unwrap().upgrade().is_none());
+        assert_eq!(run_cancellable(|| 42), Some(42));
+
+        let panic = catch_unwind(AssertUnwindSafe(|| {
+            run_cancellable(|| resume_unwind(Box::new("unexpected worker failure")));
+        }))
+        .unwrap_err();
+        assert_eq!(
+            panic.downcast_ref::<&str>(),
+            Some(&"unexpected worker failure")
+        );
+    }
 
     #[test]
     fn warnings_since_a_mark_are_the_later_distinct_warnings() {

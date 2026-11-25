@@ -1945,7 +1945,9 @@ impl<'ctx> SolverDriver<'ctx> {
 
     fn drain_queue(&mut self) -> bool {
         let mut made_progress = false;
+        let dcx = self.solver.gcx().dcx();
         while let Some(obligation) = self.solver.obligations.pop_front() {
+            dcx.cancellation_point();
             let mut result = self.solver.solve(&obligation);
             if let SolverResult::Solved(obligations) = &mut result
                 && self.solver.lookups_have_waiters

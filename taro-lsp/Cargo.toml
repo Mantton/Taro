@@ -1,0 +1,26 @@
+[package]
+name = "taro-lsp"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Build the language server independently from the SDK workspace so a
+# workspace-wide Cargo command cannot unify LLVM into its compiler dependency.
+[workspace]
+resolver = "2"
+
+[dependencies]
+compiler = { path = "../compiler", default-features = false }
+crossbeam-channel = "0.5"
+lsp-server = "0.10"
+lsp-types = "0.97"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+url = "2.5"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

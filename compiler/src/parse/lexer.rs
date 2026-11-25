@@ -165,6 +165,7 @@ pub(crate) fn tokenize_file(
     target_triple: Option<&str>,
     mode: SyntaxMode,
 ) -> Result<File, ReportedError> {
+    dcx.cancellation_point();
     let source = match dcx.sources().read_text(&path) {
         Ok(source) => source,
         Err(e) => {

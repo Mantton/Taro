@@ -300,6 +300,7 @@ impl<'ctx> Actor<'ctx> {
         node: &hir::Function,
         fn_ctx: hir::FunctionContext,
     ) {
+        self.context.dcx().cancellation_point();
         let mut checker = checker::Checker::new(self.context, id, self.results.clone());
         checker.check_function(id, node, fn_ctx);
     }
