@@ -31,7 +31,7 @@ fn filter_module(module: &mut ast::Module, target: &TargetInfo, gcx: GlobalConte
     });
 }
 
-fn filter_file(file: &mut ast::File, target: &TargetInfo, gcx: GlobalContext<'_>) {
+pub(crate) fn filter_file(file: &mut ast::File, target: &TargetInfo, gcx: GlobalContext<'_>) {
     filter_declarations(&mut file.declarations, target, gcx);
 }
 

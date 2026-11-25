@@ -158,7 +158,7 @@ fn tokenize_module(
     })
 }
 
-fn tokenize_file(
+pub(crate) fn tokenize_file(
     file: FileID,
     path: PathBuf,
     dcx: &DiagCtx,

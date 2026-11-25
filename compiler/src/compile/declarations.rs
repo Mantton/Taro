@@ -385,8 +385,9 @@ mod tests {
             )
         });
         let sources = Rc::new(WorkspaceSources::new(revision, changes).unwrap());
-        let reply =
-            with_workspace_compiler(root, sources, |compiler| compiler.analyze_owned(revision));
+        let reply = with_workspace_compiler(root, sources, None, |compiler| {
+            compiler.analyze_owned(revision)
+        });
         assert!(reply.complete, "{:?}", reply.diagnostics);
         reply
     }

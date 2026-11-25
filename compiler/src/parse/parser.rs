@@ -60,6 +60,20 @@ pub(crate) fn parse_package(
     Ok(ast::Package { root })
 }
 
+pub(crate) fn parse_root_file(
+    file: lexer::File,
+    dcx: &DiagCtx,
+    lint_warnings: bool,
+) -> Result<ast::File, ReportedError> {
+    let options = ParseOptions {
+        lint_warnings,
+        mode: SyntaxMode::Strict,
+    };
+    let (file, declarations) = parse_file(file, NextNode::default(), dcx, options)?;
+    pick_module_decl(crate::constants::ROOT_MODULE_NAME, true, declarations, dcx)?;
+    Ok(file)
+}
+
 #[derive(Clone, Copy)]
 struct ParseOptions {
     lint_warnings: bool,

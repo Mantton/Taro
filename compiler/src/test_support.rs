@@ -152,13 +152,14 @@ pub(crate) fn with_target_source_compiler<R>(
 pub(crate) fn with_workspace_compiler<R>(
     root: &Path,
     sources: Rc<dyn SourceProvider>,
+    target: Option<String>,
     f: impl for<'ctx> FnOnce(&mut Compiler<'ctx>) -> R,
 ) -> R {
     let mut config = test_config(root);
     config.is_script = false;
     config.is_std_provider = false;
     config.overflow_checks = false;
-    with_context(root, config, None, Some(sources), |context, config| {
+    with_context(root, config, target, Some(sources), |context, config| {
         f(&mut Compiler::new(context, config))
     })
 }

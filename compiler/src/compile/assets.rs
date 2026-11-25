@@ -1,4 +1,8 @@
-use super::{config::Config, context::Gcx, source::SourceProvider};
+use super::{
+    config::Config,
+    context::Gcx,
+    source::{FileContents, SourceProvider},
+};
 use crate::{hir::Literal, span::FileID};
 use std::{
     collections::BTreeMap,
@@ -27,14 +31,11 @@ fn is_relative_asset(path: &Path) -> bool {
 }
 
 impl Gcx<'_> {
-    /// Resolve relative to the source containing the directive. Fingerprint
-    /// the exact bytes used to produce the literal, including for text files.
-    pub(crate) fn read_embedded(
+    pub(crate) fn embedded_input(
         self,
         file: FileID,
         name: &str,
-        bytes: bool,
-    ) -> Result<Literal, String> {
+    ) -> Result<(PathBuf, FileContents), String> {
         let path = Path::new(name);
         if name.contains('\0') {
             return Err("embedded asset path contains a NUL byte".into());
@@ -60,6 +61,18 @@ impl Gcx<'_> {
             _ => format!("could not read embedded asset '{name}': {error}"),
         };
         let data = sources.read_file(&root.join(&relative)).map_err(failed)?;
+        Ok((relative, data))
+    }
+
+    /// Resolve relative to the source containing the directive. Fingerprint
+    /// the exact bytes used to produce the literal, including for text files.
+    pub(crate) fn read_embedded(
+        self,
+        file: FileID,
+        name: &str,
+        bytes: bool,
+    ) -> Result<Literal, String> {
+        let (relative, data) = self.embedded_input(file, name)?;
         let data = data.as_bytes();
         let literal = if bytes {
             Literal::Bytes(self.interner().intern_bytes(data))

@@ -30,6 +30,7 @@ pub mod entry;
 pub mod frozen_dependencies;
 pub mod fuzz_collector;
 pub mod harness;
+pub mod semantic_revision;
 pub mod source;
 pub mod target_facts;
 pub mod test_collector;

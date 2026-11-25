@@ -169,7 +169,7 @@ impl DiagCtx {
         Some(text.text().get(start..end)?.into())
     }
 
-    fn get_file_content(&self, id: FileID) -> Option<Arc<SourceText>> {
+    pub(crate) fn get_file_content(&self, id: FileID) -> Option<Arc<SourceText>> {
         if let Some(stored) = self.inner.borrow().file_content_mappings.get(&id) {
             return Some(Arc::clone(stored));
         }

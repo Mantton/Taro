@@ -516,7 +516,7 @@ mod tests {
             )
         };
         let analyze = |sources: Rc<WorkspaceSources>| {
-            with_workspace_compiler(&root, sources, |compiler| compiler.analyze_owned(999))
+            with_workspace_compiler(&root, sources, None, |compiler| compiler.analyze_owned(999))
         };
         let old = build(7, text("func helper() -> int32 { 1 }"));
         assert!(old.read_directory(&directory).unwrap().iter().any(|entry| {
@@ -652,7 +652,7 @@ mod tests {
             )
         };
         let original = build(1, [0, 255, 1]);
-        let frozen = with_workspace_compiler(&root, original.clone(), |compiler| {
+        let frozen = with_workspace_compiler(&root, original.clone(), None, |compiler| {
             compiler.freeze_dependency().unwrap_or_else(|error| {
                 panic!(
                     "{error}: {:?}",
@@ -660,11 +660,11 @@ mod tests {
                 )
             })
         });
-        with_workspace_compiler(&root, original, |compiler| {
+        with_workspace_compiler(&root, original, None, |compiler| {
             frozen.hydrate(compiler.context).unwrap()
         });
         let changed = build(2, [0, 255, 2]);
-        with_workspace_compiler(&root, changed, |compiler| {
+        with_workspace_compiler(&root, changed, None, |compiler| {
             assert_eq!(
                 frozen.hydrate(compiler.context).unwrap_err().to_string(),
                 "embedded asset 'src/data.bin' changed"
