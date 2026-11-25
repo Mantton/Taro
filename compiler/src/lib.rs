@@ -25,6 +25,7 @@ pub mod runtime_abi;
 mod sema;
 pub mod span;
 pub mod specialize;
+pub mod symbols;
 #[cfg(test)]
 mod test_support;
 mod thir;
