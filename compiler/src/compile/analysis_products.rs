@@ -575,7 +575,7 @@ struct BodyTraversal {
     next_ordinal: u32,
 }
 
-impl OccurrenceCollector<'_, '_> {
+impl<'ctx> OccurrenceCollector<'_, 'ctx> {
     fn next_anchor(&mut self) -> Option<BodyLocalAnchor> {
         let body = self.current_body.as_mut()?;
         let ordinal = body.next_ordinal;
@@ -588,13 +588,13 @@ impl OccurrenceCollector<'_, '_> {
 
     fn record(
         &mut self,
-        id: hir::NodeID,
+        ty: Option<Ty<'ctx>>,
         span: Span,
         definition: Option<DefinitionID>,
         local_declaration: Option<LocalDeclaration>,
         anchor: Option<BodyLocalAnchor>,
     ) {
-        if let Some(ty) = self.types.try_node_type(id)
+        if let Some(ty) = ty
             && let Some(source) = SourceRange::capture(self.gcx, span)
         {
             #[cfg(test)]
@@ -627,7 +627,7 @@ impl OccurrenceCollector<'_, '_> {
                 },
             );
         }
-        self.record(id, span, None, None, anchor);
+        self.record(self.types.try_node_type(id), span, None, None, anchor);
     }
 
     fn start_body(&mut self, id: DefinitionID, node: &hir::Function) -> Option<BodyTraversal> {
@@ -668,6 +668,26 @@ impl HirVisitor for OccurrenceCollector<'_, '_> {
     fn visit_function_parameter(&mut self, parameter: &hir::FunctionParameter) {
         self.record_local(parameter.id, parameter.name.span);
         hir::walk_function_parameter(self, parameter);
+    }
+
+    fn visit_type(&mut self, ty: &hir::Type) {
+        // A static call's type qualifier is visited as a type. Its declaration
+        // is already resolved even though the solver records the call's value
+        // type on a different node.
+        if let hir::TypeKind::Nominal(hir::ResolvedPath::Resolved(path)) = &ty.kind
+            && let hir::Resolution::Definition(id, DefinitionKind::Struct | DefinitionKind::Enum) =
+                path.resolution
+            && let Some(segment) = path.segments.last()
+        {
+            self.record(
+                self.gcx.try_get_type(id),
+                segment.identifier.span,
+                Some(id),
+                None,
+                None,
+            );
+        }
+        hir::walk_type(self, ty);
     }
 
     fn visit_expression(&mut self, expression: &hir::Expression) {
@@ -736,7 +756,13 @@ impl HirVisitor for OccurrenceCollector<'_, '_> {
             Some(hir::Resolution::LocalVariable(binding)) => self.locals.get(&binding).cloned(),
             _ => None,
         };
-        self.record(expression.id, span, definition, local, anchor);
+        self.record(
+            self.types.try_node_type(expression.id),
+            span,
+            definition,
+            local,
+            anchor,
+        );
         hir::walk_expression(self, expression);
     }
 

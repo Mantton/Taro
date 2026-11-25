@@ -681,8 +681,10 @@ fn editor_features_follow_two_unsaved_files_and_clear_repaired_diagnostics() {
             "func choose(_ value: int32) -> int32 { value }\n",
             "func choose(_ value: bool) -> string { \"selected\" }\n",
             "struct Sample { count: int32 }\n",
-            "extend Sample {\n    public func show() -> int32 { self.count }\n}\n",
-            "func make() -> Sample { Sample { count: 1 } }\n",
+            "extend Sample {\n",
+            "    public func show() -> int32 { self.count }\n",
+            "    public static func make() -> Sample { Sample { count: 1 } }\n",
+            "}\n",
         ),
     );
     let original = concat!(
@@ -690,7 +692,7 @@ fn editor_features_follow_two_unsaved_files_and_clear_repaired_diagnostics() {
         "    input := 7\n",
         "    _ = \"🌱\"; value := choose(input)\n",
         "    _ = value\n",
-        "    item := make()\n",
+        "    item := Sample::make()\n",
         "    _ = item.show()\n",
         "}\n",
     );
@@ -765,7 +767,15 @@ fn editor_features_follow_two_unsaved_files_and_clear_repaired_diagnostics() {
             break;
         }
     }
-    server.request(6, "shutdown", Value::Null);
-    assert_eq!(server.response(6), Value::Null);
+    let qualifier = at(active.as_str(), &changed, "Sample::make");
+    server.request(6, "textDocument/hover", qualifier.clone());
+    assert_eq!(server.response(6)["contents"]["value"], "Sample");
+    server.request(7, "textDocument/definition", qualifier);
+    let definition = server.response(7);
+    assert_eq!(definition["uri"], definitions.as_str());
+    assert_eq!(definition["range"]["start"]["line"], 2);
+
+    server.request(8, "shutdown", Value::Null);
+    assert_eq!(server.response(8), Value::Null);
     server.notify("exit", Value::Null);
 }
