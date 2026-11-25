@@ -116,7 +116,7 @@ conform int32 to Greeter {
         let diagnostics = with_lint_warnings(|| analyze_package_diagnostics(&files));
         diagnostics
             .iter()
-            .map(|DiagnosticRecord { message, span }| {
+            .map(|DiagnosticRecord { message, span, .. }| {
                 let span = span.expect("lint warnings carry a span");
                 (message.clone(), span.start.line + 1, span.start.offset)
             })
@@ -203,7 +203,7 @@ func greets() {
         let found = with_lint_warnings(|| analyze_package_diagnostics_outside_tests(&files));
         let found: Vec<_> = found
             .iter()
-            .map(|DiagnosticRecord { message, span }| {
+            .map(|DiagnosticRecord { message, span, .. }| {
                 let span = span.expect("lint warnings carry a span");
                 (message.clone(), span.start.line + 1, span.start.offset)
             })
@@ -221,7 +221,7 @@ func greets() {
             with_lint_warnings(|| analyze_package_diagnostics(&[("main.tr", source)]));
         diagnostics
             .iter()
-            .map(|DiagnosticRecord { message, span }| {
+            .map(|DiagnosticRecord { message, span, .. }| {
                 let name = message
                     .strip_prefix("unused variable '")
                     .and_then(|rest| rest.split('\'').next())

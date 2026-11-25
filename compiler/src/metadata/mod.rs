@@ -1016,7 +1016,7 @@ pub fn hydrate_loaded_metadata<'ctx>(
     Ok(())
 }
 
-fn build_payload_wire<'ctx>(
+pub(crate) fn build_payload_wire<'ctx>(
     gcx: GlobalContext<'ctx>,
     mode: ReuseMode,
 ) -> io::Result<wire::MetadataPayloadWire> {

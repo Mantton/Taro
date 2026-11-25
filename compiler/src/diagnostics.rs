@@ -251,6 +251,7 @@ impl DiagCtx {
             self.inner.borrow_mut().recorded.push(DiagnosticRecord {
                 message: diagnostic.message.clone(),
                 span: diagnostic.span,
+                level: diagnostic.level,
             });
         } else {
             if let Some(message) = self.format(&diagnostic, false) {
@@ -490,6 +491,7 @@ impl std::fmt::Display for DiagnosticLevel {
 pub struct DiagnosticRecord {
     pub message: String,
     pub span: Option<Span>,
+    pub level: DiagnosticLevel,
 }
 
 impl DiagCtx {

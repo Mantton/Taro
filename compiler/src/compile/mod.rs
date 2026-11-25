@@ -16,11 +16,13 @@ use crate::{
 use std::time::{Duration, Instant};
 
 pub(crate) mod allocation_report;
+pub mod analysis_products;
 pub(crate) mod assets;
 pub mod bench_collector;
 pub mod config;
 pub mod context;
 pub mod entry;
+pub mod frozen_dependencies;
 pub mod fuzz_collector;
 pub mod harness;
 pub mod target_facts;
