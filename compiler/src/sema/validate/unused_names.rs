@@ -22,6 +22,10 @@
 use crate::{compile::context::GlobalContext, span::Span};
 
 pub fn run(gcx: GlobalContext<'_>) {
+    run_in(gcx, |_| true);
+}
+
+pub(super) fn run_in(gcx: GlobalContext<'_>, includes: impl Fn(Span) -> bool) {
     if !gcx.config.lint_warnings {
         return;
     }
@@ -34,6 +38,9 @@ pub fn run(gcx: GlobalContext<'_>) {
         let trait_uses = gcx.store.trait_visibility_uses.borrow();
 
         for import in &facts.imports {
+            if !includes(import.target.span) {
+                continue;
+            }
             if facts.used_imports.contains(&import.binding) {
                 continue;
             }
@@ -56,6 +63,9 @@ pub fn run(gcx: GlobalContext<'_>) {
         }
 
         for local in &facts.locals {
+            if !includes(local.name.span) {
+                continue;
+            }
             let name = gcx.symbol_text(local.name.symbol);
             // An initializer's `self` is a local the parser declares.
             if name.starts_with('_') || name == "self" || facts.read_locals.contains(&local.id) {

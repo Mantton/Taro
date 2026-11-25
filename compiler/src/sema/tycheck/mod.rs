@@ -88,6 +88,18 @@ fn run_typecheck_pipeline<'ctx>(
     context: GlobalContext<'ctx>,
     phase_timings: &mut Option<&mut Vec<TypecheckPhaseTiming>>,
 ) -> CompileResult<results::TypeCheckResults<'ctx>> {
+    prepare_declarations(package, context, phase_timings)?;
+    run_typecheck_phase(phase_timings, "sema.typecheck.check", || {
+        check_prepared_bodies(package, context)
+    })
+}
+
+/// Materialize the package-wide solver environment before checking bodies.
+pub(crate) fn prepare_declarations<'ctx>(
+    package: &hir::Package,
+    context: GlobalContext<'ctx>,
+    phase_timings: &mut Option<&mut Vec<TypecheckPhaseTiming>>,
+) -> CompileResult<()> {
     run_typecheck_phase(phase_timings, "sema.typecheck.collect.attributes", || {
         collect::attributes::run(package, context)
     })?; // Collect Attributes
@@ -214,12 +226,16 @@ fn run_typecheck_pipeline<'ctx>(
             crate::sema::lowering::class_defaults::cache_provider_signatures(context);
             Ok(())
         },
-    )?;
+    )
+}
 
-    // Check Body
-    run_typecheck_phase(phase_timings, "sema.typecheck.check", || {
-        check::run(package, context)
-    })
+/// Use the regular checker and its body validators on a selected HIR
+/// projection. Its headers must already have been prepared in this context.
+pub(crate) fn check_prepared_bodies<'ctx>(
+    package: &hir::Package,
+    context: GlobalContext<'ctx>,
+) -> CompileResult<results::TypeCheckResults<'ctx>> {
+    check::run(package, context)
 }
 
 fn run_typecheck_phase<R>(

@@ -14,6 +14,7 @@ use super::{Compiler, context::Gcx};
 /// revision and hydrate dependencies in topological order.
 pub struct FrozenDependency {
     configuration: blake3::Hash,
+    fingerprint: blake3::Hash,
     payload: Box<[u8]>,
 }
 
@@ -26,8 +27,12 @@ impl Compiler<'_> {
         let configuration = configuration_key(self.context)?;
         let payload = metadata::build_payload_wire(self.context, ReuseMode::SemanticDependency)?;
         let payload = bincode::serialize(&payload).map_err(io::Error::other)?;
+        let mut fingerprint = blake3::Hasher::new();
+        fingerprint.update(configuration.as_bytes());
+        fingerprint.update(&payload);
         Ok(FrozenDependency {
             configuration,
+            fingerprint: fingerprint.finalize(),
             payload: payload.into_boxed_slice(),
         })
     }
@@ -66,7 +71,12 @@ impl FrozenDependency {
         )
         .map_err(io::Error::other)?;
         metadata::hydrate_loaded_metadata(gcx, &loaded, ReuseMode::SemanticDependency)
-            .map_err(io::Error::other)
+            .map_err(io::Error::other)?;
+        gcx.store
+            .frozen_dependency_keys
+            .borrow_mut()
+            .insert(gcx.package_index(), self.fingerprint);
+        Ok(())
     }
 }
 

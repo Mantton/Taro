@@ -203,7 +203,10 @@ impl Compiler<'_> {
     }
 }
 
-fn summarize(gcx: Gcx<'_>, package: &ast::Package) -> Result<PackageSemanticSummary, String> {
+pub(super) fn summarize(
+    gcx: Gcx<'_>,
+    package: &ast::Package,
+) -> Result<PackageSemanticSummary, String> {
     let mut visitor = SummaryVisitor {
         gcx,
         files: Vec::new(),
@@ -408,7 +411,7 @@ fn summarize_file(gcx: Gcx<'_>, file: &ast::File) -> Result<FileSemanticSummary,
 
 /// The first reusable category is an ordinary free function with a declared
 /// result. The compiler will still check whether its body needs a package pass.
-fn ordinary_body(declaration: &ast::Declaration) -> Option<Span> {
+pub(super) fn ordinary_body(declaration: &ast::Declaration) -> Option<Span> {
     let ast::DeclarationKind::Function(function) = &declaration.kind else {
         return None;
     };

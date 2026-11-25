@@ -23,6 +23,7 @@ mod analysis_oracle;
 pub mod analysis_products;
 pub(crate) mod assets;
 pub mod bench_collector;
+pub mod body_check;
 pub mod config;
 pub mod context;
 pub mod declarations;
@@ -634,12 +635,23 @@ impl<'state> Compiler<'state> {
         timings: &mut TimingReport,
         tolerate_std_item_errors: bool,
     ) -> CompileResult<hir::Package> {
-        let target = cfg_eval::target_info(self.context);
-        // AST passes
-        let phase_started_at = Instant::now();
-        cfg_eval::filter_package(&mut package, &target, self.context);
-        timings.push_elapsed("cfg.filter", phase_started_at);
+        self.filter_parsed_package(&mut package, timings);
+        self.lower_configured_package(package, timings, tolerate_std_item_errors)
+    }
 
+    fn filter_parsed_package(&self, package: &mut crate::ast::Package, timings: &mut TimingReport) {
+        let target = cfg_eval::target_info(self.context);
+        let phase_started_at = Instant::now();
+        cfg_eval::filter_package(package, &target, self.context);
+        timings.push_elapsed("cfg.filter", phase_started_at);
+    }
+
+    fn lower_configured_package(
+        &self,
+        package: crate::ast::Package,
+        timings: &mut TimingReport,
+        tolerate_std_item_errors: bool,
+    ) -> CompileResult<hir::Package> {
         let phase_started_at = Instant::now();
         let resolution_output = sema::resolve::resolve_package(&package, self.context)?;
         timings.push_elapsed("sema.resolve", phase_started_at);

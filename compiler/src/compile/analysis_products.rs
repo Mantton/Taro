@@ -403,7 +403,7 @@ pub struct AnalysisSuggestion {
 }
 
 impl AnalysisDiagnostic {
-    fn capture(gcx: Gcx<'_>, diagnostic: Diagnostic, bodies: &[BodyRecord]) -> Self {
+    pub(super) fn capture(gcx: Gcx<'_>, diagnostic: Diagnostic, bodies: &[BodyRecord]) -> Self {
         let relative = |range: &SourceRange| bodies.iter().find_map(|body| body.relative(range));
         let source = diagnostic
             .span
@@ -431,6 +431,36 @@ impl AnalysisDiagnostic {
             }),
         }
     }
+}
+
+pub(super) fn capture_function<'ctx>(
+    gcx: Gcx<'ctx>,
+    declaration: &hir::Declaration,
+    types: &TypeCheckResults<'ctx>,
+) -> Option<(DeclarationRecord, BodyRecord, Vec<TypedOccurrence>)> {
+    let hir::DeclarationKind::Function(function) = &declaration.kind else {
+        return None;
+    };
+    let record = declarations::collect_function(gcx, declaration.id, function)?;
+    let records = FxHashMap::from_iter([(declaration.id, record.clone())]);
+    let mut occurrences = Vec::new();
+    let mut bodies = Vec::new();
+    let mut missing_members = Vec::new();
+    hir::walk_declaration(
+        &mut OccurrenceCollector {
+            gcx,
+            types,
+            occurrences: &mut occurrences,
+            missing_members: &mut missing_members,
+            declarations: &records,
+            bodies: &mut bodies,
+            current_body: None,
+            locals: FxHashMap::default(),
+        },
+        declaration,
+    );
+    let body = bodies.pop()?;
+    Some((record, body, occurrences))
 }
 
 impl Compiler<'_> {

@@ -279,44 +279,24 @@ pub(crate) fn collect(
         signatures: FxHashMap::default(),
     };
     hir::walk_package(&mut declarations, package);
-    let output = gcx.resolution_output(gcx.package_index());
-    let component = |id| {
-        let kind = *output.definition_to_kind.get(&id)?;
-        let name = output
-            .definition_to_ident
-            .get(&id)
-            .map(|ident| gcx.symbol_text(ident.symbol).into())
-            .unwrap_or_default();
-        Some(DeclarationComponent {
-            name,
-            kind,
-            signature: declarations.signatures.get(&id).copied(),
-        })
-    };
-
-    output
+    gcx.resolution_output(gcx.package_index())
         .definition_to_ident
         .keys()
-        .filter_map(|&id| {
-            let location = DeclarationKey::capture(gcx, id)?;
-            if location.name.is_empty() || location.source.start == location.source.end {
-                return None;
-            }
-            let mut enclosing = Vec::new();
-            let mut current = id;
-            while let Some(&parent) = output.definition_to_parent.get(&current) {
-                enclosing.push(component(parent)?);
-                current = parent;
-            }
-            enclosing.reverse();
-            let anchor = DeclarationAnchor {
-                package: location.package.clone(),
-                enclosing,
-                declaration: component(id)?,
-            };
-            Some((id, DeclarationRecord { anchor, location }))
-        })
+        .filter_map(|&id| declarations.capture(id).map(|record| (id, record)))
         .collect()
+}
+
+pub(super) fn collect_function(
+    gcx: Gcx<'_>,
+    id: DefinitionID,
+    function: &hir::Function,
+) -> Option<DeclarationRecord> {
+    let mut headers = HeaderSites {
+        gcx,
+        signatures: FxHashMap::default(),
+    };
+    headers.record(id, [function.signature.span]);
+    headers.capture(id)
 }
 
 struct HeaderSites<'ctx> {
@@ -325,6 +305,41 @@ struct HeaderSites<'ctx> {
 }
 
 impl HeaderSites<'_> {
+    fn capture(&self, id: DefinitionID) -> Option<DeclarationRecord> {
+        let gcx = self.gcx;
+        let output = gcx.resolution_output(gcx.package_index());
+        let component = |id| {
+            let kind = *output.definition_to_kind.get(&id)?;
+            let name = output
+                .definition_to_ident
+                .get(&id)
+                .map(|ident| gcx.symbol_text(ident.symbol).into())
+                .unwrap_or_default();
+            Some(DeclarationComponent {
+                name,
+                kind,
+                signature: self.signatures.get(&id).copied(),
+            })
+        };
+        let location = DeclarationKey::capture(gcx, id)?;
+        if location.name.is_empty() || location.source.start == location.source.end {
+            return None;
+        }
+        let mut enclosing = Vec::new();
+        let mut current = id;
+        while let Some(&parent) = output.definition_to_parent.get(&current) {
+            enclosing.push(component(parent)?);
+            current = parent;
+        }
+        enclosing.reverse();
+        let anchor = DeclarationAnchor {
+            package: location.package.clone(),
+            enclosing,
+            declaration: component(id)?,
+        };
+        Some(DeclarationRecord { anchor, location })
+    }
+
     fn record(&mut self, id: DefinitionID, pieces: impl IntoIterator<Item = Span>) {
         let mut hash = blake3::Hasher::new();
         for piece in pieces {

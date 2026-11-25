@@ -2099,6 +2099,8 @@ pub struct CompilerStore<'arena> {
     pub(crate) embedded_inputs: RefCell<FxHashMap<PackageIndex, super::assets::AssetInputs>>,
     pub resolution_outputs: RefCell<FxHashMap<PackageIndex, &'arena ResolutionOutput<'arena>>>,
     pub package_mapping: RefCell<FxHashMap<EcoString, PackageIndex>>,
+    /// Content identities of packages hydrated by the body-analysis API.
+    pub(super) frozen_dependency_keys: RefCell<FxHashMap<PackageIndex, blake3::Hash>>,
     pub package_idents: RefCell<FxHashMap<PackageIndex, EcoString>>,
     pub type_databases: RefCell<FxHashMap<PackageIndex, TypeDatabase<'arena>>>,
     /// Canonical MIR after local passes and before interprocedural transforms.
@@ -2248,6 +2250,7 @@ impl<'arena> CompilerStore<'arena> {
             interners: CompilerInterners::new(arenas),
             lowering: Default::default(),
             package_mapping: Default::default(),
+            frozen_dependency_keys: Default::default(),
             package_idents: Default::default(),
             allocation_report: Default::default(),
             embedded_inputs: Default::default(),
