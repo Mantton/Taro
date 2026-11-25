@@ -183,6 +183,25 @@ class LanguageTestOracleTests(unittest.TestCase):
         self.assertFalse(self.run_case("invalid/broken.tr", stderr="error: broken\n", exit_code=1)[0])
         self.assertFalse(self.outputs.exists())
 
+    def test_invalid_snapshot_normalizes_only_the_active_std_location(self) -> None:
+        self.env = TestEnvironment(
+            self.env.temp_dir, self.env.compiler_path, self.env.taro_home,
+            self.root / "current-sdk/std",
+        )
+        snapshot = self.outputs / "invalid/broken.out"
+        snapshot.parent.mkdir(parents=True)
+        snapshot.write_text(
+            "error: broken\n -> std/src/definition.tr:1:0\n\tdeclaration\n",
+            encoding="utf-8",
+        )
+        for root, passes in (("current-sdk/std", True), ("previous-sdk/std", False)):
+            with self.subTest(root=root), patch.object(language_tests, "PROJECT_ROOT", self.root):
+                stderr = f"error: broken\n -> {root}/src/definition.tr:1:0\n\tdeclaration\n"
+                self.assertEqual(
+                    self.run_case("invalid/broken.tr", stderr=stderr, exit_code=1)[0],
+                    passes,
+                )
+
     def test_valid_filename_containing_invalid_does_not_change_expectations(self) -> None:
         self.assertTrue(self.run_case("valid/invalid_utf8.tr")[0])
 

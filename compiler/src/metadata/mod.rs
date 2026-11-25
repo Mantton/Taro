@@ -23,8 +23,8 @@ mod declarations;
 pub mod wire;
 
 const META_MAGIC: [u8; 8] = *b"TAROMETA";
-// Format 148 can replay source-level allocation decisions from a cached object.
-const META_FORMAT_VERSION: u32 = 161;
+// File mappings can be relative to the package root for relocatable metadata.
+const META_FORMAT_VERSION: u32 = 162;
 
 #[derive(Debug, Clone)]
 pub struct DependencyFingerprint {

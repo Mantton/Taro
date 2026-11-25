@@ -32,7 +32,10 @@ use ena::unify::UnifyKey;
 use indexmap::IndexSet;
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use serde::{Deserialize, Serialize};
-use std::cell::Cell;
+use std::{
+    cell::Cell,
+    path::{MAIN_SEPARATOR, Path, PathBuf},
+};
 
 #[derive(Debug, Clone)]
 pub struct WireDecodeError {
@@ -58,7 +61,13 @@ impl std::error::Error for WireDecodeError {}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileMappingWire {
     pub old_file_id: u32,
-    pub path: String,
+    pub path: FilePathWire,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FilePathWire {
+    PackageRelative(String),
+    Original(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1493,13 +1502,27 @@ pub enum MirPhaseWire {
     Lowered,
 }
 
+fn metadata_source_root(gcx: GlobalContext<'_>) -> PathBuf {
+    let source = &gcx.config.src;
+    gcx.dcx
+        .sources()
+        .resolve(source)
+        .unwrap_or_else(|_| source.clone())
+}
+
 pub fn file_table_from_dcx(gcx: GlobalContext<'_>) -> Vec<FileMappingWire> {
+    let package_root = metadata_source_root(gcx);
     gcx.dcx
         .all_file_mappings()
         .into_iter()
         .map(|(id, path)| FileMappingWire {
             old_file_id: id.raw(),
-            path: path.to_string_lossy().into_owned(),
+            path: match path.strip_prefix(&package_root).ok().and_then(Path::to_str) {
+                Some(relative) if !relative.is_empty() => {
+                    FilePathWire::PackageRelative(relative.replace(MAIN_SEPARATOR, "/"))
+                }
+                _ => FilePathWire::Original(path.to_string_lossy().into_owned()),
+            },
         })
         .collect()
 }
@@ -1509,10 +1532,14 @@ pub fn build_file_remap(
     file_table: &[FileMappingWire],
 ) -> FxHashMap<u32, FileID> {
     let mut map = FxHashMap::default();
+    let package_root = metadata_source_root(gcx);
     for entry in file_table {
-        let new_id = gcx
-            .dcx
-            .add_file_mapping(std::path::PathBuf::from(&entry.path));
+        // Attached metadata can be loaded from an SDK at a different path.
+        let path = match &entry.path {
+            FilePathWire::PackageRelative(relative) => package_root.join(relative),
+            FilePathWire::Original(path) => PathBuf::from(path),
+        };
+        let new_id = gcx.dcx.add_file_mapping(path);
         map.insert(entry.old_file_id, new_id);
     }
     map
@@ -6110,6 +6137,25 @@ pub fn type_database_from_wire<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_paths_rebase_to_the_package_using_the_metadata() {
+        let relative = "src/nested/definition.tr";
+        let external = PathBuf::from("/external/definition.tr");
+        let (files, original, external_id) = crate::test_support::with_test_gcx(|gcx| {
+            let original = gcx.dcx.add_file_mapping(metadata_source_root(gcx).join(relative));
+            let external_id = gcx.dcx.add_file_mapping(external.clone());
+            (file_table_from_dcx(gcx), original, external_id)
+        });
+        crate::test_support::with_test_gcx(|gcx| {
+            let remap = build_file_remap(gcx, &files);
+            assert_eq!(
+                gcx.dcx.file_path(remap[&original.raw()]),
+                Some(metadata_source_root(gcx).join(relative))
+            );
+            assert_eq!(gcx.dcx.file_path(remap[&external_id.raw()]), Some(external));
+        });
+    }
 
     #[test]
     fn internal_visibility_roundtrips_with_its_defining_package_identity() {

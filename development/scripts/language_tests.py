@@ -360,10 +360,17 @@ def run_test(
             # Normalize the error output: extract just the error lines
             # (skip compilation progress messages like "Compiling – std")
             error_lines = []
+            std_path = env.std_path.resolve()
+            if std_path.is_relative_to(PROJECT_ROOT):
+                std_path = std_path.relative_to(PROJECT_ROOT)
+            std_location = f" -> {std_path}/"
             for line in actual_output.split("\n"):
                 stripped = line.strip()
                 if not stripped or line.startswith("Compiling"):
                     continue
+                # Compare the same source location in the checkout and an SDK.
+                if line.startswith(std_location):
+                    line = " -> std/" + line[len(std_location):]
                 # Rust panic output may include per-run thread IDs; normalize to keep snapshots stable.
                 line = re.sub(r"thread 'main' \(\d+\)", "thread 'main' (<pid>)", line)
                 error_lines.append(line)

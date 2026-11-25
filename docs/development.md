@@ -33,10 +33,11 @@ usable `dist/`; symlink destinations are rejected.
 ### Stage a macOS SDK
 
 Use the release SDK build to test a relocatable install on a native macOS
-host. It builds the CLI with vendored Git and OpenSSL, includes the LSP, and
-copies std sources before building the attached artifacts. Both Cargo workspaces
-use their committed lockfiles in this build. The loader audit rejects shared
-libraries outside the macOS system paths.
+host. The attached std artifacts are compiled for the build Mac's native
+target and CPU, so use this SDK on that Mac. The builder vendors Git and
+OpenSSL in the CLI, includes the LSP, and copies std sources before building
+the attached artifacts. Both Cargo workspaces use their committed lockfiles.
+The loader audit rejects shared libraries outside the macOS system paths.
 
 For an LLVM build that links zstd, supply a static archive for the host
 architecture. The path below is an example for an Apple Silicon Homebrew
@@ -52,7 +53,8 @@ python3 -B development/scripts/smoke_macos_sdk.py target/taro-0.1.0-macos-arm64.
 ```
 
 The smoke test extracts the archive to a new path, checks native linking with
-only system tools on `PATH`, and verifies editor navigation into and within std.
+only system tools on `PATH`, and verifies std source excerpts in compiler
+diagnostics and editor navigation into and within std.
 Pass `--developer-dir /Library/Developer/CommandLineTools` to test Command Line
 Tools on a host that also has Xcode installed.
 

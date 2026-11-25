@@ -5,7 +5,10 @@ use std::{
     path::{Component, Path},
 };
 
-use crate::metadata::{self, LoadedMetadata, ReuseMode};
+use crate::metadata::{
+    self, LoadedMetadata, ReuseMode,
+    wire::{FilePathWire, MetadataPayloadWire},
+};
 
 use super::{Compiler, context::Gcx};
 
@@ -50,35 +53,9 @@ impl Compiler<'_> {
         self.check()
             .map_err(|_| io::Error::other("dependency check failed"))?;
         let configuration = configuration_key(self.context, relocatable)?;
-        let mut payload =
-            metadata::build_payload_wire(self.context, ReuseMode::SemanticDependency)?;
+        let payload = metadata::build_payload_wire(self.context, ReuseMode::SemanticDependency)?;
         if relocatable {
-            let root = self
-                .context
-                .dcx()
-                .sources()
-                .resolve(&self.context.config.src)?;
-            for entry in &mut payload.file_table {
-                let relative = Path::new(&entry.path)
-                    .strip_prefix(&root)
-                    .map_err(|_| invalid_path())?;
-                if !package_relative(relative) {
-                    return Err(invalid_path());
-                }
-                // Use the same separator in distributed bundles on every host.
-                entry.path = relative
-                    .components()
-                    .map(|part| part.as_os_str().to_str().ok_or_else(invalid_path))
-                    .collect::<io::Result<Vec<_>>>()?
-                    .join("/");
-            }
-            if !payload
-                .embedded_inputs
-                .keys()
-                .all(|path| package_relative(path))
-            {
-                return Err(invalid_path());
-            }
+            validate_relocatable_paths(&payload)?;
         }
         let payload = bincode::serialize(&payload).map_err(io::Error::other)?;
         Ok(FrozenDependency::new(
@@ -146,30 +123,15 @@ impl FrozenDependency {
                 "a package with this index is already loaded",
             ));
         }
-        let mut loaded = LoadedMetadata {
+        let loaded = LoadedMetadata {
             package_identifier: gcx.config.identifier.to_string(),
             package_index: gcx.package_index(),
             artifact: None,
             payload: bincode::deserialize(&self.payload).map_err(io::Error::other)?,
         };
         if self.relocatable {
-            let root = gcx.dcx().sources().resolve(&gcx.config.src)?;
-            for entry in &mut loaded.payload.file_table {
-                let relative = Path::new(&entry.path);
-                if !package_relative(relative) {
-                    return Err(invalid_path());
-                }
-                let absolute = root.join(relative);
-                entry.path = absolute.to_str().ok_or_else(invalid_path)?.into();
-            }
-            if !loaded
-                .payload
-                .embedded_inputs
-                .keys()
-                .all(|path| package_relative(path))
-            {
-                return Err(invalid_path());
-            }
+            gcx.dcx().sources().resolve(&gcx.config.src)?;
+            validate_relocatable_paths(&loaded.payload)?;
         }
         super::assets::validate_inputs(
             gcx.config,
@@ -194,11 +156,17 @@ fn package_relative(path: &Path) -> bool {
             .all(|part| matches!(part, Component::Normal(_)))
 }
 
-fn invalid_path() -> io::Error {
-    io::Error::new(
+fn validate_relocatable_paths(payload: &MetadataPayloadWire) -> io::Result<()> {
+    if payload.file_table.iter().all(|entry| {
+        matches!(&entry.path, FilePathWire::PackageRelative(path) if package_relative(Path::new(path)))
+    }) && payload.embedded_inputs.keys().all(|path| package_relative(path))
+    {
+        return Ok(());
+    }
+    Err(io::Error::new(
         io::ErrorKind::InvalidData,
         "snapshot path is outside the package",
-    )
+    ))
 }
 
 fn configuration_key(gcx: Gcx<'_>, relocatable: bool) -> io::Result<blake3::Hash> {

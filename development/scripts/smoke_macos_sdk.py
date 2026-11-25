@@ -119,6 +119,14 @@ def main():
         subprocess.run([taro, "build", hello, "-o", executable], cwd=app, env=env, check=True)
         verify_macos_linkage(executable)
 
+        fixture = scratch.parent / "language_tests/source_files/invalid/conversion_bridge_overlap.tr"
+        rejected = subprocess.run([taro, "check", fixture], cwd=app, env=env,
+                                  capture_output=True, text=True)
+        std_source = sdk / "std/src/convert/convert.tr"
+        if (rejected.returncode != 1 or f" -> {std_source}:" not in rejected.stderr
+                or "conform[Source, Target: From[Source]]" not in rejected.stderr):
+            raise RuntimeError(f"expected a source excerpt from relocated std: {rejected.stderr}")
+
         source = app / "src/main.tr"
         source.write_text('func main() { _ = std::fs::readToString("") }\n')
         verify_editor(sdk, app, source, env)
@@ -128,7 +136,7 @@ def main():
                                  capture_output=True, text=True)
         if missing.returncode == 0 or "runtime archive missing from the Taro SDK" not in missing.stderr:
             raise RuntimeError(f"expected SDK runtime diagnostic: {missing.stderr}")
-        print("macOS SDK relocation, native linking, std navigation and missing-runtime checks passed")
+        print("macOS SDK relocation, native linking, std diagnostics and navigation checks passed")
 
 
 if __name__ == "__main__":
