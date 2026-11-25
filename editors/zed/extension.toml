@@ -4,5 +4,10 @@ name = "Taro"
 version = "0.1.0"
 schema_version = 1
 authors = ["Mantton"]
-description = "Syntax highlighting and editing configuration for Taro"
+description = "Syntax highlighting and language-server support for Taro"
 repository = "https://github.com/Mantton/Taro"
+
+[language_servers.taro-lsp]
+name = "Taro Language Server"
+languages = ["Taro"]
+language_ids = { Taro = "taro" }

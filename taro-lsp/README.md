@@ -43,11 +43,32 @@ The pilot reports typed analysis as unavailable when that target or source ident
 
 ## Use in VS Code
 
-The Taro extension launches the installed server for local `.tr` documents. Set `taro.languageServer.path` in user settings when `taro-lsp` is outside the editor's executable search path. Set `taro.sdk.path` to choose an SDK explicitly, or `taro.languageServer.bundle` for a portable installation. The pilot provides live diagnostics, inferred-type hover, go-to-definition and member completion after a dot.
+The Taro extension launches the installed server for local `.tr` documents. Set `taro.languageServer.path` when `taro-lsp` is outside the editor's executable search path. Set `taro.sdk.path` to choose an SDK explicitly, or `taro.languageServer.bundle` for a portable installation. These settings can be set in user settings or in a trusted workspace. The pilot provides live diagnostics, inferred-type hover, go-to-definition and member completion after a dot.
 
 Go to Definition follows the identifier under the cursor in a qualified path. A named namespace or explicit `mod` goes to its declaration. Modules defined only by a directory have no source location. Stored field accesses and explicit struct literal labels go to the selected field declaration, including inherited fields. Struct literal shorthand follows the local binding.
 
-The server registers file watchers with supporting clients. Without watch registration it refreshes disk sources on each text edit and uses a full package check. It refreshes embedded assets on the next analysis. Installed std files opened from a definition are browsable source, and replacing an installed bundle requires restarting the server.
+The server registers file watchers with supporting clients. Without watch registration it refreshes disk sources on each text edit and uses a full package check. It refreshes embedded assets on the next analysis. Replacing an installed bundle requires restarting the server.
+
+Opening an installed std file starts a separate analysis of the library as a source package using the SDK's default target. Go to Definition can then follow references between std files. The first query may wait for the source check. The server releases that worker when the last std document closes. Unsaved std edits affect browsing only. Project analysis uses its own installed metadata.
+
+## Use in Zed
+
+Run `npm run prepare:zed` in `tree-sitter-taro`, then use Zed's **Install Dev Extension** action and select the printed directory. The extension finds `taro-lsp` on PATH. A trusted project can also point Zed at a local SDK in `.zed/settings.json`.
+
+```json
+{
+  "lsp": {
+    "taro-lsp": {
+      "binary": {
+        "path": "/path/to/taro-lsp",
+        "arguments": ["--sdk", "/path/to/taro-sdk"]
+      }
+    }
+  }
+}
+```
+
+## Tests
 
 From the checkout root, use its shared, ignored Cargo target directory.
 

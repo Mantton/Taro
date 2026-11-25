@@ -6,7 +6,7 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
 const root = path.resolve(__dirname, '../..');
-const destination = path.join(root, 'tmp/zed-extension');
+const destination = path.join(root, 'target/zed-extension');
 const checkout = path.join(destination, 'grammars/taro');
 const repository = pathToFileURL(root).href;
 const revision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
@@ -28,6 +28,8 @@ cpSync(parserSource, stagedSource, { recursive: true });
 const languages = path.join(destination, 'languages');
 rmSync(languages, { recursive: true, force: true });
 cpSync(path.join(__dirname, 'languages'), languages, { recursive: true });
+cpSync(path.join(__dirname, 'Cargo.toml'), path.join(destination, 'Cargo.toml'));
+cpSync(path.join(__dirname, 'src'), path.join(destination, 'src'), { recursive: true });
 writeFileSync(path.join(destination, 'extension.toml'),
   readFileSync(path.join(__dirname, 'extension.toml'), 'utf8') +
   `\n[grammars.taro]\nrepository = ${JSON.stringify(repository)}\nrev = "${revision}"\npath = "tree-sitter-taro"\n`);
