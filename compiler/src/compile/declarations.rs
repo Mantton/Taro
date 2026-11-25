@@ -24,14 +24,14 @@ use super::{
 };
 
 /// A declaration's place in the package and its source signature.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct DeclarationAnchor {
     pub package: String,
     pub enclosing: Vec<DeclarationComponent>,
     pub declaration: DeclarationComponent,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct DeclarationComponent {
     pub name: String,
     pub kind: DefinitionKind,
@@ -39,20 +39,20 @@ pub struct DeclarationComponent {
     pub signature: Option<blake3::Hash>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DeclarationRecord {
     pub anchor: DeclarationAnchor,
     pub location: DeclarationKey,
 }
 
 /// Identifies an unchanged body in a declared function.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct BodyIdentity {
     pub owner: DeclarationAnchor,
     pub content: blake3::Hash,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BodyRecord {
     pub identity: Arc<BodyIdentity>,
     pub declaration: DeclarationKey,
@@ -61,14 +61,14 @@ pub struct BodyRecord {
 
 /// A traversal position within one unchanged body. Compiler node IDs never
 /// cross revisions.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct BodyLocalAnchor {
     pub body: Arc<BodyIdentity>,
     pub ordinal: u32,
 }
 
 /// A diagnostic or edit range relative to the beginning of its body.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BodyRelativeRange {
     pub body: Arc<BodyIdentity>,
     pub start: Position,
@@ -159,6 +159,10 @@ impl Default for DeclarationTracker {
 }
 
 impl DeclarationTracker {
+    pub fn revision(&self) -> Option<u64> {
+        self.revision
+    }
+
     /// Reject late replies. If filesystem changes were coalesced, supply files
     /// deleted and recreated since the last accepted revision explicitly.
     pub fn update(&mut self, analysis: &AnalysisProduct, recreated: &[PathBuf]) -> bool {

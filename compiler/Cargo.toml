@@ -19,9 +19,9 @@ indexmap = "2.8.0"
 typed-arena = "2.0.2"
 ena = "0.14.3"
 bumpalo = "3.17.0"
-serde = { version = "1.0.219", features = ["derive"] }
+serde = { version = "1.0.219", features = ["derive", "rc"] }
 bincode = "1.3.3"
-blake3 = "1.8.2"
+blake3 = { version = "1.8.2", features = ["serde"] }
 inkwell = { version = "0.9.0", default-features = false, features = ["llvm22-1"], optional = true }
 # Keep llvm-sys direct so its selected llvm-config is available to build.rs.
 llvm-sys = { version = "221.0.1", features = ["strict-versioning"], optional = true }

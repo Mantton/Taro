@@ -283,7 +283,7 @@ pub struct Namespace {
     pub declarations: Vec<Declaration>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Abi {
     C,
     Blocking,

@@ -28,7 +28,7 @@ use super::{
 
 /// A source range in the package revision from which it was captured.
 /// Columns count Unicode scalar values, as they do in the lexer.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SourceRange {
     pub path: PathBuf,
     pub start: Position,
@@ -47,7 +47,7 @@ impl SourceRange {
 
 /// A declaration address within one revision. The package identifier and
 /// exact source range disambiguate overloads without retaining compiler IDs.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct DeclarationKey {
     pub package: String,
     pub name: String,
@@ -68,7 +68,7 @@ impl DeclarationKey {
 }
 
 /// Literal contents and resolvable declarations in place of interner slots.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum OwnedConstant {
     Bytes(Box<[u8]>),
     Integer(i128),
@@ -108,7 +108,7 @@ impl OwnedConstant {
 
 /// The compiler's type shape with owner-local definitions copied to source
 /// addresses. A synthetic declaration may have no source address.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TypeShape {
     Bool,
     Rune,
@@ -157,32 +157,32 @@ pub enum TypeShape {
     Never,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TupleElement {
     pub label: Option<String>,
     pub ty: TypeShape,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InterfaceShape {
     pub declaration: Option<DeclarationKey>,
     pub arguments: Box<[Argument]>,
     pub bindings: Box<[(String, TypeShape)]>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Argument {
     Type(TypeShape),
     Constant(ConstantArgument),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ConstantArgument {
     pub ty: TypeShape,
     pub value: ConstantArgumentValue,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ConstantArgumentValue {
     Literal(OwnedConstant),
     Parameter { index: usize, name: String },
@@ -316,7 +316,7 @@ impl ConstantArgument {
 }
 
 /// Successful semantic facts and diagnostics, tagged with the input revision.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AnalysisProduct {
     pub revision: u64,
     pub complete: bool,
@@ -329,7 +329,7 @@ pub struct AnalysisProduct {
 }
 
 /// Syntax damage that may conceal declaration boundaries.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SyntaxUncertainty {
     None,
     Files(Box<[PathBuf]>),
@@ -361,13 +361,13 @@ impl SyntaxUncertainty {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MissingMember {
     pub insertion: SourceRange,
     pub receiver: TypeShape,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TypedOccurrence {
     pub source: SourceRange,
     pub ty: TypeShape,
@@ -376,13 +376,13 @@ pub struct TypedOccurrence {
     pub local_declaration: Option<LocalDeclaration>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LocalDeclaration {
     pub source: SourceRange,
     pub anchor: BodyLocalAnchor,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AnalysisDiagnostic {
     pub source: Option<SourceRange>,
     pub body_range: Option<BodyRelativeRange>,
@@ -393,7 +393,7 @@ pub struct AnalysisDiagnostic {
     pub suggestion: Option<AnalysisSuggestion>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AnalysisSuggestion {
     pub source: SourceRange,
     pub body_range: Option<BodyRelativeRange>,

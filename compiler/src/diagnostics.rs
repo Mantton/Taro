@@ -386,7 +386,7 @@ struct DiagCtxInner {
     suggestions: Vec<Suggestion>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Applicability {
     /// Safe to apply automatically with `taro fix`.
     MachineApplicable,
@@ -437,7 +437,7 @@ impl Diagnostic {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DiagnosticLevel {
     Warn,
     Info,

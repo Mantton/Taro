@@ -11,7 +11,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::{Cell, RefCell};
 
 pub use crate::span::PackageIndex;
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum DefinitionKind {
     Module,
     Struct,
@@ -68,7 +68,7 @@ impl DefinitionKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum VariantCtorKind {
     Function,
     Constant,

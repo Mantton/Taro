@@ -23,6 +23,7 @@ mod analysis_oracle;
 pub mod analysis_products;
 pub(crate) mod assets;
 pub mod bench_collector;
+pub mod body_cache;
 pub mod body_check;
 pub mod config;
 pub mod context;

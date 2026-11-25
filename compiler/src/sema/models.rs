@@ -496,7 +496,7 @@ pub enum TyKind<'arena> {
 
 /// Function values preserve async, safety and ABI identity through inference
 /// and metadata. Only safe Taro pointers implement the safe callable traits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct FunctionPointerEffects {
     pub kind: ClosureKind,
     pub is_unsafe: bool,
@@ -513,7 +513,7 @@ impl Default for FunctionPointerEffects {
 }
 
 /// Kind of type alias
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum AliasKind {
     /// Impl block associated type: `impl Foo { type Bar = Int }`
     Inherent,
@@ -526,7 +526,7 @@ pub enum AliasKind {
 }
 
 /// Classification of a closure's callable behavior
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ClosureKind {
     /// Repeatable synchronous invocation over a persistent environment.
     Fn,
@@ -656,7 +656,7 @@ pub struct ClosureCaptures<'arena> {
     pub kind: ClosureKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum AdtKind {
     Struct,
     Enum,
@@ -800,7 +800,7 @@ pub struct EnumDefinition<'arena> {
     pub variants: &'arena [EnumVariant<'arena>],
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum IntTy {
     ISize,
     I8,
@@ -809,7 +809,7 @@ pub enum IntTy {
     I64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum UIntTy {
     USize,
     U8,
@@ -818,7 +818,7 @@ pub enum UIntTy {
     U64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum FloatTy {
     F32,
     F64,

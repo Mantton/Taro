@@ -18,7 +18,7 @@ use super::{
 
 /// Owned IDE facts for one checked declaration, including its lexical closures.
 /// Package diagnostics and build state require a separate package analysis.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BodyProduct {
     pub package_fingerprint: blake3::Hash,
     pub declaration: DeclarationRecord,
