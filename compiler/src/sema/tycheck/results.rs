@@ -56,6 +56,7 @@ pub struct TypeCheckResults<'ctx> {
     /// including explicit generics absent from value parameters/results.
     pub(crate) selected_method_calls:
         FxHashMap<hir::NodeID, (DefinitionID, GenericArguments<'ctx>)>,
+    pub(crate) missing_member_receivers: FxHashMap<hir::NodeID, bool>,
     node_tys: FxHashMap<hir::NodeID, Ty<'ctx>>,
     node_adjustments: FxHashMap<hir::NodeID, Vec<Adjustment<'ctx>>>,
     interface_calls: FxHashMap<hir::NodeID, InterfaceCallInfo>,
@@ -96,6 +97,8 @@ impl<'ctx> TypeCheckResults<'ctx> {
             .extend(other.tuple_assignment_values.drain());
         self.selected_method_calls
             .extend(other.selected_method_calls.drain());
+        self.missing_member_receivers
+            .extend(other.missing_member_receivers.drain());
         self.node_tys.extend(other.node_tys.drain());
         self.node_adjustments.extend(other.node_adjustments.drain());
         self.interface_calls.extend(other.interface_calls.drain());

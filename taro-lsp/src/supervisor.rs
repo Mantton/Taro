@@ -6,12 +6,20 @@ use std::{
     io::{self, BufReader, BufWriter},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
-use compiler::compile::analysis_products::AnalysisProduct;
+use compiler::compile::{
+    analysis_products::AnalysisProduct,
+    source::{DiskSources, SourceProvider, SourceText},
+};
 use crossbeam_channel::{Receiver, Sender, TryRecvError, bounded};
+use lsp_types::Uri;
 
 use crate::protocol::{self, AnalysisRequest, FromWorker, Inputs, Stamp, ToWorker};
 
@@ -46,6 +54,7 @@ pub enum Notice {
 }
 
 pub struct Supervisor {
+    instance: u64,
     root: PathBuf,
     launch: Launch,
     policy: Policy,
@@ -54,6 +63,8 @@ pub struct Supervisor {
     revision: u64,
     flight: Option<Flight>,
     documents: BTreeMap<PathBuf, Document>,
+    current: Option<Box<AnalysisProduct>>,
+    published: BTreeSet<Uri>,
     pending: BTreeSet<PathBuf>,
     reset: bool,
     failures: u32,
@@ -62,7 +73,8 @@ pub struct Supervisor {
 
 struct Document {
     version: i32,
-    text: String,
+    text: Arc<SourceText>,
+    uri: Option<Uri>,
 }
 
 struct Flight {
@@ -73,7 +85,11 @@ struct Flight {
 
 impl Supervisor {
     pub fn new(root: PathBuf, launch: Launch, policy: Policy) -> Self {
+        static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
         Self {
+            instance: NEXT_INSTANCE
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                .expect("workspace instances exhausted"),
             root,
             launch,
             policy,
@@ -82,6 +98,8 @@ impl Supervisor {
             revision: 1,
             flight: None,
             documents: BTreeMap::new(),
+            current: None,
+            published: BTreeSet::new(),
             pending: BTreeSet::new(),
             reset: true,
             failures: 0,
@@ -93,6 +111,54 @@ impl Supervisor {
         self.revision
     }
 
+    pub fn instance(&self) -> u64 {
+        self.instance
+    }
+
+    pub fn current(&self) -> Option<&AnalysisProduct> {
+        self.current.as_deref()
+    }
+
+    pub fn install(&mut self, product: Box<AnalysisProduct>) {
+        if product.revision == self.revision {
+            self.current = Some(product);
+        }
+    }
+
+    pub fn set_document_uri(&mut self, path: &Path, uri: Uri) {
+        if let Some(document) = self.documents.get_mut(path) {
+            document.uri = Some(uri);
+        }
+    }
+
+    pub fn document_uri(&self, path: &Path) -> Option<Uri> {
+        self.documents
+            .get(path)
+            .and_then(|document| document.uri.clone())
+            .or_else(|| url::Url::from_file_path(path).ok()?.as_str().parse().ok())
+    }
+
+    pub fn document_version(&self, path: &Path) -> Option<i32> {
+        self.documents.get(path).map(|document| document.version)
+    }
+
+    pub fn open_document_uris(&self) -> impl Iterator<Item = Uri> + '_ {
+        self.documents
+            .keys()
+            .filter_map(|path| self.document_uri(path))
+    }
+
+    pub fn source_text(&self, path: &Path) -> Option<Arc<SourceText>> {
+        self.documents
+            .get(path)
+            .map(|document| Arc::clone(&document.text))
+            .or_else(|| DiskSources.read_text(path).ok())
+    }
+
+    pub fn swap_published(&mut self, new: BTreeSet<Uri>) -> BTreeSet<Uri> {
+        std::mem::replace(&mut self.published, new)
+    }
+
     pub fn set_document(&mut self, path: PathBuf, version: i32, text: String) -> bool {
         if self
             .documents
@@ -101,8 +167,18 @@ impl Supervisor {
         {
             return false;
         }
-        self.documents
-            .insert(path.clone(), Document { version, text });
+        let uri = self
+            .documents
+            .get(&path)
+            .and_then(|document| document.uri.clone());
+        self.documents.insert(
+            path.clone(),
+            Document {
+                version,
+                text: Arc::new(SourceText::new(text)),
+                uri,
+            },
+        );
         self.changed(path);
         true
     }
@@ -134,6 +210,7 @@ impl Supervisor {
     }
 
     fn advance(&mut self) {
+        self.current = None;
         self.revision = self
             .revision
             .checked_add(1)
@@ -200,7 +277,7 @@ impl Supervisor {
                 documents: self
                     .documents
                     .iter()
-                    .map(|(path, document)| (path.clone(), document.text.clone()))
+                    .map(|(path, document)| (path.clone(), document.text.text().to_owned()))
                     .collect(),
             }
         } else {
@@ -212,7 +289,7 @@ impl Supervisor {
                             path.clone(),
                             self.documents
                                 .get(path)
-                                .map(|document| document.text.clone()),
+                                .map(|document| document.text.text().to_owned()),
                         )
                     })
                     .collect(),
@@ -277,6 +354,7 @@ impl Supervisor {
 
     fn failed(&mut self, now: Instant, error: String) -> Notice {
         self.process.take();
+        self.current = None;
         self.flight = None;
         self.reset = true;
         self.pending.clear();

@@ -365,6 +365,14 @@ impl SyntaxUncertainty {
 pub struct MissingMember {
     pub insertion: SourceRange,
     pub receiver: TypeShape,
+    pub items: Vec<MemberCompletion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MemberCompletion {
+    pub name: String,
+    pub is_method: bool,
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -546,6 +554,7 @@ struct OccurrenceCollector<'result, 'ctx> {
 
 struct BodyTraversal {
     identity: Arc<BodyIdentity>,
+    definition: DefinitionID,
     next_ordinal: u32,
 }
 
@@ -572,7 +581,11 @@ impl OccurrenceCollector<'_, '_> {
             && let Some(source) = SourceRange::capture(self.gcx, span)
         {
             #[cfg(test)]
-            self.gcx.dcx().analysis_work.copied_occurrences.update(|count| count + 1);
+            self.gcx
+                .dcx()
+                .analysis_work
+                .copied_occurrences
+                .update(|count| count + 1);
             self.occurrences.push(TypedOccurrence {
                 source,
                 ty: TypeShape::capture(self.gcx, ty),
@@ -616,6 +629,7 @@ impl OccurrenceCollector<'_, '_> {
         });
         Some(BodyTraversal {
             identity,
+            definition: id,
             next_ordinal: 0,
         })
     }
@@ -645,11 +659,30 @@ impl HirVisitor for OccurrenceCollector<'_, '_> {
             if let Some(receiver) = self.types.try_node_type(target.id)
                 && !receiver.is_error()
                 && !receiver.is_infer()
-                && let Some(insertion) = SourceRange::capture(self.gcx, *insertion)
+                && let Some(site) = SourceRange::capture(self.gcx, *insertion)
             {
+                let mut items = Vec::new();
+                if let Some(owner) = &self.current_body {
+                    let addressable = self
+                        .types
+                        .missing_member_receivers
+                        .get(&expression.id)
+                        .copied()
+                        .unwrap_or(false);
+                    (items, _) = self.gcx.dcx().with_deferred_diagnostics(|| {
+                        crate::sema::tycheck::solve::completion::members(
+                            self.gcx,
+                            owner.definition,
+                            receiver,
+                            addressable,
+                            *insertion,
+                        )
+                    });
+                }
                 self.missing_members.push(MissingMember {
-                    insertion,
+                    insertion: site,
                     receiver: TypeShape::capture(self.gcx, receiver),
+                    items,
                 });
             }
             hir::walk_expression(self, expression);
@@ -896,6 +929,47 @@ mod tests {
     }
 
     #[test]
+    fn member_completion_checks_scope_and_receiver_place() {
+        let source = r#"
+struct Board {
+    value: int32
+    private hidden: int32
+}
+extend Board {
+    public func show() -> int32 { self.value }
+    private func secret() -> int32 { self.hidden }
+    public static func reset() {}
+}
+extend &Board {
+    public func borrowed() -> int32 { self.value }
+}
+func missing(_ board: Board) {
+    board.
+}
+"#;
+        with_source_compiler(
+            &[("main.tr", source)],
+            false,
+            HarnessMode::None,
+            |compiler| {
+                let result = compiler.analyze_partial_owned(1);
+                let [member] = result.missing_members.as_slice() else {
+                    panic!("missing receiver facts: {:?}", result.diagnostics);
+                };
+                let items = member
+                    .items
+                    .iter()
+                    .map(|item| (item.name.as_str(), item.is_method))
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    items,
+                    [("borrowed", true), ("show", true), ("value", false)]
+                );
+            },
+        );
+    }
+
+    #[test]
     fn incomplete_optional_members_keep_the_unwrapped_receiver_type() {
         use crate::{
             PackageIndex,
@@ -973,6 +1047,14 @@ mod tests {
                 assert!(matches!(&member.receiver,
                     TypeShape::Nominal { declaration: Some(declaration), .. }
                         if declaration.name == "Board"));
+                assert_eq!(
+                    member
+                        .items
+                        .iter()
+                        .map(|item| item.name.as_str())
+                        .collect::<Vec<_>>(),
+                    ["value"]
+                );
                 assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
                 assert_eq!(
                     result.diagnostics[0].code,

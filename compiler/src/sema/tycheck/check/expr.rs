@@ -83,6 +83,8 @@ impl<'ctx> Checker<'ctx> {
         match &expression.kind {
             hir::ExpressionKind::MissingMember { target, .. } => {
                 self.synth(target, cs);
+                let addressable = self.receiver_is_addressable(target, cs);
+                self.results.borrow_mut().missing_member_receivers.insert(expression.id, addressable);
                 self.gcx().types.error
             }
             hir::ExpressionKind::MemberBrackets {

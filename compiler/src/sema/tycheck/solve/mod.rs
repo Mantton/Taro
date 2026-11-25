@@ -35,6 +35,7 @@ mod apply;
 mod cast;
 mod coerce;
 mod collection_span;
+pub(crate) mod completion;
 mod conformance_inference;
 mod deref;
 mod early_interface;
@@ -741,10 +742,8 @@ impl<'ctx> ConstraintSystem<'ctx> {
         })
     }
 
-    fn solve_internal(&mut self, check_unresolved: bool, default_scope: Option<Rc<[Ty<'ctx>]>>) {
-        let gcx = self.infer_cx.gcx;
-
-        let solver = ConstraintSolver {
+    fn take_solver(&mut self, default_scope: Option<Rc<[Ty<'ctx>]>>) -> ConstraintSolver<'ctx> {
+        ConstraintSolver {
             icx: self.infer_cx.clone(),
             coercions: 0,
             boxings: 0,
@@ -773,8 +772,12 @@ impl<'ctx> ConstraintSystem<'ctx> {
             lookups_have_waiters: false,
             receiver_proofs: std::mem::take(&mut self.receiver_proofs),
             default_scope,
-        };
+        }
+    }
 
+    fn solve_internal(&mut self, check_unresolved: bool, default_scope: Option<Rc<[Ty<'ctx>]>>) {
+        let gcx = self.infer_cx.gcx;
+        let solver = self.take_solver(default_scope);
         let mut driver = SolverDriver::new(solver);
         driver.default_collection_literals = check_unresolved;
         driver.allow_fallbacks = !self.isolated_goals;

@@ -1,4 +1,5 @@
 mod bundle;
+mod features;
 mod project;
 mod protocol;
 mod server;

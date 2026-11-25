@@ -26,6 +26,10 @@ std_digest = "<digest from the installed bundle>"
 
 The pilot reports typed analysis as unavailable when that target or source identity is missing or a project depends on an unresolved package. The `--target-facts` developer option starts bootstrap analysis with one descriptor.
 
+## Use in VS Code
+
+The Taro extension launches the installed server for local `.tr` documents. Set `taro.languageServer.path` in user settings when `taro-lsp` is outside the editor's executable search path. The pilot provides live diagnostics, inferred-type hover, go-to-definition and member completion after a dot.
+
 From the checkout root, use its shared, ignored Cargo target directory.
 
 ```sh

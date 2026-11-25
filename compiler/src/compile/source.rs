@@ -472,6 +472,10 @@ fn read_once<T: Clone>(
 
 /// Resolve the existing prefix of a path. An editor can open a file
 /// whose parent directory or complete path has not been saved yet.
+pub fn canonical_source_path(path: &Path) -> io::Result<PathBuf> {
+    resolve_disk_path(path).map(|path| path.canonical)
+}
+
 fn resolve_disk_path(path: &Path) -> io::Result<DiskPath> {
     let mut path = std::path::absolute(path)?;
     let mut suffix = Vec::<OsString>::new();

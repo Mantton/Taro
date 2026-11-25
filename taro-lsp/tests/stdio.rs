@@ -136,6 +136,60 @@ fn copy_fixture_tree(from: &Path, to: &Path) {
     }
 }
 
+impl Session<Message> {
+    fn notify(&mut self, method: &str, params: Value) {
+        Message::Notification(Notification::new(method.into(), params))
+            .write(&mut self.input)
+            .unwrap();
+    }
+
+    fn request(&mut self, id: i32, method: &str, params: Value) {
+        Message::Request(Request::new(id.into(), method.into(), params))
+            .write(&mut self.input)
+            .unwrap();
+    }
+
+    fn response(&self, id: i32) -> Value {
+        loop {
+            if let Message::Response(response) = self.next() {
+                assert_eq!(response.id, id.into());
+                return response.response_result.unwrap();
+            }
+        }
+    }
+
+    fn open(&mut self, uri: &str, text: &str) {
+        self.notify(
+            "textDocument/didOpen",
+            json!({
+                "textDocument": { "uri": uri, "version": 1, "languageId": "taro", "text": text },
+            }),
+        );
+    }
+
+    fn change(&mut self, uri: &str, version: i32, text: &str) {
+        self.notify(
+            "textDocument/didChange",
+            json!({
+                "textDocument": { "uri": uri, "version": version },
+                "contentChanges": [{ "text": text }],
+            }),
+        );
+    }
+}
+
+fn at(uri: &str, text: &str, needle: &str) -> Value {
+    let (line, before) = text
+        .lines()
+        .enumerate()
+        .find_map(|(line, text)| Some((line, &text[..text.find(needle)?])))
+        .unwrap();
+    json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": line, "character": before.encode_utf16().count() },
+    })
+}
+
 #[test]
 fn worker_checks_unsaved_siblings_then_updates_only_one_buffer() {
     let fixture = Fixture::new();
@@ -386,4 +440,118 @@ fn installed_bundle_resolves_std_sources_and_rebuilds_for_target_changes() {
             .is_some_and(|message| message.contains("sources do not match")),
         "{stale}"
     );
+}
+
+#[test]
+fn editor_features_follow_two_unsaved_files_and_clear_repaired_diagnostics() {
+    let fixture = Fixture::new();
+    let mut server = Session::spawn(&mut fixture.command(), Message::read);
+    let root = as_uri(&fixture.root);
+    server.request(
+        1,
+        "initialize",
+        json!({
+            "capabilities": {},
+            "workspaceFolders": [{ "name": "test", "uri": root.as_str() }],
+        }),
+    );
+    let capabilities = server.response(1);
+    assert_eq!(capabilities["capabilities"]["hoverProvider"], true);
+    server.notify("initialized", json!({}));
+
+    let definitions = as_uri(&fixture.root.join("src/definitions.tr"));
+    let active = as_uri(&fixture.root.join("src/active.tr"));
+    server.open(
+        definitions.as_str(),
+        concat!(
+            "func choose(_ value: int32) -> int32 { value }\n",
+            "func choose(_ value: bool) -> string { \"selected\" }\n",
+            "struct Sample { count: int32 }\n",
+            "extend Sample {\n    public func show() -> int32 { self.count }\n}\n",
+            "func make() -> Sample { Sample { count: 1 } }\n",
+        ),
+    );
+    let original = concat!(
+        "func inspect() {\n",
+        "    input := 7\n",
+        "    _ = \"🌱\"; value := choose(input)\n",
+        "    _ = value\n",
+        "    item := make()\n",
+        "    _ = item.show()\n",
+        "}\n",
+    );
+    server.open(active.as_str(), original);
+    server.request(
+        2,
+        "textDocument/definition",
+        at(active.as_str(), original, "choose"),
+    );
+    let first = server.response(2);
+    assert_eq!(first["uri"], definitions.as_str());
+    assert_eq!(first["range"]["start"]["line"], 0);
+
+    let changed = original.replace("input := 7", "input := true");
+    server.change(active.as_str(), 2, &changed);
+    server.request(
+        3,
+        "textDocument/definition",
+        at(active.as_str(), &changed, "choose"),
+    );
+    let second = server.response(3);
+    assert_eq!(second["uri"], definitions.as_str());
+    assert_eq!(second["range"]["start"]["line"], 1);
+    server.request(
+        4,
+        "textDocument/hover",
+        at(active.as_str(), &changed, "value"),
+    );
+    assert_eq!(server.response(4)["contents"]["value"], "string");
+
+    let dot = changed.replace("_ = item.show()", "item.");
+    server.change(active.as_str(), 3, &dot);
+    let mut caret = at(active.as_str(), &dot, "item.");
+    let character = caret["position"]["character"].as_u64().unwrap() + 5;
+    caret["position"]["character"] = character.into();
+    server.request(5, "textDocument/completion", caret);
+    let mut saw_diagnostic = false;
+    loop {
+        match server.next() {
+            Message::Notification(note)
+                if note.method == "textDocument/publishDiagnostics"
+                    && note.params["uri"] == active.as_str()
+                    && note.params["version"] == 3 =>
+            {
+                saw_diagnostic = !note.params["diagnostics"].as_array().unwrap().is_empty();
+            }
+            Message::Response(response) => {
+                assert_eq!(response.id, 5.into());
+                let completions = response.response_result.unwrap();
+                let labels = completions
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|item| item["label"].as_str().unwrap())
+                    .collect::<Vec<_>>();
+                assert_eq!(labels, ["count", "show"]);
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(saw_diagnostic);
+
+    server.change(active.as_str(), 4, &changed);
+    loop {
+        if let Message::Notification(note) = server.next()
+            && note.method == "textDocument/publishDiagnostics"
+            && note.params["uri"] == active.as_str()
+            && note.params["version"] == 4
+        {
+            assert!(note.params["diagnostics"].as_array().unwrap().is_empty());
+            break;
+        }
+    }
+    server.request(6, "shutdown", Value::Null);
+    assert_eq!(server.response(6), Value::Null);
+    server.notify("exit", Value::Null);
 }

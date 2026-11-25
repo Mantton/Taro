@@ -1,15 +1,31 @@
 {
     "name": "taro",
     "displayName": "Taro Language",
-    "description": "Syntax highlighting and editing configuration for Taro",
+    "description": "Syntax highlighting and language-server support for Taro",
     "version": "0.1.0",
     "engines": {
-        "vscode": "^1.74.0"
+        "vscode": "^1.82.0"
     },
     "categories": [
         "Programming Languages"
     ],
+    "activationEvents": ["onLanguage:taro"],
+    "main": "./extension.js",
+    "dependencies": {
+        "vscode-languageclient": "^9.0.1"
+    },
     "contributes": {
+        "configuration": {
+            "title": "Taro",
+            "properties": {
+                "taro.languageServer.path": {
+                    "type": "string",
+                    "default": "taro-lsp",
+                    "scope": "machine",
+                    "description": "Path to the installed Taro language server executable."
+                }
+            }
+        },
         "languages": [
             {
                 "id": "taro",
