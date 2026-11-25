@@ -195,6 +195,13 @@ def main():
             lib_dir = lib_dir / target
         lib_dir.mkdir(parents=True, exist_ok=True)
 
+        # Use the same target machine as the compiler to describe the layout.
+        # The standalone frontend can read the result without loading LLVM.
+        facts_command = [str(dst_bin), "target-facts", str(lib_dir / "target-facts.toml")]
+        if target:
+            facts_command.extend(["--target", target])
+        run_command(facts_command, cwd=repo_root)
+
         src_lib = repo_root / "target"
         if target:
             src_lib = src_lib / target

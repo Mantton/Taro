@@ -18,6 +18,7 @@ pub mod context;
 pub mod entry;
 pub mod fuzz_collector;
 pub mod harness;
+pub mod target_facts;
 pub mod test_collector;
 #[cfg(test)]
 mod analysis_oracle;
@@ -533,21 +534,20 @@ impl<'state> Compiler<'state> {
 
         // Tokenization & Parsing
         // Get target triple for file-level cfg evaluation
-        let triple = self.context.store.target_layout.triple();
-        let triple_str = triple.as_str().to_str().unwrap_or("");
+        let triple = self.context.store.target_facts.triple();
 
         let phase_started_at = Instant::now();
         let package = if self.context.config.is_script {
             parse::lexer::tokenize_single_file(
                 self.context.config.src.clone(),
                 &self.context.dcx,
-                Some(triple_str),
+                Some(triple),
             )?
         } else {
             parse::lexer::tokenize_package(
                 self.context.config.src.clone(),
                 &self.context.dcx,
-                Some(triple_str),
+                Some(triple),
             )?
         };
         timings.push_elapsed("parse.tokenize", phase_started_at);

@@ -1,8 +1,7 @@
 use crate::{ast, cfg::TargetInfo, compile::context::GlobalContext};
 
 pub(crate) fn target_info(gcx: GlobalContext<'_>) -> TargetInfo {
-    let triple = gcx.store.target_layout.triple();
-    let mut target = TargetInfo::from_triple(triple.as_str().to_str().unwrap_or(""));
+    let mut target = TargetInfo::from_triple(gcx.store.target_facts.triple());
     target.profile = match gcx.config.profile {
         crate::compile::config::BuildProfile::Debug => "debug".to_string(),
         crate::compile::config::BuildProfile::Release => "release".to_string(),

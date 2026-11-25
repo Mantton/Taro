@@ -113,9 +113,17 @@ impl<'ctx> LiteralValidator<'_, 'ctx> {
         if let hir::Literal::Integer { value, .. } = literal
             && let Some(ty) = self.results.try_node_type(id)
             && !(if pattern {
-                super::utils::literal::integer_literal_fits(*value, ty)
+                super::utils::literal::integer_literal_fits(
+                    *value,
+                    ty,
+                    self.context.store.target_facts.pointer_bits(),
+                )
             } else {
-                super::utils::literal::integer_expression_literal_fits(*value, ty)
+                super::utils::literal::integer_expression_literal_fits(
+                    *value,
+                    ty,
+                    self.context.store.target_facts.pointer_bits(),
+                )
             })
         {
             self.context.dcx().emit_error(

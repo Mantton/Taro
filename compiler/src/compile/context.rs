@@ -2152,6 +2152,8 @@ pub struct CompilerStore<'arena> {
     pub compiled_instances: RefCell<FxHashSet<Instance<'arena>>>,
     /// Target-specific layout information (shared between MIR and codegen).
     pub target_layout: TargetLayout,
+    /// Target inputs needed by the frontend and semantic MIR passes.
+    pub target_facts: super::target_facts::TargetFacts,
     /// The std provider package index selected by the driver.
     pub std_provider_index: std::cell::Cell<Option<PackageIndex>>,
     /// Cached standard library language items collected from std.
@@ -2244,6 +2246,7 @@ impl<'arena> CompilerStore<'arena> {
             trait_visibility_uses: Default::default(),
             warning_marks: Default::default(),
             compiled_instances: Default::default(),
+            target_facts: target_layout.facts().clone(),
             target_layout,
             std_provider_index: std::cell::Cell::new(None),
             std_items: Default::default(),

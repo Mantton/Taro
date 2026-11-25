@@ -952,7 +952,7 @@ pub(crate) fn integer_layout<'ctx>(
         TyKind::Int(kind) => Some(IntegerLayout {
             signed: true,
             bits: match kind {
-                IntTy::ISize => (gcx.store.target_layout.pointer_size * 8) as u32,
+                IntTy::ISize => gcx.store.target_facts.pointer_bits(),
                 IntTy::I8 => 8,
                 IntTy::I16 => 16,
                 IntTy::I32 => 32,
@@ -962,7 +962,7 @@ pub(crate) fn integer_layout<'ctx>(
         TyKind::UInt(kind) => Some(IntegerLayout {
             signed: false,
             bits: match kind {
-                UIntTy::USize => (gcx.store.target_layout.pointer_size * 8) as u32,
+                UIntTy::USize => gcx.store.target_facts.pointer_bits(),
                 UIntTy::U8 => 8,
                 UIntTy::U16 => 16,
                 UIntTy::U32 => 32,

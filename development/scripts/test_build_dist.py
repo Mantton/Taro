@@ -67,6 +67,8 @@ class BuildDistributionTests(unittest.TestCase):
 
     def test_success_publishes_complete_distribution_once(self) -> None:
         def bootstrap(command, **kwargs):
+            if "target-facts" in command:
+                Path(command[-1]).write_text('triple = "test"\npointer_bits = 64\n')
             if "check" in command:
                 self.assertEqual((self.dist / "usable").read_text(), "old toolchain")
                 home = Path(kwargs["env"]["TARO_HOME"])
@@ -76,6 +78,7 @@ class BuildDistributionTests(unittest.TestCase):
         self.assertFalse((self.dist / "usable").exists())
         self.assertEqual((self.dist / "bin/taro").read_bytes(), b"new compiler")
         self.assertEqual((self.dist / "attached-std").read_text(), "ready")
+        self.assertIn("pointer_bits = 64", (self.dist / "lib/taro/runtime/target-facts.toml").read_text())
         self.assertEqual((self.dist / "std").resolve(), self.std)
         self.assertFalse((self.dist / ".std_bootstrap.tr").exists())
 

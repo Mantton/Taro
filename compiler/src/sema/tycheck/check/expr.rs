@@ -954,7 +954,7 @@ impl<'ctx> Checker<'ctx> {
                         crate::parse::IntegerTypeSuffix::U64 => gcx.types.uint64,
                     };
 
-                    if !integer_expression_literal_fits(*value, ty) {
+                    if !integer_expression_literal_fits(*value, ty, gcx.store.target_facts.pointer_bits()) {
                         gcx.dcx().emit_error(
                             format!(
                                 "integer literal '{}' is out of range for type '{}'",
@@ -976,7 +976,7 @@ impl<'ctx> Checker<'ctx> {
                 });
 
                 if let Some(ty) = opt_ty {
-                    if !integer_expression_literal_fits(*value, ty) {
+                    if !integer_expression_literal_fits(*value, ty, gcx.store.target_facts.pointer_bits()) {
                         gcx.dcx().emit_error(
                             format!(
                                 "integer literal '{}' is out of range for type '{}'",

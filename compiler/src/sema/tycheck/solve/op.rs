@@ -135,11 +135,11 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return;
         };
 
-        if integer_expression_literal_fits(value, ty) {
+        let gcx = self.gcx();
+        if integer_expression_literal_fits(value, ty, gcx.store.target_facts.pointer_bits()) {
             return;
         }
 
-        let gcx = self.gcx();
         gcx.dcx().emit_error(
             format!(
                 "integer literal '{}' is out of range for type '{}'",

@@ -5,6 +5,7 @@
 
 use crate::{
     compile::config::{BuildProfile, OptLevel, OptimizationMode},
+    compile::target_facts::TargetFacts,
     diagnostics::DiagCtx,
     error::CompileResult,
 };
@@ -45,8 +46,8 @@ fn uses_global_isel(target_machine: &TargetMachine) -> bool {
 ///
 /// Created early in the compilation pipeline and shared between MIR and Codegen.
 pub struct TargetLayout {
-    pub pointer_size: u64,
     pub pointer_align: u64,
+    facts: TargetFacts,
     requested_triple: Option<String>,
     cpu: String,
     features: String,
@@ -119,17 +120,32 @@ impl TargetLayout {
             })?;
 
         let target_data = target_machine.get_target_data();
-        let pointer_size = target_data.get_pointer_byte_size(None) as u64;
+        let facts = TargetFacts::new(
+            target_machine
+                .get_triple()
+                .as_str()
+                .to_string_lossy()
+                .into_owned(),
+            target_data.get_pointer_byte_size(None) * 8,
+        )
+        .map_err(|message| {
+            dcx.emit_error(message, None);
+            crate::error::ReportedError
+        })?;
         let pointer_align = pointer_abi_alignment(&target_data);
 
         Ok(TargetLayout {
-            pointer_size,
             pointer_align,
+            facts,
             requested_triple: target_override.map(ToOwned::to_owned),
             cpu,
             features,
             target_machine,
         })
+    }
+
+    pub fn facts(&self) -> &TargetFacts {
+        &self.facts
     }
 
     /// Get the underlying LLVM TargetData for precise layout queries.

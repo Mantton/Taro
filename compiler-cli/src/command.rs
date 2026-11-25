@@ -78,6 +78,27 @@ pub fn handle(arguments: Cli) -> CommandResult {
                 }
             }
         }
+        CliCommand::TargetFacts { output, target } => {
+            use compiler::{
+                codegen::target::TargetLayout,
+                compile::config::BuildProfile,
+                diagnostics::DiagCtx,
+            };
+
+            let dcx = DiagCtx::new(std::path::PathBuf::from("."));
+            let layout = TargetLayout::new(&dcx, target.as_deref(), BuildProfile::Release)?;
+            let contents = toml::to_string(layout.facts()).map_err(|error| {
+                dcx.emit_error(format!("could not encode target facts: {error}"), None);
+                ReportedError
+            })?;
+            std::fs::write(&output, contents).map_err(|error| {
+                dcx.emit_error(
+                    format!("could not write '{}': {error}", output.display()),
+                    None,
+                );
+                ReportedError
+            })?;
+        }
         CliCommand::Test(arguments) => return test::run(arguments),
     }
 

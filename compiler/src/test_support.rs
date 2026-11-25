@@ -53,12 +53,13 @@ fn test_config(root: &Path) -> Config {
 fn with_context<R>(
     root: &Path,
     config: Config,
+    target: Option<String>,
     f: impl for<'ctx> FnOnce(&'ctx CompilerContext<'ctx>, &'ctx Config) -> R,
 ) -> R {
     let dcx = Rc::new(DiagCtx::new(root.to_path_buf()));
     dcx.enable_recording();
     let arenas = CompilerArenas::new();
-    let store = CompilerStore::new(&arenas, root.join("target"), &dcx, None, config.profile)
+    let store = CompilerStore::new(&arenas, root.join("target"), &dcx, target, config.profile)
         .unwrap_or_else(|_| panic!("test compiler store"));
     let context = CompilerContext::new(dcx, store);
     let config = context.store.arenas.configs.alloc(config);
@@ -76,7 +77,7 @@ pub(crate) fn with_test_gcx_config<R>(
     let root = TempDir::new("context");
     let mut config = test_config(&root);
     configure(&mut config);
-    with_context(&root, config, |context, config| {
+    with_context(&root, config, None, |context, config| {
         f(Gcx::new(context, config))
     })
 }
@@ -85,6 +86,16 @@ pub(crate) fn with_source_compiler<R>(
     files: &[(&str, &str)],
     is_script: bool,
     harness_mode: HarnessMode,
+    f: impl for<'ctx> FnOnce(&mut Compiler<'ctx>) -> R,
+) -> R {
+    with_target_source_compiler(files, is_script, harness_mode, None, f)
+}
+
+pub(crate) fn with_target_source_compiler<R>(
+    files: &[(&str, &str)],
+    is_script: bool,
+    harness_mode: HarnessMode,
+    target: Option<String>,
     f: impl for<'ctx> FnOnce(&mut Compiler<'ctx>) -> R,
 ) -> R {
     let root = TempDir::new("analysis");
@@ -115,7 +126,7 @@ pub(crate) fn with_source_compiler<R>(
         fs::create_dir_all(path.parent().unwrap()).expect("source directory");
         fs::write(&path, source).expect("test source");
     }
-    with_context(&root, config, |context, config| {
+    with_context(&root, config, target, |context, config| {
         f(&mut Compiler::new(context, config))
     })
 }

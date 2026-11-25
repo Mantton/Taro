@@ -47,6 +47,12 @@ pub enum CliCommand {
     New(NewArgs),
     #[command(hide = true)]
     RuntimeManifest(RuntimeManifestArgs),
+    #[command(hide = true)]
+    TargetFacts {
+        output: PathBuf,
+        #[arg(long)]
+        target: Option<String>,
+    },
 }
 
 #[derive(Args, Clone, Debug)]

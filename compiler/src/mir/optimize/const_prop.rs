@@ -600,7 +600,7 @@ fn is_propagatable(constant: &Constant<'_>) -> bool {
 }
 
 fn integer_layout(gcx: Gcx<'_>, ty: Ty<'_>) -> Option<IntegerLayout> {
-    let pointer_bits = (gcx.store.target_layout.pointer_size * 8) as u32;
+    let pointer_bits = gcx.store.target_facts.pointer_bits();
     Some(match ty.kind() {
         TyKind::Bool => IntegerLayout {
             signed: false,
