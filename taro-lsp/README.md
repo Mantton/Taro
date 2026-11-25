@@ -37,3 +37,17 @@ CARGO_TARGET_DIR="$PWD/target" cargo test --manifest-path taro-lsp/Cargo.toml
 ```
 
 The tests cover stdio lifecycle, unsaved inputs in the actual compiler worker, crash and hang recovery, and outdated replies arriving after new edits. The private protocol is versioned with the executable.
+
+## Release checks
+
+Run the measurements on an otherwise idle machine with one release build and matching bundle. The current development server uses full package checks. The compiler example measures the closed-body path separately and reports when the Iris fixture requires a package check.
+
+```sh
+export CARGO_TARGET_DIR="$PWD/target"
+cargo build --release --manifest-path taro-lsp/Cargo.toml --bin taro-lsp --example profile_edits
+python3 -B development/scripts/lsp_reclamation.py --bin target/release/taro-lsp --target-facts "$target_descriptor" --rss
+python3 -B development/scripts/lsp_release_gate.py --bin target/release/taro-lsp --bundle "$lsp_install/share/taro-lsp" --edits 10000 --recoveries 3
+target/release/examples/profile_edits "$target_descriptor" "$scratch_directory" showcase/adex_iris "$lsp_install/share/taro-lsp"
+```
+
+Use an empty existing directory for `scratch_directory`. Set `TARO_LSP_SOAK_EDITS=10000` when running the LLVM-free compiler allocation test to check exact requested bytes and live allocation counts across the extended trace.
