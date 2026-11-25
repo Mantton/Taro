@@ -107,7 +107,7 @@ mod tests {
                     adjustments: Default::default(),
                     interface_calls: Default::default(),
                     integer_literals: Default::default(),
-                    field_indices: Default::default(),
+                    fields: Default::default(),
                     property_reads: Default::default(),
                     overload_sources: Default::default(),
                     lazy_argument_targets: Default::default(),

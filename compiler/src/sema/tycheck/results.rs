@@ -2,7 +2,7 @@ use crate::{
     hir::{self, DefinitionID, Resolution},
     sema::{
         models::{GenericArguments, Ty},
-        tycheck::solve::{Adjustment, InterfaceCallInfo, ResolvedPropertyRead},
+        tycheck::solve::{Adjustment, InterfaceCallInfo, ResolvedField, ResolvedPropertyRead},
     },
 };
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -60,7 +60,7 @@ pub struct TypeCheckResults<'ctx> {
     node_tys: FxHashMap<hir::NodeID, Ty<'ctx>>,
     node_adjustments: FxHashMap<hir::NodeID, Vec<Adjustment<'ctx>>>,
     interface_calls: FxHashMap<hir::NodeID, InterfaceCallInfo>,
-    field_indices: FxHashMap<hir::NodeID, usize>,
+    fields: FxHashMap<hir::NodeID, ResolvedField>,
     property_reads: FxHashMap<hir::NodeID, ResolvedPropertyRead>,
     overload_sources: FxHashMap<hir::NodeID, DefinitionID>,
     value_resolutions: FxHashMap<hir::NodeID, Resolution>,
@@ -102,7 +102,7 @@ impl<'ctx> TypeCheckResults<'ctx> {
         self.node_tys.extend(other.node_tys.drain());
         self.node_adjustments.extend(other.node_adjustments.drain());
         self.interface_calls.extend(other.interface_calls.drain());
-        self.field_indices.extend(other.field_indices.drain());
+        self.fields.extend(other.fields.drain());
         self.property_reads.extend(other.property_reads.drain());
         self.overload_sources.extend(other.overload_sources.drain());
         self.value_resolutions
@@ -152,8 +152,8 @@ impl<'ctx> TypeCheckResults<'ctx> {
         self.interface_calls.insert(id, info);
     }
 
-    pub fn record_field_index(&mut self, id: hir::NodeID, index: usize) {
-        self.field_indices.insert(id, index);
+    pub(crate) fn record_field(&mut self, id: hir::NodeID, field: ResolvedField) {
+        self.fields.insert(id, field);
     }
 
     pub fn record_property_read(&mut self, id: hir::NodeID, info: ResolvedPropertyRead) {
@@ -206,7 +206,11 @@ impl<'ctx> TypeCheckResults<'ctx> {
     }
 
     pub fn field_index(&self, id: hir::NodeID) -> Option<usize> {
-        self.field_indices.get(&id).cloned()
+        self.fields.get(&id).map(|field| field.index)
+    }
+
+    pub(crate) fn field_definition(&self, id: hir::NodeID) -> Option<DefinitionID> {
+        self.fields.get(&id)?.definition
     }
 
     pub fn property_read(&self, id: hir::NodeID) -> Option<ResolvedPropertyRead> {

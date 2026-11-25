@@ -528,7 +528,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 }
                 prev = Some(ty);
 
-                if let Some((index, field_ty, visibility)) = self.lookup_field(ty, name.symbol) {
+                if let Some((field, field_ty, visibility)) = self.lookup_field(ty, name.symbol) {
                     if !self
                         .gcx()
                         .is_visibility_allowed(visibility, self.current_def)
@@ -543,7 +543,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
                     // Record field index and receiver adjustments.
                     self.record_adjustments(*reciever_node, adjustments);
-                    self.record_field_index(*node_id, index);
+                    self.record_field(*node_id, field);
 
                     // Create an Apply goal: calls the field value with the arguments.
                     let apply_goal = Obligation {

@@ -24,10 +24,13 @@ struct Actor<'resolver, 'arena> {
 
 impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
     fn visit_module(&mut self, node: &ast::Module, _: bool) -> Self::Result {
-        let name = Identifier {
-            span: Span::empty(FileID::new(0)),
-            symbol: node.name,
-        };
+        let name = node.module_decl.as_ref().map_or(
+            Identifier {
+                span: Span::empty(FileID::new(0)),
+                symbol: node.name,
+            },
+            |decl| decl.name,
+        );
         let parent = self.tag(&name, node.id, DefinitionKind::Module);
         match &node.module_decl {
             Some(decl) => self.record_visibility(parent, decl.visibility),

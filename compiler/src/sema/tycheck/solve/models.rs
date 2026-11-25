@@ -209,6 +209,13 @@ pub struct InterfaceCallInfo {
     pub table_index: usize,
 }
 
+/// A solved field projection. Tuple elements have an index but no declaration.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ResolvedField {
+    pub index: usize,
+    pub definition: Option<DefinitionID>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ResolvedPropertyRead {
     pub getter_id: DefinitionID,

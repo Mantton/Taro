@@ -772,8 +772,8 @@ impl<'ctx> Checker<'ctx> {
                 .borrow_mut()
                 .record_value_resolution(id, resolution);
         }
-        for (id, index) in cs.resolved_field_indices() {
-            self.results.borrow_mut().record_field_index(id, index);
+        for (&id, &field) in cs.resolved_fields() {
+            self.results.borrow_mut().record_field(id, field);
         }
         for (id, info) in cs.resolved_property_reads() {
             self.results.borrow_mut().record_property_read(id, info);

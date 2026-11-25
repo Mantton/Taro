@@ -198,6 +198,168 @@ fn at(uri: &str, text: &str, needle: &str) -> Value {
 }
 
 #[test]
+fn definitions_follow_qualified_paths_and_resolved_fields() {
+    let fixture = Fixture::new();
+    let mut server = Session::spawn(&mut fixture.command(), Message::read);
+    server.request(
+        1,
+        "initialize",
+        json!({"capabilities": {}, "rootUri": as_uri(&fixture.root).as_str()}),
+    );
+    server.response(1);
+    server.notify("initialized", json!({}));
+
+    let declarations = as_uri(&fixture.root.join("src/definitions.tr"));
+    let active = as_uri(&fixture.root.join("src/active.tr"));
+    let module = as_uri(&fixture.root.join("src/utilities/helpers.tr"));
+    let declared_module = as_uri(&fixture.root.join("src/declared/helpers.tr"));
+    let definitions = "namespace Outer {\n\
+        public namespace Inner {\n\
+        public struct Packet { count: int32 }\n\
+        public func select(_ v: int32) -> int32 { v }\n\
+        public func select(_ v: bool) -> bool { v }\n\
+        }\n\
+        }\n\
+        struct Other { count: bool }\n\
+        class Base[T] { stored: T }\n\
+        class Child: Base[int32] {}\n\
+        struct Callback { invoke: (int32) -> int32 }\n";
+    let uses = "func inspect(child: Child, callback: Callback) {\n\
+        first := Outer::Inner::Packet { count: 1 }\n\
+        second := Other { count: true }\n\
+        _ = \"🌱\"; _ = first.count\n\
+        _ = second.count\n\
+        _ = child.stored\n\
+        _ = Outer::Inner::select(true)\n\
+        _ = utilities::produce()\n\
+        _ = declared::answer()\n\
+        _ = callback.invoke(3)\n\
+        }\n";
+    let helpers = "public func produce() -> int32 { 1 }";
+    let declared_helpers = "public mod declared;\npublic func answer() -> int32 { 2 }";
+    server.open(declarations.as_str(), definitions);
+    server.open(module.as_str(), helpers);
+    server.open(declared_module.as_str(), declared_helpers);
+    server.open(active.as_str(), uses);
+
+    loop {
+        if let Message::Notification(note) = server.next()
+            && note.method == "textDocument/publishDiagnostics"
+            && note.params["uri"] == active.as_str()
+        {
+            assert_eq!(note.params["diagnostics"], json!([]));
+            break;
+        }
+    }
+
+    for (index, (use_prefix, token, declaration_prefix, declaration_text, uri)) in [
+        (
+            "first := ",
+            "Outer",
+            "namespace ",
+            definitions,
+            &declarations,
+        ),
+        (
+            "Outer::",
+            "Inner",
+            "public namespace ",
+            definitions,
+            &declarations,
+        ),
+        (
+            "Inner::",
+            "Packet",
+            "public struct ",
+            definitions,
+            &declarations,
+        ),
+        (
+            "Packet { ",
+            "count",
+            "Packet { ",
+            definitions,
+            &declarations,
+        ),
+        ("Other { ", "count", "Other { ", definitions, &declarations),
+        ("first.", "count", "Packet { ", definitions, &declarations),
+        ("second.", "count", "Other { ", definitions, &declarations),
+        ("child.", "stored", "Base[T] { ", definitions, &declarations),
+        (
+            "Inner::",
+            "select",
+            "public func ",
+            definitions,
+            &declarations,
+        ),
+        ("utilities::", "produce", "public func ", helpers, &module),
+        (
+            "_ = ",
+            "declared",
+            "public mod ",
+            declared_helpers,
+            &declared_module,
+        ),
+        (
+            "callback.",
+            "invoke",
+            "Callback { ",
+            definitions,
+            &declarations,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let id = 2 + index as i32;
+        let start = |uri: &url::Url, text: &str, prefix: &str, suffix: &str| {
+            let mut params = at(uri.as_str(), text, &format!("{prefix}{token}{suffix}"));
+            let column = params["position"]["character"].as_u64().unwrap();
+            params["position"]["character"] = (column + prefix.len() as u64).into();
+            params
+        };
+        server.request(
+            id,
+            "textDocument/definition",
+            start(&active, uses, use_prefix, ""),
+        );
+        let mut expected = start(
+            uri,
+            declaration_text,
+            declaration_prefix,
+            if token == "select" { "(_ v: bool" } else { "" },
+        )["position"]
+            .clone();
+        let begin = expected.clone();
+        expected["character"] = (begin["character"].as_u64().unwrap() + token.len() as u64).into();
+        assert_eq!(
+            server.response(id),
+            json!({"uri": uri.as_str(), "range": {"start": begin, "end": expected}}),
+            "definition of {use_prefix}{token}"
+        );
+    }
+
+    server.request(
+        20,
+        "textDocument/definition",
+        at(active.as_str(), uses, "utilities::"),
+    );
+    assert_eq!(server.response(20), Value::Null);
+
+    server.request(
+        21,
+        "textDocument/hover",
+        at(declarations.as_str(), definitions, "Packet {"),
+    );
+    assert!(
+        server.response(21)["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .ends_with("Packet")
+    );
+}
+
+#[test]
 fn worker_checks_unsaved_siblings_then_updates_only_one_buffer() {
     let fixture = Fixture::new();
     let mut command = fixture.command();

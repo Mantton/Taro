@@ -874,7 +874,7 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                     return None;
                 }
                 let field =
-                    crate::thir::FieldIndex::from_usize(*self.cs.field_indices.get(&expr.id)?);
+                    crate::thir::FieldIndex::from_usize(self.cs.fields.get(&expr.id)?.index);
                 let (root, name, mut projection) = self.stored_projection(target)?;
                 if let Some(class) = gcx.class_for_payload(target_ty) {
                     // Lifecycle self is private inline storage. Keep capture

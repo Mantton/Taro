@@ -2,7 +2,7 @@ use super::method::{MethodCandidate, ReceiverResolution};
 use super::{
     Adjustment, ApplyArgument, ApplyGoalData, BindInterfaceMethodGoalData, BindMethodValueGoalData,
     BindOverloadGoalData, ConstraintSolver, DisjunctionBranch, Goal, InferredStaticMemberGoalData,
-    InterfaceCallInfo, MemberGoalData, Obligation, ResolvedPropertyRead, SolverResult,
+    InterfaceCallInfo, MemberGoalData, Obligation, ResolvedField, ResolvedPropertyRead, SolverResult,
 };
 use crate::{
     hir::{NodeID, Resolution, StdItem},
@@ -72,7 +72,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             if depth > 0 {
                 field_adjustments.push(Adjustment::Dereference);
             }
-            if let Some((index, field_ty, visibility)) = self.lookup_field(ty, name.symbol) {
+            if let Some((field, field_ty, visibility)) = self.lookup_field(ty, name.symbol) {
                 if self
                     .gcx()
                     .is_visibility_allowed(visibility, self.current_def)
@@ -81,7 +81,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         return self.solve_equality(span, result, self.gcx().types.bool);
                     }
                     self.record_adjustments(receiver_node, field_adjustments);
-                    self.record_field_index(node_id, index);
+                    self.record_field(node_id, field);
                     return self.solve_equality(span, result, field_ty);
                 }
                 hidden_field.get_or_insert((name.symbol, ty));
@@ -829,9 +829,13 @@ impl<'ctx> ConstraintSolver<'ctx> {
         &self,
         ty: Ty<'ctx>,
         name: Symbol,
-    ) -> Option<(usize, Ty<'ctx>, crate::sema::resolve::models::Visibility)> {
+    ) -> Option<(ResolvedField, Ty<'ctx>, crate::sema::resolve::models::Visibility)> {
         if let Some((index, ty)) = ty.labeled_tuple_field(name) {
-            return Some((index, ty, crate::sema::resolve::models::Visibility::Public));
+            return Some((
+                ResolvedField { index, definition: None },
+                ty,
+                crate::sema::resolve::models::Visibility::Public,
+            ));
         }
         let TyKind::Adt(def, _) = ty.kind() else {
             return None;
@@ -842,9 +846,13 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
 
         let struct_def = self.gcx().source_struct_definition(ty)?;
-        for (idx, field) in struct_def.fields.iter().enumerate() {
+        for (index, field) in struct_def.fields.iter().enumerate() {
             if field.name == name {
-                return Some((idx, field.ty, field.visibility));
+                return Some((
+                    ResolvedField { index, definition: Some(field.def_id) },
+                    field.ty,
+                    field.visibility,
+                ));
             }
         }
         None

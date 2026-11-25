@@ -45,6 +45,8 @@ The pilot reports typed analysis as unavailable when that target or source ident
 
 The Taro extension launches the installed server for local `.tr` documents. Set `taro.languageServer.path` in user settings when `taro-lsp` is outside the editor's executable search path. Set `taro.sdk.path` to choose an SDK explicitly, or `taro.languageServer.bundle` for a portable installation. The pilot provides live diagnostics, inferred-type hover, go-to-definition and member completion after a dot.
 
+Go to Definition follows the identifier under the cursor in a qualified path. A named namespace or explicit `mod` goes to its declaration. Modules defined only by a directory have no source location. Stored field accesses and explicit struct literal labels go to the selected field declaration, including inherited fields. Struct literal shorthand follows the local binding.
+
 The server registers file watchers with supporting clients. Without watch registration it refreshes disk sources on each text edit and uses a full package check. It refreshes embedded assets on the next analysis. Installed std files opened from a definition are browsable source, and replacing an installed bundle requires restarting the server.
 
 From the checkout root, use its shared, ignored Cargo target directory.

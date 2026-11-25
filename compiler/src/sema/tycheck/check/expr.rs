@@ -888,7 +888,7 @@ impl<'ctx> Checker<'ctx> {
         // This only admits direct assignment. MIR proves one-time readonly
         // initialization across branches/loops; mutable borrowing is unchanged.
         let initializes_self_field = initializes_self_field
-            && cs.resolved_field_indices().contains_key(&lhs.id)
+            && cs.resolved_fields().contains_key(&lhs.id)
             && !matches!(&lhs.kind, hir::ExpressionKind::Member { target, .. } if cs.node_adjustments(target.id).iter().any(|adjustment| matches!(adjustment, Adjustment::DerefCall { .. })));
         let index_assignment = self.pending_indices.borrow().contains_key(&lhs.id);
         if index_assignment {

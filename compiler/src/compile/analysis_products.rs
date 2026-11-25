@@ -65,6 +65,12 @@ impl DeclarationKey {
             source: SourceRange::capture(gcx, ident.span)?,
         })
     }
+
+    fn navigation_target(gcx: Gcx<'_>, id: DefinitionID) -> Option<Self> {
+        let target = Self::capture(gcx, id)?;
+        // Implicit directory modules have no source identifier.
+        (target.source.start < target.source.end).then_some(target)
+    }
 }
 
 /// Literal contents and resolvable declarations in place of interner slots.
@@ -594,7 +600,8 @@ impl<'ctx> OccurrenceCollector<'_, 'ctx> {
         local_declaration: Option<LocalDeclaration>,
         anchor: Option<BodyLocalAnchor>,
     ) {
-        if let Some(ty) = ty
+        let declaration = definition.and_then(|id| DeclarationKey::navigation_target(self.gcx, id));
+        if (ty.is_some() || declaration.is_some() || local_declaration.is_some())
             && let Some(source) = SourceRange::capture(self.gcx, span)
         {
             #[cfg(test)]
@@ -605,12 +612,41 @@ impl<'ctx> OccurrenceCollector<'_, 'ctx> {
                 .update(|count| count + 1);
             self.occurrences.push(TypedOccurrence {
                 source,
-                ty: TypeShape::capture(self.gcx, ty),
-                declaration: definition
-                    .and_then(|definition| DeclarationKey::capture(self.gcx, definition)),
+                ty: ty.map_or(TypeShape::Unresolved, |ty| TypeShape::capture(self.gcx, ty)),
+                declaration,
                 anchor,
                 local_declaration,
             });
+        }
+    }
+
+    fn resolved_definition(&self, resolution: &hir::Resolution) -> Option<DefinitionID> {
+        match resolution {
+            hir::Resolution::StdItem(item) => self.gcx.std_item_def(*item),
+            _ => resolution.definition_id(),
+        }
+    }
+
+    fn record_literal_fields(&mut self, literal: &hir::StructLiteral, ty: Option<Ty<'ctx>>) {
+        let Some(definition) = ty.and_then(|ty| self.gcx.source_struct_definition(ty)) else {
+            return;
+        };
+        for field in &literal.fields {
+            // Shorthand fields are also local variable reads. Keep their local target.
+            if let Some(label) = field.label
+                && let Some(field) = definition
+                    .fields
+                    .iter()
+                    .find(|field| field.name == label.identifier.symbol)
+            {
+                self.record(
+                    Some(field.ty),
+                    label.identifier.span,
+                    Some(field.def_id),
+                    None,
+                    None,
+                );
+            }
         }
     }
 
@@ -653,6 +689,30 @@ impl<'ctx> OccurrenceCollector<'_, 'ctx> {
 }
 
 impl HirVisitor for OccurrenceCollector<'_, '_> {
+    fn visit_declaration(&mut self, node: &hir::Declaration) {
+        if matches!(node.kind, hir::DeclarationKind::Struct(_)) {
+            self.record(
+                self.gcx.try_get_type(node.id),
+                node.identifier.span,
+                Some(node.id),
+                None,
+                None,
+            );
+        }
+        hir::walk_declaration(self, node);
+    }
+
+    fn visit_field_definition(&mut self, node: &hir::FieldDefinition) {
+        self.record(
+            self.gcx.try_get_type(node.def_id),
+            node.identifier.span,
+            Some(node.def_id),
+            None,
+            None,
+        );
+        hir::walk_field_definition(self, node);
+    }
+
     fn visit_function(
         &mut self,
         id: DefinitionID,
@@ -670,15 +730,10 @@ impl HirVisitor for OccurrenceCollector<'_, '_> {
         hir::walk_function_parameter(self, parameter);
     }
 
-    fn visit_type(&mut self, ty: &hir::Type) {
-        // A static call's type qualifier is visited as a type. Its declaration
-        // is already resolved even though the solver records the call's value
-        // type on a different node.
-        if let hir::TypeKind::Nominal(hir::ResolvedPath::Resolved(path)) = &ty.kind
-            && let hir::Resolution::Definition(id, DefinitionKind::Struct | DefinitionKind::Enum) =
-                path.resolution
-            && let Some(segment) = path.segments.last()
-        {
+    fn visit_path_segment(&mut self, segment: &hir::PathSegment) {
+        // This also visits the type qualifier of a relative path. Function
+        // sets have no single declaration until the solver selects an overload.
+        if let Some(id) = self.resolved_definition(&segment.resolution) {
             self.record(
                 self.gcx.try_get_type(id),
                 segment.identifier.span,
@@ -687,7 +742,7 @@ impl HirVisitor for OccurrenceCollector<'_, '_> {
                 None,
             );
         }
-        hir::walk_type(self, ty);
+        hir::walk_path_segment(self, segment);
     }
 
     fn visit_expression(&mut self, expression: &hir::Expression) {
@@ -729,10 +784,12 @@ impl HirVisitor for OccurrenceCollector<'_, '_> {
             ExpressionKind::Call { callee, .. } => callee,
             _ => expression,
         };
+        let ty = self.types.try_node_type(expression.id);
         let (span, resolved) = match &target.kind {
             ExpressionKind::MethodCall { name, .. }
             | ExpressionKind::Member { name, .. }
             | ExpressionKind::InferredMember { name } => (name.span, None),
+            ExpressionKind::TupleAccess(_, index) => (index.value.span, None),
             ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => (
                 path.segments
                     .last()
@@ -742,6 +799,23 @@ impl HirVisitor for OccurrenceCollector<'_, '_> {
             ExpressionKind::Path(hir::ResolvedPath::Relative(_, segment)) => {
                 (segment.identifier.span, Some(&segment.resolution))
             }
+            ExpressionKind::StructLiteral(literal) => {
+                self.record_literal_fields(literal, ty);
+                match &literal.path {
+                    hir::ConstructorPath::Qualified {
+                        path: hir::ResolvedPath::Resolved(path),
+                    } => (
+                        path.segments
+                            .last()
+                            .map_or(path.span, |segment| segment.identifier.span),
+                        Some(&path.resolution),
+                    ),
+                    hir::ConstructorPath::Qualified {
+                        path: hir::ResolvedPath::Relative(_, segment),
+                    } => (segment.identifier.span, Some(&segment.resolution)),
+                    hir::ConstructorPath::Inferred { name, .. } => (name.span, None),
+                }
+            }
             _ => (expression.span, None),
         };
         let resolved = self
@@ -750,19 +824,14 @@ impl HirVisitor for OccurrenceCollector<'_, '_> {
             .or_else(|| resolved.cloned());
         let definition = self
             .types
-            .overload_source(expression.id)
-            .or_else(|| resolved.as_ref()?.definition_id());
+            .field_definition(target.id)
+            .or_else(|| self.types.overload_source(expression.id))
+            .or_else(|| self.resolved_definition(resolved.as_ref()?));
         let local = match resolved {
             Some(hir::Resolution::LocalVariable(binding)) => self.locals.get(&binding).cloned(),
             _ => None,
         };
-        self.record(
-            self.types.try_node_type(expression.id),
-            span,
-            definition,
-            local,
-            anchor,
-        );
+        self.record(ty, span, definition, local, anchor);
         hir::walk_expression(self, expression);
     }
 

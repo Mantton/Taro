@@ -71,7 +71,7 @@ pub struct ConstraintSystem<'ctx> {
     adjustments: FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
     interface_calls: FxHashMap<NodeID, InterfaceCallInfo>,
     pub locals: RefCell<FxHashMap<NodeID, Ty<'ctx>>>,
-    pub field_indices: FxHashMap<NodeID, usize>,
+    pub(crate) fields: FxHashMap<NodeID, ResolvedField>,
     pub property_reads: FxHashMap<NodeID, ResolvedPropertyRead>,
     overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
     /// Unwrapped call arguments selected for a `@lazy` parameter by overload resolution.
@@ -105,7 +105,7 @@ struct SolverOutputs<'ctx> {
     obligations: VecDeque<Obligation<'ctx>>,
     adjustments: FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
     interface_calls: FxHashMap<NodeID, InterfaceCallInfo>,
-    field_indices: FxHashMap<NodeID, usize>,
+    fields: FxHashMap<NodeID, ResolvedField>,
     property_reads: FxHashMap<NodeID, ResolvedPropertyRead>,
     overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
     lazy_argument_targets: FxHashMap<NodeID, Ty<'ctx>>,
@@ -151,7 +151,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
             locals: Default::default(),
             adjustments: Default::default(),
             interface_calls: Default::default(),
-            field_indices: Default::default(),
+            fields: Default::default(),
             property_reads: Default::default(),
             overload_sources: Default::default(),
             lazy_argument_targets: Default::default(),
@@ -423,14 +423,14 @@ impl<'ctx> ConstraintSystem<'ctx> {
     }
 
     pub(super) fn bound_method_source(&self, id: NodeID) -> Option<DefinitionID> {
-        if self.field_indices.contains_key(&id) || self.property_reads.contains_key(&id) {
+        if self.fields.contains_key(&id) || self.property_reads.contains_key(&id) {
             return None;
         }
         self.overload_sources.get(&id).copied()
     }
 
-    pub fn resolved_field_indices(&self) -> FxHashMap<NodeID, usize> {
-        self.field_indices.clone()
+    pub(crate) fn resolved_fields(&self) -> &FxHashMap<NodeID, ResolvedField> {
+        &self.fields
     }
 
     pub fn resolved_property_reads(&self) -> FxHashMap<NodeID, ResolvedPropertyRead> {
@@ -751,7 +751,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
             adjustments: std::mem::take(&mut self.adjustments),
             interface_calls: std::mem::take(&mut self.interface_calls),
             integer_literals: self.integer_literals.clone(),
-            field_indices: std::mem::take(&mut self.field_indices),
+            fields: std::mem::take(&mut self.fields),
             property_reads: std::mem::take(&mut self.property_reads),
             overload_sources: std::mem::take(&mut self.overload_sources),
             lazy_argument_targets: std::mem::take(&mut self.lazy_argument_targets),
@@ -800,7 +800,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
         }
         self.adjustments = outputs.adjustments;
         self.interface_calls = outputs.interface_calls;
-        self.field_indices = outputs.field_indices;
+        self.fields = outputs.fields;
         self.property_reads = outputs.property_reads;
         self.overload_sources = outputs.overload_sources;
         self.lazy_argument_targets = outputs.lazy_argument_targets;
@@ -934,7 +934,7 @@ struct ConstraintSolver<'ctx> {
     adjustments: FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
     interface_calls: FxHashMap<NodeID, InterfaceCallInfo>,
     integer_literals: FxHashMap<NodeID, i128>,
-    pub field_indices: FxHashMap<NodeID, usize>,
+    pub(crate) fields: FxHashMap<NodeID, ResolvedField>,
     pub property_reads: FxHashMap<NodeID, ResolvedPropertyRead>,
     overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
     lazy_argument_targets: FxHashMap<NodeID, Ty<'ctx>>,
@@ -974,8 +974,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
         self.icx.gcx
     }
 
-    pub fn record_field_index(&mut self, id: NodeID, index: usize) {
-        self.field_indices.insert(id, index);
+    pub(crate) fn record_field(&mut self, id: NodeID, field: ResolvedField) {
+        self.fields.insert(id, field);
     }
 
     pub fn record_property_read(&mut self, id: NodeID, info: ResolvedPropertyRead) {
@@ -1636,7 +1636,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             adjustments: FxHashMap::default(),
             interface_calls: FxHashMap::default(),
             integer_literals: self.integer_literals.clone(),
-            field_indices: FxHashMap::default(),
+            fields: FxHashMap::default(),
             property_reads: FxHashMap::default(),
             overload_sources: FxHashMap::default(),
             lazy_argument_targets: FxHashMap::default(),
@@ -1732,7 +1732,7 @@ impl<'ctx> SolverDriver<'ctx> {
             obligations,
             adjustments: self.solver.adjustments,
             interface_calls: self.solver.interface_calls,
-            field_indices: self.solver.field_indices,
+            fields: self.solver.fields,
             property_reads: self.solver.property_reads,
             overload_sources: self.solver.overload_sources,
             lazy_argument_targets: self.solver.lazy_argument_targets,

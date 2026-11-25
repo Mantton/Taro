@@ -50,8 +50,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
             }
             prev = Some(ty);
 
-            let (field_ty, arity) = match ty.kind() {
-                TyKind::Tuple(elements) => (elements.get(index).copied(), elements.len()),
+            let (field_ty, arity, definition) = match ty.kind() {
+                TyKind::Tuple(elements) => (elements.get(index).copied(), elements.len(), None),
                 TyKind::Adt(def, args) if def.kind == crate::sema::models::AdtKind::Struct => {
                     let definition = self.gcx().get_struct_definition(def.id);
                     if !definition.positional { continue; }
@@ -62,10 +62,11 @@ impl<'ctx> ConstraintSolver<'ctx> {
                             TypeError::FieldNotVisible { name: field.name, struct_ty: ty }, span,
                         )]);
                     }
-                    let ty = definition.fields.get(index).map(|field| {
+                    let field = definition.fields.get(index);
+                    let ty = field.map(|field| {
                         super::instantiate_ty_with_args(self.gcx(), field.ty, args)
                     });
-                    (ty, definition.fields.len())
+                    (ty, definition.fields.len(), field.map(|field| field.def_id))
                 }
                 TyKind::Infer(_) => return SolverResult::Deferred,
                 _ => continue,
@@ -80,7 +81,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             };
             // Dereference the receiver before projecting its positional field.
             self.record_adjustments(receiver_node_id, adjustment);
-            self.record_field_index(node_id, index);
+            self.record_field(node_id, super::ResolvedField { index, definition });
             return self.solve_equality(span, result, field_ty);
         }
 
