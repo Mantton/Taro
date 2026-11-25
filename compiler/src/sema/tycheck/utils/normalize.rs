@@ -419,7 +419,7 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
                 .store
                 .arenas
                 .global
-                .alloc_slice_clone(&constraints)
+                .alloc_slice_copy(&constraints)
         });
         let self_ty = interface.self_ty()?;
         let is_goal_bound = |constraint: &crate::sema::models::Constraint<'ctx>| {
@@ -443,7 +443,7 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
                 .filter(|constraint| !is_goal_bound(constraint))
                 .copied()
                 .collect();
-            self.gcx().store.arenas.global.alloc_slice_clone(&filtered)
+            self.gcx().store.arenas.global.alloc_slice_copy(&filtered)
         };
         resolve_conformance_witness_with_param_env(self.gcx(), interface, param_env)
     }

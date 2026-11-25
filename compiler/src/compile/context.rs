@@ -168,18 +168,18 @@ impl<'arena> GlobalContext<'arena> {
     }
 
     pub fn intern_symbol(self, text: &str) -> Symbol {
-        self.symbols().intern(text)
+        self.interner().intern(text)
     }
 
     pub fn symbol_eq(self, symbol: impl std::borrow::Borrow<Symbol>, text: &str) -> bool {
-        self.symbols().matches(*symbol.borrow(), text)
+        self.interner().matches(*symbol.borrow(), text)
     }
 
     pub fn symbol_text(self, symbol: impl std::borrow::Borrow<Symbol>) -> EcoString {
-        self.symbols().text(*symbol.borrow())
+        self.interner().text(*symbol.borrow())
     }
 
-    pub(crate) fn symbols(self) -> &'arena crate::symbols::SymbolTable {
+    pub(crate) fn interner(self) -> &'arena crate::interner::SessionInterner {
         &self.context.dcx.symbols
     }
 }
@@ -213,7 +213,7 @@ impl<'arena> GlobalContext<'arena> {
         self.store
             .const_definitions
             .borrow_mut()
-            .insert(id, self.store.arenas.global.alloc(node.clone()));
+            .insert(id, self.store.arenas.hir_constants.alloc(node.clone()));
         self.store.const_eval_states.borrow_mut().remove(&id);
     }
 
@@ -226,7 +226,7 @@ impl<'arena> GlobalContext<'arena> {
         self.store
             .const_fn_definitions
             .borrow_mut()
-            .insert(id, (self.store.arenas.global.alloc(node.clone()), fn_ctx));
+            .insert(id, (self.store.arenas.const_functions.alloc(node.clone()), fn_ctx));
     }
 
     pub(crate) fn const_fn_definition(
@@ -398,7 +398,7 @@ impl<'arena> GlobalContext<'arena> {
             .store
             .arenas
             .global
-            .alloc_slice_clone(&interfaces);
+            .alloc_slice_copy(&interfaces);
         self.with_type_database(id.package(), |db| {
             db.resolved_interface_aliases.insert(id, interfaces);
         });
@@ -640,7 +640,7 @@ impl<'arena> GlobalContext<'arena> {
         let mut cache = self.context.store.type_databases.borrow_mut();
         let package_index = id.package();
         let database = cache.entry(package_index).or_insert_with(Default::default);
-        let attributes = self.context.store.arenas.global.alloc(attributes);
+        let attributes = self.context.store.arenas.attributes.alloc(attributes);
         let ok = database.def_to_attributes.insert(id, attributes).is_none();
         debug_assert!(ok, "duplicated attribute information")
     }
@@ -2062,7 +2062,7 @@ impl<'arena> GlobalContext<'arena> {
         } else if let Some(empty) = database.empty_attributes {
             empty
         } else {
-            let empty = self.context.store.arenas.global.alloc(Vec::new());
+            let empty = self.context.store.arenas.attributes.alloc(Vec::new());
             database.empty_attributes = Some(empty);
             empty
         }
@@ -2094,6 +2094,7 @@ impl<'arena> CompilerContext<'arena> {
 pub struct CompilerStore<'arena> {
     pub arenas: &'arena CompilerArenas<'arena>,
     pub interners: CompilerInterners<'arena>,
+    pub(crate) lowering: crate::sema::tycheck::lower::LoweringRequest,
     pub(crate) allocation_report: RefCell<Option<super::allocation_report::AllocationReport>>,
     pub(crate) embedded_inputs: RefCell<FxHashMap<PackageIndex, super::assets::AssetInputs>>,
     pub resolution_outputs: RefCell<FxHashMap<PackageIndex, &'arena ResolutionOutput<'arena>>>,
@@ -2245,6 +2246,7 @@ impl<'arena> CompilerStore<'arena> {
         CompilerStore {
             arenas,
             interners: CompilerInterners::new(arenas),
+            lowering: Default::default(),
             package_mapping: Default::default(),
             package_idents: Default::default(),
             allocation_report: Default::default(),
@@ -2427,7 +2429,7 @@ impl<'arena> CompilerInterners<'arena> {
         if let Some(canonical) = self.canonical_kind(k) {
             return self
                 .intern_ty(canonical)
-                .presented(k, &[], &self.arenas.global);
+                .presented(k, &[], &self.arenas.types);
         }
         *self.types.borrow_mut().entry(k).or_insert_with(|| {
             Ty::from_data(self.arenas.types.alloc(TypeData {
@@ -2502,6 +2504,11 @@ pub struct CompilerArenas<'arena> {
     pub(crate) types: typed_arena::Arena<TypeData<'arena>>,
     pub type_lists: typed_arena::Arena<Vec<Ty<'arena>>>,
     pub function_signatures: typed_arena::Arena<LabeledFunctionSignature<'arena>>,
+    pub(crate) attributes: typed_arena::Arena<hir::AttributeList>,
+    pub(crate) hir_constants: typed_arena::Arena<hir::Constant>,
+    pub(crate) const_functions: typed_arena::Arena<hir::Function>,
+    pub(crate) expressions: typed_arena::Arena<hir::Expression>,
+    pub(crate) hir_types: typed_arena::Arena<hir::Type>,
     pub struct_definitions: typed_arena::Arena<StructDefinition<'arena>>,
     pub enum_definitions: typed_arena::Arena<EnumDefinition<'arena>>,
     pub mir_bodies: typed_arena::Arena<Body<'arena>>,
@@ -2511,7 +2518,28 @@ pub struct CompilerArenas<'arena> {
     pub interface_definitions: typed_arena::Arena<InterfaceDefinition<'arena>>,
     pub interface_requirements: typed_arena::Arena<InterfaceRequirements<'arena>>,
 
-    pub global: Bump,
+    pub(crate) global: CompilerSlices,
+}
+
+/// Store slices of non-owning compiler values in a bump arena.
+///
+/// The arena skips element destructors. Values that own heap storage belong
+/// in a typed arena so dropping a compiler session reclaims that storage too.
+#[derive(Default)]
+pub(crate) struct CompilerSlices(Bump);
+
+impl CompilerSlices {
+    pub(crate) fn alloc_slice_copy<T: Copy>(&self, values: &[T]) -> &mut [T] {
+        self.0.alloc_slice_copy(values)
+    }
+
+    pub(crate) fn alloc_slice_fill_iter<T: Copy, I>(&self, values: I) -> &mut [T]
+    where
+        I: IntoIterator<Item = T>,
+        I::IntoIter: ExactSizeIterator,
+    {
+        self.0.alloc_slice_fill_iter(values)
+    }
 }
 
 impl<'arena> CompilerArenas<'arena> {
@@ -2525,6 +2553,11 @@ impl<'arena> CompilerArenas<'arena> {
             types: Default::default(),
             type_lists: Default::default(),
             function_signatures: Default::default(),
+            attributes: Default::default(),
+            hir_constants: Default::default(),
+            const_functions: Default::default(),
+            expressions: Default::default(),
+            hir_types: Default::default(),
             struct_definitions: Default::default(),
             enum_definitions: Default::default(),
             mir_bodies: Default::default(),
@@ -2533,7 +2566,7 @@ impl<'arena> CompilerArenas<'arena> {
             generic_arguments: Default::default(),
             interface_definitions: Default::default(),
             interface_requirements: Default::default(),
-            global: Bump::new(),
+            global: Default::default(),
         }
     }
 }

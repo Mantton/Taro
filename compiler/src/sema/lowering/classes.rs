@@ -971,7 +971,7 @@ pub(super) fn constraints_satisfied<'ctx>(
     };
     let env = ParamEnv::new(assumptions.to_vec());
     let icx = std::rc::Rc::new(InferCtx::new(gcx));
-    let assumptions = gcx.store.arenas.global.alloc_slice_clone(assumptions);
+    let assumptions = gcx.store.arenas.global.alloc_slice_copy(assumptions);
     constraints.into_iter().all(|constraint| match constraint {
         Constraint::TypeEquality(left, right) => {
             normalize_ty(icx.clone(), left, &env) == normalize_ty(icx.clone(), right, &env)

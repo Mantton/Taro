@@ -60,7 +60,7 @@ impl<'ctx> Actor<'ctx> {
                         self.context
                             .store
                             .arenas
-                            .global
+                            .hir_types
                             .alloc(node.target.as_ref().clone()),
                     );
                 self.context.with_session_type_database(|db| {

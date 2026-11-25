@@ -1,7 +1,7 @@
 use crate::{
     error::ReportedError,
+    interner::SessionInterner,
     span::{FileID, Span, Symbol},
-    symbols::SymbolTable,
 };
 use colored::{ColoredString, Colorize};
 use ecow::EcoString;
@@ -18,7 +18,7 @@ use unicode_width::UnicodeWidthChar;
 pub struct DiagCtx {
     cwd: PathBuf,
     inner: RefCell<DiagCtxInner>,
-    pub(crate) symbols: Rc<SymbolTable>,
+    pub(crate) symbols: Rc<SessionInterner>,
     #[cfg(test)]
     pub(crate) analysis_work: AnalysisWork,
 }

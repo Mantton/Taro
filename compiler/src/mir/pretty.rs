@@ -197,8 +197,8 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
         match &c.value {
             ConstantKind::Bool(b) => write!(f, "{}", b),
             ConstantKind::Rune(c) => write!(f, "{:?}", c),
-            ConstantKind::Bytes(value) => value.with_bytes(|bytes| write!(f, "{bytes:?}")),
-            ConstantKind::ConstArray(arr) => write!(f, "[const; {}]", arr.len()),
+            ConstantKind::Bytes(value) => write!(f, "{:?}", &*self.gcx.interner().bytes(*value)),
+            ConstantKind::ConstArray(arr) => write!(f, "[const; {}]", self.gcx.interner().const_elements(*arr).len()),
             ConstantKind::String(s) => write!(f, "{:?}", self.gcx.symbol_text(s).as_str()),
             ConstantKind::Integer(i) => write!(f, "const {}", i),
             ConstantKind::Float(fl) => write!(f, "const {}", fl),

@@ -6,6 +6,7 @@ use crate::{
     PackageIndex,
     compile::context::Gcx,
     hir::{self, DefinitionID, Mutability},
+    interner::InternedConstArray,
     sema::{
         resolve::models::TypeHead,
         tycheck::{
@@ -140,7 +141,7 @@ impl<'arena> Ty<'arena> {
         self,
         kind: TyKind<'arena>,
         labels: &'arena [(usize, Symbol)],
-        arena: &'arena bumpalo::Bump,
+        arena: &'arena typed_arena::Arena<TypeData<'arena>>,
     ) -> Self {
         Ty(arena.alloc(TypeData {
             kind,
@@ -172,7 +173,7 @@ impl<'arena> Ty<'arena> {
         if labels.is_empty() {
             return self;
         }
-        self.presented(self.kind(), labels, &gcx.store.arenas.global)
+        self.presented(self.kind(), labels, &gcx.store.arenas.types)
     }
 
     pub(crate) fn with_source_labels(
@@ -1024,39 +1025,6 @@ pub enum ConstKind {
     Infer(ConstVarID),
 }
 
-thread_local! {
-    static SESSION_CONST_ARRAYS: std::cell::RefCell<indexmap::IndexSet<Box<[ConstValue]>>> =
-        std::cell::RefCell::new(indexmap::IndexSet::new());
-}
-
-/// Session-interned fixed-size constant array value so `ConstValue` remains `Copy`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct InternedConstArray(u32);
-
-impl InternedConstArray {
-    pub fn new(elements: Vec<ConstValue>) -> Self {
-        let boxed: Box<[ConstValue]> = elements.into_boxed_slice();
-        SESSION_CONST_ARRAYS.with_borrow_mut(|values| {
-            let index = values
-                .get_index_of(&boxed)
-                .unwrap_or_else(|| values.insert_full(boxed).0);
-            Self(u32::try_from(index).expect("const array table exhausted"))
-        })
-    }
-
-    pub fn with_elements<R>(self, read: impl FnOnce(&[ConstValue]) -> R) -> R {
-        SESSION_CONST_ARRAYS.with_borrow(|values| read(&values[self.0 as usize]))
-    }
-
-    pub fn len(self) -> usize {
-        self.with_elements(<[ConstValue]>::len)
-    }
-
-    pub fn to_vec(self) -> Vec<ConstValue> {
-        self.with_elements(|items| items.to_vec())
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub enum ConstValue {
     Bytes(crate::span::InternedBytes),
@@ -1889,13 +1857,13 @@ mod tests {
             name: gcx.intern_symbol("Item"),
             ty: binding_ty,
         };
-        let bindings = gcx.store.arenas.global.alloc_slice_clone(&[binding]);
+        let bindings = gcx.store.arenas.global.alloc_slice_copy(&[binding]);
         let iface = InterfaceReference {
             id: dummy_definition(10),
             arguments: GenericArguments::empty(),
             bindings,
         };
-        let interfaces = gcx.store.arenas.global.alloc_slice_clone(&[iface]);
+        let interfaces = gcx.store.arenas.global.alloc_slice_copy(&[iface]);
         Ty::new(TyKind::BoxedExistential { interfaces }, gcx)
     }
 

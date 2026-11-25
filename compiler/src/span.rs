@@ -1,4 +1,3 @@
-use crate::interner;
 use index_vec::define_index_type;
 
 index_vec::define_index_type! {
@@ -58,8 +57,7 @@ impl<T> Spanned<T> {
     }
 }
 
-pub use crate::symbols::Symbol;
-pub use interner::InternedBytes;
+pub use crate::interner::{InternedBytes, Symbol};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Identifier {
@@ -68,7 +66,7 @@ pub struct Identifier {
 }
 
 impl Identifier {
-    pub(crate) fn empty(file: FileID, symbols: &crate::symbols::SymbolTable) -> Self {
+    pub(crate) fn empty(file: FileID, symbols: &crate::interner::SessionInterner) -> Self {
         Identifier {
             span: Span::empty(file),
             symbol: symbols.intern(""),

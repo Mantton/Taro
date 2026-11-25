@@ -247,8 +247,8 @@ fn simultaneous_compilers_resolve_names_in_their_own_sessions() {
                         panic!("{:?}", second.context.dcx().take_recorded_diagnostics())
                     });
                     let second_name = package.root.declarations[0].identifier.symbol;
-                    assert!(first.context.symbols().try_resolve(second_name).is_none());
-                    assert!(second.context.symbols().try_resolve(first_name).is_none());
+                    assert!(first.context.interner().try_resolve(second_name).is_none());
+                    assert!(second.context.interner().try_resolve(first_name).is_none());
                     assert!(first.context.symbol_eq(first_name, "first"));
                     assert!(second.context.symbol_eq(second_name, "second"));
                 },

@@ -18,9 +18,9 @@ use crate::{
     },
     diagnostics::DiagCtx,
     error::ReportedError,
+    interner::SessionInterner,
     parse::{Base, lexer, token::Token},
     span::{Position, Span, Spanned, Symbol},
-    symbols::SymbolTable,
 };
 use std::{cell::RefCell, fmt::Display, rc::Rc};
 
@@ -192,7 +192,7 @@ struct ParserCheckpoint {
 }
 
 struct Parser {
-    symbols: Rc<SymbolTable>,
+    symbols: Rc<SessionInterner>,
     file: lexer::File,
     cursor: usize,
     restrictions: Restrictions,
@@ -208,7 +208,7 @@ struct Parser {
 }
 
 impl Parser {
-    fn new(file: lexer::File, next: NextNode, symbols: Rc<SymbolTable>) -> Parser {
+    fn new(file: lexer::File, next: NextNode, symbols: Rc<SessionInterner>) -> Parser {
         Parser {
             symbols,
             file,
@@ -7152,7 +7152,7 @@ mod tests {
     use crate::parse::lexer::Lexer;
 
     thread_local! {
-        static TEST_NAMES: Rc<SymbolTable> = Rc::default();
+        static TEST_NAMES: Rc<SessionInterner> = Rc::default();
     }
 
     fn symbol_text(symbol: Symbol) -> ecow::EcoString {

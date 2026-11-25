@@ -74,7 +74,7 @@ impl<'ctx> Actor<'ctx> {
                             mutability: field.mutability,
                         });
                     }
-                    let fields = self.context.store.arenas.global.alloc_slice_clone(&out);
+                    let fields = self.context.store.arenas.global.alloc_slice_copy(&out);
                     if matches!(&variant.kind, hir::VariantKind::Struct(..)) {
                         EnumVariantKind::Struct(fields)
                     } else {
@@ -97,7 +97,7 @@ impl<'ctx> Actor<'ctx> {
             .store
             .arenas
             .global
-            .alloc_slice_clone(&variants);
+            .alloc_slice_copy(&variants);
         let def = EnumDefinition { adt_def, variants };
         self.cache_variant_constructors(id, &def);
         self.context.cache_enum_definition(id, def);

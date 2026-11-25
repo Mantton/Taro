@@ -195,7 +195,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 } => {
                     let bounds = self.bounds_for_member_lookup(ty);
                     (!bounds.is_empty()).then(|| {
-                        self.gcx().store.arenas.global.alloc_slice_clone(&bounds) as &'ctx [_]
+                        self.gcx().store.arenas.global.alloc_slice_copy(&bounds) as &'ctx [_]
                     })
                 }
                 TyKind::BoxedExistential { interfaces } => Some(interfaces),

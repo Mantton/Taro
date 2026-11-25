@@ -963,7 +963,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 .store
                 .arenas
                 .global
-                .alloc_slice_clone(&interfaces) as &_
+                .alloc_slice_copy(&interfaces) as &_
         })
     }
 
@@ -1082,7 +1082,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 .store
                 .arenas
                 .global
-                .alloc_slice_clone(&interfaces),
+                .alloc_slice_copy(&interfaces),
         )
     }
 

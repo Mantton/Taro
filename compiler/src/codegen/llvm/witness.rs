@@ -214,7 +214,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 ty: self.normalize_post_mono_ty(binding.ty),
             })
             .collect::<Vec<_>>();
-        let bindings = self.gcx.store.arenas.global.alloc_slice_clone(&bindings);
+        let bindings = self.gcx.store.arenas.global.alloc_slice_copy(&bindings);
 
         InterfaceReference {
             id: iface.id,

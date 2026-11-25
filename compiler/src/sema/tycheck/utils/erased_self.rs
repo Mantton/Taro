@@ -234,7 +234,7 @@ mod tests {
                     .store
                     .arenas
                     .global
-                    .alloc_slice_clone(&[interface(gcx, args)]),
+                    .alloc_slice_copy(&[interface(gcx, args)]),
             },
             gcx,
         )
@@ -393,7 +393,7 @@ mod tests {
     fn erased_self_depth_survives_metadata_without_becoming_a_generic_argument() {
         with_test_gcx(|gcx| {
             let ty = Ty::new(TyKind::ExistentialSelf(2), gcx);
-            let wire = crate::metadata::wire::ty_to_wire(gcx.symbols(), ty);
+            let wire = crate::metadata::wire::ty_to_wire(gcx.interner(), ty);
             assert_eq!(crate::metadata::wire::ty_from_wire(gcx, &wire), ty);
             let args = gcx
                 .store

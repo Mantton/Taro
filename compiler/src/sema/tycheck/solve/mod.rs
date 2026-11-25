@@ -141,7 +141,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
             .store
             .arenas
             .global
-            .alloc_slice_clone(&assumptions.constraints());
+            .alloc_slice_copy(&assumptions.constraints());
         ConstraintSystem {
             infer_cx,
             obligations: Default::default(),

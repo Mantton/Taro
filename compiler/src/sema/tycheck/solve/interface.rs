@@ -57,7 +57,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     .store
                     .arenas
                     .global
-                    .alloc_slice_clone(&new_bindings),
+                    .alloc_slice_copy(&new_bindings),
             },
             has_infer,
         )

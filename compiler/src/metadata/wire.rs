@@ -133,12 +133,12 @@ pub struct FileRemap<'a> {
 
 #[derive(Debug)]
 pub struct SymbolTableBuilder<'a> {
-    names: &'a crate::symbols::SymbolTable,
+    names: &'a crate::interner::SessionInterner,
     symbols: IndexSet<String, FxBuildHasher>,
 }
 
 impl<'a> SymbolTableBuilder<'a> {
-    pub fn new(names: &'a crate::symbols::SymbolTable) -> Self {
+    pub fn new(names: &'a crate::interner::SessionInterner) -> Self {
         Self {
             names,
             symbols: IndexSet::default(),
@@ -166,14 +166,14 @@ impl<'a> SymbolTableBuilder<'a> {
 
 #[derive(Debug, Clone, Copy)]
 pub struct SymbolTableRef<'a> {
-    names: &'a crate::symbols::SymbolTable,
+    names: &'a crate::interner::SessionInterner,
     table: &'a SymbolTableWire,
     invalid_symbol_id: &'a Cell<Option<u32>>,
 }
 
 impl<'a> SymbolTableRef<'a> {
     pub fn new(
-        names: &'a crate::symbols::SymbolTable,
+        names: &'a crate::interner::SessionInterner,
         table: &'a SymbolTableWire,
         invalid_symbol_id: &'a Cell<Option<u32>>,
     ) -> Self {
@@ -1849,12 +1849,12 @@ wire_enum_conversions!(
 );
 
 #[inline]
-pub fn literal_to_wire(names: &crate::symbols::SymbolTable, v: &hir::Literal) -> LiteralWire {
+pub fn literal_to_wire(names: &crate::interner::SessionInterner, v: &hir::Literal) -> LiteralWire {
     match v {
         hir::Literal::Bool(v) => LiteralWire::Bool(*v),
         hir::Literal::Rune(v) => LiteralWire::Rune(*v),
         hir::Literal::String(v) => LiteralWire::String(names.text(*v).to_string()),
-        hir::Literal::Bytes(v) => LiteralWire::Bytes(v.with_bytes(<[u8]>::to_vec)),
+        hir::Literal::Bytes(v) => LiteralWire::Bytes(names.bytes(*v).to_vec()),
         hir::Literal::Integer { value, suffix } => LiteralWire::Integer {
             value: *value,
             suffix: suffix.as_ref().map(|v| int_suffix_to_wire(*v)),
@@ -1865,12 +1865,15 @@ pub fn literal_to_wire(names: &crate::symbols::SymbolTable, v: &hir::Literal) ->
 }
 
 #[inline]
-pub fn literal_from_wire(names: &crate::symbols::SymbolTable, v: &LiteralWire) -> hir::Literal {
+pub fn literal_from_wire(
+    names: &crate::interner::SessionInterner,
+    v: &LiteralWire,
+) -> hir::Literal {
     match v {
         LiteralWire::Bool(v) => hir::Literal::Bool(*v),
         LiteralWire::Rune(v) => hir::Literal::Rune(*v),
         LiteralWire::String(v) => hir::Literal::String(names.intern(v)),
-        LiteralWire::Bytes(v) => hir::Literal::Bytes(crate::span::InternedBytes::new(v)),
+        LiteralWire::Bytes(v) => hir::Literal::Bytes(names.intern_bytes(v)),
         LiteralWire::Integer { value, suffix } => hir::Literal::Integer {
             value: *value,
             suffix: suffix.as_ref().map(int_suffix_from_wire),
@@ -1965,7 +1968,7 @@ pub fn attribute_from_wire(
 
 #[inline]
 pub fn generic_param_to_wire(
-    names: &crate::symbols::SymbolTable,
+    names: &crate::interner::SessionInterner,
     param: GenericParameter,
 ) -> GenericParameterWire {
     GenericParameterWire {
@@ -1976,7 +1979,7 @@ pub fn generic_param_to_wire(
 
 #[inline]
 pub fn generic_param_from_wire(
-    names: &crate::symbols::SymbolTable,
+    names: &crate::interner::SessionInterner,
     param: &GenericParameterWire,
 ) -> GenericParameter {
     GenericParameter {
@@ -1986,25 +1989,28 @@ pub fn generic_param_from_wire(
 }
 
 #[inline]
-pub fn const_value_to_wire(names: &crate::symbols::SymbolTable, v: ConstValue) -> ConstValueWire {
+pub fn const_value_to_wire(
+    names: &crate::interner::SessionInterner,
+    v: ConstValue,
+) -> ConstValueWire {
     match v {
         ConstValue::Integer(v) => ConstValueWire::Integer(v),
         ConstValue::Bool(v) => ConstValueWire::Bool(v),
         ConstValue::Rune(v) => ConstValueWire::Rune(v),
         ConstValue::String(v) => ConstValueWire::String(names.text(v).to_string()),
-        ConstValue::Bytes(v) => ConstValueWire::Bytes(v.with_bytes(<[u8]>::to_vec)),
+        ConstValue::Bytes(v) => ConstValueWire::Bytes(names.bytes(v).to_vec()),
         ConstValue::Float(v) => ConstValueWire::Float(v),
         ConstValue::Unit => ConstValueWire::Unit,
         ConstValue::EnumUnitVariant(v) => ConstValueWire::EnumUnitVariant(def_to_wire(v)),
         ConstValue::Array(arr) => {
-            ConstValueWire::Array(arr.with_elements(|elems| elems.iter().copied().map(|value| const_value_to_wire(names, value)).collect()))
+            ConstValueWire::Array(names.const_elements(arr).iter().copied().map(|value| const_value_to_wire(names, value)).collect())
         }
     }
 }
 
 #[inline]
 pub fn const_value_from_wire(
-    names: &crate::symbols::SymbolTable,
+    names: &crate::interner::SessionInterner,
     v: &ConstValueWire,
 ) -> ConstValue {
     match v {
@@ -2012,12 +2018,12 @@ pub fn const_value_from_wire(
         ConstValueWire::Bool(v) => ConstValue::Bool(*v),
         ConstValueWire::Rune(v) => ConstValue::Rune(*v),
         ConstValueWire::String(v) => ConstValue::String(names.intern(v)),
-        ConstValueWire::Bytes(v) => ConstValue::Bytes(crate::span::InternedBytes::new(v)),
+        ConstValueWire::Bytes(v) => ConstValue::Bytes(names.intern_bytes(v)),
         ConstValueWire::Float(v) => ConstValue::Float(*v),
         ConstValueWire::Unit => ConstValue::Unit,
         ConstValueWire::EnumUnitVariant(v) => ConstValue::EnumUnitVariant(def_from_wire(v)),
         ConstValueWire::Array(elems) => ConstValue::Array(
-            crate::sema::models::InternedConstArray::new(
+            names.intern_const_array(
                 elems.iter().map(|value| const_value_from_wire(names, value)).collect(),
             ),
         ),
@@ -2107,7 +2113,7 @@ pub fn adt_def_from_wire(v: &AdtDefWire) -> AdtDef {
 }
 
 pub fn generic_arg_to_wire(
-    names: &crate::symbols::SymbolTable,
+    names: &crate::interner::SessionInterner,
     v: GenericArgument<'_>,
 ) -> GenericArgumentWire {
     match v {
@@ -2127,7 +2133,7 @@ pub fn generic_arg_from_wire<'a>(
 }
 
 pub fn interface_reference_to_wire(
-    names: &crate::symbols::SymbolTable,
+    names: &crate::interner::SessionInterner,
     v: InterfaceReference<'_>,
 ) -> InterfaceReferenceWire {
     InterfaceReferenceWire {
@@ -2153,7 +2159,7 @@ pub fn interface_reference_from_wire<'a>(
     gcx: GlobalContext<'a>,
     v: &InterfaceReferenceWire,
 ) -> InterfaceReference<'a> {
-    let names = gcx.symbols();
+    let names = gcx.interner();
     let arguments: Vec<_> = v
         .arguments
         .iter()
@@ -2175,7 +2181,7 @@ pub fn interface_reference_from_wire<'a>(
     }
 }
 
-pub fn const_to_wire(names: &crate::symbols::SymbolTable, v: Const<'_>) -> ConstWire {
+pub fn const_to_wire(names: &crate::interner::SessionInterner, v: Const<'_>) -> ConstWire {
     ConstWire {
         ty: ty_to_wire(names, v.ty),
         kind: match v.kind {
@@ -2187,7 +2193,7 @@ pub fn const_to_wire(names: &crate::symbols::SymbolTable, v: Const<'_>) -> Const
 }
 
 pub fn const_from_wire<'a>(gcx: GlobalContext<'a>, v: &ConstWire) -> Const<'a> {
-    let names = gcx.symbols();
+    let names = gcx.interner();
     Const {
         ty: ty_from_wire(gcx, &v.ty),
         kind: match &v.kind {
@@ -2200,7 +2206,7 @@ pub fn const_from_wire<'a>(gcx: GlobalContext<'a>, v: &ConstWire) -> Const<'a> {
     }
 }
 
-pub fn ty_to_wire(names: &crate::symbols::SymbolTable, v: Ty<'_>) -> TyWire {
+pub fn ty_to_wire(names: &crate::interner::SessionInterner, v: Ty<'_>) -> TyWire {
     TyWire {
         kind: match v.kind() {
             TyKind::Array { element, len } => TyKindWire::Array {
@@ -2283,7 +2289,7 @@ pub fn ty_to_wire(names: &crate::symbols::SymbolTable, v: Ty<'_>) -> TyWire {
 }
 
 pub fn ty_from_wire<'a>(gcx: GlobalContext<'a>, v: &TyWire) -> Ty<'a> {
-    let names = gcx.symbols();
+    let names = gcx.interner();
     let kind = match &v.kind {
         TyKindWire::Array { element, len } => TyKind::Array {
             element: ty_from_wire(gcx, element),
@@ -2586,7 +2592,7 @@ pub fn type_head_from_wire(v: &TypeHeadWire) -> TypeHead {
 }
 
 pub fn constraint_to_wire(
-    names: &crate::symbols::SymbolTable,
+    names: &crate::interner::SessionInterner,
     v: &Constraint<'_>,
 ) -> ConstraintWire {
     match v {
@@ -2634,7 +2640,7 @@ fn dummy_hir_anon_const(span: Span) -> hir::AnonConst {
 }
 
 pub fn fn_param_to_wire(
-    names: &crate::symbols::SymbolTable,
+    names: &crate::interner::SessionInterner,
     v: &LabeledFunctionParameter<'_>,
 ) -> LabeledFunctionParameterWire {
     LabeledFunctionParameterWire {
@@ -2650,7 +2656,7 @@ pub fn fn_param_from_wire<'a>(
     gcx: GlobalContext<'a>,
     v: &LabeledFunctionParameterWire,
 ) -> LabeledFunctionParameter<'a> {
-    let names = gcx.symbols();
+    let names = gcx.interner();
     LabeledFunctionParameter {
         label: v.label.as_ref().map(|v| names.intern(v)),
         name: names.intern(&v.name),
@@ -2661,7 +2667,7 @@ pub fn fn_param_from_wire<'a>(
 }
 
 pub fn signature_to_wire(
-    names: &crate::symbols::SymbolTable,
+    names: &crate::interner::SessionInterner,
     v: &LabeledFunctionSignature<'_>,
 ) -> LabeledFunctionSignatureWire {
     LabeledFunctionSignatureWire {
@@ -2688,7 +2694,7 @@ pub fn signature_from_wire<'a>(
     }
 }
 
-pub fn generics_to_wire(names: &crate::symbols::SymbolTable, v: &Generics) -> GenericsWire {
+pub fn generics_to_wire(names: &crate::interner::SessionInterner, v: &Generics) -> GenericsWire {
     GenericsWire {
         parameters: v
             .parameters
@@ -2719,7 +2725,7 @@ pub fn generics_to_wire(names: &crate::symbols::SymbolTable, v: &Generics) -> Ge
 }
 
 pub fn generics_from_wire(
-    names: &crate::symbols::SymbolTable,
+    names: &crate::interner::SessionInterner,
     v: &GenericsWire,
     placeholder_span: Span,
 ) -> Generics {
@@ -2819,7 +2825,7 @@ pub fn struct_definition_from_wire<'a>(
     v: &StructDefinitionWire,
     symbols: SymbolTableRef<'_>,
 ) -> StructDefinition<'a> {
-    let names = gcx.symbols();
+    let names = gcx.interner();
     let fields: Vec<_> = v
         .fields
         .iter()
@@ -2945,7 +2951,7 @@ pub fn enum_definition_from_wire<'a>(
     v: &EnumDefinitionWire,
     symbols: SymbolTableRef<'_>,
 ) -> EnumDefinition<'a> {
-    let names = gcx.symbols();
+    let names = gcx.interner();
     let variants: Vec<_> = v
         .variants
         .iter()
@@ -3013,7 +3019,7 @@ pub fn interface_def_from_wire<'a>(
     remap: FileRemap<'_>,
     symbols: SymbolTableRef<'_>,
 ) -> InterfaceDefinition<'a> {
-    let names = gcx.symbols();
+    let names = gcx.interner();
     InterfaceDefinition {
         id: def_from_wire(&v.id),
         superfaces: v
@@ -3087,7 +3093,7 @@ pub fn interface_requirements_from_wire<'a>(
     v: &InterfaceRequirementsWire,
     symbols: SymbolTableRef<'_>,
 ) -> InterfaceRequirements<'a> {
-    let names = gcx.symbols();
+    let names = gcx.interner();
     InterfaceRequirements {
         methods: v
             .methods
@@ -3154,7 +3160,7 @@ pub fn conformance_id_from_wire(v: &ConformanceRecordIdWire) -> ConformanceRecor
 }
 
 pub fn conformance_record_to_wire(
-    names: &crate::symbols::SymbolTable,
+    names: &crate::interner::SessionInterner,
     v: ConformanceRecord<'_>,
 ) -> ConformanceRecordWire {
     ConformanceRecordWire {
@@ -3205,7 +3211,7 @@ pub fn member_set_from_wire(v: &MemberSetWire) -> crate::compile::context::Membe
 }
 
 pub fn computed_property_entry_to_wire(
-    names: &crate::symbols::SymbolTable,
+    names: &crate::interner::SessionInterner,
     v: crate::compile::context::ComputedPropertyEntry<'_>,
 ) -> ComputedPropertyEntryWire {
     ComputedPropertyEntryWire {
@@ -3474,7 +3480,7 @@ pub fn closure_captures_from_wire<'a>(
     v: &ClosureCapturesWire,
     symbols: SymbolTableRef<'_>,
 ) -> ClosureCaptures<'a> {
-    let names = gcx.symbols();
+    let names = gcx.interner();
     ClosureCaptures {
         captures: v
             .captures
@@ -3482,7 +3488,7 @@ pub fn closure_captures_from_wire<'a>(
             .map(|capture| CapturedVar {
                 source_id: hir_node_from_wire(capture.source_id),
                 root_ty: ty_from_wire(gcx, &capture.root_ty),
-                projection: gcx.store.arenas.global.alloc_slice_clone(
+                projection: gcx.store.arenas.global.alloc_slice_copy(
                     &capture
                         .projection
                         .iter()
@@ -3562,7 +3568,7 @@ pub fn synthetic_method_info_from_wire<'a>(
     v: &SyntheticMethodInfoWire,
     symbols: SymbolTableRef<'_>,
 ) -> SyntheticMethodInfo<'a> {
-    let names = gcx.symbols();
+    let names = gcx.interner();
     let interface_args: Vec<_> = v
         .interface_args
         .iter()
@@ -3616,7 +3622,7 @@ pub fn synthetic_method_info_from_wire<'a>(
     }
 }
 
-pub fn instance_to_wire(names: &crate::symbols::SymbolTable, v: Instance<'_>) -> InstanceWire {
+pub fn instance_to_wire(names: &crate::interner::SessionInterner, v: Instance<'_>) -> InstanceWire {
     InstanceWire {
         kind: match v.kind {
             InstanceKind::Item(id) => InstanceKindWire::Item(def_to_wire(id)),
@@ -3689,7 +3695,7 @@ pub fn std_registry_from_wire(wire: &StdItemRegistryWire, remap: FileRemap<'_>) 
 }
 
 pub fn synthetic_definition_to_wire(
-    names: &crate::symbols::SymbolTable,
+    names: &crate::interner::SessionInterner,
     id: DefinitionID,
     v: &SyntheticDefinition<'_>,
 ) -> SyntheticDefinitionWire {
@@ -3708,7 +3714,7 @@ pub fn synthetic_definition_from_wire<'a>(
     v: &SyntheticDefinitionWire,
     remap: FileRemap<'_>,
 ) -> (DefinitionID, SyntheticDefinition<'a>) {
-    let names = gcx.symbols();
+    let names = gcx.interner();
     let placeholder_file = remap
         .old_to_new
         .values()
@@ -4012,7 +4018,7 @@ wire_enum_conversions!(
     ]
 );
 
-pub fn place_to_wire(names: &crate::symbols::SymbolTable, v: &mir::Place<'_>) -> PlaceWire {
+pub fn place_to_wire(names: &crate::interner::SessionInterner, v: &mir::Place<'_>) -> PlaceWire {
     PlaceWire {
         local: v.local.index() as u32,
         projection: v
@@ -4033,7 +4039,7 @@ pub fn place_to_wire(names: &crate::symbols::SymbolTable, v: &mir::Place<'_>) ->
 }
 
 pub fn place_from_wire<'a>(gcx: GlobalContext<'a>, v: &PlaceWire) -> mir::Place<'a> {
-    let names = gcx.symbols();
+    let names = gcx.interner();
     mir::Place {
         local: mir::LocalId::from_raw(v.local),
         projection: v
@@ -4055,7 +4061,7 @@ pub fn place_from_wire<'a>(gcx: GlobalContext<'a>, v: &PlaceWire) -> mir::Place<
 }
 
 pub fn mir_constant_to_wire(
-    names: &crate::symbols::SymbolTable,
+    names: &crate::interner::SessionInterner,
     v: &mir::Constant<'_>,
 ) -> ConstantWire {
     ConstantWire {
@@ -4064,9 +4070,9 @@ pub fn mir_constant_to_wire(
             mir::ConstantKind::Bool(v) => ConstantKindWire::Bool(*v),
             mir::ConstantKind::Rune(v) => ConstantKindWire::Rune(*v),
             mir::ConstantKind::String(v) => ConstantKindWire::String(names.text(*v).to_string()),
-            mir::ConstantKind::Bytes(v) => ConstantKindWire::Bytes(v.with_bytes(<[u8]>::to_vec)),
+            mir::ConstantKind::Bytes(v) => ConstantKindWire::Bytes(names.bytes(*v).to_vec()),
             mir::ConstantKind::ConstArray(arr) => ConstantKindWire::ConstArray(
-                arr.with_elements(|elems| elems.iter().copied().map(|value| const_value_to_wire(names, value)).collect()),
+                names.const_elements(*arr).iter().copied().map(|value| const_value_to_wire(names, value)).collect(),
             ),
             mir::ConstantKind::Integer(v) => ConstantKindWire::Integer(*v),
             mir::ConstantKind::Float(v) => ConstantKindWire::Float(*v),
@@ -4091,7 +4097,7 @@ pub fn mir_constant_to_wire(
 }
 
 pub fn mir_constant_from_wire<'a>(gcx: GlobalContext<'a>, v: &ConstantWire) -> mir::Constant<'a> {
-    let names = gcx.symbols();
+    let names = gcx.interner();
     mir::Constant {
         ty: ty_from_wire(gcx, &v.ty),
         value: match &v.value {
@@ -4099,10 +4105,10 @@ pub fn mir_constant_from_wire<'a>(gcx: GlobalContext<'a>, v: &ConstantWire) -> m
             ConstantKindWire::Rune(v) => mir::ConstantKind::Rune(*v),
             ConstantKindWire::String(v) => mir::ConstantKind::String(names.intern(v)),
             ConstantKindWire::Bytes(v) => {
-                mir::ConstantKind::Bytes(crate::span::InternedBytes::new(v))
+                mir::ConstantKind::Bytes(names.intern_bytes(v))
             }
             ConstantKindWire::ConstArray(elems) => mir::ConstantKind::ConstArray(
-                crate::sema::models::InternedConstArray::new(
+                names.intern_const_array(
                     elems.iter().map(|value| const_value_from_wire(names, value)).collect(),
                 ),
             ),
@@ -4138,7 +4144,10 @@ pub fn mir_constant_from_wire<'a>(gcx: GlobalContext<'a>, v: &ConstantWire) -> m
     }
 }
 
-pub fn operand_to_wire(names: &crate::symbols::SymbolTable, v: &mir::Operand<'_>) -> OperandWire {
+pub fn operand_to_wire(
+    names: &crate::interner::SessionInterner,
+    v: &mir::Operand<'_>,
+) -> OperandWire {
     match v {
         mir::Operand::Copy(v) => OperandWire::Copy(place_to_wire(names, v)),
 
@@ -4167,7 +4176,7 @@ pub fn operand_from_wire<'a>(gcx: GlobalContext<'a>, v: &OperandWire) -> mir::Op
 }
 
 pub fn cast_kind_to_wire(
-    names: &crate::symbols::SymbolTable,
+    names: &crate::interner::SessionInterner,
     v: &mir::CastKind<'_>,
 ) -> CastKindWire {
     match v {
@@ -4212,7 +4221,7 @@ pub fn cast_kind_from_wire<'a>(gcx: GlobalContext<'a>, v: &CastKindWire) -> mir:
 }
 
 pub fn aggregate_kind_to_wire(
-    names: &crate::symbols::SymbolTable,
+    names: &crate::interner::SessionInterner,
     v: &mir::AggregateKind<'_>,
 ) -> AggregateKindWire {
     match v {
@@ -4289,7 +4298,7 @@ pub fn aggregate_kind_from_wire<'a>(
     }
 }
 
-pub fn rvalue_to_wire(names: &crate::symbols::SymbolTable, v: &mir::Rvalue<'_>) -> RvalueWire {
+pub fn rvalue_to_wire(names: &crate::interner::SessionInterner, v: &mir::Rvalue<'_>) -> RvalueWire {
     match v {
         mir::Rvalue::Alloc { ty } => RvalueWire::Alloc {
             ty: ty_to_wire(names, *ty),
@@ -4398,7 +4407,7 @@ pub fn rvalue_from_wire<'a>(gcx: GlobalContext<'a>, v: &RvalueWire) -> mir::Rval
 }
 
 pub fn statement_to_wire(
-    names: &crate::symbols::SymbolTable,
+    names: &crate::interner::SessionInterner,
     v: &mir::Statement<'_>,
 ) -> StatementWire {
     StatementWire {
@@ -4496,7 +4505,7 @@ pub fn unwind_from_wire(v: &CallUnwindActionWire) -> mir::CallUnwindAction {
 }
 
 pub fn terminator_to_wire(
-    names: &crate::symbols::SymbolTable,
+    names: &crate::interner::SessionInterner,
     v: &mir::Terminator<'_>,
 ) -> TerminatorWire {
     TerminatorWire {
@@ -4640,7 +4649,7 @@ pub fn terminator_from_wire<'a>(
     }
 }
 
-pub fn mir_body_to_wire(names: &crate::symbols::SymbolTable, v: &mir::Body<'_>) -> BodyWire {
+pub fn mir_body_to_wire(names: &crate::interner::SessionInterner, v: &mir::Body<'_>) -> BodyWire {
     BodyWire {
         owner: def_to_wire(v.owner),
         source_scopes: v
@@ -4684,7 +4693,7 @@ pub fn mir_body_from_wire<'a>(
     v: &BodyWire,
     remap: FileRemap<'_>,
 ) -> mir::Body<'a> {
-    let names = gcx.symbols();
+    let names = gcx.interner();
     mir::Body {
         escape_locals: Vec::new(),
 
@@ -4737,7 +4746,7 @@ pub fn mir_body_from_wire<'a>(
 }
 
 pub fn mir_package_to_wire_filtered(
-    names: &crate::symbols::SymbolTable,
+    names: &crate::interner::SessionInterner,
     v: &mir::MirPackage<'_>,
     mut include: impl FnMut(DefinitionID, &mir::Body<'_>) -> bool,
 ) -> MirPackageWire {
@@ -5114,7 +5123,7 @@ pub fn resolution_output_from_wire<'a>(
     remap: FileRemap<'_>,
     symbols: SymbolTableRef<'_>,
 ) -> Result<ResolutionOutput<'a>, WireDecodeError> {
-    let names = gcx.symbols();
+    let names = gcx.interner();
     let scope_order = validate_scope_graph_for_hydration(wire)?;
 
     let fallback_file = remap
@@ -5665,7 +5674,7 @@ pub fn type_database_from_wire<'a>(
     remap: FileRemap<'_>,
     symbols: SymbolTableRef<'_>,
 ) -> TypeDatabase<'a> {
-    let names = gcx.symbols();
+    let names = gcx.interner();
     let placeholder_file = remap
         .old_to_new
         .values()
@@ -5959,7 +5968,7 @@ pub fn type_database_from_wire<'a>(
                     .iter()
                     .map(|attr| attribute_from_wire(attr, remap, symbols))
                     .collect();
-                let attrs: &'a hir::AttributeList = gcx.store.arenas.global.alloc(attrs);
+                let attrs: &'a hir::AttributeList = gcx.store.arenas.attributes.alloc(attrs);
                 (def_from_wire(def), attrs)
             })
             .collect(),
@@ -6068,7 +6077,7 @@ pub fn type_database_from_wire<'a>(
                     .collect::<Vec<_>>();
                 (
                     def_from_wire(def),
-                    gcx.store.arenas.global.alloc_slice_clone(&interfaces) as &'a [_],
+                    gcx.store.arenas.global.alloc_slice_copy(&interfaces) as &'a [_],
                 )
             })
             .collect(),
@@ -6184,12 +6193,12 @@ mod tests {
                 },
                 variants,
             };
-            let mut symbols = SymbolTableBuilder::new(gcx.symbols());
+            let mut symbols = SymbolTableBuilder::new(gcx.interner());
             let wire = enum_definition_to_wire(&original, &mut symbols);
             let table = symbols.finish();
             let invalid = Cell::new(None);
             let restored =
-                enum_definition_from_wire(gcx, &wire, SymbolTableRef::new(gcx.symbols(), &table, &invalid));
+                enum_definition_from_wire(gcx, &wire, SymbolTableRef::new(gcx.interner(), &table, &invalid));
             let EnumVariantKind::Struct(decoded) = restored.variants[0].kind else {
                 panic!("struct payload")
             };
@@ -6216,7 +6225,7 @@ mod tests {
             symbols: vec!["alpha".into()],
         };
         let invalid = Cell::new(None);
-        let names = crate::symbols::SymbolTable::default();
+        let names = crate::interner::SessionInterner::default();
         let symbols = SymbolTableRef::new(&names, &table, &invalid);
 
         assert_eq!(symbols.resolve_str(SymbolIdWire(0)), "alpha");
@@ -6272,7 +6281,7 @@ mod tests {
             let value = mir::Rvalue::Alloc {
                 ty: gcx.types.int32,
             };
-            let decoded = rvalue_from_wire(gcx, &rvalue_to_wire(gcx.symbols(), &value));
+            let decoded = rvalue_from_wire(gcx, &rvalue_to_wire(gcx.interner(), &value));
             assert!(matches!(decoded, mir::Rvalue::Alloc { ty } if ty == gcx.types.int32));
             let mut body = crate::mir::test_support::minimal_body(gcx);
             body.escape_locals.fill(true);
@@ -6280,7 +6289,7 @@ mod tests {
             let files = FxHashMap::from_iter([(span.file.index() as u32, span.file)]);
             let decoded = mir_body_from_wire(
                 gcx,
-                &mir_body_to_wire(gcx.symbols(), &body),
+                &mir_body_to_wire(gcx.interner(), &body),
                 FileRemap { old_to_new: &files },
             );
             assert!(
@@ -6303,7 +6312,7 @@ mod tests {
             let value = mir::Rvalue::CleanupAddress {
                 place: mir::Place::from_local(source),
             };
-            let decoded = rvalue_from_wire(gcx, &rvalue_to_wire(gcx.symbols(), &value));
+            let decoded = rvalue_from_wire(gcx, &rvalue_to_wire(gcx.interner(), &value));
             assert!(
                 matches!(&decoded, mir::Rvalue::CleanupAddress { place } if place.local == source)
             );
@@ -6340,7 +6349,7 @@ mod tests {
             let value = mir::Rvalue::Ref {
                 place: mir::Place::from_local(source),
             };
-            let decoded = rvalue_from_wire(gcx, &rvalue_to_wire(gcx.symbols(), &value));
+            let decoded = rvalue_from_wire(gcx, &rvalue_to_wire(gcx.interner(), &value));
             assert!(matches!(&decoded, mir::Rvalue::Ref { place } if place.local == source));
             body.basic_blocks[body.start_block]
                 .statements
@@ -6387,7 +6396,7 @@ mod tests {
                     span,
                 });
 
-            let wire = mir_body_to_wire(gcx.symbols(), &body);
+            let wire = mir_body_to_wire(gcx.interner(), &body);
             let file_remap = FxHashMap::from_iter([(span.file.index() as u32, span.file)]);
             let decoded = mir_body_from_wire(
                 gcx,
@@ -6442,7 +6451,7 @@ mod tests {
                     FileRemap {
                         old_to_new: &file_remap,
                     },
-                    SymbolTableRef::new(gcx.symbols(), &table, &invalid),
+                    SymbolTableRef::new(gcx.interner(), &table, &invalid),
                 );
                 assert!(result.is_err(), "invalid scope mapping must fail hydration");
             }
@@ -6476,7 +6485,7 @@ mod tests {
                 FileRemap {
                     old_to_new: &file_remap,
                 },
-                SymbolTableRef::new(gcx.symbols(), &table, &invalid),
+                SymbolTableRef::new(gcx.interner(), &table, &invalid),
             )
             .expect("valid parent and glob graphs");
             let child = output.file_scope_mapping[&FileID::new(0)];
@@ -6563,12 +6572,12 @@ mod tests {
                     coding_skip: false,
                 }]),
             };
-            let mut symbols = SymbolTableBuilder::new(gcx.symbols());
+            let mut symbols = SymbolTableBuilder::new(gcx.interner());
             let wire = struct_definition_to_wire(&original, &mut symbols);
             let table = symbols.finish();
             let invalid = Cell::new(None);
             let decoded =
-                struct_definition_from_wire(gcx, &wire, SymbolTableRef::new(gcx.symbols(), &table, &invalid));
+                struct_definition_from_wire(gcx, &wire, SymbolTableRef::new(gcx.interner(), &table, &invalid));
             assert!(decoded.has_initializer);
             assert_eq!(decoded.fields[0].default_provider, Some(definition));
             assert_eq!(
@@ -6624,12 +6633,12 @@ mod tests {
                     repr: StructRepr::Taro,
                     fields: &[],
                 };
-                let mut symbols = SymbolTableBuilder::new(gcx.symbols());
+                let mut symbols = SymbolTableBuilder::new(gcx.interner());
                 let wire = struct_definition_to_wire(&original, &mut symbols);
                 let table = symbols.finish();
                 let invalid = Cell::new(None);
                 let decoded =
-                    struct_definition_from_wire(gcx, &wire, SymbolTableRef::new(gcx.symbols(), &table, &invalid));
+                    struct_definition_from_wire(gcx, &wire, SymbolTableRef::new(gcx.interner(), &table, &invalid));
                 assert_eq!(decoded.class_info, original.class_info);
                 assert!(decoded.has_initializer);
             }
@@ -6733,7 +6742,7 @@ mod function_pointer_effect_tests {
                 );
                 assert_eq!(
                     pointer,
-                    super::ty_from_wire(gcx, &super::ty_to_wire(gcx.symbols(), pointer))
+                    super::ty_from_wire(gcx, &super::ty_to_wire(gcx.interner(), pointer))
                 );
                 assert_eq!(
                     crate::sema::models::callable_signature(pointer).is_some(),

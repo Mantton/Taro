@@ -16,7 +16,7 @@ pub mod constants;
 pub mod diagnostics;
 pub mod error;
 mod hir;
-mod interner;
+pub mod interner;
 pub mod metadata;
 pub mod mir;
 pub mod package;
@@ -25,7 +25,6 @@ pub mod runtime_abi;
 mod sema;
 pub mod span;
 pub mod specialize;
-pub mod symbols;
 #[cfg(test)]
 mod test_support;
 mod thir;

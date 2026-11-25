@@ -916,7 +916,7 @@ fn nonconforming_fields<'ctx>(
         .iter()
         .map(|bound| bound.value)
         .collect();
-    let param_env = gcx.store.arenas.global.alloc_slice_clone(&constraints);
+    let param_env = gcx.store.arenas.global.alloc_slice_copy(&constraints);
     let environment = crate::sema::tycheck::utils::ParamEnv::new(constraints);
     let icx = std::rc::Rc::new(crate::sema::tycheck::infer::InferCtx::new(gcx));
     Some(
@@ -1001,7 +1001,7 @@ pub(crate) fn codec_field_metadata_obstacles<'ctx>(
             .iter()
             .map(|bound| bound.value)
             .collect();
-        let param_env = gcx.store.arenas.global.alloc_slice_clone(&constraints);
+        let param_env = gcx.store.arenas.global.alloc_slice_copy(&constraints);
         let environment = crate::sema::tycheck::utils::ParamEnv::new(constraints);
         let icx = std::rc::Rc::new(crate::sema::tycheck::infer::InferCtx::new(gcx));
 

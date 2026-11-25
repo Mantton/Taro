@@ -214,7 +214,7 @@ fn task_result_failure_edge_preserves_order_remapping_and_metadata() {
             };
             let edges = terminator.kind.successors();
             assert_eq!(*edges.last().unwrap(), BasicBlockId::from_raw(5));
-            let wire = crate::metadata::wire::terminator_to_wire(gcx.symbols(), &terminator);
+            let wire = crate::metadata::wire::terminator_to_wire(gcx.interner(), &terminator);
             let files = rustc_hash::FxHashMap::default();
             let roundtrip = crate::metadata::wire::terminator_from_wire(
                 gcx,

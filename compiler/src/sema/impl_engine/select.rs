@@ -644,7 +644,7 @@ impl<'ctx> Selector<'ctx> {
                 .store
                 .arenas
                 .global
-                .alloc_slice_clone(&field_assumptions);
+                .alloc_slice_copy(&field_assumptions);
             let icx = Rc::new(InferCtx::new(self.gcx));
             for field in fields {
                 let field = instantiate_ty_with_args(self.gcx, field, subst);

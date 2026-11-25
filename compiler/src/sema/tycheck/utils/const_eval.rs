@@ -302,7 +302,7 @@ fn const_expression_type_hint<'ctx>(
     Some(match literal {
         hir::Literal::Bool(_) => gcx.types.bool,
         hir::Literal::Rune(_) => gcx.types.rune,
-        hir::Literal::Bytes(value) => gcx.byte_array_type(value.len()),
+        hir::Literal::Bytes(value) => gcx.byte_array_type(gcx.interner().bytes(*value).len()),
         hir::Literal::String(_) => gcx.types.string,
         hir::Literal::Float(_) => gcx.types.float64,
         hir::Literal::Integer {
@@ -586,7 +586,7 @@ fn early_static_member<'ctx>(
                 .entry(expression.id)
                 .or_insert_with(|| crate::compile::context::ConstantMemberUse {
                     owner: current,
-                    expression: gcx.store.arenas.global.alloc(expression.clone()),
+                    expression: gcx.store.arenas.expressions.alloc(expression.clone()),
                     expected: receiver_context
                         .map(|ty| normalize_aliases(gcx, ty))
                         .filter(|ty| !ty.contains_inference()),

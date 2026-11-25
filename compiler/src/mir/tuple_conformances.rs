@@ -1305,7 +1305,7 @@ mod tests {
                         .get(&id)
                         .unwrap()
                         .clone();
-                    let wire = crate::metadata::wire::synthetic_definition_to_wire(gcx.symbols(), id, &definition);
+                    let wire = crate::metadata::wire::synthetic_definition_to_wire(gcx.interner(), id, &definition);
                     let bytes = bincode::serialize(&wire).unwrap();
                     let restored = bincode::deserialize(&bytes).unwrap();
                     let files = rustc_hash::FxHashMap::default();

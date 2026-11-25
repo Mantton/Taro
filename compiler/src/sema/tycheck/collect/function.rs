@@ -191,7 +191,7 @@ impl<'ctx> Actor<'ctx> {
             .store
             .arenas
             .global
-            .alloc_slice_clone(&[InterfaceReference {
+            .alloc_slice_copy(&[InterfaceReference {
                 id,
                 arguments,
                 bindings: &[],

@@ -621,7 +621,7 @@ func main() {}
                     .store
                     .arenas
                     .global
-                    .alloc_slice_clone(&[InterfaceReference {
+                    .alloc_slice_copy(&[InterfaceReference {
                         id: interface,
                         arguments,
                         bindings: &[],
@@ -652,7 +652,7 @@ func main() {}
                     .store
                     .arenas
                     .global
-                    .alloc_slice_clone(&[InterfaceReference {
+                    .alloc_slice_copy(&[InterfaceReference {
                         id: interface,
                         arguments: hidden,
                         bindings: &[],

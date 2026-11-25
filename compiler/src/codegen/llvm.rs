@@ -923,8 +923,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .as_basic_value_enum(),
             ),
             ConstValue::Bytes(value) => Some(
-                value
-                    .with_bytes(|b| self.context.const_string(b, false))
+                self.context
+                    .const_string(&self.gcx.interner().bytes(value), false)
                     .as_basic_value_enum(),
             ),
             ConstValue::String(sym) => {
@@ -953,7 +953,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     fn lower_const_array_with_ty(
         &mut self,
         ty: Ty<'gcx>,
-        arr: crate::sema::models::InternedConstArray,
+        arr: crate::interner::InternedConstArray,
     ) -> Option<BasicValueEnum<'llvm>> {
         let TyKind::Array { element, .. } =
             crate::sema::tycheck::utils::normalize_aliases(self.gcx, ty).kind()
@@ -961,7 +961,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return None;
         };
         let elem_llvm_ty = self.lower_ty(element)?;
-        let elements = arr.to_vec();
+        let elements = self.gcx.interner().const_elements(arr).to_vec();
         let mut lowered = Vec::with_capacity(elements.len());
         for elem in elements {
             lowered.push(self.lower_const_value_with_ty(element, elem)?);
@@ -8096,8 +8096,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .as_basic_value_enum(),
             ),
             mir::ConstantKind::Bytes(value) => Some(
-                value
-                    .with_bytes(|b| self.context.const_string(b, false))
+                self.context
+                    .const_string(&self.gcx.interner().bytes(*value), false)
                     .as_basic_value_enum(),
             ),
             mir::ConstantKind::ConstArray(arr) => {

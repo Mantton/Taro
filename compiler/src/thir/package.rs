@@ -1090,7 +1090,7 @@ impl<'ctx> FunctionLower<'ctx> {
             .into_iter()
             .map(|c| c.value)
             .collect();
-        let param_env = self.gcx.store.arenas.global.alloc_slice_clone(&constraints);
+        let param_env = self.gcx.store.arenas.global.alloc_slice_copy(&constraints);
         let goal = crate::sema::models::InterfaceGoal {
             interface_id: debug_iface,
             self_ty: value_ty,

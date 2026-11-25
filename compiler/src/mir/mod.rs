@@ -630,7 +630,7 @@ use crate::sema::models::{GenericArguments, GenericParameter};
 #[derive(Debug, Clone)]
 pub enum ConstantKind<'ctx> {
     Bytes(crate::span::InternedBytes),
-    ConstArray(crate::sema::models::InternedConstArray),
+    ConstArray(crate::interner::InternedConstArray),
     Bool(bool),
     Rune(char),
     String(Symbol),

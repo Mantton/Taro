@@ -17,7 +17,7 @@ use crate::{
         PlaceElem, Rvalue, StatementKind, TerminatorKind, UnaryOperator, builder::MirBuilder,
     },
     sema::{
-        models::{Const, ConstKind, ConstValue, FloatTy, InternedConstArray, Ty, TyKind},
+        models::{Const, ConstKind, ConstValue, FloatTy, Ty, TyKind},
         tycheck::{
             results::TypeCheckResults,
             utils::{
@@ -598,7 +598,7 @@ impl<'hir, 'ctx> ConstMirEvaluator<'hir, 'ctx> {
                 for elem in elems {
                     out.push(self.interp_to_const_value(elem, element, span)?);
                 }
-                Ok(ConstValue::Array(InternedConstArray::new(out)))
+                Ok(ConstValue::Array(self.gcx.interner().intern_const_array(out)))
             }
             _ => {
                 self.gcx.dcx().emit_error(
@@ -974,9 +974,9 @@ impl<'a, 'hir, 'ctx> InterpMachine<'a, 'hir, 'ctx> {
                     TyKind::Array { element, .. } => normalize_aliases(self.gcx(), element),
                     _ => self.gcx().types.error,
                 };
-                let elems = arr.to_vec();
+                let elems = self.gcx().interner().const_elements(*arr);
                 let mut out = Vec::with_capacity(elems.len());
-                for e in elems {
+                for &e in elems.iter() {
                     out.push(self.const_value_to_interp(e, elem_ty, span)?);
                 }
                 Ok(InterpVal::Array(out))
@@ -1016,8 +1016,9 @@ impl<'a, 'hir, 'ctx> InterpMachine<'a, 'hir, 'ctx> {
                     TyKind::Array { element, .. } => normalize_aliases(self.gcx(), element),
                     _ => self.gcx().types.error,
                 };
-                let mut out = Vec::with_capacity(arr.len());
-                for elem in arr.to_vec() {
+                let elems = self.gcx().interner().const_elements(arr);
+                let mut out = Vec::with_capacity(elems.len());
+                for &elem in elems.iter() {
                     out.push(self.const_value_to_interp(elem, elem_ty, span)?);
                 }
                 Ok(InterpVal::Array(out))

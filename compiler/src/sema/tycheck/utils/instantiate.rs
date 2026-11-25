@@ -225,7 +225,7 @@ mod tests {
             };
             let erased = Ty::new(
                 TyKind::BoxedExistential {
-                    interfaces: gcx.store.arenas.global.alloc_slice_clone(&[interface]),
+                    interfaces: gcx.store.arenas.global.alloc_slice_copy(&[interface]),
                 },
                 gcx,
             );

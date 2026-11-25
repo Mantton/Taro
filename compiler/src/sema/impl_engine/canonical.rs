@@ -42,7 +42,7 @@ fn canonicalize_goal<'ctx>(gcx: Gcx<'ctx>, goal: InterfaceGoal<'ctx>) -> Interfa
             binding.ty.format(gcx),
         )
     });
-    let bindings = gcx.store.arenas.global.alloc_slice_clone(&bindings);
+    let bindings = gcx.store.arenas.global.alloc_slice_copy(&bindings);
 
     let mut param_env: Vec<_> = goal
         .param_env
@@ -50,7 +50,7 @@ fn canonicalize_goal<'ctx>(gcx: Gcx<'ctx>, goal: InterfaceGoal<'ctx>) -> Interfa
         .map(|constraint| canonicalize_constraint(gcx, *constraint))
         .collect();
     param_env.sort_by_cached_key(|constraint| constraint_sort_key(gcx, *constraint));
-    let param_env = gcx.store.arenas.global.alloc_slice_clone(&param_env);
+    let param_env = gcx.store.arenas.global.alloc_slice_copy(&param_env);
 
     InterfaceGoal {
         interface_id: goal.interface_id,
@@ -103,7 +103,7 @@ fn canonicalize_interface_ref<'ctx>(
             binding.ty.format(gcx),
         )
     });
-    let bindings = gcx.store.arenas.global.alloc_slice_clone(&bindings);
+    let bindings = gcx.store.arenas.global.alloc_slice_copy(&bindings);
 
     InterfaceReference {
         id: interface.id,

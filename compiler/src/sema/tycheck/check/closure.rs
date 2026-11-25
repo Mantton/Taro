@@ -258,7 +258,7 @@ impl<'ctx> Checker<'ctx> {
             // Get the type of the captured variable from local bindings
             let binding = self.get_local(place.root);
             let root_ty = cs.structurally_resolve(binding.ty);
-            let projection = gcx.store.arenas.global.alloc_slice_clone(&info.projection);
+            let projection = gcx.store.arenas.global.alloc_slice_copy(&info.projection);
             let ty = projection.last().map_or(root_ty, |field| field.ty);
             let capture_kind = if owns_captures {
                 CaptureKind::ByCopy
@@ -691,7 +691,7 @@ impl<'ctx> Checker<'ctx> {
         if let Some(method) = self.results.borrow().bound_method_closure(closure_def_id) {
             // Synthetic declarations must track finalized closure types too;
             // get_signature consults this declaration before the ordinary cache.
-            let signature = gcx.store.arenas.global.alloc(new_sig.clone());
+            let signature = gcx.store.arenas.function_signatures.alloc(new_sig.clone());
             gcx.register_synthetic_definition(
                 closure_def_id,
                 crate::sema::models::SyntheticDefinition {
@@ -1418,7 +1418,7 @@ mod precise_capture_tests {
                     captures.captures[1].source_id
                 );
                 use crate::metadata::wire::{self, SymbolTableBuilder, SymbolTableRef};
-                let mut symbols = SymbolTableBuilder::new(gcx.symbols());
+                let mut symbols = SymbolTableBuilder::new(gcx.interner());
                 let wire = wire::closure_captures_to_wire(&captures, &mut symbols);
                 let wire: wire::ClosureCapturesWire =
                     bincode::deserialize(&bincode::serialize(&wire).unwrap()).unwrap();
@@ -1427,7 +1427,7 @@ mod precise_capture_tests {
                 let restored = wire::closure_captures_from_wire(
                     gcx,
                     &wire,
-                    SymbolTableRef::new(gcx.symbols(), &symbols, &invalid),
+                    SymbolTableRef::new(gcx.interner(), &symbols, &invalid),
                 );
                 for (original, restored) in captures.captures.iter().zip(&restored.captures) {
                     assert_eq!(original.root_ty, restored.root_ty);

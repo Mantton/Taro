@@ -259,7 +259,7 @@ pub(crate) fn interface_constant<'ctx>(
         .into_iter()
         .map(|constraint| constraint.value)
         .collect();
-    let constraints: &[_] = gcx.store.arenas.global.alloc_slice_clone(&constraints);
+    let constraints: &[_] = gcx.store.arenas.global.alloc_slice_copy(&constraints);
     let mut roots = Vec::new();
     for constraint in constraints {
         if let Constraint::Bound { ty, interface } = constraint

@@ -473,7 +473,7 @@ impl<'a> Resolver<'a> {
                 Ok(LexicalScopeBinding::Declaration(holder)) => holder,
                 Ok(LexicalScopeBinding::Resolution(resolution)) => {
                     if let (Some(lint), Resolution::LocalVariable(local)) = (&self.lint, &resolution) {
-                        lint.borrow_mut().note_local_reference(self.context.symbols(), segment.id, *local, scopes);
+                        lint.borrow_mut().note_local_reference(self.context.interner(), segment.id, *local, scopes);
                     }
                     self.record_resolution(segment.id, ResolutionState::Complete(resolution.clone()));
                     let state = if is_last {

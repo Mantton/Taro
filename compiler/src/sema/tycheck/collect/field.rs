@@ -262,7 +262,7 @@ impl<'ctx> Actor<'ctx> {
             }
         }
         let repr = self.parse_struct_repr(id);
-        let fields = self.context.store.arenas.global.alloc_slice_clone(&fields);
+        let fields = self.context.store.arenas.global.alloc_slice_copy(&fields);
         let def = StructDefinition {
             // Class headers can be seeded before their fields are collected.
             class_info: self

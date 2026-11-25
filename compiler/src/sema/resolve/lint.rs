@@ -162,7 +162,7 @@ impl LintState {
     /// The expression `node` refers to `local` while `scopes` are open.
     pub fn note_local_reference(
         &mut self,
-        names: &crate::symbols::SymbolTable,
+        names: &crate::interner::SessionInterner,
         node: NodeID,
         local: NodeID,
         scopes: &[LexicalScope<'_>],

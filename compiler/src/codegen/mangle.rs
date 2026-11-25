@@ -87,26 +87,37 @@ fn closure_kind_key(kind: ClosureKind) -> &'static str {
     }
 }
 
-pub(crate) fn const_key<'gcx>(gcx: GlobalContext<'gcx>, c: Const<'gcx>) -> String {
-    let kind = match c.kind {
-        ConstKind::Value(ConstValue::Integer(i)) => format!("value:int:{i}"),
-        ConstKind::Value(ConstValue::Bool(b)) => format!("value:bool:{b}"),
-        ConstKind::Value(ConstValue::Rune(ch)) => format!("value:rune:{}", ch as u32),
-        ConstKind::Value(ConstValue::Bytes(bytes)) => {
-            bytes.with_bytes(|v| format!("value:bytes:{}", blake3::hash(v)))
+fn const_value_key(gcx: GlobalContext<'_>, value: ConstValue) -> String {
+    match value {
+        ConstValue::Integer(i) => format!("value:int:{i}"),
+        ConstValue::Bool(b) => format!("value:bool:{b}"),
+        ConstValue::Rune(ch) => format!("value:rune:{}", ch as u32),
+        ConstValue::Bytes(bytes) => {
+            format!("value:bytes:{}", blake3::hash(&gcx.interner().bytes(bytes)))
         }
-        ConstKind::Value(ConstValue::String(sym)) => {
+        ConstValue::String(sym) => {
             let text = gcx.symbol_text(sym);
             format!("value:string:{}", text_key(text.as_ref()))
         }
-        ConstKind::Value(ConstValue::Float(f)) => format!("value:float:{:016x}", f.to_bits()),
-        ConstKind::Value(ConstValue::Unit) => "value:unit".into(),
-        ConstKind::Value(ConstValue::EnumUnitVariant(def_id)) => {
+        ConstValue::Float(f) => format!("value:float:{:016x}", f.to_bits()),
+        ConstValue::Unit => "value:unit".into(),
+        ConstValue::EnumUnitVariant(def_id) => {
             format!("value:enum-unit:{}", definition_key(def_id))
         }
-        ConstKind::Value(ConstValue::Array(arr)) => {
-            format!("value:array:{:?}", arr)
+        ConstValue::Array(arr) => {
+            let values = gcx.interner().const_elements(arr);
+            let elements = values
+                .iter()
+                .map(|&value| text_key(&const_value_key(gcx, value)))
+                .collect::<String>();
+            format!("value:array:{}:{elements}", values.len())
         }
+    }
+}
+
+pub(crate) fn const_key<'gcx>(gcx: GlobalContext<'gcx>, c: Const<'gcx>) -> String {
+    let kind = match c.kind {
+        ConstKind::Value(value) => const_value_key(gcx, value),
         ConstKind::Param(param) => format!("param:{}", generic_parameter_key(gcx, param)),
         ConstKind::Infer(_) => panic!("ICE: unresolved inferred const reached codegen mangling"),
     };
@@ -119,8 +130,8 @@ fn const_readable_prefix<'gcx>(gcx: GlobalContext<'gcx>, c: Const<'gcx>) -> Stri
         ConstKind::Value(ConstValue::Bool(true)) => "b1".into(),
         ConstKind::Value(ConstValue::Bool(false)) => "b0".into(),
         ConstKind::Value(ConstValue::Rune(ch)) => format!("r{}", ch as u32),
-        ConstKind::Value(ConstValue::Bytes(bytes)) => format!("bytes{}", bytes.len()),
-        ConstKind::Value(ConstValue::Array(arr)) => format!("arr{}", arr.len()),
+        ConstKind::Value(ConstValue::Bytes(bytes)) => format!("bytes{}", gcx.interner().bytes(bytes).len()),
+        ConstKind::Value(ConstValue::Array(arr)) => format!("arr{}", gcx.interner().const_elements(arr).len()),
         ConstKind::Value(ConstValue::String(sym)) => {
             let text = gcx.symbol_text(sym);
             format!("s{}", sanitize(text.as_ref()))
@@ -483,7 +494,8 @@ pub fn mangle_instance<'gcx>(gcx: GlobalContext<'gcx>, instance: Instance<'gcx>)
 
 #[cfg(test)]
 mod tests {
-    use super::{stable_hash_hex16, stable_hash_u64};
+    use super::{ConstValue, const_value_key, stable_hash_hex16, stable_hash_u64};
+    use crate::test_support::with_test_gcx;
 
     #[test]
     fn stable_hash_helpers_are_consistent() {
@@ -503,5 +515,30 @@ mod tests {
         let mut first_eight = [0; 8];
         first_eight.copy_from_slice(&bytes);
         assert_eq!(stable_hash_u64(key), u64::from_le_bytes(first_eight));
+    }
+
+    #[test]
+    fn nested_constant_keys_follow_literal_contents_across_sessions() {
+        fn keys(reserve_slot: bool) -> [String; 2] {
+            with_test_gcx(|gcx| {
+                let interner = gcx.interner();
+                if reserve_slot {
+                    interner.intern("unrelated name");
+                    interner.intern_bytes(b"unrelated bytes");
+                    interner.intern_const_array(vec![ConstValue::Unit]);
+                }
+                let text = ConstValue::String(interner.intern("label"));
+                [b"first", b"other"].map(|bytes| {
+                    let bytes = ConstValue::Bytes(interner.intern_bytes(bytes));
+                    let inner = interner.intern_const_array(vec![text, bytes]);
+                    let outer = interner.intern_const_array(vec![ConstValue::Array(inner)]);
+                    const_value_key(gcx, ConstValue::Array(outer))
+                })
+            })
+        }
+
+        let [first, other] = keys(false);
+        assert_ne!(first, other);
+        assert_eq!([first, other], keys(true));
     }
 }

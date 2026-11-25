@@ -11,7 +11,7 @@ use crate::{
         resolve::models::{PrimaryType, TypeHead},
         tycheck::{
             fold::{TypeFoldable, TypeFolder, TypeSuperFoldable},
-            lower::{DefTyLoweringCtx, LoweringRequest},
+            lower::DefTyLoweringCtx,
             solve::DefaultFallbackGoalData,
             utils::{
                 const_eval::eval_const_expression_with_expected_type,
@@ -34,10 +34,6 @@ use crate::{
 
 use rustc_hash::FxHashSet;
 use std::collections::VecDeque;
-
-thread_local! {
-    static LOWERING_REQUEST: LoweringRequest = LoweringRequest::new();
-}
 
 pub trait TypeLowerer<'ctx> {
     fn gcx(&self) -> GlobalContext<'ctx>;
@@ -122,7 +118,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                     lowered.extend(self.lower_interface_references(self_ty, interface));
                 }
                 deduplicate_interface_refs(&mut lowered);
-                let list = gcx.store.arenas.global.alloc_slice_clone(&lowered);
+                let list = gcx.store.arenas.global.alloc_slice_copy(&lowered);
                 Ty::new(TyKind::BoxedExistential { interfaces: list }, gcx)
             }
             hir::TypeKind::ImplTrait { .. } => {
@@ -525,7 +521,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
 
         (
             gcx.store.interners.intern_generic_args(output),
-            gcx.store.arenas.global.alloc_slice_clone(&bindings),
+            gcx.store.arenas.global.alloc_slice_copy(&bindings),
         )
     }
 
@@ -550,7 +546,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             return self.error_const();
         };
 
-        if !const_value_matches_type(value, expected_ty) {
+        if !const_value_matches_type(gcx, value, expected_ty) {
             emit_const_arg_type_mismatch(gcx, expected_ty, anon.value.span);
             return self.error_const();
         }
@@ -733,27 +729,30 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             return &[];
         };
 
-        if let Err(cycle) = LOWERING_REQUEST.with(|request| request.enter_alias(alias_id)) {
-            let mut names: Vec<_> = cycle
-                .iter()
-                .map(|id| {
-                    gcx.symbol_text(gcx.definition_ident(*id).symbol)
-                        .to_string()
-                })
-                .collect();
-            if let Some(first) = names.first().cloned() {
-                names.push(first);
+        let visit = match gcx.store.lowering.enter_alias(alias_id) {
+            Ok(visit) => visit,
+            Err(cycle) => {
+                let mut names: Vec<_> = cycle
+                    .iter()
+                    .map(|id| {
+                        gcx.symbol_text(gcx.definition_ident(*id).symbol)
+                            .to_string()
+                    })
+                    .collect();
+                if let Some(first) = names.first().cloned() {
+                    names.push(first);
+                }
+                gcx.dcx().emit_error(
+                    format!(
+                        "circular interface-set alias\n\tcycle: {}",
+                        names.join(" -> ")
+                    ),
+                    Some(definition.span),
+                );
+                gcx.cache_interface_alias(alias_id, Vec::new());
+                return gcx.try_get_interface_alias(alias_id).unwrap_or(&[]);
             }
-            gcx.dcx().emit_error(
-                format!(
-                    "circular interface-set alias\n\tcycle: {}",
-                    names.join(" -> ")
-                ),
-                Some(definition.span),
-            );
-            gcx.cache_interface_alias(alias_id, Vec::new());
-            return gcx.try_get_interface_alias(alias_id).unwrap_or(&[]);
-        }
+        };
 
         let placeholder = interface_alias_self_placeholder(gcx, alias_id);
         let lowering = DefTyLoweringCtx::new(alias_id, gcx);
@@ -766,7 +765,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             );
         }
         deduplicate_interface_refs(&mut interfaces);
-        LOWERING_REQUEST.with(|request| request.exit_alias(alias_id));
+        drop(visit);
 
         gcx.cache_interface_alias(alias_id, interfaces);
         gcx.try_get_interface_alias(alias_id).unwrap_or(&[])
@@ -1142,7 +1141,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             .flat_map(|id| self.constraints_in_scope(id))
             .map(|bound| bound.value)
             .collect();
-        let env = gcx.store.arenas.global.alloc_slice_clone(&constraints);
+        let env = gcx.store.arenas.global.alloc_slice_copy(&constraints);
         let goal = interface_ref.to_goal_with_self_ty(gcx, env, target_ty);
         match gcx.prove_interface_goal(goal, crate::sema::models::SelectionMode::Typecheck) {
             crate::sema::models::GoalResult::Proven => {}
@@ -1492,28 +1491,31 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             return gcx.types.error;
         };
 
-        if let Err(cycle) = LOWERING_REQUEST.with(|req| req.enter_alias(alias_id)) {
-            let mut cycle_display: Vec<_> = cycle
-                .iter()
-                .map(|id| {
-                    gcx.symbol_text(gcx.definition_ident(*id).symbol)
-                        .to_string()
-                })
-                .collect();
-            if let Some(first) = cycle_display.first().cloned() {
-                cycle_display.push(first);
+        let visit = match gcx.store.lowering.enter_alias(alias_id) {
+            Ok(visit) => visit,
+            Err(cycle) => {
+                let mut cycle_display: Vec<_> = cycle
+                    .iter()
+                    .map(|id| {
+                        gcx.symbol_text(gcx.definition_ident(*id).symbol)
+                            .to_string()
+                    })
+                    .collect();
+                if let Some(first) = cycle_display.first().cloned() {
+                    cycle_display.push(first);
+                }
+                let message = format!(
+                    "circular type alias\n\tcycle: {}",
+                    cycle_display.join(" -> ")
+                );
+                gcx.dcx().emit_error(message, Some(def.span));
+                gcx.cache_alias_type(alias_id, gcx.types.error);
+                return gcx.types.error;
             }
-            let message = format!(
-                "circular type alias\n\tcycle: {}",
-                cycle_display.join(" -> ")
-            );
-            gcx.dcx().emit_error(message, Some(def.span));
-            gcx.cache_alias_type(alias_id, gcx.types.error);
-            return gcx.types.error;
-        }
+        };
 
         let lowered = self.lower_type(&def.ast_ty);
-        LOWERING_REQUEST.with(|req| req.exit_alias(alias_id));
+        drop(visit);
 
         gcx.cache_alias_type(alias_id, lowered);
 
@@ -1673,7 +1675,7 @@ fn substitute_interface_alias_self<'ctx>(
     InterfaceReference {
         id: interface.id,
         arguments: gcx.store.interners.intern_generic_args(arguments),
-        bindings: gcx.store.arenas.global.alloc_slice_clone(&bindings),
+        bindings: gcx.store.arenas.global.alloc_slice_copy(&bindings),
     }
 }
 
@@ -1682,7 +1684,7 @@ fn deduplicate_interface_refs(interfaces: &mut Vec<InterfaceReference<'_>>) {
     interfaces.retain(|interface| seen.insert(*interface));
 }
 
-fn const_value_matches_type(value: ConstValue, ty: Ty<'_>) -> bool {
+fn const_value_matches_type(gcx: GlobalContext<'_>, value: ConstValue, ty: Ty<'_>) -> bool {
     match ty.kind() {
         TyKind::Error => true,
         TyKind::Bool => matches!(value, ConstValue::Bool(_)),
@@ -1691,7 +1693,7 @@ fn const_value_matches_type(value: ConstValue, ty: Ty<'_>) -> bool {
         TyKind::Array { element, len } => {
             matches!((element.kind(), len.kind, value),
                 (TyKind::UInt(crate::sema::models::UIntTy::U8), ConstKind::Value(ConstValue::Integer(size)), ConstValue::Bytes(bytes))
-                    if size == bytes.len() as i128)
+                    if size == gcx.interner().bytes(bytes).len() as i128)
         }
         TyKind::Int(_) | TyKind::UInt(_) => matches!(value, ConstValue::Integer(_)),
         TyKind::Float(_) => matches!(value, ConstValue::Float(_)),

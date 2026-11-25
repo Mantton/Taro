@@ -939,7 +939,7 @@ impl<'ctx> Checker<'ctx> {
         match literal {
             hir::Literal::Bool(_) => gcx.types.bool,
             hir::Literal::Rune(_) => gcx.types.rune,
-            hir::Literal::Bytes(value) => gcx.byte_array_type(value.len()),
+            hir::Literal::Bytes(value) => gcx.byte_array_type(gcx.interner().bytes(*value).len()),
             hir::Literal::String(_) => gcx.types.string,
             hir::Literal::Integer { value, suffix } => {
                 if let Some(suffix) = suffix {

@@ -288,7 +288,7 @@ mod erased_projection_tests {
                         gcx.store
                             .arenas
                             .global
-                            .alloc_slice_clone(&[InterfaceReference {
+                            .alloc_slice_copy(&[InterfaceReference {
                                 id,
                                 arguments,
                                 bindings,
@@ -311,7 +311,7 @@ mod erased_projection_tests {
                 };
                 let unbound = project(make(&[]));
                 assert!(try_normalize_post_monomorphization(gcx, unbound).is_err());
-                let bindings = gcx.store.arenas.global.alloc_slice_clone(&[
+                let bindings = gcx.store.arenas.global.alloc_slice_copy(&[
                     crate::sema::models::AssociatedTypeBinding {
                         name: gcx.definition_ident(associated).symbol,
                         ty: gcx.types.int32,

@@ -745,7 +745,7 @@ pub fn hydrate_loaded_metadata<'ctx>(
 
     let invalid_symbol_id = Cell::new(None);
     let symbol_table =
-        wire::SymbolTableRef::new(gcx.symbols(), &semantic.symbol_table, &invalid_symbol_id);
+        wire::SymbolTableRef::new(gcx.interner(), &semantic.symbol_table, &invalid_symbol_id);
     let resolution_output =
         wire::resolution_output_from_wire(gcx, &semantic.resolution, remap, symbol_table).map_err(
             |e| HydrationError::new(format!("failed to decode resolution payload: {e}")),
@@ -1023,7 +1023,7 @@ fn build_payload_wire<'ctx>(
     let pkg = gcx.package_index();
 
     let semantic = gcx.try_resolution_output(pkg).map(|resolution_output| {
-        let mut symbols = wire::SymbolTableBuilder::new(gcx.symbols());
+        let mut symbols = wire::SymbolTableBuilder::new(gcx.interner());
         let resolution = wire::resolution_output_to_wire(resolution_output, &mut symbols);
         let type_db =
             gcx.with_type_database(pkg, |db| wire::type_database_to_wire(db, &mut symbols));
@@ -1068,11 +1068,11 @@ fn build_payload_wire<'ctx>(
                         mir_roots_for_metadata(gcx, package).chain(inline_retained.iter().copied());
                     let final_retained = reachable_mir_defs(package, final_roots);
                     (
-                        Some(wire::mir_package_to_wire_filtered(gcx.symbols(),
+                        Some(wire::mir_package_to_wire_filtered(gcx.interner(),
                             package,
                             |def_id, _body| final_retained.contains(&def_id),
                         )),
-                        Some(wire::mir_package_to_wire_filtered(gcx.symbols(),
+                        Some(wire::mir_package_to_wire_filtered(gcx.interner(),
                             inline_package,
                             |def_id, _body| inline_retained.contains(&def_id),
                         )),
@@ -1095,7 +1095,7 @@ fn build_payload_wire<'ctx>(
                     return None;
                 }
                 let retained = reachable_mir_defs(inline_package, const_roots);
-                Some(wire::mir_package_to_wire_filtered(gcx.symbols(),
+                Some(wire::mir_package_to_wire_filtered(gcx.interner(),
                     inline_package,
                     |def_id, _body| retained.contains(&def_id),
                 ))
@@ -1141,14 +1141,14 @@ fn build_payload_wire<'ctx>(
         let defs = gcx.store.synthetic_definitions.borrow();
         defs.iter()
             .filter(|(id, _)| id.package() == pkg)
-            .map(|(id, def)| wire::synthetic_definition_to_wire(gcx.symbols(), *id, def))
+            .map(|(id, def)| wire::synthetic_definition_to_wire(gcx.interner(), *id, def))
             .collect()
     };
 
     let emitted_instances = gcx
         .emitted_instances_of(pkg)
         .into_iter()
-        .map(|value| wire::instance_to_wire(gcx.symbols(), value))
+        .map(|value| wire::instance_to_wire(gcx.interner(), value))
         .collect();
 
     Ok(wire::MetadataPayloadWire {
@@ -1176,7 +1176,7 @@ fn build_payload_wire<'ctx>(
             .into_iter()
             .flatten()
             .copied()
-            .map(|value| wire::ty_to_wire(gcx.symbols(), value))
+            .map(|value| wire::ty_to_wire(gcx.interner(), value))
             .collect(),
         class_dispatch_calls: gcx
             .store
@@ -1186,7 +1186,7 @@ fn build_payload_wire<'ctx>(
             .into_iter()
             .flatten()
             .copied()
-            .map(|value| wire::instance_to_wire(gcx.symbols(), value))
+            .map(|value| wire::instance_to_wire(gcx.interner(), value))
             .collect(),
         erased_opening_types: gcx
             .store
@@ -1196,7 +1196,7 @@ fn build_payload_wire<'ctx>(
             .into_iter()
             .flatten()
             .copied()
-            .map(|value| wire::ty_to_wire(gcx.symbols(), value))
+            .map(|value| wire::ty_to_wire(gcx.interner(), value))
             .collect(),
         erased_opening_calls: gcx
             .store
@@ -1206,7 +1206,7 @@ fn build_payload_wire<'ctx>(
             .into_iter()
             .flatten()
             .copied()
-            .map(|value| wire::instance_to_wire(gcx.symbols(), value))
+            .map(|value| wire::instance_to_wire(gcx.interner(), value))
             .collect(),
         class_super_calls: gcx
             .store
@@ -1973,7 +1973,7 @@ mod tests {
             );
             type_db.def_to_fn_sig.insert(def_id, sig);
 
-            let mut symbols = wire::SymbolTableBuilder::new(gcx.symbols());
+            let mut symbols = wire::SymbolTableBuilder::new(gcx.interner());
             let resolution = wire::resolution_output_to_wire(&resolution_output, &mut symbols);
             let type_db_wire = wire::type_database_to_wire(&type_db, &mut symbols);
             let semantic = wire::SemanticPayloadWire {

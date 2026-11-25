@@ -192,7 +192,7 @@ fn fold_ty_kind<'ctx, F: TypeFolder<'ctx> + ?Sized>(
         BoxedExistential { interfaces } => {
             let folded = map_changed(interfaces, |iface| iface.fold_with(folder))?;
             Some(BoxedExistential {
-                interfaces: gcx.store.arenas.global.alloc_slice_clone(&folded),
+                interfaces: gcx.store.arenas.global.alloc_slice_copy(&folded),
             })
         }
 
@@ -276,7 +276,7 @@ fn fold_associated_type_bindings<'ctx, F: TypeFolder<'ctx> + ?Sized>(
         name: binding.name,
         ty: binding.ty.fold_with(folder),
     }) {
-        Some(folded) => gcx.store.arenas.global.alloc_slice_clone(&folded),
+        Some(folded) => gcx.store.arenas.global.alloc_slice_copy(&folded),
         None => bindings,
     }
 }
@@ -298,7 +298,7 @@ impl<'ctx> TypeFoldable<'ctx> for StructDefinition<'ctx> {
             .map(|field| (*field).fold_with(folder))
             .collect();
 
-        let fields = folder.gcx().store.arenas.global.alloc_slice_clone(&fields);
+        let fields = folder.gcx().store.arenas.global.alloc_slice_copy(&fields);
         StructDefinition {
             class_info: self.class_info,
             adt_def: self.adt_def,
@@ -334,7 +334,7 @@ impl<'ctx> TypeFoldable<'ctx> for EnumVariantKind<'ctx> {
                     .store
                     .arenas
                     .global
-                    .alloc_slice_clone(&folded_fields);
+                    .alloc_slice_copy(&folded_fields);
                 if matches!(self, EnumVariantKind::Struct(..)) {
                     EnumVariantKind::Struct(folded_fields)
                 } else {
@@ -367,7 +367,7 @@ impl<'ctx> TypeFoldable<'ctx> for EnumDefinition<'ctx> {
             .store
             .arenas
             .global
-            .alloc_slice_clone(&variants);
+            .alloc_slice_copy(&variants);
         EnumDefinition {
             adt_def: self.adt_def,
             variants,

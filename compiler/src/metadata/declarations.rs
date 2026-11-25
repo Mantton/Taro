@@ -1880,7 +1880,7 @@ mod tests {
                     inherited,
                     gcx.store.synthetic_definitions.borrow()[&inherited].clone(),
                 )];
-                let mut symbols = wire::SymbolTableBuilder::new(gcx.symbols());
+                let mut symbols = wire::SymbolTableBuilder::new(gcx.interner());
                 let encoded = wire::resolution_output_to_wire(
                     gcx.resolution_output(gcx.package_index()),
                     &mut symbols,
@@ -1892,7 +1892,7 @@ mod tests {
                     gcx,
                     &encoded,
                     wire::FileRemap { old_to_new: &files },
-                    wire::SymbolTableRef::new(gcx.symbols(), &table, &invalid),
+                    wire::SymbolTableRef::new(gcx.interner(), &table, &invalid),
                 )
                 .unwrap();
                 validate_required_initializers(gcx, &database, &resolution, &synthetics).unwrap();
@@ -1992,7 +1992,7 @@ func main() {}
                         .preserves_dynamic_self
                         .unwrap()
                 );
-                let mut symbols = super::super::wire::SymbolTableBuilder::new(gcx.symbols());
+                let mut symbols = super::super::wire::SymbolTableBuilder::new(gcx.interner());
                 let mut wire = super::super::wire::type_database_to_wire(&database, &mut symbols);
                 let table = symbols.finish();
                 let invalid = std::cell::Cell::new(None);
@@ -2006,7 +2006,7 @@ func main() {}
                     gcx,
                     &wire,
                     super::super::wire::FileRemap { old_to_new: &files },
-                    super::super::wire::SymbolTableRef::new(gcx.symbols(), &table, &invalid),
+                    super::super::wire::SymbolTableRef::new(gcx.interner(), &table, &invalid),
                 );
                 assert_eq!(
                     decoded.def_to_class_default_contract,
@@ -2083,9 +2083,9 @@ func main() {}
                 // both must reject the now-inconsistent generic environment.
                 assert!(validate_class_payloads(gcx, &database, &synthetics).is_err());
                 synthetics[index].1 = original;
-                let mut symbols = super::super::wire::SymbolTableBuilder::new(gcx.symbols());
+                let mut symbols = super::super::wire::SymbolTableBuilder::new(gcx.interner());
                 for (id, definition) in &synthetics {
-                    let wire = super::super::wire::synthetic_definition_to_wire(gcx.symbols(), *id, definition);
+                    let wire = super::super::wire::synthetic_definition_to_wire(gcx.interner(), *id, definition);
                     // Encoding all new kinds is independent of hydration order.
                     assert_eq!(wire.id.index, id.index().raw());
                 }
@@ -2273,7 +2273,7 @@ func main() {}
                     .map(|(id, value)| (*id, value.clone()))
                     .collect();
                 validate_class_payloads(gcx, &database, &synthetics).unwrap();
-                let mut symbols = super::super::wire::SymbolTableBuilder::new(gcx.symbols());
+                let mut symbols = super::super::wire::SymbolTableBuilder::new(gcx.interner());
                 let mut wire = super::super::wire::type_database_to_wire(&database, &mut symbols);
                 let symbols = symbols.finish();
                 let invalid = std::cell::Cell::new(None);
@@ -2287,7 +2287,7 @@ func main() {}
                     gcx,
                     &wire,
                     super::super::wire::FileRemap { old_to_new: &files },
-                    super::super::wire::SymbolTableRef::new(gcx.symbols(), &symbols, &invalid),
+                    super::super::wire::SymbolTableRef::new(gcx.interner(), &symbols, &invalid),
                 );
                 assert_eq!(decoded.class_adoptions[0].conformance, conformance);
                 assert_eq!(decoded.class_adoptions[0].methods, methods);
@@ -2417,14 +2417,14 @@ func main() {}
                     .collect();
                 validate_class_payloads(gcx, &database, &synthetics).unwrap();
                 let original = database.def_to_struct_def[&child].clone();
-                let mut symbols = super::super::wire::SymbolTableBuilder::new(gcx.symbols());
+                let mut symbols = super::super::wire::SymbolTableBuilder::new(gcx.interner());
                 let wire = super::super::wire::struct_definition_to_wire(&original, &mut symbols);
                 let table = symbols.finish();
                 let invalid = std::cell::Cell::new(None);
                 let decoded = super::super::wire::struct_definition_from_wire(
                     gcx,
                     &wire,
-                    super::super::wire::SymbolTableRef::new(gcx.symbols(), &table, &invalid),
+                    super::super::wire::SymbolTableRef::new(gcx.interner(), &table, &invalid),
                 );
                 assert_eq!(
                     decoded.class_info.unwrap().methods,
@@ -2907,7 +2907,7 @@ mod return_only_tests {
         crate::test_support::check_script(
             "enum Maybe { case none; case some(&int32) }\nstruct View { value: Maybe = .none }\nfunc empty() -> View { View {} }\nfunc main() {}",
             |_, gcx| {
-                let mut symbols = SymbolTableBuilder::new(gcx.symbols());
+                let mut symbols = SymbolTableBuilder::new(gcx.interner());
                 let wire = gcx
                     .with_session_type_database(|db| wire::type_database_to_wire(db, &mut symbols));
                 let symbols = symbols.finish();
@@ -2923,7 +2923,7 @@ mod return_only_tests {
                     gcx,
                     &wire,
                     FileRemap { old_to_new: &files },
-                    SymbolTableRef::new(gcx.symbols(), &symbols, &invalid),
+                    SymbolTableRef::new(gcx.interner(), &symbols, &invalid),
                 );
                 validate_class_defaults(gcx, &restored, resolution).unwrap();
                 let provider = *gcx

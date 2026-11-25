@@ -8,36 +8,35 @@ pub use lowerer::*;
 
 use crate::hir::DefinitionID;
 
-/// Tracks state during type lowering, specifically for cycle detection in aliases
+/// The alias resolution stack for one compiler session.
 #[derive(Debug, Default)]
-pub struct LoweringRequest {
-    /// Stack of alias IDs currently being lowered (for cycle detection)
-    pub alias_visits: RefCell<Vec<DefinitionID>>,
+pub(crate) struct LoweringRequest {
+    alias_visits: RefCell<Vec<DefinitionID>>,
 }
 
 impl LoweringRequest {
-    pub fn new() -> Self {
-        Self {
-            alias_visits: Default::default(),
-        }
-    }
-
-    /// Enter an alias lowering. Returns Err with cycle path if cycle detected.
-    pub fn enter_alias(&self, id: DefinitionID) -> Result<(), Vec<DefinitionID>> {
+    /// Enter an alias until the returned guard drops. A cycle returns its path.
+    pub(crate) fn enter_alias(
+        &self,
+        id: DefinitionID,
+    ) -> Result<AliasVisit<'_>, Vec<DefinitionID>> {
         let mut visits = self.alias_visits.borrow_mut();
-        if let Some(pos) = visits.iter().position(|&v| v == id) {
-            // Found cycle - return the cycle path
-            let cycle = visits[pos..].to_vec();
-            return Err(cycle);
+        if let Some(start) = visits.iter().position(|&alias| alias == id) {
+            return Err(visits[start..].to_vec());
         }
         visits.push(id);
-        Ok(())
+        Ok(AliasVisit { request: self, id })
     }
+}
 
-    /// Exit an alias lowering
-    pub fn exit_alias(&self, id: DefinitionID) {
-        let mut visits = self.alias_visits.borrow_mut();
-        debug_assert_eq!(visits.last(), Some(&id));
-        visits.pop();
+pub(crate) struct AliasVisit<'a> {
+    request: &'a LoweringRequest,
+    id: DefinitionID,
+}
+
+impl Drop for AliasVisit<'_> {
+    fn drop(&mut self) {
+        let removed = self.request.alias_visits.borrow_mut().pop();
+        debug_assert_eq!(removed, Some(self.id));
     }
 }

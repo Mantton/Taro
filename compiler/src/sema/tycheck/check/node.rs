@@ -566,7 +566,7 @@ impl<'ctx> Checker<'ctx> {
                                 .into_iter()
                                 .map(|constraint| constraint.value)
                                 .collect::<Vec<_>>();
-                        let param_env = gcx.store.arenas.global.alloc_slice_clone(&param_env);
+                        let param_env = gcx.store.arenas.global.alloc_slice_copy(&param_env);
                         let goal = interface.to_goal_with_self_ty(gcx, param_env, hidden_ty);
                         if !matches!(
                             gcx.prove_interface_goal(
@@ -856,7 +856,7 @@ impl<'ctx> Checker<'ctx> {
                         ty: cs.infer_cx.resolve_vars_or_error(binding.ty),
                     })
                     .collect();
-                let bindings = self.gcx().store.arenas.global.alloc_slice_clone(&bindings);
+                let bindings = self.gcx().store.arenas.global.alloc_slice_copy(&bindings);
 
                 InterfaceReference {
                     id: iface.id,
@@ -866,7 +866,7 @@ impl<'ctx> Checker<'ctx> {
             })
             .collect();
 
-        self.gcx().store.arenas.global.alloc_slice_clone(&resolved)
+        self.gcx().store.arenas.global.alloc_slice_copy(&resolved)
     }
 
     fn resolve_generic_args_or_error(

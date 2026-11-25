@@ -179,7 +179,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         arguments: self.interface_args_with_self(interface, receiver_ty),
                         bindings: interface.bindings,
                     };
-                    let roots = self.gcx().store.arenas.global.alloc_slice_clone(&[root]);
+                    let roots = self.gcx().store.arenas.global.alloc_slice_copy(&[root]);
                     let (candidates, _) = self.interface_method_candidates(
                         receiver_ty,
                         Some(receiver_ty),

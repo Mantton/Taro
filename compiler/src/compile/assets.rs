@@ -1,8 +1,5 @@
 use super::{config::Config, context::Gcx};
-use crate::{
-    hir::Literal,
-    span::{FileID, InternedBytes},
-};
+use crate::{hir::Literal, span::FileID};
 use std::{
     collections::BTreeMap,
     fs, io,
@@ -78,7 +75,7 @@ impl Gcx<'_> {
             .read_to_end(&mut data)
             .map_err(failed)?;
         let literal = if bytes {
-            Literal::Bytes(InternedBytes::new(&data))
+            Literal::Bytes(self.interner().intern_bytes(&data))
         } else {
             let text = std::str::from_utf8(&data)
                 .map_err(|_| format!("embedded asset '{name}' is not valid UTF-8"))?;

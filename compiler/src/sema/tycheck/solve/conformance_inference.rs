@@ -101,7 +101,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 if !complete {
                     continue;
                 }
-                interface.bindings = gcx.store.arenas.global.alloc_slice_clone(&bindings);
+                interface.bindings = gcx.store.arenas.global.alloc_slice_copy(&bindings);
                 if self
                     .icx
                     .probe(|_| self.unify_conformance_arguments(expected, interface))
