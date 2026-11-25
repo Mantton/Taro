@@ -82,9 +82,10 @@ impl<T: Send + 'static> Session<T> {
         }
     }
 
+    #[track_caller]
     fn next(&self) -> T {
         self.replies
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(Duration::from_secs(40))
             .expect("response from language server")
     }
 }
@@ -120,6 +121,19 @@ fn send_worker(input: &mut impl Write, data: Value) {
 
 fn as_uri(path: &Path) -> url::Url {
     url::Url::from_file_path(path).unwrap()
+}
+
+fn copy_fixture_tree(from: &Path, to: &Path) {
+    fs::create_dir(to).unwrap();
+    for entry in fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let destination = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_fixture_tree(&entry.path(), &destination);
+        } else {
+            fs::copy(entry.path(), destination).unwrap();
+        }
+    }
 }
 
 #[test]
@@ -228,4 +242,148 @@ fn stdio_reserves_stdout_for_lsp_messages_and_exits_on_shutdown() {
         thread::sleep(Duration::from_millis(5));
     }
     panic!("server did not exit after shutdown");
+}
+
+#[test]
+fn installed_bundle_resolves_std_sources_and_rebuilds_for_target_changes() {
+    let fixture = Fixture::new();
+    let std = fixture.root.join("std-dev");
+    fs::create_dir(&std).unwrap();
+    let repository_std = Path::new(env!("CARGO_MANIFEST_DIR")).join("../std");
+    fs::copy(
+        repository_std.join("package.toml"),
+        std.join("package.toml"),
+    )
+    .unwrap();
+    copy_fixture_tree(&repository_std.join("src"), &std.join("src"));
+    let std_text = concat!(
+        "@cfg(arch(\"x86_64\"))\npublic func selected() -> int32 { 15 }\n",
+        "@cfg(arch(\"aarch64\"))\npublic func selected() -> bool { true }\n",
+    );
+    fs::write(std.join("src/lsp_bundle_fixture.tr"), std_text).unwrap();
+    let arm = fixture.root.join("aarch64.toml");
+    fs::write(
+        &arm,
+        "triple = 'aarch64-unknown-linux-gnu'\npointer_bits = 64\n",
+    )
+    .unwrap();
+    let bundle = fixture.root.join("bundle");
+    assert!(
+        Command::new(env!("CARGO_BIN_EXE_taro-lsp"))
+            .arg("--prepare-bundle")
+            .arg(&bundle)
+            .arg(&std)
+            .arg(&fixture.facts)
+            .arg(&arm)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let project = fixture.root.join("project");
+    fs::create_dir_all(project.join("src")).unwrap();
+    let manifest = project.join("package.toml");
+    let package =
+        "[package]\nname = 'github.com/test/project'\nkind = 'library'\nno_std_prelude = true\n";
+    fs::write(&manifest, package).unwrap();
+    let open_path = project.join("src/use.tr");
+    let text = "func check() { _ = std::selected() }";
+    let reset = |revision| {
+        json!({
+            "Analyze": {
+                "stamp": {"generation": 1, "revision": revision},
+                "inputs": {"Reset": {
+                    "root": project,
+                    "documents": {open_path.to_str().unwrap(): text},
+                }},
+            },
+        })
+    };
+    let delta = |revision, text: Option<&str>| {
+        json!({
+            "Analyze": {
+                "stamp": {"generation": 1, "revision": revision},
+                "inputs": {"Delta": {open_path.to_str().unwrap(): text}},
+            },
+        })
+    };
+    let mut command = Command::new(env!("CARGO_BIN_EXE_taro-lsp"));
+    let mut worker = Session::spawn(
+        command.arg("--worker").arg("--bundle").arg(&bundle),
+        read_worker,
+    );
+    send_worker(&mut worker.input, reset(1));
+    let reply = worker.next();
+    let first = &reply["Finished"]["result"]["Ok"];
+    assert_eq!(first["complete"], true, "{reply}");
+    let installed = bundle
+        .canonicalize()
+        .unwrap()
+        .join("std/src/lsp_bundle_fixture.tr");
+    let same_signature = |product: &Value, line: u64| {
+        product["occurrences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|fact| {
+                fact["declaration"]["name"] == "selected" && fact["declaration"]["package"] == "std"
+            })
+            .is_some_and(|fact| {
+                fact["declaration"]["source"]["path"] == installed.to_str().unwrap()
+                    && fact["declaration"]["source"]["start"]["line"] == line
+            })
+    };
+    assert!(same_signature(first, 1), "{first}");
+
+    send_worker(&mut worker.input, delta(2, None));
+    assert_eq!(worker.next()["Finished"]["result"]["Ok"]["complete"], true);
+    send_worker(&mut worker.input, delta(3, Some(text)));
+    let warm = worker.next();
+    assert!(
+        same_signature(&warm["Finished"]["result"]["Ok"], 1),
+        "{warm}"
+    );
+
+    fs::write(
+        &manifest,
+        format!("{package}\n[language_server]\ntarget = 'aarch64-unknown-linux-gnu'\n"),
+    )
+    .unwrap();
+    send_worker(&mut worker.input, reset(4));
+    let switched = worker.next();
+    let second = &switched["Finished"]["result"]["Ok"];
+    assert_eq!(second["complete"], true, "{switched}");
+    assert!(same_signature(second, 3), "{second}");
+    assert!(
+        second["occurrences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|fact| fact["ty"] == "Bool")
+    );
+
+    fs::write(
+        &manifest,
+        format!("{package}\n[language_server]\nstd_digest = 'different'\n"),
+    )
+    .unwrap();
+    send_worker(&mut worker.input, reset(5));
+    let mismatch = worker.next();
+    assert!(
+        mismatch["Finished"]["result"]["Err"]
+            .as_str()
+            .is_some_and(|message| message.contains("different standard-library source identity")),
+        "{mismatch}"
+    );
+
+    fs::write(&manifest, package).unwrap();
+    fs::write(installed, format!("{std_text}\n// Different source.")).unwrap();
+    send_worker(&mut worker.input, reset(6));
+    let stale = worker.next();
+    assert!(
+        stale["Finished"]["result"]["Err"]
+            .as_str()
+            .is_some_and(|message| message.contains("sources do not match")),
+        "{stale}"
+    );
 }

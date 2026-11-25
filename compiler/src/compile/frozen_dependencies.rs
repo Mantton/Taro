@@ -6,6 +6,9 @@ use crate::metadata::{self, LoadedMetadata, ReuseMode};
 
 use super::{Compiler, context::Gcx};
 
+/// Build identity for language-server bundles and semantic products.
+pub const SEMANTIC_BUILD_ID: &str = env!("TARO_COMPILER_ID");
+
 /// An in-memory semantic dependency in the compiler's metadata representation.
 ///
 /// The snapshot contains only owned bytes. A check materializes a fresh copy

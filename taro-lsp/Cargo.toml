@@ -10,6 +10,7 @@ publish = false
 resolver = "2"
 
 [dependencies]
+blake3 = "1.8"
 compiler = { path = "../compiler", default-features = false }
 crossbeam-channel = "0.5"
 lsp-server = "0.10"

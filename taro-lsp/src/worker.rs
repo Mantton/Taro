@@ -13,11 +13,9 @@ use std::{
 };
 
 use compiler::{
-    PackageIndex,
     compile::{
         Compiler,
         analysis_products::AnalysisProduct,
-        config::{Config, PackageKind, StdMode},
         context::{CompilerArenas, CompilerContext, CompilerStore},
         source::{FileContents, FileOverlay, SourceText, WorkspaceSources},
         target_facts::TargetFacts,
@@ -26,9 +24,19 @@ use compiler::{
 };
 use crossbeam_channel::bounded;
 
-use crate::protocol::{self, AnalysisRequest, FromWorker, Inputs, Stamp, ToWorker};
+use crate::{
+    bundle::Bundle,
+    project::Project,
+    protocol::{self, AnalysisRequest, FromWorker, Inputs, Stamp, ToWorker},
+    standard_library::StdCache,
+};
 
-pub fn run(target: TargetFacts) -> io::Result<()> {
+pub enum Environment {
+    Bootstrap(TargetFacts),
+    Installed(Bundle),
+}
+
+pub fn run(environment: Environment) -> io::Result<()> {
     let (requests, incoming) = bounded(1);
     let cancelled = Arc::new(AtomicU64::new(0));
     let reader_cancellation = Arc::clone(&cancelled);
@@ -61,7 +69,7 @@ pub fn run(target: TargetFacts) -> io::Result<()> {
             if is_cancelled(&cancelled, stamp.revision) {
                 return Ok(None);
             }
-            workspace.analyze(stamp.revision, &target, Arc::clone(&cancelled))
+            workspace.analyze(stamp.revision, &environment, Arc::clone(&cancelled))
         });
         let reply = if is_cancelled(&cancelled, stamp.revision) {
             FromWorker::Cancelled(stamp)
@@ -93,6 +101,7 @@ struct Workspace {
     root: PathBuf,
     documents: BTreeMap<PathBuf, Arc<SourceText>>,
     sources: Option<Rc<WorkspaceSources>>,
+    std_cache: StdCache,
 }
 
 impl Workspace {
@@ -116,6 +125,7 @@ impl Workspace {
                     .map(|(path, text)| (path, Arc::new(SourceText::new(text))))
                     .collect();
                 self.sources = None;
+                self.std_cache = StdCache::default();
             }
             Inputs::Delta(edits) => {
                 if self.stamp.is_none() || edits.is_empty() {
@@ -164,7 +174,7 @@ impl Workspace {
     fn analyze(
         &mut self,
         revision: u64,
-        target: &TargetFacts,
+        environment: &Environment,
         cancelled: Arc<AtomicU64>,
     ) -> io::Result<Option<AnalysisProduct>> {
         if self.sources.is_none() {
@@ -177,18 +187,52 @@ impl Workspace {
             self.sources = Some(Rc::new(WorkspaceSources::new(revision, buffers)?));
         }
         let sources = self.sources.as_ref().unwrap().clone();
-        Ok(run_cancellable(|| {
+        let project = Project::read(
+            &self.root,
+            sources.as_ref(),
+            matches!(environment, Environment::Installed(_)),
+        )?;
+        run_cancellable(|| {
+            let (target, prepared_std) = match environment {
+                Environment::Bootstrap(target) => {
+                    if project
+                        .prefs
+                        .target
+                        .as_deref()
+                        .is_some_and(|requested| requested != target.triple())
+                    {
+                        return Err(io::Error::other(
+                            "the project requests an unavailable analysis target",
+                        ));
+                    }
+                    (target.clone(), None)
+                }
+                Environment::Installed(bundle) => {
+                    let target = bundle.target(project.prefs.target.as_deref())?;
+                    let cancel_std = Arc::clone(&cancelled);
+                    let prepared = self.std_cache.prepare(
+                        bundle,
+                        &target,
+                        project.prefs.std_digest.as_deref(),
+                        Rc::clone(&sources),
+                        move || is_cancelled(&cancel_std, revision),
+                    )?;
+                    (target, Some(prepared))
+                }
+            };
             let arenas = CompilerArenas::new();
             let dcx = Rc::new(
                 DiagCtx::with_sources(self.root.clone(), sources)
                     .with_cancellation(move || is_cancelled(&cancelled, revision)),
             );
-            let store =
-                CompilerStore::new_for_analysis(&arenas, self.root.join("target"), target.clone());
+            let store = CompilerStore::new_for_analysis(&arenas, self.root.join("target"), target);
             let context = CompilerContext::new(dcx, store);
-            let config = package_config(&self.root);
-            Compiler::new(&context, &config).analyze_partial_owned(revision)
-        }))
+            if let Some(std) = prepared_std {
+                std.hydrate(&context)?;
+            }
+            Ok(Compiler::new(&context, &project.config).analyze_partial_owned(revision))
+        })
+        .transpose()
     }
 }
 
@@ -207,31 +251,5 @@ fn validate_path(root: &Path, path: &Path) -> io::Result<()> {
             io::ErrorKind::InvalidInput,
             "source is outside its workspace",
         ))
-    }
-}
-
-fn package_config(root: &Path) -> Config {
-    let name = root
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .unwrap_or("workspace");
-    Config {
-        name: name.into(),
-        identifier: name.into(),
-        src: root.to_path_buf(),
-        dependencies: Default::default(),
-        index: PackageIndex::new(1),
-        kind: PackageKind::Library,
-        executable_out: None,
-        no_std_prelude: true,
-        is_script: root.extension().is_some_and(|extension| extension == "tr"),
-        profile: Default::default(),
-        codegen: Default::default(),
-        overflow_checks: true,
-        debug: Default::default(),
-        harness_mode: Default::default(),
-        std_mode: StdMode::BootstrapStd,
-        is_std_provider: false,
-        lint_warnings: true,
     }
 }
