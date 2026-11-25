@@ -1,8 +1,8 @@
 use crate::span::Symbol;
 use crate::{
     PackageIndex,
-    codegen::{artifact::ModuleArtifact, target::TargetLayout},
-    compile::config::{BuildProfile, Config, StdMode},
+    codegen::artifact::ModuleArtifact,
+    compile::config::{Config, StdMode},
     diagnostics::DiagCtx,
     error::CompileResult,
     hir::{self, DefinitionID, StdItem},
@@ -26,6 +26,8 @@ use crate::{
     thir::VariantIndex,
     utils::intern::{InternedInSet, InternedSet, List},
 };
+#[cfg(feature = "llvm")]
+use crate::{codegen::target::TargetLayout, compile::config::BuildProfile};
 use bumpalo::Bump;
 use ecow::EcoString;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -2151,6 +2153,7 @@ pub struct CompilerStore<'arena> {
     /// Global set of instances that have been compiled (to avoid duplicate work)
     pub compiled_instances: RefCell<FxHashSet<Instance<'arena>>>,
     /// Target-specific layout information (shared between MIR and codegen).
+    #[cfg(feature = "llvm")]
     pub target_layout: TargetLayout,
     /// Target inputs needed by the frontend and semantic MIR passes.
     pub target_facts: super::target_facts::TargetFacts,
@@ -2202,6 +2205,7 @@ pub struct CompilerStore<'arena> {
 }
 
 impl<'arena> CompilerStore<'arena> {
+    #[cfg(feature = "llvm")]
     pub fn new(
         arenas: &'arena CompilerArenas<'arena>,
         output_root: PathBuf,
@@ -2210,7 +2214,31 @@ impl<'arena> CompilerStore<'arena> {
         profile: BuildProfile,
     ) -> CompileResult<CompilerStore<'arena>> {
         let target_layout = TargetLayout::new(dcx, target_override.as_deref(), profile)?;
-        Ok(CompilerStore {
+        Ok(Self::with_target(
+            arenas,
+            output_root,
+            target_layout.facts().clone(),
+            target_layout,
+        ))
+    }
+
+    /// Create an analysis-only store from a target descriptor produced by Taro.
+    #[cfg(not(feature = "llvm"))]
+    pub fn new_for_analysis(
+        arenas: &'arena CompilerArenas<'arena>,
+        output_root: PathBuf,
+        target_facts: super::target_facts::TargetFacts,
+    ) -> Self {
+        Self::with_target(arenas, output_root, target_facts)
+    }
+
+    fn with_target(
+        arenas: &'arena CompilerArenas<'arena>,
+        output_root: PathBuf,
+        target_facts: super::target_facts::TargetFacts,
+        #[cfg(feature = "llvm")] target_layout: TargetLayout,
+    ) -> Self {
+        CompilerStore {
             arenas,
             interners: CompilerInterners::new(arenas),
             package_mapping: Default::default(),
@@ -2246,7 +2274,8 @@ impl<'arena> CompilerStore<'arena> {
             trait_visibility_uses: Default::default(),
             warning_marks: Default::default(),
             compiled_instances: Default::default(),
-            target_facts: target_layout.facts().clone(),
+            target_facts,
+            #[cfg(feature = "llvm")]
             target_layout,
             std_provider_index: std::cell::Cell::new(None),
             std_items: Default::default(),
@@ -2269,7 +2298,7 @@ impl<'arena> CompilerStore<'arena> {
             const_eval_states: Default::default(),
             const_eval_stack: Default::default(),
             lazy_callable_names: Default::default(),
-        })
+        }
     }
 
     pub fn add_link_input(&self, path: PathBuf) {

@@ -47,7 +47,7 @@ impl TargetFacts {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "llvm"))]
 mod tests {
     use super::TargetFacts;
     use crate::compile::config::HarnessMode;

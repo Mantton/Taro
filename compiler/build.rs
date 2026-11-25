@@ -15,24 +15,18 @@ fn command_output(program: &Path, arguments: &[&str]) -> Option<String> {
 }
 
 fn main() {
-    println!("cargo:rerun-if-env-changed=DEP_LLVM_22_CONFIG_PATH");
-    println!("cargo:rerun-if-changed=native/llvm_shims.cpp");
-
-    let llvm_config = env::var_os("DEP_LLVM_22_CONFIG_PATH")
-        .map(PathBuf::from)
-        .expect("llvm-sys did not provide its selected llvm-config path");
+    #[cfg(feature = "llvm")]
+    let llvm_version = build_llvm_shim();
     let rustc = env::var_os("RUSTC").map(PathBuf::from).expect("RUSTC");
     let mut settings = vec![
         (
             "rustc".into(),
             command_output(&rustc, &["--version", "--verbose"]).expect("rustc version"),
         ),
-        (
-            "llvm".into(),
-            command_output(&llvm_config, &["--version"]).expect("LLVM version"),
-        ),
         ("target".into(), env::var("TARGET").expect("TARGET")),
     ];
+    #[cfg(feature = "llvm")]
+    settings.push(("llvm".into(), llvm_version));
     settings.extend(env::vars().filter(|(name, _)| name.starts_with("CARGO_FEATURE_")));
     let identity = build_identity::compute(
         Path::new(&env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR")),
@@ -43,7 +37,17 @@ fn main() {
         println!("cargo:rerun-if-changed={}", path.display());
     }
     println!("cargo:rustc-env=TARO_COMPILER_ID={}", identity.stamp);
+}
 
+#[cfg(feature = "llvm")]
+fn build_llvm_shim() -> String {
+    println!("cargo:rerun-if-env-changed=DEP_LLVM_22_CONFIG_PATH");
+    println!("cargo:rerun-if-changed=native/llvm_shims.cpp");
+
+    let llvm_config = env::var_os("DEP_LLVM_22_CONFIG_PATH")
+        .map(PathBuf::from)
+        .expect("llvm-sys did not provide its selected llvm-config path");
+    let llvm_version = command_output(&llvm_config, &["--version"]).expect("LLVM version");
     let include_dir = command_output(&llvm_config, &["--includedir"])
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -64,4 +68,5 @@ fn main() {
         .define("__STDC_LIMIT_MACROS", None)
         .file("native/llvm_shims.cpp");
     build.compile("taro_llvm_shims");
+    llvm_version
 }

@@ -1,15 +1,23 @@
 pub mod abi;
 pub mod artifact;
+#[cfg(feature = "llvm")]
 pub(crate) mod gc_pc_metadata;
+#[cfg(feature = "llvm")]
 pub(crate) mod gc_stack_maps;
+#[cfg(feature = "llvm")]
 pub mod link;
+#[cfg(feature = "llvm")]
 pub mod llvm;
+#[cfg(feature = "llvm")]
 pub mod lto;
 pub mod mangle;
+#[cfg(feature = "llvm")]
 pub mod target;
 
+#[cfg(feature = "llvm")]
 use std::{ffi::CString, ptr, sync::Once};
 
+#[cfg(feature = "llvm")]
 static CONFIGURE_OPTIMIZATION_REMARKS: Once = Once::new();
 
 /// Enable LLVM's passed, missed, and analysis optimization remarks.
@@ -17,6 +25,7 @@ static CONFIGURE_OPTIMIZATION_REMARKS: Once = Once::new();
 /// LLVM exposes remark filtering through process-global command-line state in
 /// its C API. The CLI calls this at most once, before creating LLVM contexts;
 /// compiler-library sessions never enable it implicitly.
+#[cfg(feature = "llvm")]
 pub fn configure_optimization_remarks(pass_filter: &str) -> Result<(), String> {
     let raw_arguments = [
         "taro".to_owned(),

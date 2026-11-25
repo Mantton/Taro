@@ -59,8 +59,17 @@ fn with_context<R>(
     let dcx = Rc::new(DiagCtx::new(root.to_path_buf()));
     dcx.enable_recording();
     let arenas = CompilerArenas::new();
+    #[cfg(feature = "llvm")]
     let store = CompilerStore::new(&arenas, root.join("target"), &dcx, target, config.profile)
         .unwrap_or_else(|_| panic!("test compiler store"));
+    #[cfg(not(feature = "llvm"))]
+    let store = {
+        assert!(target.is_none(), "the test target comes from the descriptor");
+        let path = std::env::var_os("TARO_TEST_TARGET_FACTS").expect("TARO_TEST_TARGET_FACTS");
+        let descriptor = fs::read_to_string(path).expect("read test target descriptor");
+        let facts = toml::from_str(&descriptor).expect("parse test target descriptor");
+        CompilerStore::new_for_analysis(&arenas, root.join("target"), facts)
+    };
     let context = CompilerContext::new(dcx, store);
     let config = context.store.arenas.configs.alloc(config);
     f(&context, config)

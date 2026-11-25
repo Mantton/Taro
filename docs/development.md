@@ -74,6 +74,32 @@ An installed toolchain infers `TARO_HOME` when `taro` lives under its
 The language and codegen runners accept `JOBS=<n>`. Language tests also accept
 `FILTER=<substring>`.
 
+## Frontend-only checks
+
+The `compiler` crate exposes semantic analysis with LLVM disabled. The caller
+provides a target descriptor to `CompilerStore::new_for_analysis`. Generate the
+descriptor with the native CLI, or use the matching
+`lib/taro/runtime/target-facts.toml` from a Taro distribution. A cross-target
+distribution places the descriptor alongside that target's runtime archive.
+
+Run the same overload and diagnostic oracle with both compiler configurations.
+The frontend-only run needs the descriptor file and a Rust toolchain.
+
+```bash
+make disk-guard
+cargo test -p compiler compile::analysis_oracle
+make compiler-release
+git check-ignore -q target/frontend-test-target.toml
+target/release/taro-bin target-facts target/frontend-test-target.toml
+cargo tree -p compiler --no-default-features
+TARO_TEST_TARGET_FACTS="$PWD/target/frontend-test-target.toml" \
+  cargo test -p compiler --no-default-features compile::analysis_oracle
+```
+
+Set `TARO_TEST_TARGET_FACTS` to the copied descriptor when running on a machine
+without a native Taro installation. The two test runs assert the same types,
+exact overload locations, diagnostics and full-check work counts.
+
 ## Inspect the Compiler
 
 The CLI exposes the maintained diagnostics; use `taro <command> --help` for

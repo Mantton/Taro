@@ -175,6 +175,20 @@ fn compiler_revision_stamp() -> String {
     env!("TARO_COMPILER_ID").to_owned()
 }
 
+fn target_cpu_features(gcx: GlobalContext<'_>) -> (&str, &str) {
+    #[cfg(feature = "llvm")]
+    {
+        (gcx.store.target_layout.cpu(), gcx.store.target_layout.features())
+    }
+    #[cfg(not(feature = "llvm"))]
+    {
+        // This build only checks source. Its compiler identity also keeps its
+        // semantic cache separate from the native compiler's artifacts.
+        let _ = gcx;
+        ("", "")
+    }
+}
+
 fn profile_name(profile: BuildProfile) -> &'static str {
     match profile {
         BuildProfile::Debug => "debug",
@@ -392,19 +406,14 @@ pub fn write_package_metadata<'ctx>(
         ReuseMode::SemanticDependency => has_semantic_payload,
     };
 
+    let (target_cpu, target_features) = target_cpu_features(gcx);
     let header = MetadataHeader {
         compiler_revision: compiler_revision_stamp(),
         package_identifier: config.identifier.to_string(),
         package_index: pkg.raw() as u32,
-        target_triple: gcx
-            .store
-            .target_layout
-            .triple()
-            .as_str()
-            .to_string_lossy()
-            .into_owned(),
-        target_cpu: gcx.store.target_layout.cpu().to_owned(),
-        target_features: gcx.store.target_layout.features().to_owned(),
+        target_triple: gcx.store.target_facts.triple().to_owned(),
+        target_cpu: target_cpu.to_owned(),
+        target_features: target_features.to_owned(),
         profile: profile_name(config.profile).to_string(),
         optimization: optimization_name(config.codegen.optimization).to_string(),
         lto: lto_name(config.codegen.lto).to_string(),
@@ -454,20 +463,11 @@ fn validate_and_decode_payload(
     if header.package_index != config.index.raw() as u32 {
         return Err("metadata package index mismatch".into());
     }
-    if header.target_triple
-        != gcx
-            .store
-            .target_layout
-            .triple()
-            .as_str()
-            .to_string_lossy()
-            .as_ref()
-    {
+    if header.target_triple != gcx.store.target_facts.triple() {
         return Err("metadata target mismatch".into());
     }
-    if header.target_cpu != gcx.store.target_layout.cpu()
-        || header.target_features != gcx.store.target_layout.features()
-    {
+    let (target_cpu, target_features) = target_cpu_features(gcx);
+    if header.target_cpu != target_cpu || header.target_features != target_features {
         return Err("metadata target CPU/features mismatch".into());
     }
     if expected_fp.is_some() && header.profile != profile_name(config.profile) {
@@ -1636,15 +1636,10 @@ mod tests {
             header.compiler_revision = compiler_revision_stamp();
             header.package_identifier = gcx.config.identifier.to_string();
             header.package_index = gcx.package_index().raw() as u32;
-            header.target_triple = gcx
-                .store
-                .target_layout
-                .triple()
-                .as_str()
-                .to_string_lossy()
-                .into_owned();
-            header.target_cpu = gcx.store.target_layout.cpu().into();
-            header.target_features = gcx.store.target_layout.features().into();
+            header.target_triple = gcx.store.target_facts.triple().into();
+            let (cpu, features) = target_cpu_features(gcx);
+            header.target_cpu = cpu.into();
+            header.target_features = features.into();
             header.optimization = optimization_name(gcx.config.codegen.optimization).into();
             header.lto = lto_name(gcx.config.codegen.lto).into();
             header.artifact_kind = Some(gcx.config.codegen.artifact);

@@ -1,12 +1,17 @@
 use crate::{
-    ast_lowering, cfg_eval, codegen,
-    codegen::artifact::ModuleArtifact,
+    ast_lowering, cfg_eval,
     compile::{
-        config::{Config, ModuleArtifactKind},
+        config::Config,
         context::{CompilerContext, GlobalContext},
     },
     error::CompileResult,
-    hir, mir, parse, sema, specialize, thir,
+    hir, mir, parse, sema, thir,
+};
+#[cfg(feature = "llvm")]
+use crate::{
+    codegen::{self, artifact::ModuleArtifact},
+    compile::config::ModuleArtifactKind,
+    specialize,
 };
 use std::time::{Duration, Instant};
 
@@ -53,6 +58,7 @@ impl TimingReport {
         });
     }
 
+    #[cfg(feature = "llvm")]
     fn push_codegen(
         &mut self,
         prefix: &str,
@@ -96,6 +102,7 @@ impl<'state> Compiler<'state> {
     }
 }
 
+#[cfg(feature = "llvm")]
 enum CompilationMode<'a> {
     Build,
     Emit,
@@ -104,6 +111,7 @@ enum CompilationMode<'a> {
     Fuzz(&'a str),
 }
 
+#[cfg(feature = "llvm")]
 impl CompilationMode<'_> {
     fn name(&self) -> &'static str {
         match self {
@@ -116,6 +124,7 @@ impl CompilationMode<'_> {
     }
 }
 
+#[cfg(feature = "llvm")]
 impl<'state> Compiler<'state> {
     pub fn build(&mut self) -> CompileResult<Option<std::path::PathBuf>> {
         self.compile(CompilationMode::Build)
@@ -250,7 +259,9 @@ impl<'state> Compiler<'state> {
         }
         result
     }
+}
 
+impl<'state> Compiler<'state> {
     pub fn check(&mut self) -> CompileResult<hir::Package> {
         self.check_with_vet(false)
     }
