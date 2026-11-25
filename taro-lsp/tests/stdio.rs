@@ -995,6 +995,36 @@ fn definitions_continue_inside_sdk_sources() {
         at(entry.as_str(), entry_text, "sdkTarget"),
     );
     assert_eq!(server.response(7)["range"]["start"]["line"], 0);
+
+    // An external change must use the editor's text for the open target.
+    server.open(sibling.as_str(), sibling_text);
+    server.request(
+        8,
+        "textDocument/definition",
+        at(entry.as_str(), entry_text, "sdkTarget"),
+    );
+    assert_eq!(server.response(8)["range"]["start"]["line"], 0);
+    fs::write(sibling.to_file_path().unwrap(), &shifted).unwrap();
+    server.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": sibling.as_str(), "type": 2}]}),
+    );
+    server.request(
+        9,
+        "textDocument/definition",
+        at(entry.as_str(), entry_text, "sdkTarget"),
+    );
+    assert_eq!(server.response(9)["range"]["start"]["line"], 0);
+    server.notify(
+        "textDocument/didClose",
+        json!({"textDocument": {"uri": sibling.as_str()}}),
+    );
+    server.request(
+        10,
+        "textDocument/definition",
+        at(entry.as_str(), entry_text, "sdkTarget"),
+    );
+    assert_eq!(server.response(10)["range"]["start"]["line"], 1);
 }
 
 #[test]

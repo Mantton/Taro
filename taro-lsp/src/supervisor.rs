@@ -75,6 +75,7 @@ struct Document {
     version: i32,
     text: Arc<SourceText>,
     uri: Option<Uri>,
+    overlay: bool,
 }
 
 struct Flight {
@@ -160,6 +161,15 @@ impl Supervisor {
     }
 
     pub fn set_document(&mut self, path: PathBuf, version: i32, text: String) -> bool {
+        self.store_document(path, version, text, true)
+    }
+
+    /// Track an editor tab whose contents are already in the disk source view.
+    pub fn open_disk_document(&mut self, path: PathBuf, version: i32, text: String) {
+        self.store_document(path, version, text, false);
+    }
+
+    fn store_document(&mut self, path: PathBuf, version: i32, text: String, overlay: bool) -> bool {
         if self
             .documents
             .get(&path)
@@ -171,27 +181,43 @@ impl Supervisor {
             .documents
             .get(&path)
             .and_then(|document| document.uri.clone());
-        self.documents.insert(
+        let previous = self.documents.insert(
             path.clone(),
             Document {
                 version,
                 text: Arc::new(SourceText::new(text)),
                 uri,
+                overlay,
             },
         );
-        self.changed(path);
+        if overlay || previous.is_some_and(|document| document.overlay) {
+            self.changed(path);
+        }
         true
     }
 
     pub fn close_document(&mut self, path: &Path) -> bool {
-        if self.documents.remove(path).is_none() {
+        let Some(document) = self.documents.remove(path) else {
             return false;
+        };
+        if document.overlay {
+            self.changed(path.to_path_buf());
         }
-        self.changed(path.to_path_buf());
         true
     }
 
     pub fn filesystem_changed(&mut self) {
+        // Keep the editor's open text authoritative if the disk file changes
+        // before the editor has reloaded it.
+        for (path, document) in &mut self.documents {
+            if !document.overlay
+                && !DiskSources
+                    .read_text(path)
+                    .is_ok_and(|disk| disk.text() == document.text.text())
+            {
+                document.overlay = true;
+            }
+        }
         self.advance();
         self.discard_disk_view();
     }
@@ -281,6 +307,7 @@ impl Supervisor {
                 documents: self
                     .documents
                     .iter()
+                    .filter(|(_, document)| document.overlay)
                     .map(|(path, document)| (path.clone(), document.text.text().to_owned()))
                     .collect(),
             }
@@ -293,6 +320,7 @@ impl Supervisor {
                             path.clone(),
                             self.documents
                                 .get(path)
+                                .filter(|document| document.overlay)
                                 .map(|document| document.text.text().to_owned()),
                         )
                     })
@@ -478,6 +506,24 @@ mod tests {
                 restart_limit: Duration::from_millis(100),
             },
         )
+    }
+
+    #[test]
+    fn disk_backed_tabs_only_advance_analysis_for_overlay_changes() {
+        let mut supervisor = supervisor(Duration::from_secs(1));
+        let path = PathBuf::from("/workspace/src/std.tr");
+        let disk_revision = supervisor.revision();
+        supervisor.open_disk_document(path.clone(), 1, "disk contents".into());
+        assert_eq!(supervisor.document_version(&path), Some(1));
+        assert_eq!(supervisor.revision(), disk_revision);
+        assert!(supervisor.close_document(&path));
+        assert_eq!(supervisor.revision(), disk_revision);
+
+        supervisor.open_disk_document(path.clone(), 1, "disk contents".into());
+        assert!(supervisor.set_document(path.clone(), 2, "unsaved edit".into()));
+        assert_eq!(supervisor.revision(), disk_revision + 1);
+        assert!(supervisor.close_document(&path));
+        assert_eq!(supervisor.revision(), disk_revision + 2);
     }
 
     #[test]

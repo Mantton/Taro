@@ -3,6 +3,7 @@
 use std::{
     collections::BTreeMap,
     error::Error,
+    fs,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -32,6 +33,7 @@ use crate::{
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+const STD_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_WAITING_REQUESTS: usize = 32;
 const FILE_WATCH_REGISTRATION: &str = "taro-file-watchers";
 
@@ -109,9 +111,25 @@ struct Server {
     installed_std: Option<PathBuf>,
     watching_files: bool,
     workspaces: BTreeMap<PathBuf, Supervisor>,
-    std_workspace: Option<Supervisor>,
+    std_workspace: Option<StdWorkspace>,
     waiting: Vec<EditorQuery>,
     trace_analysis: bool,
+}
+
+struct StdWorkspace {
+    supervisor: Supervisor,
+    disk_digest: Option<String>,
+    idle_until: Option<Instant>,
+}
+
+impl StdWorkspace {
+    fn refresh_disk_view(&mut self, root: &Path) {
+        let digest = crate::bundle::std_digest(root).ok();
+        if digest.is_none() || self.disk_digest != digest {
+            self.supervisor.filesystem_changed();
+            self.disk_digest = digest;
+        }
+    }
 }
 
 enum QueryKind {
@@ -148,7 +166,11 @@ impl Server {
 
     fn lookup(&mut self, path: &Path) -> Option<&mut Supervisor> {
         if self.is_installed_std(path) {
-            return self.std_workspace.as_mut();
+            return self
+                .std_workspace
+                .as_mut()
+                .filter(|workspace| workspace.idle_until.is_none())
+                .map(|workspace| &mut workspace.supervisor);
         }
         let root = self
             .workspaces
@@ -193,11 +215,20 @@ impl Server {
                 Err(RecvTimeoutError::Disconnected) => return Ok(()),
             }
             let now = Instant::now();
-            for supervisor in self
-                .workspaces
-                .values_mut()
-                .chain(self.std_workspace.iter_mut())
+            if self
+                .std_workspace
+                .as_ref()
+                .and_then(|workspace| workspace.idle_until)
+                .is_some_and(|deadline| now >= deadline)
             {
+                self.std_workspace = None;
+            }
+            let active_std = self
+                .std_workspace
+                .iter_mut()
+                .filter(|workspace| workspace.idle_until.is_none())
+                .map(|workspace| &mut workspace.supervisor);
+            for supervisor in self.workspaces.values_mut().chain(active_std) {
                 match supervisor.drive(now) {
                     Some(Notice::Current(mode, product)) => {
                         let diagnostics = features::diagnostics(supervisor, &product);
@@ -385,18 +416,45 @@ impl Server {
                         .as_ref()
                         .filter(|root| path.starts_with(root))
                     {
-                        self.std_workspace.get_or_insert_with(|| {
-                            Supervisor::new(root.clone(), self.launch.clone(), Policy::default())
+                        let workspace = self.std_workspace.get_or_insert_with(|| StdWorkspace {
+                            supervisor: Supervisor::new(
+                                root.clone(),
+                                self.launch.clone(),
+                                Policy::default(),
+                            ),
+                            disk_digest: None,
+                            idle_until: None,
                         });
-                    } else if self.lookup(&path).is_none() {
-                        self.workspaces.insert(
-                            path.clone(),
-                            Supervisor::new(path.clone(), self.launch.clone(), Policy::default()),
-                        );
-                    }
-                    if let Some(supervisor) = self.lookup(&path) {
-                        supervisor.set_document(path.clone(), doc.version, doc.text);
+                        workspace.idle_until = None;
+                        workspace.refresh_disk_view(root);
+                        let supervisor = &mut workspace.supervisor;
+                        if workspace.disk_digest.is_some()
+                            && fs::read_to_string(&path).is_ok_and(|disk| disk == doc.text)
+                        {
+                            supervisor.open_disk_document(path.clone(), doc.version, doc.text);
+                        } else {
+                            supervisor.set_document(path.clone(), doc.version, doc.text);
+                        }
                         supervisor.set_document_uri(&path, doc.uri);
+                        if let Some(product) = supervisor.current() {
+                            let diagnostics = features::diagnostics(supervisor, product);
+                            publish(connection, supervisor, diagnostics, None)?;
+                        }
+                    } else {
+                        if self.lookup(&path).is_none() {
+                            self.workspaces.insert(
+                                path.clone(),
+                                Supervisor::new(
+                                    path.clone(),
+                                    self.launch.clone(),
+                                    Policy::default(),
+                                ),
+                            );
+                        }
+                        if let Some(supervisor) = self.lookup(&path) {
+                            supervisor.set_document(path.clone(), doc.version, doc.text);
+                            supervisor.set_document_uri(&path, doc.uri);
+                        }
                     }
                 }
             }
@@ -423,12 +481,23 @@ impl Server {
             notification::DidCloseTextDocument::METHOD => {
                 let params: DidCloseTextDocumentParams = serde_json::from_value(note.params)?;
                 if let Some(path) = file_path(&params.text_document.uri) {
-                    if self.is_installed_std(&path) {
-                        if let Some(supervisor) = &mut self.std_workspace {
-                            supervisor.close_document(&path);
+                    if let Some(root) = self
+                        .installed_std
+                        .as_ref()
+                        .filter(|root| path.starts_with(root))
+                    {
+                        if let Some(workspace) = &mut self.std_workspace
+                            && workspace.supervisor.close_document(&path)
+                        {
+                            workspace.refresh_disk_view(root);
+                            let supervisor = &mut workspace.supervisor;
                             if supervisor.open_document_uris().next().is_none() {
+                                // A preview tab can close just before the next one opens.
+                                workspace.idle_until = Some(Instant::now() + STD_IDLE_TIMEOUT);
                                 publish(connection, supervisor, BTreeMap::new(), None)?;
-                                self.std_workspace = None;
+                            } else if let Some(product) = supervisor.current() {
+                                let diagnostics = features::diagnostics(supervisor, product);
+                                publish(connection, supervisor, diagnostics, None)?;
                             }
                         }
                     } else if self.workspaces.remove(&path).is_none()
@@ -441,9 +510,17 @@ impl Server {
             notification::DidChangeWatchedFiles::METHOD => {
                 let params: DidChangeWatchedFilesParams = serde_json::from_value(note.params)?;
                 for change in params.changes {
-                    if let Some(path) = file_path(&change.uri)
-                        && let Some(supervisor) = self.lookup(&path)
-                    {
+                    let Some(path) = file_path(&change.uri) else {
+                        continue;
+                    };
+                    let supervisor = if self.is_installed_std(&path) {
+                        self.std_workspace
+                            .as_mut()
+                            .map(|workspace| &mut workspace.supervisor)
+                    } else {
+                        self.lookup(&path)
+                    };
+                    if let Some(supervisor) = supervisor {
                         supervisor.filesystem_changed();
                     }
                 }
@@ -510,7 +587,14 @@ fn publish(
     for uri in workspace.open_document_uris() {
         diagnostics.entry(uri).or_default();
     }
-    let previous = workspace.swap_published(diagnostics.keys().cloned().collect());
+    // Only a document that had diagnostics needs a clearing notification.
+    let previous = workspace.swap_published(
+        diagnostics
+            .iter()
+            .filter(|(_, items)| !items.is_empty())
+            .map(|(uri, _)| uri.clone())
+            .collect(),
+    );
     for uri in previous {
         diagnostics.entry(uri).or_default();
     }

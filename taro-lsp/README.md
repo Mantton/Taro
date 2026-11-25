@@ -49,7 +49,7 @@ Go to Definition follows the identifier under the cursor in a qualified path. A 
 
 The server registers file watchers with supporting clients. Without watch registration it refreshes disk sources on each text edit and uses a full package check. It refreshes embedded assets on the next analysis. Replacing an installed bundle requires restarting the server.
 
-Opening an installed std file starts a separate analysis of the library as a source package using the SDK's default target. Go to Definition can then follow references between std files. The first query may wait for the source check. The server releases that worker when the last std document closes. Unsaved std edits affect browsing only. Project analysis uses its own installed metadata.
+Opening an installed std file starts a separate analysis of the library as a source package using the SDK's default target. Go to Definition can then follow references between std files. The first query may wait for the source check. Opening or closing tabs that match the unchanged SDK sources reuses the current analysis. The worker expires after five seconds with no std tabs open. Unsaved std edits affect browsing only. Project analysis uses its own installed metadata.
 
 ## Use in Zed
 
