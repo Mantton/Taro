@@ -9,6 +9,7 @@ use crate::package::{
     utils::{canonicalize_git_url, language_home},
 };
 use compiler::{
+    compile::source::DiskSources,
     constants::{LOCK_FILE, MANIFEST_FILE, PACKAGE_STORE},
     error::{CompileResult, ReportedError},
 };
@@ -187,15 +188,18 @@ impl<'a> Actor<'a> {
 
 impl<'a> Actor<'a> {
     fn load_root_package(&mut self, root_path: PathBuf) -> CompileResult<RPkg<'a>> {
-        let root_manifest = Manifest::parse(root_path.join(MANIFEST_FILE)).map_err(|e| {
+        let root_manifest =
+            Manifest::parse(&root_path.join(MANIFEST_FILE), &DiskSources).map_err(|e| {
             eprintln!(
                 "error: failed to parse manifest at '{}': {}",
                 root_path.display(),
                 e
             );
             ReportedError
-        })?;
-        let root_manifest = root_manifest.normalize(root_path.clone()).map_err(|e| {
+            })?;
+        let root_manifest = root_manifest
+            .normalize(&root_path, &DiskSources)
+            .map_err(|e| {
             eprintln!(
                 "error: failed to normalize manifest at '{}': {}",
                 root_path.display(),
@@ -334,8 +338,8 @@ impl<'a> Actor<'a> {
                 dependency.package.0
             ));
         };
-        let manifest = Manifest::parse(abs.join(MANIFEST_FILE))?;
-        let manifest = manifest.normalize(abs.clone())?;
+        let manifest = Manifest::parse(&abs.join(MANIFEST_FILE), &DiskSources)?;
+        let manifest = manifest.normalize(abs, &DiskSources)?;
         let dependency = self.intern_rdep(ResolvedPackage {
             package: dependency.package.clone(),
             source: ResolvedSource::Path { abs: abs.clone() },
@@ -416,8 +420,8 @@ impl<'a> Actor<'a> {
             (package_source, revision, selector, None)
         };
 
-        let manifest = Manifest::parse(package_source.join(MANIFEST_FILE))?;
-        let manifest = manifest.normalize(package_source.clone())?;
+        let manifest = Manifest::parse(&package_source.join(MANIFEST_FILE), &DiskSources)?;
+        let manifest = manifest.normalize(&package_source, &DiskSources)?;
         let dependency = self.intern_rdep(ResolvedPackage {
             package: key.package.clone(),
             source: ResolvedSource::Git {

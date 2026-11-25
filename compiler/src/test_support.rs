@@ -4,6 +4,7 @@ use crate::{
         Compiler,
         config::{BuildProfile, Config, HarnessMode, PackageKind, StdMode},
         context::{CompilerArenas, CompilerContext, CompilerStore, Gcx},
+        source::SourceProvider,
     },
     diagnostics::{DiagCtx, DiagnosticRecord},
     hir,
@@ -54,9 +55,14 @@ fn with_context<R>(
     root: &Path,
     config: Config,
     target: Option<String>,
+    sources: Option<Rc<dyn SourceProvider>>,
     f: impl for<'ctx> FnOnce(&'ctx CompilerContext<'ctx>, &'ctx Config) -> R,
 ) -> R {
-    let dcx = Rc::new(DiagCtx::new(root.to_path_buf()));
+    let diagnostics = match sources {
+        Some(sources) => DiagCtx::with_sources(root.to_path_buf(), sources),
+        None => DiagCtx::new(root.to_path_buf()),
+    };
+    let dcx = Rc::new(diagnostics);
     dcx.enable_recording();
     let arenas = CompilerArenas::new();
     #[cfg(feature = "llvm")]
@@ -64,7 +70,10 @@ fn with_context<R>(
         .unwrap_or_else(|_| panic!("test compiler store"));
     #[cfg(not(feature = "llvm"))]
     let store = {
-        assert!(target.is_none(), "the test target comes from the descriptor");
+        assert!(
+            target.is_none(),
+            "the test target comes from the descriptor"
+        );
         let path = std::env::var_os("TARO_TEST_TARGET_FACTS").expect("TARO_TEST_TARGET_FACTS");
         let descriptor = fs::read_to_string(path).expect("read test target descriptor");
         let facts = toml::from_str(&descriptor).expect("parse test target descriptor");
@@ -86,7 +95,7 @@ pub(crate) fn with_test_gcx_config<R>(
     let root = TempDir::new("context");
     let mut config = test_config(&root);
     configure(&mut config);
-    with_context(&root, config, None, |context, config| {
+    with_context(&root, config, None, None, |context, config| {
         f(Gcx::new(context, config))
     })
 }
@@ -135,7 +144,21 @@ pub(crate) fn with_target_source_compiler<R>(
         fs::create_dir_all(path.parent().unwrap()).expect("source directory");
         fs::write(&path, source).expect("test source");
     }
-    with_context(&root, config, target, |context, config| {
+    with_context(&root, config, target, None, |context, config| {
+        f(&mut Compiler::new(context, config))
+    })
+}
+
+pub(crate) fn with_workspace_compiler<R>(
+    root: &Path,
+    sources: Rc<dyn SourceProvider>,
+    f: impl for<'ctx> FnOnce(&mut Compiler<'ctx>) -> R,
+) -> R {
+    let mut config = test_config(root);
+    config.is_script = false;
+    config.is_std_provider = false;
+    config.overflow_checks = false;
+    with_context(root, config, None, Some(sources), |context, config| {
         f(&mut Compiler::new(context, config))
     })
 }
@@ -241,7 +264,9 @@ pub(crate) fn analyze_script_built_mir_with_items<R>(
                             .root
                             .declarations
                             .iter()
-                            .find(|declaration| gcx.symbol_text(declaration.identifier.symbol).as_str() == *name)
+                            .find(|declaration| {
+                                gcx.symbol_text(declaration.identifier.symbol).as_str() == *name
+                            })
                             .expect("fixture allocation-family declaration");
                         (
                             *item,

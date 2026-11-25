@@ -1,16 +1,13 @@
 use crate::{
     cfg,
+    compile::source::EntryKind,
     constants::{FILE_EXTENSION, ROOT_MODULE_NAME, SOURCE_DIRECTORY},
     diagnostics::DiagCtx,
     error::ReportedError,
     parse::token::{Base, IntegerTypeSuffix, Token},
     span::{FileID, Position, Span, Spanned},
 };
-use std::{
-    ffi::OsStr,
-    fs::{read_dir, read_to_string},
-    path::PathBuf,
-};
+use std::{ffi::OsStr, path::PathBuf};
 
 pub struct Pacakge {
     pub root: Module,
@@ -46,7 +43,7 @@ pub fn tokenize_single_file(
     dcx: &DiagCtx,
     target_triple: Option<&str>,
 ) -> Result<Pacakge, ReportedError> {
-    let file_path = match path.canonicalize() {
+    let file_path = match dcx.sources().resolve(&path) {
         Ok(path) => path,
         Err(e) => {
             let message = format!("failed to resolve source file – {e}");
@@ -95,7 +92,7 @@ pub fn tokenize_module(
     dcx: &DiagCtx,
     target_triple: Option<&str>,
 ) -> Result<Module, ReportedError> {
-    let directory = match path.canonicalize() {
+    let directory = match dcx.sources().resolve(&path) {
         Ok(path) => path,
         Err(e) => {
             let message = format!("failed to resolve project source directory – {e}");
@@ -122,7 +119,7 @@ pub fn tokenize_module(
         }
     };
 
-    let entries = match read_dir(&directory) {
+    let entries = match dcx.sources().read_directory(&directory) {
         Ok(entries) => entries,
         Err(e) => {
             let message = format!("failed to read directory '{}': {}", directory.display(), e);
@@ -135,39 +132,16 @@ pub fn tokenize_module(
     let mut files = vec![];
 
     for entry in entries {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(e) => {
-                let message = format!(
-                    "failed to read directory entry in '{}': {}",
-                    directory.display(),
-                    e
-                );
-                dcx.emit_error(message, None);
-                return Err(ReportedError);
-            }
-        };
-
-        let path = entry.path();
-        if path.is_symlink() {
-            continue;
-        }
-
-        if path.is_file() {
-            if path.extension().unwrap_or(OsStr::new("")) != FILE_EXTENSION {
-                continue;
-            };
-            let id = dcx.add_file_mapping(path.clone());
-            let file = match tokenize_file(id, path.clone(), dcx, target_triple) {
-                Ok(file) => file,
-                Err(_) => {
-                    return Err(ReportedError);
+        let path = entry.path;
+        match entry.kind {
+            EntryKind::File => {
+                if path.extension().unwrap_or(OsStr::new("")) != FILE_EXTENSION {
+                    continue;
                 }
-            };
-            files.push(file);
-        } else if path.is_dir() {
-            let module = tokenize_module(path.clone(), dcx, target_triple)?;
-            submodules.push(module);
+                let id = dcx.add_file_mapping(path.clone());
+                files.push(tokenize_file(id, path, dcx, target_triple)?);
+            }
+            EntryKind::Directory => submodules.push(tokenize_module(path, dcx, target_triple)?),
         }
     }
 
@@ -184,7 +158,7 @@ pub fn tokenize_file(
     dcx: &DiagCtx,
     target_triple: Option<&str>,
 ) -> Result<File, ReportedError> {
-    let source = match read_to_string(&path) {
+    let source = match dcx.sources().read_text(&path) {
         Ok(source) => source,
         Err(e) => {
             let message = format!("failed to read file '{}': {}", path.display(), e);
@@ -195,7 +169,7 @@ pub fn tokenize_file(
 
     // Check for //+cfg directive on first line
     if let Some(triple) = target_triple {
-        if !cfg::evaluate_file_cfg(&source, triple) {
+        if !cfg::evaluate_file_cfg(source.text(), triple) {
             // File is excluded by cfg - return empty file with just EOF
             return Ok(File {
                 id: file,
@@ -204,7 +178,7 @@ pub fn tokenize_file(
         }
     }
 
-    let lexer = Lexer::new(&source, file);
+    let lexer = Lexer::new(source.text(), file);
     dcx.record_source(file, source);
     match lexer.tokenize() {
         Ok(file) => Ok(file),

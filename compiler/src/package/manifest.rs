@@ -1,10 +1,10 @@
-use super::utils::{canonicalize_rel, derive_git_url, get_package_name, normalize_module_path};
-use crate::compile::config::PackageKind;
+use super::utils::{derive_git_url, get_package_name, normalize_module_path};
+use crate::compile::{config::PackageKind, source::SourceProvider};
 use ecow::EcoString;
 use rustc_hash::FxHashMap;
 use serde::Deserialize;
 use std::hash::Hash;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Deserialize, Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
 pub struct PackageIdentifier(pub EcoString);
@@ -16,10 +16,11 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    pub fn parse(path: PathBuf) -> Result<Manifest, String> {
-        let content = std::fs::read_to_string(&path)
+    pub fn parse(path: &Path, sources: &dyn SourceProvider) -> Result<Manifest, String> {
+        let content = sources
+            .read_text(path)
             .map_err(|e| format!("failed to read manifest file {:?}, {}", path, e))?;
-        let manifest = toml::from_str::<Manifest>(&content)
+        let manifest = toml::from_str::<Manifest>(content.text())
             .map_err(|e| format!("failed to parse manifest file {:?}, {}", path, e))?;
         Ok(manifest)
     }
@@ -95,7 +96,8 @@ impl ManifestDependency {
     pub fn spec_with_base(
         &self,
         package: &str,
-        base_url: &std::path::Path,
+        base_url: &Path,
+        sources: &dyn SourceProvider,
     ) -> Result<(EcoString, UnresolvedDependency), String> {
         let package = EcoString::from(normalize_module_path(package)?);
         let (source, alias) = match self {
@@ -151,7 +153,10 @@ impl ManifestDependency {
                 }
 
                 if let Some(p) = path.clone() {
-                    let abs = canonicalize_rel(base_url, p)?;
+                    let path = base_url.join(p);
+                    let abs = sources
+                        .resolve(&path)
+                        .map_err(|e| format!("failed to canonicalize {}: {e}", path.display()))?;
                     (SourceSpec::Path { abs }, alias.clone())
                 } else {
                     let url = if let Some(u) = git.clone() {
@@ -201,7 +206,11 @@ pub struct NormalizedManifest {
 }
 
 impl Manifest {
-    pub fn normalize(&self, base_url: PathBuf) -> Result<NormalizedManifest, String> {
+    pub fn normalize(
+        &self,
+        base_url: &Path,
+        sources: &dyn SourceProvider,
+    ) -> Result<NormalizedManifest, String> {
         let name = normalize_module_path(&self.package.name)?;
         let root_package_name = get_package_name(&name)?;
         let mut errs: Vec<String> = Vec::new();
@@ -216,7 +225,7 @@ impl Manifest {
                 }
             };
 
-            match dep.spec_with_base(&key.0, &base_url) {
+            match dep.spec_with_base(&key.0, base_url, sources) {
                 Ok((alias, mut spec)) => {
                     spec.package = key.clone();
                     if out.contains_key(&alias) {
@@ -249,11 +258,14 @@ impl Manifest {
 #[cfg(test)]
 mod tests {
     use super::Manifest;
-    use std::path::PathBuf;
+    use std::path::Path;
 
     fn normalize_manifest(source: &str) -> Result<super::NormalizedManifest, String> {
         let manifest = toml::from_str::<Manifest>(source).expect("manifest");
-        manifest.normalize(PathBuf::from("/manifest-test"))
+        manifest.normalize(
+            Path::new("/manifest-test"),
+            &crate::compile::source::DiskSources,
+        )
     }
 
     #[test]

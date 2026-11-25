@@ -59,6 +59,12 @@ impl FrozenDependency {
             artifact: None,
             payload: bincode::deserialize(&self.payload).map_err(io::Error::other)?,
         };
+        super::assets::validate_inputs(
+            gcx.config,
+            gcx.dcx().sources(),
+            &loaded.payload.embedded_inputs,
+        )
+        .map_err(io::Error::other)?;
         metadata::hydrate_loaded_metadata(gcx, &loaded, ReuseMode::SemanticDependency)
             .map_err(io::Error::other)
     }

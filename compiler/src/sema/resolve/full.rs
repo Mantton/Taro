@@ -226,12 +226,13 @@ impl<'r, 'a> Actor<'r, 'a> {
 
 impl<'r, 'a> ast::AstVisitor for Actor<'r, 'a> {
     fn visit_module(&mut self, node: &ast::Module, _: bool) -> Self::Result {
-        // Soft Reset on Modular Level, So Module Root is Scope Count
-        self.scopes = vec![];
+        // A module starts its own lexical scope. Restore the parent before
+        // walking its source files after returning from a child module.
+        let parent_scopes = std::mem::take(&mut self.scopes);
         let def_id = self.resolver.definition_id(node.id);
         let scope = self.resolver.get_definition_scope(def_id);
         self.with_scope(scope, |this| ast::walk_module(this, node));
-        self.scopes = vec![]
+        self.scopes = parent_scopes;
     }
 
     fn visit_file(&mut self, node: &ast::File) -> Self::Result {
@@ -1042,7 +1043,7 @@ impl<'r, 'a> Actor<'r, 'a> {
         for &ns in &[preferred, fallback] {
             let result = self
                 .resolver
-                .resolve_path_in_scopes(&path, ns, None, &self.scopes);
+                .resolve_path_in_scopes(&path, ns, None, None, &self.scopes);
 
             match result {
                 PathResult::Scope(scope) => {
@@ -1641,7 +1642,7 @@ impl<'r, 'a> Actor<'r, 'a> {
         let fallback = matches!(source, ResolutionSource::MatchPatternTupleStruct)
             .then_some(ScopeNamespace::Type);
         let result = self.resolver.resolve_path_in_scopes(
-            &path.segments, source.namespace(), fallback, &self.scopes,
+            &path.segments, source.namespace(), fallback, Some(source), &self.scopes,
         );
 
         let resolution = match result {

@@ -114,9 +114,9 @@ impl<'arena> GlobalContext<'arena> {
                     if !self.config.is_script {
                         if let Some(relative) =
                             path.strip_prefix(&self.config.src).ok().or_else(|| {
-                                self.config
-                                    .src
-                                    .canonicalize()
+                                self.dcx
+                                    .sources()
+                                    .resolve(&self.config.src)
                                     .ok()
                                     .and_then(|root| path.strip_prefix(root).ok())
                             })

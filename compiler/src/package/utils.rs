@@ -93,12 +93,6 @@ pub fn canonicalize_git_url(input: &str) -> Result<String, String> {
         .ok_or_else(|| format!("cannot canonicalize git url '{}'", input))
 }
 
-pub fn canonicalize_rel(base: &Path, p: PathBuf) -> Result<PathBuf, String> {
-    let abs = if p.is_absolute() { p } else { base.join(p) };
-    std::fs::canonicalize(&abs)
-        .map_err(|e| format!("failed to canonicalize {}: {e}", abs.display()))
-}
-
 pub fn infer_language_home_from_executable(exe_path: &Path) -> Option<PathBuf> {
     let bin_dir = exe_path.parent()?;
     if bin_dir.file_name()?.to_str()? != "bin" {

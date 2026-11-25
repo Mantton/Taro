@@ -16,6 +16,8 @@ use crate::{
 use std::time::{Duration, Instant};
 
 pub(crate) mod allocation_report;
+#[cfg(test)]
+mod analysis_oracle;
 pub mod analysis_products;
 pub(crate) mod assets;
 pub mod bench_collector;
@@ -25,10 +27,9 @@ pub mod entry;
 pub mod frozen_dependencies;
 pub mod fuzz_collector;
 pub mod harness;
+pub mod source;
 pub mod target_facts;
 pub mod test_collector;
-#[cfg(test)]
-mod analysis_oracle;
 
 pub struct Compiler<'state> {
     pub context: GlobalContext<'state>,

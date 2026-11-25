@@ -1,8 +1,8 @@
-use super::{config::Config, context::Gcx};
+use super::{config::Config, context::Gcx, source::SourceProvider};
 use crate::{hir::Literal, span::FileID};
 use std::{
     collections::BTreeMap,
-    fs, io,
+    io,
     path::{Path, PathBuf},
 };
 
@@ -10,8 +10,8 @@ use std::{
 /// of the files actually embedded in this package.
 pub(crate) type AssetInputs = BTreeMap<PathBuf, [u8; 32]>;
 
-fn source_root(config: &Config) -> io::Result<PathBuf> {
-    let mut root = config.src.canonicalize()?;
+fn source_root(config: &Config, sources: &dyn SourceProvider) -> io::Result<PathBuf> {
+    let mut root = sources.resolve(&config.src)?;
     if config.is_script {
         root.pop();
     }
@@ -26,16 +26,6 @@ fn is_relative_asset(path: &Path) -> bool {
         )
 }
 
-fn open_regular(path: &Path) -> io::Result<fs::File> {
-    if !fs::metadata(path)?.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "expected a regular file",
-        ));
-    }
-    fs::File::open(path)
-}
-
 impl Gcx<'_> {
     /// Resolve relative to the source containing the directive. Fingerprint
     /// the exact bytes used to produce the literal, including for text files.
@@ -45,7 +35,6 @@ impl Gcx<'_> {
         name: &str,
         bytes: bool,
     ) -> Result<Literal, String> {
-        use io::Read;
         let path = Path::new(name);
         if name.contains('\0') {
             return Err("embedded asset path contains a NUL byte".into());
@@ -53,7 +42,8 @@ impl Gcx<'_> {
         if !is_relative_asset(path) {
             return Err("embedded asset path must be a nonempty relative path".into());
         }
-        let root = source_root(self.config)
+        let sources = self.dcx.sources();
+        let root = source_root(self.config, sources)
             .map_err(|e| format!("could not resolve embedded asset source: {e}"))?;
         let source = self
             .dcx
@@ -69,19 +59,16 @@ impl Gcx<'_> {
             io::ErrorKind::InvalidInput => format!("embedded asset '{name}' is not a regular file"),
             _ => format!("could not read embedded asset '{name}': {error}"),
         };
-        let mut data = Vec::new();
-        open_regular(&root.join(&relative))
-            .map_err(failed)?
-            .read_to_end(&mut data)
-            .map_err(failed)?;
+        let data = sources.read_file(&root.join(&relative)).map_err(failed)?;
+        let data = data.as_bytes();
         let literal = if bytes {
-            Literal::Bytes(self.interner().intern_bytes(&data))
+            Literal::Bytes(self.interner().intern_bytes(data))
         } else {
-            let text = std::str::from_utf8(&data)
+            let text = std::str::from_utf8(data)
                 .map_err(|_| format!("embedded asset '{name}' is not valid UTF-8"))?;
             Literal::String(self.intern_symbol(text))
         };
-        let hash = *blake3::hash(&data).as_bytes();
+        let hash = *blake3::hash(data).as_bytes();
         let mut packages = self.store.embedded_inputs.borrow_mut();
         if let Some(previous) = packages
             .entry(self.package_index())
@@ -121,20 +108,24 @@ impl Gcx<'_> {
 
 /// Attached SDKs are self-contained. Recheck external files only for normal
 /// incremental cache hits, when the source package is present.
-pub(crate) fn validate_inputs(config: &Config, inputs: &AssetInputs) -> Result<(), String> {
+pub(crate) fn validate_inputs(
+    config: &Config,
+    sources: &dyn SourceProvider,
+    inputs: &AssetInputs,
+) -> Result<(), String> {
     if inputs.is_empty() {
         return Ok(());
     }
-    let root = source_root(config).map_err(|e| e.to_string())?;
+    let root = source_root(config, sources).map_err(|e| e.to_string())?;
     for (path, expected) in inputs {
         if !is_relative_asset(path) {
             return Err("invalid cached embedded asset path".into());
         }
         let changed = || format!("embedded asset '{}' changed", path.display());
-        let mut file = open_regular(&root.join(path)).map_err(|_| changed())?;
-        let mut digest = blake3::Hasher::new();
-        io::copy(&mut file, &mut digest).map_err(|_| changed())?;
-        if digest.finalize().as_bytes() != expected {
+        let digest = sources
+            .digest_file(&root.join(path))
+            .map_err(|_| changed())?;
+        if digest.as_bytes() != expected {
             return Err(changed());
         }
     }
@@ -145,6 +136,7 @@ pub(crate) fn validate_inputs(config: &Config, inputs: &AssetInputs) -> Result<(
 mod tests {
     use super::*;
     use crate::test_support::{TempDir, with_test_gcx_config};
+    use std::fs;
 
     #[test]
     fn validate_cached_asset_contents_and_dependency_fingerprint() {
@@ -164,9 +156,9 @@ mod tests {
                 gcx.read_embedded(file, "data.bin", true).unwrap();
                 let inputs = gcx.store.embedded_inputs.borrow()[&gcx.package_index()].clone();
                 let before = gcx.fingerprint_with_embedded_inputs("original".into());
-                validate_inputs(gcx.config, &inputs).unwrap();
+                validate_inputs(gcx.config, gcx.dcx.sources(), &inputs).unwrap();
                 fs::write(&asset, [1, 255]).unwrap();
-                assert!(validate_inputs(gcx.config, &inputs).is_err());
+                assert!(validate_inputs(gcx.config, gcx.dcx.sources(), &inputs).is_err());
                 gcx.store.embedded_inputs.borrow_mut().clear();
                 gcx.read_embedded(file, "data.bin", true).unwrap();
                 assert_ne!(
@@ -174,9 +166,9 @@ mod tests {
                     before
                 );
                 fs::remove_file(&asset).unwrap();
-                assert!(validate_inputs(gcx.config, &inputs).is_err());
+                assert!(validate_inputs(gcx.config, gcx.dcx.sources(), &inputs).is_err());
                 fs::write(&asset, [0, 255]).unwrap();
-                validate_inputs(gcx.config, &inputs).unwrap();
+                validate_inputs(gcx.config, gcx.dcx.sources(), &inputs).unwrap();
             },
         );
     }

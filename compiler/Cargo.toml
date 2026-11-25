@@ -28,6 +28,7 @@ llvm-sys = { version = "221.0.1", features = ["strict-versioning"], optional = t
 petgraph = "0.8.3"
 toml = "0.8.20"
 semver = { version = "1.0.26", features = ["serde"] }
+line-index = "0.1.2"
 
 [build-dependencies]
 blake3 = "1.8.2"

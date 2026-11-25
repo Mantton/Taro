@@ -561,7 +561,11 @@ pub fn try_load_package_metadata<'ctx>(
     if gcx.explains_allocations() && payload.allocation_report.is_none() {
         return MetadataLoadStatus::Miss("cached package has no allocation report".into());
     }
-    if let Err(reason) = crate::compile::assets::validate_inputs(config, &payload.embedded_inputs) {
+    if let Err(reason) = crate::compile::assets::validate_inputs(
+        config,
+        gcx.dcx().sources(),
+        &payload.embedded_inputs,
+    ) {
         return MetadataLoadStatus::Miss(reason);
     }
 

@@ -5,7 +5,12 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use compiler::{compile::config::PackageKind, constants::MANIFEST_FILE, error::ReportedError, package::manifest::Manifest};
+use compiler::{
+    compile::{config::PackageKind, source::DiskSources},
+    constants::MANIFEST_FILE,
+    error::ReportedError,
+    package::manifest::Manifest,
+};
 
 use crate::{
     TestArgs,
@@ -268,7 +273,7 @@ fn detect_library_package(source: &Path) -> Result<Option<(String, PathBuf)>, St
     for directory in path.ancestors().skip(1) {
         let manifest = directory.join(MANIFEST_FILE);
         if manifest.is_file() {
-            let package = Manifest::parse(manifest)?.package;
+            let package = Manifest::parse(&manifest, &DiskSources)?.package;
             if matches!(package.kind, PackageKind::Library | PackageKind::Both) && package.name != "github.com/taro/std" {
                 return Ok(Some((package.name.to_string(), directory.to_owned())));
             }

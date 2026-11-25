@@ -336,6 +336,10 @@ impl Compiler<'_> {
     pub fn analyze_owned(&mut self, revision: u64) -> AnalysisProduct {
         let gcx = self.context;
         let diagnostics = gcx.dcx();
+        let revision = diagnostics
+            .sources()
+            .workspace_revision()
+            .unwrap_or(revision);
         diagnostics.enable_recording();
         let result = self.analyze();
         let mut occurrences = Vec::new();
@@ -389,7 +393,11 @@ impl OccurrenceCollector<'_, '_> {
 
 impl HirVisitor for OccurrenceCollector<'_, '_> {
     fn visit_expression(&mut self, expression: &hir::Expression) {
-        let (span, resolved) = match &expression.kind {
+        let target = match &expression.kind {
+            ExpressionKind::Call { callee, .. } => callee,
+            _ => expression,
+        };
+        let (span, resolved) = match &target.kind {
             ExpressionKind::MethodCall { name, .. }
             | ExpressionKind::Member { name, .. }
             | ExpressionKind::InferredMember { name } => (name.span, None),

@@ -445,6 +445,7 @@ impl<'a> Resolver<'a> {
         path: &[PathSegment],
         namespace: ScopeNamespace,
         final_fallback: Option<ScopeNamespace>,
+        source: Option<ResolutionSource>,
         scopes: &[LexicalScope<'a>],
     ) -> PathResult<'a> {
         let mut resulting_scope: Option<Scope<'a>> = None;
@@ -487,6 +488,18 @@ impl<'a> Resolver<'a> {
             };
 
             let resolution = result.resolution();
+            // A module can share a spelling with a primitive, as std does
+            // with string. The module still serves as a qualified prefix.
+            if index == 0
+                && is_last
+                && matches!(resolution, Resolution::Definition(_, DefinitionKind::Module | DefinitionKind::Namespace))
+                && let Some(builtin) = self.builin_types_bindings.get(&segment.identifier.symbol)
+                && source.is_some_and(|source| source.is_allowed(builtin))
+            {
+                let state = ResolutionState::Complete(builtin.clone());
+                self.record_resolution(segment.id, state.clone());
+                return PathResult::Resolution(state);
+            }
             let possibly_associated_type = ResolutionSource::Type.is_allowed(&resolution);
 
             // A nominal owner can have both nested types and ordinary associated

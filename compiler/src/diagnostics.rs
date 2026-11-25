@@ -1,4 +1,5 @@
 use crate::{
+    compile::source::{DiskSources, SourceProvider, SourceText},
     error::ReportedError,
     interner::SessionInterner,
     span::{FileID, Span, Symbol},
@@ -9,14 +10,15 @@ use index_vec::IndexVec;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::{
     cell::{Cell, RefCell},
-    fs,
     path::PathBuf,
     rc::Rc,
+    sync::Arc,
 };
 use unicode_width::UnicodeWidthChar;
 
 pub struct DiagCtx {
     cwd: PathBuf,
+    sources: Rc<dyn SourceProvider>,
     inner: RefCell<DiagCtxInner>,
     pub(crate) symbols: Rc<SessionInterner>,
     #[cfg(test)]
@@ -34,13 +36,23 @@ pub(crate) struct AnalysisWork {
 
 impl DiagCtx {
     pub fn new(cwd: PathBuf) -> DiagCtx {
+        Self::with_sources(cwd, Rc::new(DiskSources))
+    }
+
+    /// Keep discovery, parsing and diagnostics on the same source view.
+    pub fn with_sources(cwd: PathBuf, sources: Rc<dyn SourceProvider>) -> DiagCtx {
         DiagCtx {
             cwd,
+            sources,
             inner: RefCell::new(Default::default()),
             symbols: Rc::default(),
             #[cfg(test)]
             analysis_work: AnalysisWork::default(),
         }
+    }
+
+    pub fn sources(&self) -> &dyn SourceProvider {
+        &*self.sources
     }
     pub fn add_file_mapping(&self, path: PathBuf) -> FileID {
         self.inner.borrow_mut().file_mappings.push(path)
@@ -142,58 +154,29 @@ impl Drop for DeferredDiagnostics<'_> {
 }
 
 impl DiagCtx {
-    pub fn record_source(&self, file: FileID, source: String) {
+    pub fn record_source(&self, file: FileID, source: Arc<SourceText>) {
         self.inner
             .borrow_mut()
             .file_content_mappings
-            .insert(file, source.into());
+            .insert(file, source);
     }
 
-    /// Lexer columns count Unicode scalars. Index line starts on the first
-    /// source-text request, then translate only the two endpoint columns.
+    /// Translate the compiler's scalar endpoints using this file's line index.
     pub fn source_text(&self, span: Span) -> Option<EcoString> {
         let text = self.get_file_content(span.file)?;
-        let mut inner = self.inner.borrow_mut();
-        let starts = inner.line_starts.entry(span.file).or_insert_with(|| {
-            std::iter::once(0)
-                .chain(text.match_indices('\n').map(|(byte, _)| byte + 1))
-                .collect()
-        });
-        let byte_offset = |p: crate::span::Position| {
-            let start = *starts.get(p.line)?;
-            let line = &text[start..starts.get(p.line + 1).copied().unwrap_or(text.len())];
-            let byte = line
-                .char_indices()
-                .map(|(i, _)| i)
-                .chain(std::iter::once(line.len()))
-                .nth(p.offset)?;
-            Some(start + byte)
-        };
-        Some(
-            text.get(byte_offset(span.start)?..byte_offset(span.end)?)?
-                .into(),
-        )
+        let start = text.byte_offset(span.start)?;
+        let end = text.byte_offset(span.end)?;
+        Some(text.text().get(start..end)?.into())
     }
 
-    fn get_file_content(&self, id: FileID) -> Option<EcoString> {
-        let stored = { self.inner.borrow().file_content_mappings.get(&id).cloned() };
-
-        if stored.is_some() {
-            return stored;
+    fn get_file_content(&self, id: FileID) -> Option<Arc<SourceText>> {
+        if let Some(stored) = self.inner.borrow().file_content_mappings.get(&id) {
+            return Some(Arc::clone(stored));
         }
-
-        let file = { self.inner.borrow().file_mappings.get(id).cloned() };
-        let Some(file) = file else { return None };
-        let content: Option<EcoString> = fs::read_to_string(file).ok().and_then(|f| Some(f.into()));
-
-        if let Some(content) = &content {
-            self.inner
-                .borrow_mut()
-                .file_content_mappings
-                .insert(id, content.clone());
-        }
-
-        content
+        let path = self.file_path(id)?;
+        let content = self.sources.read_text(&path).ok()?;
+        self.record_source(id, Arc::clone(&content));
+        Some(content)
     }
 }
 
@@ -370,7 +353,7 @@ impl DiagCtx {
             );
 
             if let Some(content) = self.get_file_content(span.file) {
-                message.push_str(&print_span_error(&content, span, diag.level));
+                message.push_str(&print_span_error(content.text(), span, diag.level));
             }
 
             Some(message)
@@ -396,8 +379,7 @@ struct DiagCtxInner {
     error_count: Cell<usize>,
     functions: FxHashMap<FileID, Vec<(Span, Symbol)>>,
     file_mappings: IndexVec<FileID, PathBuf>,
-    line_starts: FxHashMap<FileID, Vec<usize>>,
-    file_content_mappings: FxHashMap<FileID, EcoString>,
+    file_content_mappings: FxHashMap<FileID, Arc<SourceText>>,
     emitted_diagnostic_keys: FxHashSet<String>,
     recording: bool,
     recorded: Vec<DiagnosticRecord>,
