@@ -2,6 +2,7 @@ mod bundle;
 mod features;
 mod project;
 mod protocol;
+mod sdk;
 mod server;
 mod standard_library;
 mod supervisor;
@@ -10,6 +11,7 @@ mod worker;
 use std::{env, error::Error, ffi::OsString, fs, path::PathBuf};
 
 use compiler::compile::target_facts::TargetFacts;
+use standard_library::Installation;
 
 fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut arguments = env::args_os().skip(1).peekable();
@@ -29,7 +31,8 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     }
     let mut child = false;
     let mut target = None;
-    let mut installed = None;
+    let mut portable = None;
+    let mut sdk_home = None;
     while let Some(argument) = arguments.next() {
         if argument == "--worker" {
             child = true;
@@ -38,41 +41,55 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         } else if argument == "--target-facts" {
             target = Some(path_argument(arguments.next(), "--target-facts")?);
         } else if argument == "--bundle" {
-            installed = Some(path_argument(arguments.next(), "--bundle")?);
+            portable = Some(path_argument(arguments.next(), "--bundle")?);
+        } else if argument == "--sdk" {
+            sdk_home = Some(path_argument(arguments.next(), "--sdk")?);
         } else if argument == "--help" {
             println!(
-                "Usage: taro-lsp [--stdio] [--bundle <directory>]\n       taro-lsp --prepare-bundle <new-directory> <std-source> <target-facts.toml>..."
+                "Usage: taro-lsp [--stdio] [--sdk <directory> | --bundle <directory>]\n       taro-lsp --prepare-bundle <new-directory> <std-source> <target-facts.toml>..."
             );
             return Ok(());
         } else {
             return Err(format!("unknown argument {:?}", argument).into());
         }
     }
-    if target.is_some() && installed.is_some() {
-        return Err("--target-facts and --bundle are mutually exclusive".into());
+    if [&target, &portable, &sdk_home]
+        .into_iter()
+        .filter(|path| path.is_some())
+        .count()
+        > 1
+    {
+        return Err("--target-facts, --bundle, and --sdk are mutually exclusive".into());
     }
     let executable = env::current_exe()?;
     let (flag, source) = if let Some(target) = target {
         ("--target-facts", fs::canonicalize(target)?)
-    } else {
-        let path = installed.unwrap_or_else(|| {
-            executable
-                .parent()
-                .expect("executable directory")
-                .join("../share/taro-lsp")
-        });
+    } else if let Some(path) = portable {
         ("--bundle", fs::canonicalize(path)?)
+    } else {
+        (
+            "--sdk",
+            sdk_home.map_or_else(sdk::discover, fs::canonicalize)?,
+        )
     };
     if child {
-        let environment = if flag == "--bundle" {
-            worker::Environment::Installed(bundle::Bundle::load(&source)?)
-        } else {
-            let descriptor: TargetFacts = toml::from_str(&fs::read_to_string(source)?)?;
-            worker::Environment::Bootstrap(descriptor)
+        let environment = match flag {
+            "--bundle" => worker::Environment::Installed(Installation::Portable(
+                bundle::Bundle::load(&source)?,
+            )),
+            "--sdk" => worker::Environment::Installed(Installation::Sdk(sdk::Sdk::load(&source)?)),
+            _ => {
+                let descriptor: TargetFacts = toml::from_str(&fs::read_to_string(source)?)?;
+                worker::Environment::Bootstrap(descriptor)
+            }
         };
         worker::run(environment)?;
     } else {
-        let installed_std = (flag == "--bundle").then(|| bundle::std_path(&source));
+        let installed_std = match flag {
+            "--sdk" => Some(sdk::std_root(&source)?),
+            "--bundle" => Some(bundle::std_path(&source)),
+            _ => None,
+        };
         let launch = supervisor::Launch {
             program: executable,
             arguments: vec![

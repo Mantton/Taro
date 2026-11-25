@@ -14,9 +14,26 @@ use compiler::{
     diagnostics::DiagCtx,
 };
 
-use crate::bundle::Bundle;
+use crate::{
+    bundle::{self, Bundle},
+    sdk::Sdk,
+};
 
 pub(crate) const MAX_FROZEN_STD_BYTES: usize = 128 * 1024 * 1024;
+
+pub enum Installation {
+    Sdk(Sdk),
+    Portable(Bundle),
+}
+
+impl Installation {
+    pub fn target(&self, target: Option<&str>) -> io::Result<TargetFacts> {
+        match self {
+            Self::Sdk(sdk) => sdk.target(target),
+            Self::Portable(bundle) => bundle.target(target),
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct StdCache {
@@ -38,13 +55,19 @@ impl StdCache {
 
     pub fn prepare(
         &mut self,
-        bundle: &Bundle,
+        installation: &Installation,
         target: &TargetFacts,
         expected_digest: Option<&str>,
         cancelled: impl Fn() -> bool + 'static,
     ) -> io::Result<&Prepared> {
-        let digest = bundle.std_digest();
-        if expected_digest.is_some_and(|expected| expected != digest) {
+        let digest = match installation {
+            Installation::Portable(bundle) => bundle.std_digest().to_owned(),
+            Installation::Sdk(sdk) => match &self.prepared {
+                Some(current) if !self.verify_sources => current.digest.clone(),
+                _ => bundle::std_digest(&sdk.std)?,
+            },
+        };
+        if expected_digest.is_some_and(|expected| expected != digest.as_str()) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "project requests a different standard-library source identity",
@@ -56,23 +79,45 @@ impl StdCache {
             .is_some_and(|current| current.target == *target && current.digest == digest)
         {
             self.prepared = None;
-            let root = bundle.verify_std_sources()?;
-            let config = std_config(root);
-            let snapshot = match bundle.frozen_std(target) {
-                Ok(snapshot) => snapshot,
-                Err(_) => {
+            let (config, cached) = match installation {
+                Installation::Portable(bundle) => (
+                    std_config(bundle.verify_std_sources()?),
+                    bundle.frozen_std(target).ok(),
+                ),
+                Installation::Sdk(sdk) => {
+                    (std_config(sdk.std.clone()), sdk.cached_std(&digest, target))
+                }
+            };
+            let snapshot = match cached {
+                Some(snapshot) => snapshot,
+                None => {
                     let snapshot = freeze(&config, target, cancelled)?;
-                    bundle.verify_std_sources()?;
+                    match installation {
+                        Installation::Portable(bundle) => {
+                            bundle.verify_std_sources()?;
+                        }
+                        Installation::Sdk(sdk) => {
+                            if bundle::std_digest(&sdk.std)? != digest {
+                                return Err(io::Error::other(
+                                    "SDK std sources changed during analysis",
+                                ));
+                            }
+                            // Read-only or unavailable cache locations still support analysis.
+                            let _ = sdk.store_std(&digest, target, &snapshot);
+                        }
+                    }
                     snapshot
                 }
             };
             self.prepared = Some(Prepared {
                 target: target.clone(),
-                digest: digest.to_owned(),
+                digest,
                 config,
                 snapshot,
             });
-        } else if self.verify_sources {
+        } else if self.verify_sources
+            && let Installation::Portable(bundle) = installation
+        {
             bundle.verify_std_sources()?;
         }
         self.verify_sources = false;

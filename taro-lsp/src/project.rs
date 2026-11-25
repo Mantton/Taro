@@ -113,7 +113,7 @@ impl Project {
                 .insert(STD_PREFIX.into(), STD_PREFIX.into());
         } else if prefs.std_digest.is_some() {
             return Err(io::Error::other(
-                "the project requests a standard library, but no bundle is installed",
+                "the project requests a standard library, but this analysis has no SDK or bundle",
             ));
         }
         Ok(Self { config, prefs })

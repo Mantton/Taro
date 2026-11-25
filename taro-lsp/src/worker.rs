@@ -27,15 +27,14 @@ use compiler::{
 use crossbeam_channel::bounded;
 
 use crate::{
-    bundle::Bundle,
     project::Project,
     protocol::{self, AnalysisMode, AnalysisRequest, FromWorker, Inputs, Stamp, ToWorker},
-    standard_library::{Prepared, StdCache},
+    standard_library::{Installation, Prepared, StdCache},
 };
 
 pub enum Environment {
     Bootstrap(TargetFacts),
-    Installed(Bundle),
+    Installed(Installation),
 }
 
 pub fn run(environment: Environment) -> io::Result<()> {
@@ -255,13 +254,13 @@ impl Workspace {
                     }
                     (target.clone(), None)
                 }
-                Environment::Installed(bundle) => {
-                    let target = bundle.target(project.prefs.target.as_deref())?;
+                Environment::Installed(installation) => {
+                    let target = installation.target(project.prefs.target.as_deref())?;
                     // The frozen std is independent of the editor revision.
                     // Finish a source rebuild even if the user keeps typing.
                     let shutdown = Arc::clone(&cancelled);
                     let prepared = self.std_cache.prepare(
-                        bundle,
+                        installation,
                         &target,
                         project.prefs.std_digest.as_deref(),
                         move || shutdown.load(Ordering::Acquire) == u64::MAX,

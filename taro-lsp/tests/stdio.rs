@@ -136,6 +136,13 @@ fn copy_fixture_tree(from: &Path, to: &Path) {
     }
 }
 
+fn copy_std(to: &Path) {
+    fs::create_dir(to).unwrap();
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../std");
+    fs::copy(repository.join("package.toml"), to.join("package.toml")).unwrap();
+    copy_fixture_tree(&repository.join("src"), &to.join("src"));
+}
+
 impl Session<Message> {
     fn notify(&mut self, method: &str, params: Value) {
         Message::Notification(Notification::new(method.into(), params))
@@ -511,14 +518,7 @@ fn stdio_reserves_stdout_for_lsp_messages_and_exits_on_shutdown() {
 fn installed_bundle_resolves_std_sources_and_rebuilds_for_target_changes() {
     let fixture = Fixture::new();
     let std = fixture.root.join("std-dev");
-    fs::create_dir(&std).unwrap();
-    let repository_std = Path::new(env!("CARGO_MANIFEST_DIR")).join("../std");
-    fs::copy(
-        repository_std.join("package.toml"),
-        std.join("package.toml"),
-    )
-    .unwrap();
-    copy_fixture_tree(&repository_std.join("src"), &std.join("src"));
+    copy_std(&std);
     let std_text = concat!(
         "@cfg(arch(\"x86_64\"))\npublic func selected() -> int32 { 15 }\n",
         "@cfg(arch(\"aarch64\"))\npublic func selected() -> bool { true }\n",
@@ -654,6 +654,85 @@ fn installed_bundle_resolves_std_sources_and_rebuilds_for_target_changes() {
             .is_some_and(|message| message.contains("sources do not match")),
         "{stale}"
     );
+}
+
+#[test]
+fn sdk_uses_canonical_sources_and_reuses_the_snapshot_after_restart() {
+    let fixture = Fixture::new();
+    let root = fixture.root.canonicalize().unwrap();
+    let sdk = root.join("sdk");
+    let runtime = sdk.join("lib/taro/runtime");
+    fs::create_dir_all(&runtime).unwrap();
+    fs::copy(&fixture.facts, runtime.join("target-facts.toml")).unwrap();
+    let std = sdk.join("std");
+    copy_std(&std);
+    let selected = std.join("src/lsp_sdk_fixture.tr");
+    fs::write(&selected, "public func sdkSelected() -> int32 { 15 }\n").unwrap();
+
+    let project = root.join("project");
+    fs::create_dir(&project).unwrap();
+    let open_path = project.join("src/use.tr");
+    let reset = |revision| {
+        json!({
+            "Analyze": {
+                "stamp": {"generation": 1, "revision": revision},
+                "inputs": {"Reset": {
+                    "root": project,
+                    "documents": {open_path.to_str().unwrap(): "func check() { _ = std::sdkSelected() }"},
+                }},
+            },
+        })
+    };
+    let cache = root.join("cache");
+    let snapshot = cache.join("std.snapshot");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_taro-lsp"));
+    command
+        .arg("--worker")
+        .env("TARO_HOME", &sdk)
+        .env("TARO_LSP_CACHE_DIR", &cache);
+    let assert_definition = |reply: Value, ty: Value| {
+        let product = &reply["Finished"]["result"]["Ok"];
+        assert_eq!(product["complete"], true, "{reply}");
+        assert!(
+            product["occurrences"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| {
+                    item["declaration"]["name"] == "sdkSelected"
+                        && item["declaration"]["source"]["path"] == selected.to_str().unwrap()
+                        && item["ty"] == ty
+                }),
+            "{product}"
+        );
+    };
+    let mut worker = Session::spawn(&mut command, read_worker);
+    send_worker(&mut worker.input, reset(1));
+    assert_definition(worker.next(), json!({"Int": "I32"}));
+    let cached = fs::metadata(&snapshot).unwrap();
+    assert!(cached.len() > 96);
+    drop(worker);
+
+    command
+        .arg("--sdk")
+        .arg(&sdk)
+        .env("TARO_HOME", root.join("invalid"));
+    let mut worker = Session::spawn(&mut command, read_worker);
+    send_worker(&mut worker.input, reset(1));
+    assert_definition(worker.next(), json!({"Int": "I32"}));
+    assert_eq!(
+        fs::metadata(&snapshot).unwrap().modified().unwrap(),
+        cached.modified().unwrap()
+    );
+
+    fs::write(&selected, "public func sdkSelected() -> bool { true }\n").unwrap();
+    send_worker(&mut worker.input, reset(2));
+    assert_definition(worker.next(), json!("Bool"));
+    assert_ne!(
+        fs::metadata(&snapshot).unwrap().modified().unwrap(),
+        cached.modified().unwrap()
+    );
+    assert_eq!(fs::read_dir(cache).unwrap().count(), 2);
 }
 
 #[test]

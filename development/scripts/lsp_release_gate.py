@@ -228,8 +228,9 @@ def run(args):
     original = main.read_text()
     uri = main.as_uri()
     analysis_modes = {}
+    installation = ["--bundle", args.bundle.resolve()] if args.bundle else ["--sdk", args.sdk.resolve()]
     with subprocess.Popen(
-        [args.bin.resolve(), "--bundle", args.bundle.resolve()],
+        [args.bin.resolve(), *installation],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -325,7 +326,8 @@ def run(args):
                 "system": platform.platform(),
                 "machine": platform.machine(),
                 "workspace": str(workspace),
-                "bundle_identity": (args.bundle / "bundle.toml").read_text(),
+                "sdk": str(args.sdk.resolve()) if args.sdk else None,
+                "bundle_identity": (args.bundle / "bundle.toml").read_text() if args.bundle else None,
                 "source_sha256": hashlib.sha256(original.encode()).hexdigest(),
                 "cold_diagnostics_ms": cold,
                 "warm_reopen_diagnostics_ms": reopen,
@@ -382,7 +384,9 @@ def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bin", type=Path, required=True)
-    parser.add_argument("--bundle", type=Path, required=True)
+    installation = parser.add_mutually_exclusive_group(required=True)
+    installation.add_argument("--sdk", type=Path)
+    installation.add_argument("--bundle", type=Path)
     parser.add_argument("--iris", type=Path, default=Path("showcase/adex_iris"))
     parser.add_argument("--edits", type=int, default=32)
     parser.add_argument("--recoveries", type=int, default=0)

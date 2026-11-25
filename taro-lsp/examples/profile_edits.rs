@@ -5,6 +5,9 @@
 mod bundle;
 #[path = "../src/project.rs"]
 mod project;
+#[allow(dead_code)]
+#[path = "../src/sdk.rs"]
+mod sdk;
 #[path = "../src/standard_library.rs"]
 mod standard_library;
 
@@ -29,7 +32,7 @@ use compiler::{
 };
 use project::Project;
 use serde_json::json;
-use standard_library::{Prepared, StdCache};
+use standard_library::{Installation, Prepared, StdCache};
 
 fn with_compiler<R>(
     root: &Path,
@@ -127,7 +130,7 @@ fn series(root: &Path, target: &TargetFacts, unrelated: usize) -> io::Result<ser
     }))
 }
 
-fn iris(root: &Path, bundle: &Bundle) -> io::Result<serde_json::Value> {
+fn iris(root: &Path, installation: &Installation) -> io::Result<serde_json::Value> {
     let path = root.join("src/main.tr");
     let source = fs::read_to_string(&path)?;
     let line = source
@@ -140,11 +143,14 @@ fn iris(root: &Path, bundle: &Bundle) -> io::Result<serde_json::Value> {
         [(path.clone(), overlay(source))],
     )?);
     let project = Project::read(root, &*sources, true)?;
-    let target = bundle.target(project.prefs.target.as_deref())?;
+    let target = installation.target(project.prefs.target.as_deref())?;
     let mut cache = StdCache::default();
-    let prepared = cache.prepare(bundle, &target, project.prefs.std_digest.as_deref(), || {
-        false
-    })?;
+    let prepared = cache.prepare(
+        installation,
+        &target,
+        project.prefs.std_digest.as_deref(),
+        || false,
+    )?;
     let mut hydrate_ms = Vec::new();
     let mut analysis_ms = Vec::new();
     let mut semantic_ms = Vec::new();
@@ -211,7 +217,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let facts: TargetFacts = toml::from_str(&fs::read_to_string(target)?)?;
     let scratch = Path::new(&scratch).canonicalize()?;
     let iris_root = Path::new(&iris_root).canonicalize()?;
-    let bundle = Bundle::load(Path::new(&bundle_root))?;
+    let bundle = Installation::Portable(Bundle::load(Path::new(&bundle_root))?);
     let generated = [10, 100, 1_000]
         .into_iter()
         .map(|size| series(&scratch, &facts, size))
