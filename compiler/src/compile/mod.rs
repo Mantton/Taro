@@ -25,6 +25,7 @@ pub(crate) mod assets;
 pub mod bench_collector;
 pub mod config;
 pub mod context;
+pub mod declarations;
 pub mod entry;
 pub mod frozen_dependencies;
 pub mod fuzz_collector;

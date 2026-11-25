@@ -1,6 +1,8 @@
 //! Semantic values that can leave the compiler session.
 
-use std::{collections::BTreeSet, path::PathBuf};
+use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
+
+use rustc_hash::FxHashMap;
 
 use crate::{
     diagnostics::{Applicability, Diagnostic, DiagnosticLevel},
@@ -16,7 +18,13 @@ use crate::{
     span::{Position, Span},
 };
 
-use super::{Compiler, context::Gcx};
+use super::{
+    Compiler,
+    context::Gcx,
+    declarations::{
+        self, BodyIdentity, BodyLocalAnchor, BodyRecord, BodyRelativeRange, DeclarationRecord,
+    },
+};
 
 /// A source range in the package revision from which it was captured.
 /// Columns count Unicode scalar values, as they do in the lexer.
@@ -313,6 +321,8 @@ pub struct AnalysisProduct {
     pub revision: u64,
     pub complete: bool,
     pub syntax_uncertainty: SyntaxUncertainty,
+    pub declarations: Vec<DeclarationRecord>,
+    pub bodies: Vec<BodyRecord>,
     pub occurrences: Vec<TypedOccurrence>,
     pub missing_members: Vec<MissingMember>,
     pub diagnostics: Vec<AnalysisDiagnostic>,
@@ -362,11 +372,20 @@ pub struct TypedOccurrence {
     pub source: SourceRange,
     pub ty: TypeShape,
     pub declaration: Option<DeclarationKey>,
+    pub anchor: Option<BodyLocalAnchor>,
+    pub local_declaration: Option<LocalDeclaration>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalDeclaration {
+    pub source: SourceRange,
+    pub anchor: BodyLocalAnchor,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnalysisDiagnostic {
     pub source: Option<SourceRange>,
+    pub body_range: Option<BodyRelativeRange>,
     pub level: DiagnosticLevel,
     pub message: String,
     pub code: Option<usize>,
@@ -377,28 +396,34 @@ pub struct AnalysisDiagnostic {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnalysisSuggestion {
     pub source: SourceRange,
+    pub body_range: Option<BodyRelativeRange>,
     pub message: String,
     pub replacement: String,
     pub applicability: Applicability,
 }
 
 impl AnalysisDiagnostic {
-    fn capture(gcx: Gcx<'_>, diagnostic: Diagnostic) -> Self {
+    fn capture(gcx: Gcx<'_>, diagnostic: Diagnostic, bodies: &[BodyRecord]) -> Self {
+        let relative = |range: &SourceRange| bodies.iter().find_map(|body| body.relative(range));
+        let source = diagnostic
+            .span
+            .and_then(|span| SourceRange::capture(gcx, span));
         Self {
-            source: diagnostic
-                .span
-                .and_then(|span| SourceRange::capture(gcx, span)),
+            body_range: source.as_ref().and_then(relative),
+            source,
             level: diagnostic.level,
             message: diagnostic.message,
             code: diagnostic.code,
             notes: diagnostic
                 .children
                 .into_iter()
-                .map(|note| Self::capture(gcx, note))
+                .map(|note| Self::capture(gcx, note, bodies))
                 .collect(),
             suggestion: diagnostic.suggestion.and_then(|suggestion| {
+                let source = SourceRange::capture(gcx, suggestion.span)?;
                 Some(AnalysisSuggestion {
-                    source: SourceRange::capture(gcx, suggestion.span)?,
+                    body_range: relative(&source),
+                    source,
                     message: suggestion.message,
                     replacement: suggestion.replacement,
                     applicability: suggestion.applicability,
@@ -440,28 +465,40 @@ impl Compiler<'_> {
         }
         let mut occurrences = Vec::new();
         let mut missing_members = Vec::new();
+        let mut declarations = Vec::new();
+        let mut bodies = Vec::new();
         if let Ok((package, types)) = &result {
+            let map = declarations::collect(gcx, package);
             hir::walk_package(
                 &mut OccurrenceCollector {
                     gcx,
                     types,
                     occurrences: &mut occurrences,
                     missing_members: &mut missing_members,
+                    declarations: &map,
+                    bodies: &mut bodies,
+                    current_body: None,
+                    locals: FxHashMap::default(),
                 },
                 package,
             );
+            declarations.extend(map.into_values());
         }
+        let complete = result.is_ok() && !diagnostics.has_error();
+        let diagnostics = diagnostics
+            .take_recorded_diagnostics()
+            .into_iter()
+            .map(|diagnostic| AnalysisDiagnostic::capture(gcx, diagnostic, &bodies))
+            .collect();
         AnalysisProduct {
             revision,
-            complete: result.is_ok() && !diagnostics.has_error(),
+            complete,
             syntax_uncertainty,
+            declarations,
+            bodies,
             occurrences,
             missing_members,
-            diagnostics: diagnostics
-                .take_recorded_diagnostics()
-                .into_iter()
-                .map(|diagnostic| AnalysisDiagnostic::capture(gcx, diagnostic))
-                .collect(),
+            diagnostics,
         }
     }
 }
@@ -471,10 +508,36 @@ struct OccurrenceCollector<'result, 'ctx> {
     types: &'result TypeCheckResults<'ctx>,
     occurrences: &'result mut Vec<TypedOccurrence>,
     missing_members: &'result mut Vec<MissingMember>,
+    declarations: &'result FxHashMap<DefinitionID, DeclarationRecord>,
+    bodies: &'result mut Vec<BodyRecord>,
+    current_body: Option<BodyTraversal>,
+    locals: FxHashMap<hir::NodeID, LocalDeclaration>,
+}
+
+struct BodyTraversal {
+    identity: Arc<BodyIdentity>,
+    next_ordinal: u32,
 }
 
 impl OccurrenceCollector<'_, '_> {
-    fn record(&mut self, id: hir::NodeID, span: Span, definition: Option<DefinitionID>) {
+    fn next_anchor(&mut self) -> Option<BodyLocalAnchor> {
+        let body = self.current_body.as_mut()?;
+        let ordinal = body.next_ordinal;
+        body.next_ordinal = ordinal.checked_add(1).expect("body traversal exhausted");
+        Some(BodyLocalAnchor {
+            body: Arc::clone(&body.identity),
+            ordinal,
+        })
+    }
+
+    fn record(
+        &mut self,
+        id: hir::NodeID,
+        span: Span,
+        definition: Option<DefinitionID>,
+        local_declaration: Option<LocalDeclaration>,
+        anchor: Option<BodyLocalAnchor>,
+    ) {
         if let Some(ty) = self.types.try_node_type(id)
             && let Some(source) = SourceRange::capture(self.gcx, span)
         {
@@ -483,13 +546,69 @@ impl OccurrenceCollector<'_, '_> {
                 ty: TypeShape::capture(self.gcx, ty),
                 declaration: definition
                     .and_then(|definition| DeclarationKey::capture(self.gcx, definition)),
+                anchor,
+                local_declaration,
             });
         }
+    }
+
+    fn record_local(&mut self, id: hir::NodeID, span: Span) {
+        let anchor = self.next_anchor();
+        if let Some(anchor) = &anchor
+            && let Some(source) = SourceRange::capture(self.gcx, span)
+        {
+            self.locals.insert(
+                id,
+                LocalDeclaration {
+                    source,
+                    anchor: anchor.clone(),
+                },
+            );
+        }
+        self.record(id, span, None, None, anchor);
+    }
+
+    fn start_body(&mut self, id: DefinitionID, node: &hir::Function) -> Option<BodyTraversal> {
+        let declaration = self.declarations.get(&id)?;
+        let span = node.block.as_ref()?.span;
+        let source = SourceRange::capture(self.gcx, span)?;
+        let text = self.gcx.dcx().source_text(span)?;
+        let identity = Arc::new(BodyIdentity {
+            owner: declaration.anchor.clone(),
+            content: blake3::hash(text.as_bytes()),
+        });
+        self.bodies.push(BodyRecord {
+            identity: Arc::clone(&identity),
+            declaration: declaration.location.clone(),
+            source,
+        });
+        Some(BodyTraversal {
+            identity,
+            next_ordinal: 0,
+        })
     }
 }
 
 impl HirVisitor for OccurrenceCollector<'_, '_> {
+    fn visit_function(
+        &mut self,
+        id: DefinitionID,
+        node: &hir::Function,
+        context: hir::FunctionContext,
+    ) {
+        let body = self.start_body(id, node);
+        let previous = std::mem::replace(&mut self.current_body, body);
+        hir::walk_function(self, id, node, context);
+        self.current_body = previous;
+    }
+
+    fn visit_function_parameter(&mut self, parameter: &hir::FunctionParameter) {
+        self.record_local(parameter.id, parameter.name.span);
+        hir::walk_function_parameter(self, parameter);
+    }
+
     fn visit_expression(&mut self, expression: &hir::Expression) {
+        let anchor = self.next_anchor();
         if let ExpressionKind::MissingMember { target, insertion } = &expression.kind {
             if let Some(receiver) = self.types.try_node_type(target.id)
                 && !receiver.is_error()
@@ -516,25 +635,32 @@ impl HirVisitor for OccurrenceCollector<'_, '_> {
                 path.segments
                     .last()
                     .map_or(path.span, |segment| segment.identifier.span),
-                path.resolution.definition_id(),
+                Some(&path.resolution),
             ),
             ExpressionKind::Path(hir::ResolvedPath::Relative(_, segment)) => {
-                (segment.identifier.span, segment.resolution.definition_id())
+                (segment.identifier.span, Some(&segment.resolution))
             }
             _ => (expression.span, None),
         };
+        let resolved = self
+            .types
+            .value_resolution(expression.id)
+            .or_else(|| resolved.cloned());
         let definition = self
             .types
             .overload_source(expression.id)
-            .or_else(|| self.types.value_resolution(expression.id)?.definition_id())
-            .or(resolved);
-        self.record(expression.id, span, definition);
+            .or_else(|| resolved.as_ref()?.definition_id());
+        let local = match resolved {
+            Some(hir::Resolution::LocalVariable(binding)) => self.locals.get(&binding).cloned(),
+            _ => None,
+        };
+        self.record(expression.id, span, definition, local, anchor);
         hir::walk_expression(self, expression);
     }
 
     fn visit_pattern(&mut self, pattern: &hir::Pattern) {
         if let hir::PatternKind::Binding { name } = pattern.kind {
-            self.record(pattern.id, name.span, None);
+            self.record_local(pattern.id, name.span);
         }
         hir::walk_pattern(self, pattern);
     }
