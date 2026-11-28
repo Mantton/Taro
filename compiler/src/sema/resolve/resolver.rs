@@ -277,6 +277,13 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Replace a recorded resolution that turned out to be invalid here.
+    pub fn replace_resolution(&mut self, id: NodeID, resolution: Resolution) {
+        self.resolutions
+            .insert(id, ResolutionState::Complete(resolution))
+            .expect("a recorded resolution");
+    }
+
     pub fn get_resolution(&self, id: NodeID) -> Option<ResolutionState> {
         self.resolutions.get(&id).cloned()
     }

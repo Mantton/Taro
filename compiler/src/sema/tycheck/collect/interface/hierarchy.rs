@@ -33,8 +33,27 @@ impl<'ctx> Actor<'ctx> {
     fn run(_: &hir::Package, context: Gcx<'ctx>) -> CompileResult<()> {
         let mut actor = Actor::new(context);
         let interfaces = context.with_session_type_database(|db| db.def_to_iface_def.clone());
-        let superinterfaces = actor.validate(interfaces);
+        let (superinterfaces, cyclic) = actor.validate(interfaces.clone());
         context.with_session_type_database(|db| db.interface_to_supers = superinterfaces);
+        // The cycle is reported. Cut its edges so analysis that continues
+        // past errors can still walk these hierarchies to a fixed point.
+        for id in &cyclic {
+            let Some(&definition) = interfaces.get(id) else {
+                continue;
+            };
+            let acyclic = InterfaceDefinition {
+                id: definition.id,
+                superfaces: definition
+                    .superfaces
+                    .iter()
+                    .filter(|superface| !cyclic.contains(&superface.value.id))
+                    .cloned()
+                    .collect(),
+                assoc_types: definition.assoc_types.clone(),
+            };
+            let acyclic = context.store.arenas.interface_definitions.alloc(acyclic);
+            context.with_session_type_database(|db| db.def_to_iface_def.insert(*id, acyclic));
+        }
         context.dcx().ok()
     }
 }
@@ -43,7 +62,10 @@ impl<'ctx> Actor<'ctx> {
     fn validate(
         &mut self,
         interfaces: FxHashMap<DefinitionID, &'ctx InterfaceDefinition<'_>>,
-    ) -> FxHashMap<DefinitionID, FxHashSet<DefinitionID>> {
+    ) -> (
+        FxHashMap<DefinitionID, FxHashSet<DefinitionID>>,
+        FxHashSet<DefinitionID>,
+    ) {
         // Seed local definitions, then follow parents through their owning package.
         // Imported interfaces are not present in the session's type database.
         for (&id, _) in &interfaces {
@@ -71,9 +93,11 @@ impl<'ctx> Actor<'ctx> {
 
         // Check Circular references
         let sccs = kosaraju_scc(&self.graph);
+        let mut cyclic = FxHashSet::default();
         for comp in sccs {
             if comp.len() > 1 || self.graph.contains_edge(comp[0], comp[0]) {
                 let nodes: Vec<_> = comp.iter().map(|&n| self.graph[n]).collect();
+                cyclic.extend(nodes.iter().copied());
                 let span = self
                     .graph
                     .edge_references()
@@ -125,6 +149,6 @@ impl<'ctx> Actor<'ctx> {
             superinterfaces.insert(start_id, set);
         }
 
-        superinterfaces
+        (superinterfaces, cyclic)
     }
 }

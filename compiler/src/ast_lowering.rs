@@ -66,6 +66,15 @@ impl<'a, 'c> Actor<'a, 'c> {
         index
     }
 
+    /// Nested types whose extension was rejected have no owner; resolution
+    /// reported why and left them unresolved.
+    fn has_nested_type_owner(&self, nested: ast::NodeID) -> bool {
+        let owner = self.resolutions.definition_to_parent[&self.definition_id(nested)];
+        self.resolutions
+            .definition_scope_mapping
+            .contains_key(&owner)
+    }
+
     fn definition_id(&self, id: ast::NodeID) -> hir::DefinitionID {
         *self
             .resolutions
@@ -229,11 +238,17 @@ impl<'a, 'c> Actor<'a, 'c> {
                 let type_only = !node.nested_types.is_empty()
                     && node.declarations.is_empty()
                     && node.generics.type_parameters.is_none();
-                nested.extend(
-                    std::mem::take(&mut node.nested_types)
-                        .into_iter()
-                        .flat_map(|d| self.lower_declaration(d)),
-                );
+                let nested_types = std::mem::take(&mut node.nested_types);
+                if nested_types
+                    .first()
+                    .is_some_and(|first| self.has_nested_type_owner(first.id))
+                {
+                    nested.extend(
+                        nested_types
+                            .into_iter()
+                            .flat_map(|d| self.lower_declaration(d)),
+                    );
+                }
                 if type_only {
                     return nested;
                 }

@@ -521,9 +521,14 @@ impl Compiler<'_> {
             (self.analyze(), Vec::new())
         };
         let syntax_uncertainty = SyntaxUncertainty::capture(gcx, &syntax_diagnostics);
+        let mut reported = diagnostics.take_recorded_diagnostics();
+        if let Some(count) = diagnostics.strict_diagnostic_count() {
+            reported.truncate(count);
+        }
         for diagnostic in syntax_diagnostics {
             diagnostics.emit(diagnostic);
         }
+        reported.extend(diagnostics.take_recorded_diagnostics());
         let mut occurrences = Vec::new();
         let mut missing_members = Vec::new();
         let mut declarations = Vec::new();
@@ -546,8 +551,7 @@ impl Compiler<'_> {
             declarations.extend(map.into_values());
         }
         let complete = result.is_ok() && !diagnostics.has_error();
-        let diagnostics = diagnostics
-            .take_recorded_diagnostics()
+        let diagnostics = reported
             .into_iter()
             .map(|diagnostic| AnalysisDiagnostic::capture(gcx, diagnostic, &bodies))
             .collect();

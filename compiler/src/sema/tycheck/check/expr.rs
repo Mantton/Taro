@@ -300,7 +300,13 @@ impl<'ctx> Checker<'ctx> {
                 Ty::error(self.gcx())
             }
             hir::ExpressionKind::Malformed => {
-                unreachable!("ICE: trying to typecheck a malformed expression node")
+                // Lowering reported why. Only a session recovering from
+                // errors checks past it.
+                assert!(
+                    self.gcx().dcx().has_error(),
+                    "ICE: trying to typecheck a malformed expression node"
+                );
+                Ty::error(self.gcx())
             }
         }
     }

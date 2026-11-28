@@ -78,6 +78,12 @@ CARGO_TARGET_DIR="$PWD/target" cargo test --manifest-path taro-lsp/Cargo.toml
 
 The tests cover stdio lifecycle, unsaved inputs in the actual compiler worker, crash and hang recovery, and outdated replies arriving after new edits. The private protocol is versioned with the executable.
 
+The worker keeps checking a package after semantic errors, so hover, definition and completion still work in the parts that check. It publishes the same diagnostics as `taro check`; errors past that point can follow from the first ones. If the recovering check panics, the worker logs the panic and falls back to the strict check. After compiler changes, run the recovering check over every invalid language fixture. The sweep reports any panics, hangs or fixtures that lose all navigation facts:
+
+```sh
+python3 -B development/scripts/lsp_error_recovery_sweep.py --bin target/release/taro-lsp --sdk "$TARO_HOME"
+```
+
 ## Release checks
 
 Run the measurements on an otherwise idle machine with one release build and matching bundle. The stdio trace reports how often the worker checks a selected body or the full package. The worker tries a selected-body check after an edit inside one clean function when text and scalar coordinates outside it are unchanged. Syntax or semantic errors, warnings, header changes and displaced source ranges use the full package checker. The selected-body check still prepares package declarations. The compiler example measures it separately from the closed-body path, which only reads the edited file for functions that meet its narrower rules.

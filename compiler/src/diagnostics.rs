@@ -21,6 +21,11 @@ pub struct DiagCtx {
     cwd: PathBuf,
     sources: Rc<dyn SourceProvider>,
     cancelled: Option<Box<dyn Fn() -> bool>>,
+    /// Keep checking after reported errors; see `with_error_recovery`.
+    recover_errors: bool,
+    /// Recorded diagnostics a strict session would have reported before
+    /// stopping, once a recovering session passes that point.
+    strict_stop: Cell<Option<usize>>,
     inner: RefCell<DiagCtxInner>,
     pub(crate) symbols: Rc<SessionInterner>,
     #[cfg(test)]
@@ -37,6 +42,12 @@ pub fn run_cancellable<T>(analyze: impl FnOnce() -> T) -> Option<T> {
         Err(payload) if payload.is::<AnalysisCancelled>() => None,
         Err(payload) => resume_unwind(payload),
     }
+}
+
+/// Whether an unwind is the cancellation of an analysis session rather than
+/// a compiler failure.
+pub fn is_cancellation(payload: &(dyn std::any::Any + Send)) -> bool {
+    payload.is::<AnalysisCancelled>()
 }
 
 /// Work counters at the pass entry points used by the full-analysis oracle.
@@ -63,6 +74,8 @@ impl DiagCtx {
             cwd,
             sources,
             cancelled: None,
+            recover_errors: false,
+            strict_stop: Cell::new(None),
             inner: RefCell::new(Default::default()),
             symbols: Rc::default(),
             #[cfg(test)]
@@ -78,6 +91,26 @@ impl DiagCtx {
     pub fn with_cancellation(mut self, cancelled: impl Fn() -> bool + 'static) -> Self {
         self.cancelled = Some(Box::new(cancelled));
         self
+    }
+
+    /// Let every phase run even after an earlier one reported an error, as
+    /// an editor needs facts for the parts of a package that still check.
+    /// Errors become `Resolution::Error` and the `<<error>>` type instead of
+    /// stopping the pipeline. Never use it for a build.
+    pub fn with_error_recovery(mut self) -> Self {
+        self.recover_errors = true;
+        self
+    }
+
+    pub fn recovers_errors(&self) -> bool {
+        self.recover_errors
+    }
+
+    /// How many recorded diagnostics a strict session reports. Errors after
+    /// that point may follow from the earlier ones, so editors show the
+    /// command line's diagnostics and use recovery only for navigation.
+    pub fn strict_diagnostic_count(&self) -> Option<usize> {
+        self.strict_stop.get()
     }
 
     pub(crate) fn cancellation_point(&self) {
@@ -134,13 +167,28 @@ impl DiagCtx {
         self.inner.borrow().error_count.get()
     }
 
+    /// The gate between phases: `Err` once an error was reported, unless this
+    /// session recovers from errors.
     pub fn ok(&self) -> Result<(), ReportedError> {
         self.cancellation_point();
         if self.has_error() {
-            return Err(ReportedError);
+            self.stop()
         } else {
             Ok(())
         }
+    }
+
+    /// A phase reported an error that ends a strict session. A recovering
+    /// session notes where it would have stopped and continues.
+    pub fn stop(&self) -> Result<(), ReportedError> {
+        if !self.recover_errors {
+            return Err(ReportedError);
+        }
+        if self.strict_stop.get().is_none() {
+            self.strict_stop
+                .set(Some(self.inner.borrow().recorded.len()));
+        }
+        Ok(())
     }
 
     /// Resolve a syntactically ambiguous branch without publishing its errors.

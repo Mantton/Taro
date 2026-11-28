@@ -3,6 +3,7 @@
 use std::{
     collections::BTreeMap,
     io::{self, BufReader, BufWriter},
+    panic::{self, AssertUnwindSafe},
     path::{Path, PathBuf},
     rc::Rc,
     sync::{
@@ -22,7 +23,7 @@ use compiler::{
         source::{FileContents, FileOverlay, SourceText, WorkspaceSources},
         target_facts::TargetFacts,
     },
-    diagnostics::{DiagCtx, run_cancellable},
+    diagnostics::{DiagCtx, is_cancellation, run_cancellable},
 };
 use crossbeam_channel::bounded;
 
@@ -315,8 +316,7 @@ impl Workspace {
                     });
                 }
             }
-            let (product, fingerprint) = with_compiler
-                .run(|compiler| compiler.analyze_partial_owned_with_fingerprint(revision))?;
+            let (product, fingerprint) = with_compiler.analyze_package(revision)?;
             Ok(CheckedRevision {
                 mode: AnalysisMode::Package,
                 product,
@@ -337,14 +337,44 @@ struct AnalysisSession<'a> {
 }
 
 impl AnalysisSession<'_> {
+    /// Check the whole package, continuing past errors so the parts that do
+    /// check still answer editor queries. A compiler failure in that mode
+    /// falls back to the strict check instead of taking the worker down.
+    fn analyze_package(
+        &self,
+        revision: u64,
+    ) -> io::Result<(AnalysisProduct, Option<blake3::Hash>)> {
+        let full = |recover| {
+            self.session(recover, |compiler| {
+                compiler.analyze_partial_owned_with_fingerprint(revision)
+            })
+        };
+        match panic::catch_unwind(AssertUnwindSafe(|| full(true))) {
+            Ok(result) => result,
+            Err(payload) if is_cancellation(payload.as_ref()) => panic::resume_unwind(payload),
+            Err(_) => full(false),
+        }
+    }
+
     fn run<R>(&self, analyze: impl FnOnce(&mut Compiler<'_>) -> R) -> io::Result<R> {
+        self.session(false, analyze)
+    }
+
+    fn session<R>(
+        &self,
+        recover_errors: bool,
+        analyze: impl FnOnce(&mut Compiler<'_>) -> R,
+    ) -> io::Result<R> {
         let arenas = CompilerArenas::new();
         let cancelled = Arc::clone(&self.cancelled);
         let revision = self.revision;
-        let dcx = Rc::new(
-            DiagCtx::with_sources(self.config.src.clone(), self.sources.clone())
-                .with_cancellation(move || is_cancelled(&cancelled, revision)),
-        );
+        let dcx = DiagCtx::with_sources(self.config.src.clone(), self.sources.clone())
+            .with_cancellation(move || is_cancelled(&cancelled, revision));
+        let dcx = Rc::new(if recover_errors {
+            dcx.with_error_recovery()
+        } else {
+            dcx
+        });
         let store = CompilerStore::new_for_analysis(
             &arenas,
             self.config.src.join("target"),

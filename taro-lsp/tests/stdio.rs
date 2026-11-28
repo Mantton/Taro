@@ -1334,3 +1334,52 @@ fn changes_to_untracked_or_non_taro_documents_do_not_stop_analysis() {
         "{found:?}"
     );
 }
+
+#[test]
+fn navigation_continues_while_another_file_has_errors() {
+    let fixture = Fixture::new();
+    let package = fixture.root.canonicalize().unwrap().join("app");
+    let broken_text = "func broken(_ value: Missing) -> int32 { unknown }\n";
+    let main_text = "func run() -> int32 {\n    total := helper()\n    total\n}\n";
+    write_package(
+        &package,
+        &[
+            ("helpers.tr", "func helper() -> int32 { 4 }\n"),
+            ("broken.tr", broken_text),
+            ("main.tr", main_text),
+        ],
+    );
+    let main = as_uri(&package.join("src/main.tr"));
+    let broken = as_uri(&package.join("src/broken.tr"));
+    let mut server = Session::spawn(&mut fixture.command(), Message::read);
+    server.initialize(&[&package]);
+
+    server.open(broken.as_str(), broken_text);
+    let errors = server.diagnostics(broken.as_str(), |items| !items.is_empty());
+    let messages: Vec<_> = errors
+        .iter()
+        .map(|item| item["message"].as_str().unwrap())
+        .collect();
+    assert!(
+        messages.iter().any(|message| message.contains("Missing")),
+        "{messages:?}"
+    );
+    server.open(main.as_str(), main_text);
+    server.request(
+        2,
+        "textDocument/definition",
+        at(main.as_str(), main_text, "helper"),
+    );
+    assert_eq!(
+        server.response(2)["uri"],
+        as_uri(&package.join("src/helpers.tr")).as_str()
+    );
+    server.request(
+        3,
+        "textDocument/hover",
+        at(main.as_str(), main_text, "total"),
+    );
+    assert_eq!(server.response(3)["contents"]["value"], "int32");
+    server.request(4, "shutdown", Value::Null);
+    assert_eq!(server.response(4), Value::Null);
+}

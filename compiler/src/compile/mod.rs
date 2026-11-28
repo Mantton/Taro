@@ -30,6 +30,8 @@ pub mod config;
 pub mod context;
 pub mod declarations;
 pub mod entry;
+#[cfg(test)]
+mod error_recovery_tests;
 pub mod frozen_dependencies;
 pub mod fuzz_collector;
 pub mod harness;
@@ -390,7 +392,10 @@ impl<'state> Compiler<'state> {
 
         if check_entry && !self.context.config.harness_mode.is_enabled() {
             let phase_started_at = Instant::now();
-            let _ = entry::validate_entry_point(&package, self.context)?;
+            if entry::validate_entry_point(&package, self.context).is_err() {
+                // The error is reported; it says nothing about the checked bodies.
+                self.context.dcx().stop()?;
+            }
             timings.push_elapsed("entry.validate", phase_started_at);
         }
 

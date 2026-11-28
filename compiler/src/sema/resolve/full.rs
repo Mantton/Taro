@@ -744,6 +744,14 @@ impl<'r, 'a> Actor<'r, 'a> {
                     // Ensure nested member chains like `a.b.c` have resolution entries for each
                     // intermediate member node (`a.b`), so lowering can compact fully-resolved paths.
                     ast::walk_expression(self, node);
+                } else {
+                    // Lowering still needs resolutions for the parts, such as
+                    // the type arguments of a rejected owner. Their errors
+                    // repeat the one just reported.
+                    let context = self.resolver.context;
+                    let _ = context
+                        .dcx()
+                        .with_deferred_diagnostics(|| ast::walk_expression(self, node));
                 }
             }
             ast::ExpressionKind::Specialize {
@@ -1594,12 +1602,15 @@ impl<'r, 'a> Actor<'r, 'a> {
             let owner = self
                 .resolver
                 .nested_type_parent(self.resolver.definition_id(first.id));
-            let scope = self.resolver.get_definition_scope(owner);
-            self.with_scope(scope, |this| {
-                for nested in &node.nested_types {
-                    this.visit_declaration(nested);
-                }
-            });
+            // An extension whose owner was rejected has no scope for its
+            // nested types; they are dropped with that diagnostic.
+            if let Some(&scope) = self.resolver.definition_scope_mapping.get(&owner) {
+                self.with_scope(scope, |this| {
+                    for nested in &node.nested_types {
+                        this.visit_declaration(nested);
+                    }
+                });
+            }
         }
         let owner_scope_index = self.scopes.len();
         self.with_scope_source(LexicalScopeSource::Plain, |this| {
@@ -1661,6 +1672,10 @@ impl<'r, 'a> Actor<'r, 'a> {
             }
             PathResult::Failed { error, .. } => {
                 self.resolver.dcx().emit(error.diag(self.resolver.context));
+                // Later phases see the reported failure as an error, as
+                // editor analysis continues past it.
+                self.resolver
+                    .record_resolution(id, ResolutionState::Complete(Resolution::Error));
                 return;
             }
         };
@@ -1669,6 +1684,7 @@ impl<'r, 'a> Actor<'r, 'a> {
 
         if let Some(resolution) = resolution {
             if !source.is_allowed(&resolution) {
+                self.resolver.replace_resolution(id, Resolution::Error);
                 let provided = resolution.description();
                 let symbol = self.resolver.context.symbol_text(path.segments.last().unwrap().identifier.symbol);
                 if matches!(

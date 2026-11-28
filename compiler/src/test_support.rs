@@ -51,6 +51,23 @@ fn test_config(root: &Path) -> Config {
     }
 }
 
+thread_local! {
+    static RECOVER_ERRORS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Run `f` with test compilers that recover from errors, as editor analysis does.
+pub(crate) fn recovering_errors<R>(f: impl FnOnce() -> R) -> R {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            RECOVER_ERRORS.with(|recover| recover.set(false));
+        }
+    }
+    RECOVER_ERRORS.with(|recover| recover.set(true));
+    let _reset = Reset;
+    f()
+}
+
 fn with_context<R>(
     root: &Path,
     config: Config,
@@ -61,6 +78,11 @@ fn with_context<R>(
     let diagnostics = match sources {
         Some(sources) => DiagCtx::with_sources(root.to_path_buf(), sources),
         None => DiagCtx::new(root.to_path_buf()),
+    };
+    let diagnostics = if RECOVER_ERRORS.with(Cell::get) {
+        diagnostics.with_error_recovery()
+    } else {
+        diagnostics
     };
     let dcx = Rc::new(diagnostics);
     dcx.enable_recording();
