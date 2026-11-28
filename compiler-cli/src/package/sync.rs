@@ -6,7 +6,7 @@ use crate::package::{
         DependencyGraph, Manifest, NormalizedManifest, PackageIdentifier, RefSpec, ResolvedPackage,
         ResolvedSource, Selector, SourceSpec, UnresolvedDependency, ValidatedDependencyGraph,
     },
-    utils::{canonicalize_git_url, language_home},
+    utils::{cache_home, canonicalize_git_url},
 };
 use compiler::{
     compile::source::DiskSources,
@@ -443,7 +443,7 @@ impl<'a> Actor<'a> {
         canonical_url: &str,
         required_revision: Option<git2::Oid>,
     ) -> Result<PathBuf, String> {
-        let store_root = language_home()?.join(PACKAGE_STORE);
+        let store_root = cache_home()?.join(PACKAGE_STORE);
         std::fs::create_dir_all(&store_root).map_err(|e| {
             format!(
                 "failed to create package cache root '{}': {}",
@@ -926,24 +926,24 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
-    struct TaroHomeGuard {
+    struct CacheHomeGuard {
         previous: Option<OsString>,
     }
 
-    impl TaroHomeGuard {
+    impl CacheHomeGuard {
         fn set(path: &Path) -> Self {
-            let previous = std::env::var_os("TARO_HOME");
-            unsafe { std::env::set_var("TARO_HOME", path) };
+            let previous = std::env::var_os("TARO_CACHE");
+            unsafe { std::env::set_var("TARO_CACHE", path) };
             Self { previous }
         }
     }
 
-    impl Drop for TaroHomeGuard {
+    impl Drop for CacheHomeGuard {
         fn drop(&mut self) {
             if let Some(previous) = self.previous.take() {
-                unsafe { std::env::set_var("TARO_HOME", previous) };
+                unsafe { std::env::set_var("TARO_CACHE", previous) };
             } else {
-                unsafe { std::env::remove_var("TARO_HOME") };
+                unsafe { std::env::remove_var("TARO_CACHE") };
             }
         }
     }
@@ -1129,7 +1129,7 @@ mod tests {
         });
         lockfile::write(&root.join("package.lock"), &lock).expect("lockfile");
 
-        let _home = TaroHomeGuard::set(&home);
+        let _home = CacheHomeGuard::set(&home);
         let graph = match super::sync_dependencies(
             root,
             SyncOptions {

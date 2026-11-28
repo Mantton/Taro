@@ -67,6 +67,11 @@ hashes, and the requests satisfied by each package.
   `false`, and `no` disable this behavior (case-insensitively). `--update-lock`
   explicitly permits refreshing the lockfile even in CI.
 
+Downloaded repositories and installed package sources live in a per-user
+cache, outside the SDK, so a read-only or system-wide installation works and
+upgrades keep it: `$TARO_CACHE` if set, otherwise `$XDG_CACHE_HOME/taro`, then
+`~/Library/Caches/taro` on macOS or `~/.cache/taro` elsewhere.
+
 Locked Git revisions are reused from the local cache and fetched only when
 missing. Installed dependency contents are verified against their locked hash.
 

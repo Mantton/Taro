@@ -1,7 +1,7 @@
 use crate::package::{
     lockfile::canonical_git_cache_key,
     manifest::{RefSpec, ResolvedPackage, Selector},
-    utils::{canonicalize_git_url, language_home},
+    utils::{cache_home, canonicalize_git_url},
 };
 use compiler::constants::{PACKAGE_STORE, VCS_REMOTE_NAME};
 use ecow::EcoString;
@@ -233,7 +233,7 @@ pub fn install_revision(package: ResolvedPackage, revision: Oid) -> Result<PathB
             ));
         }
     };
-    let source = language_home()?
+    let source = cache_home()?
         .join(PACKAGE_STORE)
         .join(canonical_git_cache_key(&package.package.0, &canonical_url));
 

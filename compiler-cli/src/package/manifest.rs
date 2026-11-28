@@ -2,7 +2,7 @@ pub use compiler::package::manifest::{
     Manifest, NormalizedManifest, PackageIdentifier, RefSpec, SourceSpec, UnresolvedDependency,
 };
 
-use crate::package::utils::{get_package_name, language_home};
+use crate::package::utils::{cache_home, get_package_name};
 use compiler::{compile::config::PackageKind, constants::PACKAGE_SOURCE};
 use ecow::EcoString;
 use petgraph::{graph::NodeIndex, visit::EdgeRef};
@@ -24,7 +24,7 @@ impl ResolvedPackage {
             ResolvedSource::Git { revision, .. } => {
                 let name = self.package.0.clone();
                 let path = format!("{name}-{revision}");
-                Ok(language_home()?.join(PACKAGE_SOURCE).join(&path))
+                Ok(cache_home()?.join(PACKAGE_SOURCE).join(&path))
             }
         }
     }

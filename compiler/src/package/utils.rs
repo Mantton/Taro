@@ -1,4 +1,4 @@
-use crate::constants::LANGUAGE_HOME;
+use crate::constants::{CACHE_HOME, LANGUAGE_HOME};
 use ecow::EcoString;
 use std::path::{Path, PathBuf};
 
@@ -117,7 +117,9 @@ pub fn language_home() -> Result<PathBuf, String> {
         });
     }
 
-    if let Ok(exe_path) = std::env::current_exe()
+    // Resolve symlinks first: an installer may link `taro` from a directory
+    // on PATH into the toolchain's own `bin/`.
+    if let Ok(exe_path) = std::env::current_exe().and_then(|path| path.canonicalize())
         && let Some(path) = infer_language_home_from_executable(&exe_path)
     {
         return path.canonicalize().map_err(|e| {
@@ -135,6 +137,50 @@ pub fn language_home() -> Result<PathBuf, String> {
         "failed to resolve {}.\nSet {} to your taro toolchain root, or install taro under <toolchain>/bin with compiler libraries under <toolchain>/lib/taro.",
         LANGUAGE_HOME, LANGUAGE_HOME
     ))
+}
+
+/// Directory for downloaded package repositories and installed sources.
+///
+/// `TARO_CACHE` overrides it. Otherwise this follows the language server's
+/// cache: `$XDG_CACHE_HOME/taro`, then `~/Library/Caches/taro` on macOS or
+/// `~/.cache/taro` elsewhere.
+pub fn cache_home() -> Result<PathBuf, String> {
+    cache_home_from(
+        std::env::consts::OS,
+        &|name| std::env::var_os(name).filter(|value| !value.is_empty()),
+    )
+}
+
+fn cache_home_from(
+    os: &str,
+    variable: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<PathBuf, String> {
+    if let Some(path) = variable(CACHE_HOME) {
+        let path = PathBuf::from(path);
+        return if path.is_absolute() {
+            Ok(path)
+        } else {
+            Err(format!("{CACHE_HOME}='{}' must be an absolute path", path.display()))
+        };
+    }
+    if let Some(path) = variable("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+    {
+        return Ok(path.join("taro"));
+    }
+    let relative = if os == "macos" {
+        "Library/Caches/taro"
+    } else {
+        ".cache/taro"
+    };
+    variable("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .map(|home| home.join(relative))
+        .ok_or_else(|| {
+            format!("cannot locate a cache directory; set {CACHE_HOME} to an absolute path")
+        })
 }
 
 pub fn get_package_name(input: &str) -> Result<EcoString, String> {
@@ -158,7 +204,51 @@ pub fn get_package_name(input: &str) -> Result<EcoString, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{canonicalize_git_url, infer_language_home_from_executable};
+    use super::{cache_home_from, canonicalize_git_url, infer_language_home_from_executable};
+    use std::{ffi::OsString, path::PathBuf};
+
+    fn variables(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> {
+        let pairs: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect();
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| OsString::from(value))
+        }
+    }
+
+    #[test]
+    fn package_cache_lives_outside_the_toolchain() {
+        let home = [("HOME", "/Users/someone")];
+        assert_eq!(
+            cache_home_from("macos", &variables(&home)),
+            Ok(PathBuf::from("/Users/someone/Library/Caches/taro"))
+        );
+        assert_eq!(
+            cache_home_from("linux", &variables(&home)),
+            Ok(PathBuf::from("/Users/someone/.cache/taro"))
+        );
+        let xdg = [("HOME", "/home/someone"), ("XDG_CACHE_HOME", "/var/cache/someone")];
+        assert_eq!(
+            cache_home_from("linux", &variables(&xdg)),
+            Ok(PathBuf::from("/var/cache/someone/taro"))
+        );
+        let relative_xdg = [("HOME", "/home/someone"), ("XDG_CACHE_HOME", "cache")];
+        assert_eq!(
+            cache_home_from("linux", &variables(&relative_xdg)),
+            Ok(PathBuf::from("/home/someone/.cache/taro"))
+        );
+        let explicit = [("HOME", "/home/someone"), ("TARO_CACHE", "/srv/taro-cache")];
+        assert_eq!(
+            cache_home_from("linux", &variables(&explicit)),
+            Ok(PathBuf::from("/srv/taro-cache"))
+        );
+        assert!(cache_home_from("linux", &variables(&[("TARO_CACHE", "relative")])).is_err());
+        assert!(cache_home_from("linux", &variables(&[])).is_err());
+    }
     use crate::test_support::TempDir;
     use std::fs::create_dir_all;
 
