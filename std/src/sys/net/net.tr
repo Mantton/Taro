@@ -56,15 +56,31 @@ public func domainForAddress(_ address: SocketAddress) -> SocketDomain {
 
 @cfg(family("unix"))
 public func socket(_ domain: SocketDomain, _ type_: SocketType) -> Result[RawSocket, Error] {
-    fd := std::libc::socket(socketDomainValue(domain), socketTypeValue(type_), 0)
+    match openSocketFd(socketDomainValue(domain), socketTypeValue(type_)) {
+        case .ok(fd) => return .ok(RawSocket { fd })
+        case .err(err) => return .err(err)
+    }
+}
+
+/// A socket that closes on exec. Linux creates it that way atomically.
+@cfg(os("linux"))
+func openSocketFd(_ domain: int32, _ type_: int32) -> Result[int32, Error] {
+    fd := std::libc::socket(domain, type_ | std::libc::SOCK_CLOEXEC, 0)
     if fd < 0 {
         return .err(std::sys::io::unix::lastError().withOperation("create socket"))
     }
+    return .ok(fd)
+}
 
-    socket := RawSocket { fd }
-    cloexecRes := setCloseOnExecFd(fd)
-    match cloexecRes {
-        case .ok(_) => return .ok(socket)
+/// macOS has no SOCK_CLOEXEC, so the flag is set straight after creation.
+@cfg(os("macos"))
+func openSocketFd(_ domain: int32, _ type_: int32) -> Result[int32, Error] {
+    fd := std::libc::socket(domain, type_, 0)
+    if fd < 0 {
+        return .err(std::sys::io::unix::lastError().withOperation("create socket"))
+    }
+    match setCloseOnExecFd(fd) {
+        case .ok(_) => return .ok(fd)
         case .err(err) => {
             var _ = std::libc::close(fd)
             return .err(err)
@@ -129,18 +145,9 @@ public func accept(_ socket: &RawSocket) -> Result[(RawSocket, SocketAddress), E
     var len: std::libc::socklen_t = SOCKET_ADDRESS_STORAGE_LEN as std::libc::socklen_t
     ptr := unsafe { (&storage as *mut [uint8; SOCKET_ADDRESS_STORAGE_LEN]) as *mut uint8 }
     lenPtr := unsafe { (&len as *mut std::libc::socklen_t) }
-    childFd := unsafe { std::libc::accept(socket.fd, ptr, lenPtr) }
-    if childFd < 0 {
-        return .err(std::sys::io::unix::lastError().withOperation("accept"))
-    }
-
-    cloexecRes := setCloseOnExecFd(childFd)
-    match cloexecRes {
-        case .ok(_) => {}
-        case .err(err) => {
-            var _ = std::libc::close(childFd)
-            return .err(err)
-        }
+    childFd := match unsafe { acceptFd(socket.fd, ptr, lenPtr) } {
+        case .ok(fd) => fd
+        case .err(err) => return .err(err)
     }
 
     addressRes := decodeSocketAddress(storage, len)
@@ -153,6 +160,39 @@ public func accept(_ socket: &RawSocket) -> Result[(RawSocket, SocketAddress), E
     }
 
     return .ok((RawSocket { fd: childFd }, address))
+}
+
+/// An accepted connection that closes on exec; atomic on Linux via accept4.
+@cfg(os("linux"))
+unsafe func acceptFd(
+    _ fd: int32,
+    _ addr: *mut uint8,
+    _ len: *mut std::libc::socklen_t,
+) -> Result[int32, Error] {
+    childFd := unsafe { std::libc::accept4(fd, addr, len, std::libc::SOCK_CLOEXEC) }
+    if childFd < 0 {
+        return .err(std::sys::io::unix::lastError().withOperation("accept"))
+    }
+    return .ok(childFd)
+}
+
+@cfg(os("macos"))
+unsafe func acceptFd(
+    _ fd: int32,
+    _ addr: *mut uint8,
+    _ len: *mut std::libc::socklen_t,
+) -> Result[int32, Error] {
+    childFd := unsafe { std::libc::accept(fd, addr, len) }
+    if childFd < 0 {
+        return .err(std::sys::io::unix::lastError().withOperation("accept"))
+    }
+    match setCloseOnExecFd(childFd) {
+        case .ok(_) => return .ok(childFd)
+        case .err(err) => {
+            var _ = std::libc::close(childFd)
+            return .err(err)
+        }
+    }
 }
 
 @cfg(family("windows"))

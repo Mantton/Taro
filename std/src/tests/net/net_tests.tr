@@ -851,3 +851,55 @@ func tcpWriteAllUntilTimesOutOnAStalledPeer() async {
         case .ok(_) => std::testing::fail("the whole write fit in socket buffers")
     }
 }
+
+@cfg(family("unix"))
+func assertClosesOnExec(_ socket: &std::sys::net::RawSocket, _ role: string) {
+    flags := std::libc::fcntl(socket.fd, std::libc::F_GETFD, 0)
+    std::testing::assertTrue(flags >= 0, "socket descriptor should be open")
+    std::testing::assertTrue((flags & std::libc::FD_CLOEXEC) != 0, role)
+}
+
+@cfg(family("unix"))
+@test
+func socketsAndAcceptedConnectionsCloseOnExec() {
+    bindAddress := std::net::SocketAddress::localhost(0_u16)
+    domain := std::sys::net::domainForAddress(bindAddress)
+    listener := match std::sys::net::socket(domain, .stream) {
+        case .ok(value) => value
+        case .err(_) => std::panic::panic("listener socket should succeed")
+    }
+    assertClosesOnExec(&listener, "a new socket should not leak into child processes")
+    match std::sys::net::bind(&listener, bindAddress) {
+        case .ok(_) => {}
+        case .err(_) => std::panic::panic("listener bind should succeed")
+    }
+    match std::sys::net::listen(&listener, 1_i32) {
+        case .ok(_) => {}
+        case .err(_) => std::panic::panic("listen should succeed")
+    }
+    address := match std::sys::net::localAddress(&listener) {
+        case .ok(value) => value
+        case .err(_) => std::panic::panic("listener localAddress should succeed")
+    }
+
+    client := match std::sys::net::socket(domain, .stream) {
+        case .ok(value) => value
+        case .err(_) => std::panic::panic("client socket should succeed")
+    }
+    match std::sys::net::connect(&client, address) {
+        case .ok(_) => {}
+        case .err(_) => std::panic::panic("loopback connect should succeed")
+    }
+    accepted := match std::sys::net::accept(&listener) {
+        case .ok(value) => value.0
+        case .err(_) => std::panic::panic("accept should succeed")
+    }
+    assertClosesOnExec(&accepted, "an accepted connection should not leak into child processes")
+
+    for socket in [accepted, client, listener] {
+        match std::sys::net::close(&socket) {
+            case .ok(_) => {}
+            case .err(_) => std::panic::panic("socket close should succeed")
+        }
+    }
+}

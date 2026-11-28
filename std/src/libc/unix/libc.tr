@@ -142,6 +142,16 @@ extern "C" {
     public unsafe func __errno_location() -> *mut int32
 }
 
+@cfg(os("linux"))
+extern "blocking" {
+    public unsafe func accept4(
+        _ fd: int32,
+        _ addr: *mut uint8,
+        _ len: *mut socklen_t,
+        _ flags: int32,
+    ) -> int32
+}
+
 @cfg(os("macos"))
 extern "C" {
     public unsafe func __error() -> *mut int32
@@ -185,6 +195,8 @@ public const AF_INET6: int32 = 30
 
 public const SOCK_STREAM: int32 = 1
 public const SOCK_DGRAM: int32 = 2
+@cfg(os("linux"))
+public const SOCK_CLOEXEC: int32 = 524288
 
 @cfg(os("linux"))
 public const SOL_SOCKET: int32 = 1
