@@ -125,9 +125,18 @@ def main():
         stage = root / "extract"
         stage.mkdir()
         with tarfile.open(args.archive, "r:gz") as archive:
-            if not all(item.isfile() or item.isdir() for item in archive.getmembers()):
+            members = archive.getmembers()
+            if not all(item.isfile() or item.isdir() for item in members):
                 raise ValueError("SDK archive must contain only regular files and directories")
-            archive.extractall(stage, filter="data")
+            if hasattr(tarfile, "data_filter"):
+                archive.extractall(stage, filter="data")
+            else:
+                # Extraction filters arrived in Python 3.11.4; Debian 12 has 3.11.2.
+                for item in members:
+                    name = Path(item.name)
+                    if name.is_absolute() or ".." in name.parts:
+                        raise ValueError(f"SDK archive entry escapes its directory: {item.name}")
+                archive.extractall(stage)
         (extracted,) = stage.iterdir()
         sdk = root / "Relocated Taro SDK"
         extracted.rename(sdk)
