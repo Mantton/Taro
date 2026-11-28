@@ -36,11 +36,12 @@ Apple's command line tools, or a C compiler (`cc`) on Linux.
 `.github/workflows/sdk.yml` runs on pushes to `main`, on related pull requests,
 and on `v*` tags:
 
-1. **Build** each platform: macOS on a macOS 14 runner, Linux in
+1. **Build** each platform: macOS on a macOS 15 runner, Linux in
    `manylinux_2_28` containers on x86-64 and ARM64 runners. LLVM is cached per
    platform until `build_llvm.py` changes; the first build takes about an hour.
 2. **Test** each archive on clean machines that have only a C compiler:
-   macOS 14 and 15, AlmaLinux 8 (the glibc floor), Ubuntu 22.04 and 24.04,
+   macOS 15 and 26 (GitHub no longer offers macOS 14, so that floor rests
+   on the executables' declared minimum), AlmaLinux 8 (the glibc floor), Ubuntu 22.04 and 24.04,
    Debian 12 and Fedora 42. `smoke_sdk.py` verifies the checksum, unpacks the
    archive to a path with spaces, makes it read-only, and then runs, builds,
    creates a package with `taro new`, runs its tests, checks a diagnostic that

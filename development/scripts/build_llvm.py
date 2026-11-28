@@ -127,12 +127,24 @@ def run(command: list[str], env: dict[str, str] | None = None) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--prefix", type=Path, required=True, help="Installation directory.")
+    parser.add_argument("--prefix", type=Path, help="Installation directory.")
     parser.add_argument("--work-dir", type=Path, help="Download and build directory (default: <prefix>.work).")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 2)
     parser.add_argument("--keep-build", action="store_true", help="Keep the build tree afterwards.")
+    parser.add_argument(
+        "--print-cache-key", action="store_true",
+        help="Print a digest of everything that determines the build, then exit.",
+    )
     args = parser.parse_args()
 
+    if args.print_cache_key:
+        # The prefix path does not affect the installed libraries.
+        portable = configuration(cmake_options(Path("/prefix")))
+        print(hashlib.sha256(json.dumps(portable, sort_keys=True).encode()).hexdigest()[:16])
+        return
+
+    if args.prefix is None:
+        parser.error("--prefix is required")
     prefix = args.prefix.absolute()
     work = (args.work_dir or prefix.with_name(prefix.name + ".work")).absolute()
     options = cmake_options(prefix)

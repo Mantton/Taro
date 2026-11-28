@@ -1,8 +1,8 @@
 # Build the downloadable SDKs, then test each archive on clean machines.
 #
 # Linux SDKs are built in manylinux_2_28 (AlmaLinux 8, glibc 2.28) so they run
-# on any distribution with that glibc or newer. The macOS SDK is built and
-# first tested on macOS 14, its deployment floor. LLVM is built from source by
+# on any distribution with that glibc or newer. The macOS SDK targets macOS 14;
+# GitHub's oldest macOS runner is 15, so the floor is enforced by build_dist.py. LLVM is built from source by
 # build_llvm.py once per platform and cached until that script changes.
 #
 # Pushing a `v*` tag additionally assembles a draft prerelease with every
@@ -48,8 +48,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # GitHub no longer offers macOS 14 runners; the build still targets
+          # macOS 14.0 and build_dist.py verifies the executables' minimum.
           - platform: macos-arm64
-            runner: macos-14
+            runner: macos-15
             container: ""
           - platform: linux-x86_64
             runner: ubuntu-24.04
@@ -77,12 +79,18 @@ jobs:
             | sh -s -- -y --profile minimal --default-toolchain "$RUST_TOOLCHAIN"
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
+      # Keyed on the LLVM version and build options, not the script text, so
+      # editing build_llvm.py does not force an hour-long rebuild.
+      - name: LLVM cache key
+        id: llvm-key
+        run: echo "key=llvm-${{ matrix.platform }}-$(python3 -B development/scripts/build_llvm.py --print-cache-key)" >> "$GITHUB_OUTPUT"
+
       - name: Restore LLVM
         id: llvm
         uses: actions/cache@v4
         with:
           path: target/sdk-llvm/${{ matrix.platform }}
-          key: llvm-${{ matrix.platform }}-${{ hashFiles('development/scripts/build_llvm.py') }}
+          key: ${{ steps.llvm-key.outputs.key }}
 
       - name: Build LLVM
         if: steps.llvm.outputs.cache-hit != 'true'
@@ -118,9 +126,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS: the deployment floor and a current release.
-          - { platform: macos-arm64, runner: macos-14, system: macOS 14, container: "" }
+          # macOS: the oldest and newest releases GitHub provides.
           - { platform: macos-arm64, runner: macos-15, system: macOS 15, container: "" }
+          - { platform: macos-arm64, runner: macos-26, system: macOS 26, container: "" }
           # Linux: the glibc floor and current distributions.
           - { platform: linux-x86_64, runner: ubuntu-24.04, system: AlmaLinux 8, container: "almalinux:8" }
           - { platform: linux-x86_64, runner: ubuntu-24.04, system: Ubuntu 22.04, container: "ubuntu:22.04" }
