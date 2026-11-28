@@ -165,6 +165,14 @@ class BuildDistributionTests(unittest.TestCase):
                 self.build(lambda command, **kwargs: None, sdk=True, llvm_prefix=homebrew)
         self.assertEqual((self.dist / "usable").read_text(), "old toolchain")
 
+    def test_sdk_bundles_its_native_dependencies(self) -> None:
+        local = {"OPENSSL_NO_VENDOR": "1", "LIBGIT2_NO_VENDOR": "1", "PATH": "/bin"}
+        env = build_dist.sdk_build_env(local, Path("/llvm"), Path("/target"))
+        self.assertEqual(env["LIBZ_SYS_STATIC"], "1")
+        self.assertNotIn("OPENSSL_NO_VENDOR", env)
+        self.assertNotIn("LIBGIT2_NO_VENDOR", env)
+        self.assertEqual(env["LLVM_SYS_221_PREFIX"], "/llvm")
+
     def test_macos_floor_matches_the_compiler(self) -> None:
         source = (Path(__file__).resolve().parents[2] / "compiler/src/codegen/target.rs").read_text()
         self.assertIn(

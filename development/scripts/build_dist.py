@@ -125,6 +125,9 @@ def sdk_build_env(
         "LIBSSH2_SYS_USE_PKG_CONFIG",
     ):
         env.pop(variable, None)
+    # zlib is not part of every Linux system; build the bundled copy, whose
+    # license THIRD_PARTY_NOTICES already carries.
+    env["LIBZ_SYS_STATIC"] = "1"
     return env
 
 
