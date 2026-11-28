@@ -263,6 +263,8 @@ pub struct RuntimeManifestArgs {
 
 #[derive(Args, Clone, Debug)]
 pub struct CommonCompileArgs {
+    /// Source file or package directory; defaults to the current directory.
+    #[arg(default_value = ".")]
     pub path: PathBuf,
     #[arg(short = 'o', long = "output")]
     pub output: Option<PathBuf>,
@@ -668,6 +670,30 @@ mod tests {
                 assert!(!test.doc);
             }
             other => panic!("expected test command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compile_commands_default_to_the_current_package() {
+        for command in ["build", "check", "run", "test", "bench"] {
+            let args = Cli::parse_from(["taro", command]);
+            let common = match &args.command {
+                CliCommand::Build(args) => &args.common,
+                CliCommand::Check(args) => &args.common,
+                CliCommand::Run(args) => &args.common,
+                CliCommand::Test(args) => &args.common,
+                CliCommand::Bench(args) => &args.common,
+                other => panic!("unexpected command {other:?}"),
+            };
+            assert_eq!(common.path, std::path::PathBuf::from("."), "{command}");
+        }
+        let args = Cli::parse_from(["taro", "run", "--", "8081"]);
+        match args.command {
+            CliCommand::Run(run) => {
+                assert_eq!(run.common.path, std::path::PathBuf::from("."));
+                assert_eq!(run.program_args, ["8081"]);
+            }
+            other => panic!("expected run command, got {other:?}"),
         }
     }
 

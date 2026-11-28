@@ -13,6 +13,10 @@ taro new github.com/acme/lib --kind library
 taro new github.com/acme/tool --kind both
 ```
 
+`build`, `check`, `run`, `test` and `bench` take a source file or package
+directory and default to the current directory, so `cd app && taro run` runs
+the package.
+
 Package kinds are:
 
 - `executable`: `src/main.tr`
