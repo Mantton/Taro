@@ -145,6 +145,16 @@ single-file artifacts live under the system temporary directory at
 `taro-scripts/<path-hash>/<profile>/`. `--no-incremental` bypasses reuse.
 `.taro_meta` is an internal format and incompatible metadata is rejected.
 
+## Native Targets
+
+Native builds target the machine's architecture and operating system, not the
+particular machine: generated code uses a baseline CPU (`apple-m1` on Apple
+Silicon, `x86-64` on Linux x86-64, generic AArch64 on Linux ARM64), and macOS
+builds target the deployment floor, macOS 14.0 (`arm64-apple-macosx14.0`).
+Executables therefore run on other machines of the same kind, and every Mac
+shares one attached std artifact directory. Metadata records the target CPU
+and features, and artifacts only link with matching ones.
+
 ## Attached Standard Library
 
 The compiler loads target-specific std metadata and native code from:

@@ -42,51 +42,45 @@ fn uses_global_isel(target_machine: &TargetMachine) -> bool {
     unsafe { taro_target_machine_uses_global_isel(target_machine.as_mut_ptr().cast()) }
 }
 
-fn native_target_triple() -> Result<TargetTriple, String> {
+/// Oldest macOS release that native artifacts, including the SDK's attached
+/// std, are built to run on. It is part of the native target triple, so every
+/// Mac sees the same triple and the same std artifact directory regardless of
+/// the macOS release it runs. The SDK builder gives Rust and C objects the same
+/// floor through `MACOSX_DEPLOYMENT_TARGET`.
+pub const MACOS_DEPLOYMENT_TARGET: &str = "14.0";
+
+fn native_target_triple() -> TargetTriple {
     let triple = TargetMachine::get_default_triple();
     #[cfg(target_os = "macos")]
     {
-        // The LLVM backend and Apple Clang can translate Darwin kernel
-        // versions differently. Give both the macOS product version directly.
+        // LLVM's default spells the host Darwin kernel version, and Apple
+        // Clang can map it to a different macOS version. Name the deployment
+        // floor directly so the backend and linker agree on it.
         let host = triple.as_str().to_string_lossy();
         let arch = host.split('-').next().expect("host triple architecture");
-        return Ok(TargetTriple::create(&format!(
-            "{arch}-apple-macosx{}",
-            macos_product_version()?
-        )));
+        return TargetTriple::create(&format!("{arch}-apple-macosx{MACOS_DEPLOYMENT_TARGET}"));
     }
     #[cfg(not(target_os = "macos"))]
-    Ok(triple)
+    triple
 }
 
-#[cfg(target_os = "macos")]
-fn macos_product_version() -> Result<&'static str, String> {
-    use std::{process::Command, sync::OnceLock};
-
-    static VERSION: OnceLock<Result<String, String>> = OnceLock::new();
-    VERSION
-        .get_or_init(|| {
-            let output = Command::new("/usr/bin/sw_vers")
-                .arg("-productVersion")
-                .env("SYSTEM_VERSION_COMPAT", "0")
-                .output()
-                .map_err(|error| format!("failed to run sw_vers: {error}"))?;
-            if !output.status.success() {
-                return Err(format!("sw_vers exited with {}", output.status));
-            }
-            let version = String::from_utf8_lossy(&output.stdout);
-            let version = version.trim();
-            if version.split('.').count() > 3
-                || !version.split('.').all(|part| {
-                    !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
-                })
-            {
-                return Err(format!("invalid macOS product version '{version}'"));
-            }
-            Ok(version.to_owned())
-        })
-        .as_deref()
-        .map_err(Clone::clone)
+/// The CPU every machine of the target's architecture provides.
+///
+/// Native builds do not tune for the build machine: executables and the SDK's
+/// attached std must run on other machines of the same kind, and compiled
+/// metadata records the CPU so artifacts only link with matching ones.
+pub fn baseline_cpu(triple: &str) -> &'static str {
+    let target = crate::cfg::TargetInfo::from_triple(triple);
+    let macos = target.matches_os("macos");
+    if target.matches_arch("aarch64") {
+        if macos { "apple-m1" } else { "generic" }
+    } else if target.matches_arch("x86_64") {
+        // Every Intel Mac that runs the deployment floor, and Rosetta 2,
+        // supports x86-64-v2. Linux keeps the original x86-64 baseline.
+        if macos { "x86-64-v2" } else { "x86-64" }
+    } else {
+        "generic"
+    }
 }
 
 /// Wrapper around LLVM target information for layout computation.
@@ -123,10 +117,7 @@ impl TargetLayout {
 
         let triple = match target_override {
             Some(t) => TargetTriple::create(t),
-            None => native_target_triple().map_err(|error| {
-                dcx.emit_error(format!("failed to determine native target: {error}"), None);
-                crate::error::ReportedError
-            })?,
+            None => native_target_triple(),
         };
 
         let target = Target::from_triple(&triple).map_err(|e| {
@@ -137,17 +128,8 @@ impl TargetLayout {
             crate::error::ReportedError
         })?;
 
-        // Use generic CPU and features for cross-compilation
-        let (cpu, features) = if target_override.is_some() {
-            ("generic".to_string(), "".to_string())
-        } else {
-            let cpu = TargetMachine::get_host_cpu_name();
-            let features = TargetMachine::get_host_cpu_features();
-            (
-                cpu.to_str().unwrap_or("").to_string(),
-                features.to_str().unwrap_or("").to_string(),
-            )
-        };
+        let cpu = baseline_cpu(&triple.as_str().to_string_lossy()).to_string();
+        let features = String::new();
 
         // Debug builds prioritize compile speed; release builds keep the default LLVM level.
         let optimization = backend_optimization_level(profile, OptimizationMode::Baseline);
@@ -436,13 +418,35 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn native_macos_target_uses_the_product_version() {
+    fn native_macos_target_uses_the_deployment_floor() {
         let dcx = diagnostics();
         let layout = TargetLayout::new(&dcx, None, BuildProfile::Debug)
             .unwrap_or_else(|_| panic!("native macOS target layout should initialize"));
-        let expected = format!("-apple-macosx{}", super::macos_product_version().unwrap());
+        let expected = format!("-apple-macosx{}", super::MACOS_DEPLOYMENT_TARGET);
         assert!(layout.triple_string().ends_with(&expected));
         assert_eq!(layout.requested_triple(), None);
+    }
+
+    #[test]
+    fn native_target_does_not_tune_for_the_build_machine() {
+        let dcx = diagnostics();
+        let layout = TargetLayout::new(&dcx, None, BuildProfile::Release)
+            .unwrap_or_else(|_| panic!("host target layout should initialize"));
+        assert_eq!(layout.cpu(), super::baseline_cpu(&layout.triple_string()));
+        assert_eq!(layout.features(), "");
+    }
+
+    #[test]
+    fn baseline_cpus_cover_supported_targets() {
+        for (triple, cpu) in [
+            ("arm64-apple-macosx14.0", "apple-m1"),
+            ("aarch64-apple-darwin", "apple-m1"),
+            ("x86_64-apple-darwin", "x86-64-v2"),
+            ("x86_64-unknown-linux-gnu", "x86-64"),
+            ("aarch64-unknown-linux-gnu", "generic"),
+        ] {
+            assert_eq!(super::baseline_cpu(triple), cpu, "{triple}");
+        }
     }
 
     #[test]
