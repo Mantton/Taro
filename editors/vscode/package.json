@@ -45,7 +45,7 @@
                     "type": "string",
                     "default": "",
                     "scope": "machine-overridable",
-                    "description": "Explicit portable LSP bundle directory. Use with the SDK path unset."
+                    "description": "Explicit portable LSP bundle directory. Takes precedence over taro.sdk.path."
                 }
             }
         },
