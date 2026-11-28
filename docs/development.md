@@ -30,39 +30,12 @@ and attached standard-library artifacts are assembled before an existing
 distribution is replaced. A build or bootstrap failure preserves the last
 usable `dist/`; symlink destinations are rejected.
 
-### Stage a macOS SDK
+### Build a Release SDK
 
-Use the release SDK build to test a relocatable install on a native macOS
-host. The attached std artifacts use the build Mac's CPU and macOS product
-version, so use this SDK on that Mac. The builder vendors Git and
-OpenSSL in the CLI, includes the LSP, and copies std sources before building
-the attached artifacts. Both Cargo workspaces use their committed lockfiles.
-The loader audit rejects shared libraries outside the macOS system paths.
-
-For an LLVM build that links zstd, supply a static archive for the host
-architecture. The path below is an example for an Apple Silicon Homebrew
-build machine.
-
-```sh
-python3 -B development/scripts/build_dist.py --macos-sdk \
-  --static-zstd /opt/homebrew/opt/zstd/lib/libzstd.a \
-  --dist-dir "$PWD/target/taro-0.1.0-macos-arm64"
-COPYFILE_DISABLE=1 tar -czf target/taro-0.1.0-macos-arm64.tar.gz \
-  -C target taro-0.1.0-macos-arm64
-python3 -B development/scripts/smoke_macos_sdk.py target/taro-0.1.0-macos-arm64.tar.gz
-```
-
-The smoke test extracts the archive to a new path, checks native linking with
-only system tools on `PATH`, and checks for deployment-version mismatches.
-It also verifies std source excerpts in compiler diagnostics and editor
-navigation into and within std.
-Pass `--developer-dir /Library/Developer/CommandLineTools` to test Command Line
-Tools on a host that also has Xcode installed.
-
-Keep the SDK directory together and add its `bin/` to your shell's `PATH`.
-Run `taro --version`, then `taro run hello.tr` from the directory containing
-your program. The Mac needs Apple Command Line Tools or Xcode for native
-linking. The installed SDK provides its runtime and std from the same root.
+`dist/` links the LLVM you develop with and is meant for this machine. The
+downloadable SDKs for macOS and Linux are built by `build_dist.py --sdk`
+against a portable LLVM; see [Releasing](releasing.md) for building and
+testing one locally.
 
 ## Run the Local Compiler
 

@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
-"""Exercise an extracted macOS SDK using the system linker and its own std."""
+"""Exercise an extracted macOS or Linux SDK the way a new user would.
+
+The archive is unpacked to a fresh path containing spaces and made read-only,
+like a system-wide install. Only system tools are on PATH: Apple's developer
+tools on macOS, the distribution's C compiler (`cc`) on Linux.
+"""
 
 import argparse
+import os
+import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -10,8 +18,10 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 import disk_guard
-from build_dist import verify_macos_linkage
+from build_dist import verify_linux_linkage, verify_macos_linkage, verify_sdk_binary
 from lsp_release_gate import Client, initialize, wait_for_diagnostics
+
+REPOSITORY = Path(__file__).resolve().parents[2]
 
 
 def request(client, method, params):
@@ -74,6 +84,24 @@ def verify_editor(sdk, app, source, env):
                 server.kill()
 
 
+def verify_program(executable):
+    """A program Taro builds links only system libraries, with the host's glibc."""
+    if sys.platform == "darwin":
+        verify_macos_linkage(executable)
+    else:
+        verify_linux_linkage(executable, floors=False)
+
+
+def set_read_only(root, read_only):
+    for directory, _, files in os.walk(root):
+        for path in [directory, *(os.path.join(directory, name) for name in files)]:
+            mode = os.lstat(path).st_mode
+            if stat.S_ISLNK(mode):
+                continue
+            writable = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+            os.chmod(path, mode & ~writable if read_only else mode | stat.S_IWUSR)
+
+
 def run_native(taro, *arguments, cwd, env):
     result = subprocess.run([taro, *arguments], cwd=cwd, env=env, capture_output=True, text=True)
     if result.returncode:
@@ -90,7 +118,7 @@ def main():
     args = parser.parse_args()
     disk_guard.enforce()
 
-    scratch = Path(__file__).resolve().parents[2] / "target"
+    scratch = REPOSITORY / "target"
     scratch.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="sdk-smoke-", dir=scratch) as temporary:
         root = Path(temporary)
@@ -108,43 +136,76 @@ def main():
         (root / "tmp").mkdir()
         env = {
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "HOME": str(root / "home"),
             "TMPDIR": str(root / "tmp"),
             "TARO_LSP_CACHE_DIR": str(root / "lsp-cache"),
         }
+        (root / "home").mkdir()
         if args.developer_dir:
             env["DEVELOPER_DIR"] = str(args.developer_dir.resolve())
         taro = sdk / "bin/taro"
-        verify_macos_linkage(taro)
-        verify_macos_linkage(sdk / "bin/taro-lsp")
         for binary in (taro, sdk / "bin/taro-lsp"):
+            verify_sdk_binary(binary)
             subprocess.run([binary, "--version"], cwd=app, env=env, check=True)
-        hello = root / "hello.tr"
-        hello.write_text('func main() { print("Hello from the relocated SDK") }\n')
-        output = run_native(taro, "run", hello, cwd=app, env=env)
-        if output.strip() != "Hello from the relocated SDK":
-            raise RuntimeError(f"unexpected output: {output}")
-        executable = root / "hello"
-        run_native(taro, "build", hello, "-o", executable, cwd=app, env=env)
-        verify_macos_linkage(executable)
+        for name in ("LICENSE-MIT", "LICENSE-APACHE", "THIRD_PARTY_NOTICES"):
+            if not (sdk / name).is_file():
+                raise RuntimeError(f"SDK is missing {name}")
+        set_read_only(sdk, True)
+        try:
+            check_sdk(sdk, taro, root, app, env)
+        finally:
+            set_read_only(sdk, False)
+        print(f"{sys.platform} SDK relocation, read-only install, native linking, packages, "
+              "tests, std diagnostics and navigation checks passed")
 
-        fixture = scratch.parent / "language_tests/source_files/invalid/conversion_bridge_overlap.tr"
-        rejected = subprocess.run([taro, "check", fixture], cwd=app, env=env,
-                                  capture_output=True, text=True)
-        std_source = sdk / "std/src/convert/convert.tr"
-        if (rejected.returncode != 1 or f" -> {std_source}:" not in rejected.stderr
-                or "conform[Source, Target: From[Source]]" not in rejected.stderr):
-            raise RuntimeError(f"expected a source excerpt from relocated std: {rejected.stderr}")
 
-        source = app / "src/main.tr"
-        source.write_text('func main() { _ = std::fs::readToString("") }\n')
-        verify_editor(sdk, app, source, env)
+def check_sdk(sdk, taro, root, app, env):
+    hello = root / "hello.tr"
+    hello.write_text('func main() { print("Hello from the relocated SDK") }\n')
+    output = run_native(taro, "run", hello, cwd=app, env=env)
+    if output.strip() != "Hello from the relocated SDK":
+        raise RuntimeError(f"unexpected output: {output}")
+    executable = root / "hello"
+    run_native(taro, "build", hello, "-o", executable, cwd=app, env=env)
+    verify_program(executable)
+    if subprocess.run([executable], capture_output=True, text=True).stdout.strip() != (
+        "Hello from the relocated SDK"
+    ):
+        raise RuntimeError("built executable printed unexpected output")
 
-        (sdk / "lib/taro/runtime/libtaro_runtime.a").unlink()
-        missing = subprocess.run([taro, "run", hello], cwd=app, env=env,
-                                 capture_output=True, text=True)
-        if missing.returncode == 0 or "runtime archive missing from the Taro SDK" not in missing.stderr:
-            raise RuntimeError(f"expected SDK runtime diagnostic: {missing.stderr}")
-        print("macOS SDK relocation, native linking, std diagnostics and navigation checks passed")
+    # A package from `taro new`, with a test, as the getting-started guide does.
+    run_native(taro, "new", "github.com/smoke/greeter", cwd=root, env=env)
+    greeter = root / "greeter"
+    (greeter / "src/main.tr").write_text(
+        'func greeting() -> string { "Hello, package" }\n\n'
+        'func main() { print("${greeting()}\\n") }\n\n'
+        '@test\nfunc greetingIsStable() { assertEqual(greeting(), "Hello, package", "greeting") }\n'
+    )
+    if run_native(taro, "run", cwd=greeter, env=env).strip() != "Hello, package":
+        raise RuntimeError("package run printed unexpected output")
+    tested = run_native(taro, "test", cwd=greeter, env=env)
+    if "greetingIsStable" not in tested:
+        raise RuntimeError(f"package test output does not name its test:\n{tested}")
+
+    fixture = REPOSITORY / "language_tests/source_files/invalid/conversion_bridge_overlap.tr"
+    rejected = subprocess.run([taro, "check", fixture], cwd=app, env=env,
+                              capture_output=True, text=True)
+    std_source = sdk / "std/src/convert/convert.tr"
+    if (rejected.returncode != 1 or f" -> {std_source}:" not in rejected.stderr
+            or "conform[Source, Target: From[Source]]" not in rejected.stderr):
+        raise RuntimeError(f"expected a source excerpt from relocated std: {rejected.stderr}")
+
+    source = app / "src/main.tr"
+    source.write_text('func main() { _ = std::fs::readToString("") }\n')
+    verify_editor(sdk, app, source, env)
+
+    runtime = sdk / "lib/taro/runtime/libtaro_runtime.a"
+    os.chmod(runtime.parent, 0o755)
+    runtime.unlink()
+    missing = subprocess.run([taro, "run", hello], cwd=app, env=env,
+                             capture_output=True, text=True)
+    if missing.returncode == 0 or "runtime archive missing from the Taro SDK" not in missing.stderr:
+        raise RuntimeError(f"expected SDK runtime diagnostic: {missing.stderr}")
 
 
 if __name__ == "__main__":

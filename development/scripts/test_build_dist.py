@@ -29,10 +29,10 @@ class BuildDistributionTests(unittest.TestCase):
         self.dist.mkdir()
         (self.dist / "usable").write_text("old toolchain", encoding="utf-8")
 
-    def build(self, command_runner, dist=None, *, macos_sdk=False, static_zstd=None) -> None:
+    def build(self, command_runner, dist=None, *, sdk=False, llvm_prefix=None) -> None:
         args = argparse.Namespace(
             profile="release", dist_dir=dist or self.dist, std_path=self.std,
-            target=None, macos_sdk=macos_sdk, static_zstd=static_zstd,
+            target=None, sdk=sdk, llvm_prefix=llvm_prefix,
         )
         with (
             patch.object(build_dist, "__file__", str(self.repo / "development/scripts/build_dist.py")),
@@ -106,16 +106,21 @@ class BuildDistributionTests(unittest.TestCase):
         (self.std / "package.lock").write_text("version = 1\n")
         (self.std / "target").mkdir()
         (self.std / "target/cache").write_text("local cache")
-        (self.repo / "target/release/taro-lsp").write_bytes(b"language server")
-        zstd = self.root / "libzstd.a"
-        zstd.write_bytes(b"compression archive")
+        sdk_target = self.repo / "target/sdk/release"
+        sdk_target.mkdir(parents=True)
+        (sdk_target / "taro-bin").write_bytes(b"sdk compiler")
+        (sdk_target / "libtaro_runtime.a").write_bytes(b"sdk runtime")
+        (sdk_target / "taro-lsp").write_bytes(b"language server")
+        for name in ("LICENSE-MIT", "LICENSE-APACHE"):
+            (self.repo / name).write_text(name)
+        llvm = self.portable_llvm()
         commands = []
 
         def inspect(command, **kwargs):
             commands.append(command)
-            if "release-sdk" in command:
-                search = Path(command[-1].removeprefix("native="))
-                self.assertEqual(list(search.iterdir()), [search / "libzstd.a"])
+            if command[0] == "cargo":
+                self.assertEqual(kwargs["env"]["LLVM_SYS_221_PREFIX"], str(llvm))
+                self.assertEqual(kwargs["env"]["CARGO_TARGET_DIR"], str(self.repo / "target/sdk"))
             if "check" in command:
                 staged = Path(kwargs["env"]["TARO_HOME"])
                 self.assertEqual(command[command.index("--std-path") + 1], str(staged / "std"))
@@ -125,15 +130,81 @@ class BuildDistributionTests(unittest.TestCase):
         with (
             patch.object(build_dist.sys, "platform", "darwin"),
             patch.object(build_dist, "apple_build_env", return_value=None),
-            patch.object(build_dist, "verify_macos_linkage") as audit,
+            patch.object(build_dist, "verify_sdk_binary") as audit,
+            patch.object(build_dist, "host_rust_target", return_value="aarch64-apple-darwin"),
+            patch.object(build_dist.third_party_notices, "render", return_value="notices") as notices,
         ):
-            self.build(inspect, macos_sdk=True, static_zstd=zstd)
+            self.build(inspect, sdk=True, llvm_prefix=llvm)
         self.assertEqual([call.args[0].name for call in audit.call_args_list], ["taro", "taro-lsp"])
+        self.assertEqual(notices.call_args.args[2], llvm / "LICENSE.TXT")
+        self.assertEqual((self.dist / "THIRD_PARTY_NOTICES").read_text(), "notices")
+        self.assertEqual((self.dist / "LICENSE-MIT").read_text(), "LICENSE-MIT")
+        self.assertEqual((self.dist / "bin/taro").read_bytes(), b"sdk compiler")
         self.assertIn("--locked", next(command for command in commands if "taro-lsp" in command))
         (self.std / "src/example.tr").unlink()
         self.assertTrue((self.dist / "std/src/example.tr").is_file())
         self.assertTrue((self.dist / "std/package.lock").is_file())
         self.assertEqual((self.dist / "bin/taro-lsp").read_bytes(), b"language server")
+
+    def portable_llvm(self) -> Path:
+        llvm = self.root / "llvm"
+        (llvm / "bin").mkdir(parents=True)
+        (llvm / "bin/llvm-config").write_text("")
+        (llvm / "taro-llvm.json").write_text("{}")
+        (llvm / "LICENSE.TXT").write_text("LLVM license")
+        return llvm
+
+    def test_sdk_requires_a_portable_llvm(self) -> None:
+        with patch.object(build_dist.sys, "platform", "linux"):
+            with self.assertRaisesRegex(ValueError, "--llvm-prefix"):
+                self.build(lambda command, **kwargs: None, sdk=True)
+            homebrew = self.root / "homebrew-llvm"
+            (homebrew / "bin").mkdir(parents=True)
+            (homebrew / "bin/llvm-config").write_text("")
+            with self.assertRaisesRegex(ValueError, "not an LLVM installation from build_llvm.py"):
+                self.build(lambda command, **kwargs: None, sdk=True, llvm_prefix=homebrew)
+        self.assertEqual((self.dist / "usable").read_text(), "old toolchain")
+
+    def test_macos_floor_matches_the_compiler(self) -> None:
+        source = (Path(__file__).resolve().parents[2] / "compiler/src/codegen/target.rs").read_text()
+        self.assertIn(
+            f'pub const MACOS_DEPLOYMENT_TARGET: &str = "{build_dist.MACOS_DEPLOYMENT_TARGET}";', source
+        )
+        import build_llvm
+        self.assertEqual(build_llvm.MACOS_DEPLOYMENT_TARGET, build_dist.MACOS_DEPLOYMENT_TARGET)
+
+    def test_macos_floor_audit_rejects_newer_minimum(self) -> None:
+        commands = "Load command 9\n      cmd LC_BUILD_VERSION\n    minos 26.0\n      sdk 27.2\n"
+        with patch.object(build_dist.subprocess, "check_output", return_value=commands):
+            with self.assertRaisesRegex(ValueError, "requires macOS \\['26.0'\\]"):
+                build_dist.verify_macos_floor(Path("taro"))
+        with patch.object(build_dist.subprocess, "check_output", return_value=commands.replace("26.0", "14.0")):
+            build_dist.verify_macos_floor(Path("taro"))
+
+    def linux_audit(self, dynamic: str, versions: str) -> None:
+        outputs = {"--dynamic": dynamic, "--version-info": versions}
+        with patch.object(
+            build_dist.subprocess, "check_output",
+            side_effect=lambda command, **kwargs: outputs[command[1]],
+        ):
+            build_dist.verify_linux_linkage(Path("taro"))
+
+    def test_linux_audit_accepts_core_system_libraries(self) -> None:
+        self.linux_audit(
+            " 0x1 (NEEDED) Shared library: [libc.so.6]\n 0x1 (NEEDED) Shared library: [libstdc++.so.6]\n",
+            "  0x0010:   Name: GLIBC_2.17  Flags: none\n  0x0020:   Name: GLIBC_2.28\n"
+            "  0x0030:   Name: GLIBCXX_3.4.25  Flags: none\n",
+        )
+
+    def test_linux_audit_rejects_non_system_library_and_new_glibc(self) -> None:
+        with self.assertRaisesRegex(ValueError, "non-system library: libzstd.so.1"):
+            self.linux_audit(" 0x1 (NEEDED) Shared library: [libzstd.so.1]\n", "")
+        with self.assertRaisesRegex(ValueError, "unexpected library search path"):
+            self.linux_audit(" 0x1d (RUNPATH) Library runpath: [/opt/llvm/lib]\n", "")
+        with self.assertRaisesRegex(ValueError, "requires GLIBC_2.34"):
+            self.linux_audit("", "  0x0010:   Name: GLIBC_2.34  Flags: none\n")
+        with self.assertRaisesRegex(ValueError, "requires GLIBCXX_3.4.30"):
+            self.linux_audit("", "  0x0010:   Name: GLIBCXX_3.4.30  Flags: none\n")
 
     def test_linkage_audit_rejects_homebrew_library(self) -> None:
         dependencies = "taro:\n\t/opt/homebrew/lib/libssl.4.dylib (compatibility version 4.0)\n"

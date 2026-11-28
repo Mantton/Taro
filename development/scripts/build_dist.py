@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import os
+import re
 import subprocess
 import shutil
 import sys
@@ -8,6 +9,7 @@ import tempfile
 from pathlib import Path
 
 import disk_guard
+import third_party_notices
 
 """
 build_dist.py
@@ -27,7 +29,24 @@ Output Structure:
           <target-triple>/libtaro_runtime.a (Cross-target runtime library)
           <target-triple>/libtaro_runtime.a.manifest.toml
     std/                   (Standard library sources)
+
+With --sdk, the result is a relocatable release SDK for macOS or Linux: it
+also contains taro-lsp, physical std sources, license files and third-party
+notices, and embeds the portable LLVM built by build_llvm.py.
 """
+
+# Must match `MACOS_DEPLOYMENT_TARGET` in compiler/src/codegen/target.rs.
+MACOS_DEPLOYMENT_TARGET = "14.0"
+# Release SDKs are built in a container with this glibc (see
+# .github/workflows/sdk.yml); newer symbol versions would exclude older distros.
+GLIBC_FLOOR = (2, 28)
+# libstdc++ of GCC 8, the system C++ runtime of the oldest supported distros.
+GLIBCXX_FLOOR = (3, 4, 25)
+LINUX_SYSTEM_LIBRARIES = {
+    "libc.so.6", "libm.so.6", "libpthread.so.0", "libdl.so.2", "librt.so.1",
+    "libgcc_s.so.1", "libstdc++.so.6", "ld-linux-x86-64.so.2", "ld-linux-aarch64.so.1",
+}
+LLVM_STAMP = "taro-llvm.json"
 
 
 def parse_args(repo_root: Path) -> argparse.Namespace:
@@ -55,14 +74,14 @@ def parse_args(repo_root: Path) -> argparse.Namespace:
         help="Build runtime and attached std artifacts for this target triple.",
     )
     parser.add_argument(
-        "--macos-sdk",
+        "--sdk",
         action="store_true",
-        help="Build a relocatable native macOS release SDK including taro-lsp.",
+        help="Build a relocatable native macOS or Linux release SDK including taro-lsp.",
     )
     parser.add_argument(
-        "--static-zstd",
+        "--llvm-prefix",
         type=Path,
-        help="Path to libzstd.a when the release LLVM build uses zstd.",
+        help="Portable LLVM installed by build_llvm.py (required with --sdk).",
     )
     return parser.parse_args()
 
@@ -73,35 +92,31 @@ def run_command(command: list[str], cwd: Path | None = None, env: dict[str, str]
 
 
 def apple_build_env(target: str | None) -> dict[str, str] | None:
-    """Give C objects in the runtime archive the deployment target rustc uses.
+    """Build Rust and C objects for the macOS floor that Taro links against.
 
     Without MACOSX_DEPLOYMENT_TARGET, cc-built objects (the unwind probe,
     ring) default to the SDK version, which can be newer than the minimum
     the link step passes, and every link then warns once per object.
     """
-    if os.environ.get("MACOSX_DEPLOYMENT_TARGET"):
-        return None
     if target is None:
         if sys.platform != "darwin":
             return None
     elif "apple-darwin" not in target and "apple-macos" not in target:
         return None
-    command = ["rustc", "--print", "deployment-target"]
-    if target:
-        command.extend(["--target", target])
-    output = subprocess.run(command, check=True, capture_output=True, text=True).stdout
-    key, _, value = output.strip().partition("=")
-    if key != "MACOSX_DEPLOYMENT_TARGET" or not value:
-        raise RuntimeError(f"unexpected `rustc --print deployment-target` output: {output!r}")
-    return {**os.environ, "MACOSX_DEPLOYMENT_TARGET": value}
+    return {**os.environ, "MACOSX_DEPLOYMENT_TARGET": MACOS_DEPLOYMENT_TARGET}
 
 
 def release_flag(profile: str) -> list[str]:
     return ["--release"] if profile == "release" else []
 
 
-def sdk_build_env(build_env: dict[str, str] | None) -> dict[str, str]:
+def sdk_build_env(
+    build_env: dict[str, str] | None, llvm_prefix: Path, cargo_target: Path
+) -> dict[str, str]:
     env = (build_env if build_env is not None else os.environ).copy()
+    env["LLVM_SYS_221_PREFIX"] = str(llvm_prefix)
+    # A different LLVM must not overwrite the development build's artifacts.
+    env["CARGO_TARGET_DIR"] = str(cargo_target)
     for variable in (
         "OPENSSL_NO_VENDOR",
         "AARCH64_APPLE_DARWIN_OPENSSL_NO_VENDOR",
@@ -111,6 +126,55 @@ def sdk_build_env(build_env: dict[str, str] | None) -> dict[str, str]:
     ):
         env.pop(variable, None)
     return env
+
+
+def verify_portable_llvm(prefix: Path) -> None:
+    if not (prefix / LLVM_STAMP).is_file() or not (prefix / "bin" / "llvm-config").is_file():
+        raise ValueError(f"{prefix} is not an LLVM installation from build_llvm.py")
+
+
+def verify_sdk_binary(binary: Path) -> None:
+    if sys.platform == "darwin":
+        verify_macos_linkage(binary)
+        verify_macos_floor(binary)
+    else:
+        verify_linux_linkage(binary)
+
+
+def verify_macos_floor(binary: Path) -> None:
+    """The executable must load on the oldest supported macOS release."""
+    commands = subprocess.check_output(["otool", "-l", str(binary)], text=True).split()
+    versions = [commands[index + 1] for index, word in enumerate(commands[:-1]) if word == "minos"]
+    if versions != [MACOS_DEPLOYMENT_TARGET]:
+        raise ValueError(
+            f"{binary.name} requires macOS {versions or 'unknown'}; expected {MACOS_DEPLOYMENT_TARGET}"
+        )
+
+
+def verify_linux_linkage(binary: Path, floors: bool = True) -> None:
+    """An SDK executable may load only core system libraries of old glibc distros.
+
+    `floors=False` checks only the libraries, for programs built on the host.
+    """
+    dynamic = subprocess.check_output(["readelf", "--dynamic", "--wide", str(binary)], text=True)
+    for line in dynamic.splitlines():
+        if "(RPATH)" in line or "(RUNPATH)" in line:
+            raise ValueError(f"{binary.name} contains an unexpected library search path")
+        if "(NEEDED)" in line:
+            library = line.partition("[")[2].partition("]")[0]
+            if library not in LINUX_SYSTEM_LIBRARIES:
+                raise ValueError(f"{binary.name} depends on a non-system library: {library}")
+    if not floors:
+        return
+    versions = subprocess.check_output(["readelf", "--version-info", "--wide", str(binary)], text=True)
+    for family, floor in (("GLIBC", GLIBC_FLOOR), ("GLIBCXX", GLIBCXX_FLOOR)):
+        for match in re.finditer(rf"Name: {family}_([0-9.]+)", versions):
+            version = tuple(int(part) for part in match.group(1).split("."))
+            if version > floor:
+                raise ValueError(
+                    f"{binary.name} requires {family}_{match.group(1)}; "
+                    f"the SDK floor is {family}_{'.'.join(map(str, floor))}"
+                )
 
 
 def verify_macos_linkage(binary: Path) -> None:
@@ -123,6 +187,11 @@ def verify_macos_linkage(binary: Path) -> None:
     commands = subprocess.check_output(["otool", "-l", str(binary)], text=True)
     if any(line.strip() == "cmd LC_RPATH" for line in commands.splitlines()):
         raise ValueError(f"{binary.name} contains an unexpected library search path")
+
+
+def host_rust_target() -> str:
+    output = subprocess.check_output(["rustc", "-vV"], text=True)
+    return next(line.split(": ", 1)[1] for line in output.splitlines() if line.startswith("host: "))
 
 
 def copy_std_sources(source: Path, destination: Path) -> None:
@@ -173,15 +242,18 @@ def main():
     dist_dir = args.dist_dir.absolute()
     std_src = args.std_path.resolve()
     target = args.target
-    macos_sdk = args.macos_sdk
-    if macos_sdk and (sys.platform != "darwin" or profile != "release" or target):
-        raise ValueError("--macos-sdk requires a native macOS release build")
-    zstd_archive = args.static_zstd
-    if zstd_archive:
-        if not macos_sdk or zstd_archive.name != "libzstd.a" or not zstd_archive.is_file():
-            raise ValueError("--static-zstd requires --macos-sdk and a libzstd.a file")
-        zstd_archive = zstd_archive.resolve()
-    cargo_target = repo_root / os.environ.get("CARGO_TARGET_DIR", "target")
+    sdk = args.sdk
+    if sdk and (sys.platform not in ("darwin", "linux") or profile != "release" or target):
+        raise ValueError("--sdk requires a native macOS or Linux release build")
+    llvm_prefix = args.llvm_prefix
+    if sdk:
+        if llvm_prefix is None:
+            raise ValueError("--sdk requires --llvm-prefix from build_llvm.py")
+        llvm_prefix = llvm_prefix.resolve()
+        verify_portable_llvm(llvm_prefix)
+    elif llvm_prefix is not None:
+        raise ValueError("--llvm-prefix requires --sdk")
+    cargo_target = repo_root / os.environ.get("CARGO_TARGET_DIR", "target/sdk" if sdk else "target")
     validate_dist_dir(repo_root, dist_dir)
     dist_dir = dist_dir.resolve()
 
@@ -209,8 +281,8 @@ def main():
         runtime_command.extend(["--target", target])
     # Both builds share dependencies; one environment avoids rebuilding them.
     build_env = apple_build_env(target)
-    if macos_sdk:
-        build_env = sdk_build_env(build_env)
+    if sdk:
+        build_env = sdk_build_env(build_env, llvm_prefix, cargo_target)
         runtime_command.append("--locked")
     run_command(runtime_command, cwd=repo_root, env=build_env)
 
@@ -221,19 +293,15 @@ def main():
     previous = temporary / "previous"
     try:
         print("\n--- Building Compiler CLI ---")
-        if macos_sdk:
-            command = [
-                "cargo", "rustc", "--release", "--locked", "-p", "taro-bin",
-                "--features", "release-sdk",
-            ]
-            if zstd_archive:
-                # Apple's linker searches each directory for both archive and
-                # dylib. Put just the archive ahead of LLVM's other search paths.
-                static_libs = temporary / "static"
-                static_libs.mkdir()
-                shutil.copy2(zstd_archive, static_libs / "libzstd.a")
-                command.extend(["--", "-L", f"native={static_libs}"])
-            run_command(command, cwd=repo_root, env=build_env)
+        if sdk:
+            run_command(
+                [
+                    "cargo", "build", "--release", "--locked", "-p", "taro-bin",
+                    "--features", "release-sdk",
+                ],
+                cwd=repo_root,
+                env=build_env,
+            )
             print("\n--- Building Language Server ---")
             run_command(
                 [
@@ -241,7 +309,7 @@ def main():
                     "--manifest-path", str(repo_root / "taro-lsp" / "Cargo.toml"),
                 ],
                 cwd=repo_root,
-                env={**build_env, "CARGO_TARGET_DIR": str(cargo_target)},
+                env=build_env,
             )
         else:
             run_command(
@@ -263,11 +331,17 @@ def main():
 
         print(f"Copying {src_bin} -> {dst_bin}")
         shutil.copy2(src_bin, dst_bin)
-        if macos_sdk:
+        if sdk:
             lsp = bin_dir / "taro-lsp"
             shutil.copy2(cargo_target / profile / "taro-lsp", lsp)
-            verify_macos_linkage(dst_bin)
-            verify_macos_linkage(lsp)
+            verify_sdk_binary(dst_bin)
+            verify_sdk_binary(lsp)
+            for license_file in ("LICENSE-MIT", "LICENSE-APACHE"):
+                shutil.copy2(repo_root / license_file, staged_dist / license_file)
+            notices = third_party_notices.render(
+                repo_root, host_rust_target(), llvm_prefix / "LICENSE.TXT"
+            )
+            (staged_dist / "THIRD_PARTY_NOTICES").write_text(notices)
 
         # lib/taro/runtime[/<target-triple>]/libtaro_runtime.a
         lib_dir = staged_dist / "lib" / "taro" / "runtime"
@@ -298,7 +372,7 @@ def main():
         run_command(manifest_command, cwd=repo_root)
 
         std_dst = staged_dist / "std"
-        if macos_sdk:
+        if sdk:
             print(f"Copying {std_src} -> {std_dst}")
             copy_std_sources(std_src, std_dst)
         else:
@@ -319,7 +393,7 @@ def main():
             "check",
             str(bootstrap_src),
             "--std-path",
-            str(std_dst if macos_sdk else std_src),
+            str(std_dst if sdk else std_src),
             "--build-std",
         ]
         if target:
