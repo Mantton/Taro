@@ -11,7 +11,7 @@ use compiler::compile::analysis_products::AnalysisProduct;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 const SCHEMA: u16 = 2;
-const MAX_FRAME: usize = 128 * 1024 * 1024;
+pub const MAX_FRAME: usize = 128 * 1024 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum AnalysisMode {
@@ -102,24 +102,95 @@ pub fn read<T: DeserializeOwned>(input: &mut impl Read) -> io::Result<Option<T>>
 }
 
 pub fn write<T: Serialize>(output: &mut impl Write, data: &T) -> io::Result<()> {
+    let frame = encode(data, MAX_FRAME)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "worker message exceeds frame limit",
+        )
+    })?;
+    write_frame(output, &frame)
+}
+
+/// The encoded frame, or `None` when it would exceed `limit` bytes.
+pub fn encode<T: Serialize>(data: &T, limit: usize) -> io::Result<Option<Vec<u8>>> {
     let frame = serde_json::to_vec(&Frame {
         schema: SCHEMA,
         data,
     })?;
-    if frame.len() > MAX_FRAME {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "worker message exceeds frame limit",
-        ));
-    }
+    Ok((frame.len() <= limit.min(MAX_FRAME)).then_some(frame))
+}
+
+pub fn write_frame(output: &mut impl Write, frame: &[u8]) -> io::Result<()> {
     output.write_all(&(frame.len() as u32).to_be_bytes())?;
-    output.write_all(&frame)?;
+    output.write_all(frame)?;
     output.flush()
+}
+
+/// A reply that fits the frame limit. An analysis too large to send becomes
+/// an error for that revision instead of ending the worker, which would be
+/// restarted into the same failure.
+pub fn reply_frame(reply: &FromWorker, limit: usize) -> io::Result<Vec<u8>> {
+    if let Some(frame) = encode(reply, limit)? {
+        return Ok(frame);
+    }
+    let error = FromWorker::Finished {
+        stamp: reply.stamp(),
+        mode: AnalysisMode::Package,
+        result: Err(format!(
+            "the analysis result exceeds the {} MiB worker message limit",
+            limit / (1024 * 1024)
+        )),
+    };
+    encode(&error, MAX_FRAME)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "error reply exceeds frame limit",
+        )
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{FromWorker, Stamp};
+    use std::sync::Arc;
+
+    use compiler::compile::analysis_products::AnalysisProduct;
+
+    use super::{AnalysisMode, FromWorker, Stamp};
+
+    #[test]
+    fn an_oversized_analysis_becomes_an_error_reply() {
+        let stamp = Stamp {
+            generation: 3,
+            revision: 7,
+        };
+        let product: AnalysisProduct = serde_json::from_value(serde_json::json!({
+            "revision": 7, "complete": true, "syntax_uncertainty": "None",
+            "declarations": [], "bodies": [], "occurrences": [],
+            "missing_members": [], "diagnostics": [],
+        }))
+        .unwrap();
+        let reply = FromWorker::Finished {
+            stamp,
+            mode: AnalysisMode::Body,
+            result: Ok(Arc::new(product)),
+        };
+        let full = super::encode(&reply, usize::MAX).unwrap().unwrap();
+        let frame = super::reply_frame(&reply, full.len() - 1).unwrap();
+        let mut bytes = Vec::new();
+        super::write_frame(&mut bytes, &frame).unwrap();
+        match super::read::<FromWorker>(&mut bytes.as_slice()).unwrap() {
+            Some(FromWorker::Finished {
+                stamp: sent,
+                result: Err(error),
+                ..
+            }) => {
+                assert_eq!(sent, stamp);
+                assert!(error.contains("message limit"), "{error}");
+            }
+            _ => panic!("an error reply for the same revision"),
+        }
+        assert_eq!(super::reply_frame(&reply, full.len()).unwrap(), full);
+    }
 
     #[test]
     fn frames_reject_truncation_size_and_version_mismatch() {

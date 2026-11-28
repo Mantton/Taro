@@ -113,7 +113,10 @@ pub fn run(environment: Environment) -> io::Result<()> {
                 },
             }
         };
-        protocol::write(&mut output, &reply)?;
+        protocol::write_frame(
+            &mut output,
+            &protocol::reply_frame(&reply, protocol::MAX_FRAME)?,
+        )?;
     }
     Ok(())
 }
