@@ -100,7 +100,20 @@ fn build_link_plan(
         ));
     }
 
-    let mut args = vec![OsString::from(format!("--target={target_triple}"))];
+    // A native Linux link uses the system C compiler driver, as Rust and Go
+    // do: `build-essential`-style installs provide `cc`, not `clang`. Only
+    // clang accepts `--target`, and coverage instrumentation needs its
+    // profile runtime, so those links still use clang.
+    let native_linux_cc = target_platform == LinkPlatform::Linux
+        && host_platform == LinkPlatform::Linux
+        && same_arch
+        && linker.is_none()
+        && !coverage;
+
+    let mut args = Vec::new();
+    if !native_linux_cc {
+        args.push(OsString::from(format!("--target={target_triple}")));
+    }
     match target_platform {
         LinkPlatform::Darwin => {
             let sdk = sysroot.or(darwin_sdk).ok_or_else(|| {
@@ -163,6 +176,7 @@ fn build_link_plan(
                 )
             })?
             .to_path_buf(),
+        (None, _) if native_linux_cc => PathBuf::from("cc"),
         (None, _) => PathBuf::from("clang"),
     };
 
@@ -439,6 +453,35 @@ mod tests {
         assert!(!args.contains(&"-lgcc_s".into()));
         assert!(args.contains(&"-ldl".into()));
         assert!(!args.contains(&"-framework".into()));
+    }
+
+    #[test]
+    fn native_linux_plan_uses_the_system_c_compiler() {
+        let link = |coverage| {
+            build_link_plan(
+                "x86_64-unknown-linux-gnu",
+                "x86_64-unknown-linux-gnu",
+                None,
+                None,
+                None,
+                None,
+                &[PathBuf::from("main.o")],
+                &[PathBuf::from("libtaro_runtime.a")],
+                std::path::Path::new("app"),
+                coverage,
+            )
+            .expect("native Linux plan")
+        };
+        let plan = link(false);
+        let native = args(&plan);
+        assert_eq!(plan.program, PathBuf::from("cc"));
+        assert!(!native.iter().any(|arg| arg.starts_with("--target=")));
+        assert!(native.contains(&"-no-pie".into()));
+        assert!(native.contains(&"-lm".into()));
+
+        let coverage = link(true);
+        assert_eq!(coverage.program, PathBuf::from("clang"));
+        assert!(args(&coverage).contains(&"--target=x86_64-unknown-linux-gnu".into()));
     }
 
     #[test]
