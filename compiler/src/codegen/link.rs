@@ -157,7 +157,10 @@ fn build_link_plan(
         // libunwind here interposes its _Unwind_* symbols ahead of libgcc on
         // GNU targets, adding costly memory validation to GC stack walks.
         // Both providers remain supported by the runtime's CFA probe.
-        args.extend(["-lm", "-ldl"].map(OsString::from));
+        // Before glibc 2.34, threads, clocks and pty helpers lived outside
+        // libc; name them as rustc does for GNU static libraries. Newer glibc
+        // keeps empty stubs, so the same link works everywhere.
+        args.extend(["-lpthread", "-lrt", "-lutil", "-lm", "-ldl"].map(OsString::from));
     }
 
     if coverage {
@@ -478,6 +481,11 @@ mod tests {
         assert!(!native.iter().any(|arg| arg.starts_with("--target=")));
         assert!(native.contains(&"-no-pie".into()));
         assert!(native.contains(&"-lm".into()));
+        // glibc 2.28 (the SDK floor) keeps pthreads outside libc.
+        assert!(native.contains(&"-lpthread".into()));
+        let runtime = native.iter().position(|arg| arg == "libtaro_runtime.a").unwrap();
+        let pthread = native.iter().position(|arg| arg == "-lpthread").unwrap();
+        assert!(runtime < pthread, "libraries must follow the archive that needs them");
 
         let coverage = link(true);
         assert_eq!(coverage.program, PathBuf::from("clang"));
