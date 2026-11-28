@@ -68,5 +68,35 @@ fn build_llvm_shim() -> String {
         .define("__STDC_LIMIT_MACROS", None)
         .file("native/llvm_shims.cpp");
     build.compile("taro_llvm_shims");
+    link_ffi_if_llvm_uses_it(&llvm_config);
     llvm_version
+}
+
+/// LLVM's interpreter calls libffi when LLVM was configured with
+/// `LLVM_ENABLE_FFI`, which `llvm-config --system-libs` does not report.
+/// Homebrew's LLVM enables it; the SDK's LLVM does not, and must not link
+/// libffi, whose soname differs between Linux distributions. inkwell's own
+/// unconditional libffi link is disabled (`no-libffi-linking`).
+#[cfg(feature = "llvm")]
+fn link_ffi_if_llvm_uses_it(llvm_config: &Path) {
+    let config = command_output(llvm_config, &["--cmakedir"])
+        .map(|dir| PathBuf::from(dir).join("LLVMConfig.cmake"));
+    let enabled = match config.as_deref().map(std::fs::read_to_string) {
+        Some(Ok(text)) => {
+            println!("cargo:rerun-if-changed={}", config.as_ref().unwrap().display());
+            text.lines().any(|line| {
+                line.trim()
+                    .strip_prefix("set(LLVM_ENABLE_FFI ")
+                    .and_then(|rest| rest.strip_suffix(')'))
+                    .is_some_and(|value| {
+                        matches!(value.to_ascii_uppercase().as_str(), "ON" | "TRUE" | "YES" | "1")
+                    })
+            })
+        }
+        // Without the CMake package, assume FFI as inkwell used to.
+        _ => true,
+    };
+    if enabled {
+        println!("cargo:rustc-link-lib=dylib=ffi");
+    }
 }
