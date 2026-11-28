@@ -65,8 +65,9 @@ jobs:
       - name: Install build tools (Linux)
         if: runner.os == 'Linux'
         run: |
-          # OpenSSL's Configure (built by openssl-src for libgit2) needs IPC::Cmd.
-          dnf install -y --quiet perl-IPC-Cmd
+          # OpenSSL's Configure (built by openssl-src for libgit2) needs Perl
+          # core modules the image's minimal Perl lacks; `perl` has them all.
+          dnf install -y --quiet perl
           /opt/python/cp312-cp312/bin/python -m pip install --quiet cmake ninja
           echo "/opt/python/cp312-cp312/bin" >> "$GITHUB_PATH"
           ln -sf /opt/python/cp312-cp312/bin/python /usr/local/bin/python3
