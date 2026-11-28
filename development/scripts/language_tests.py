@@ -360,9 +360,12 @@ def run_test(
             # Normalize the error output: extract just the error lines
             # (skip compilation progress messages like "Compiling – std")
             error_lines = []
+            # Resolve both sides: the std path may be a symlink, and on macOS
+            # temporary directories live behind the /var -> /private/var link.
             std_path = env.std_path.resolve()
-            if std_path.is_relative_to(PROJECT_ROOT):
-                std_path = std_path.relative_to(PROJECT_ROOT)
+            project_root = PROJECT_ROOT.resolve()
+            if std_path.is_relative_to(project_root):
+                std_path = std_path.relative_to(project_root)
             std_location = f" -> {std_path}/"
             for line in actual_output.split("\n"):
                 stripped = line.strip()
