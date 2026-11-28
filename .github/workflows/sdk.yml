@@ -65,6 +65,8 @@ jobs:
       - name: Install build tools (Linux)
         if: runner.os == 'Linux'
         run: |
+          # OpenSSL's Configure (built by openssl-src for libgit2) needs IPC::Cmd.
+          dnf install -y --quiet perl-IPC-Cmd
           /opt/python/cp312-cp312/bin/python -m pip install --quiet cmake ninja
           echo "/opt/python/cp312-cp312/bin" >> "$GITHUB_PATH"
           ln -sf /opt/python/cp312-cp312/bin/python /usr/local/bin/python3
@@ -87,7 +89,7 @@ jobs:
 
       - name: Restore LLVM
         id: llvm
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: target/sdk-llvm/${{ matrix.platform }}
           key: ${{ steps.llvm-key.outputs.key }}
@@ -98,6 +100,14 @@ jobs:
           jobs=$(python3 -c 'import os; print(os.cpu_count())')
           python3 -B development/scripts/build_llvm.py \
             --prefix "$PWD/target/sdk-llvm/${{ matrix.platform }}" --jobs "$jobs"
+
+      # Saved right away, so a later failing step does not discard the build.
+      - name: Save LLVM
+        if: steps.llvm.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: target/sdk-llvm/${{ matrix.platform }}
+          key: ${{ steps.llvm-key.outputs.key }}
 
       - name: Build SDK
         run: |
