@@ -1,6 +1,6 @@
 # Taro language server
 
-`taro-lsp` builds as a separate Cargo workspace with the compiler's LLVM feature disabled. The server keeps the editor's current buffers and uses one analysis process for each open workspace. The process runs disposable compiler sessions and returns owned results.
+`taro-lsp` builds as a separate Cargo workspace with the compiler's LLVM feature disabled. The server keeps the editor's current buffers and uses one analysis process for each package. A file belongs to the nearest enclosing directory with a `package.toml` (or an editor workspace folder) whose `src/` contains it; any other file is checked as a standalone script. Packages inside a workspace folder stay analyzed while no tab is open; a script, or a package outside every folder, stops with its last tab and clears its diagnostics. The process runs disposable compiler sessions and returns owned results.
 
 ## Install
 
@@ -43,7 +43,7 @@ The pilot reports typed analysis as unavailable when that target or source ident
 
 ## Use in VS Code
 
-The Taro extension launches the installed server for local `.tr` documents. Set `taro.languageServer.path` when `taro-lsp` is outside the editor's executable search path. Set `taro.sdk.path` to choose an SDK explicitly, or `taro.languageServer.bundle` for a portable installation. These settings can be set in user settings or in a trusted workspace. The pilot provides live diagnostics, inferred-type hover, go-to-definition and member completion after a dot.
+The Taro extension launches the installed server for local `.tr` documents. Set `taro.languageServer.path` when `taro-lsp` is outside the editor's executable search path. Set `taro.sdk.path` to choose an SDK explicitly, or `taro.languageServer.bundle` for a portable installation; the bundle wins when both are set. Changing these settings restarts the server. These settings can be set in user settings or in a trusted workspace. The pilot provides live diagnostics, inferred-type hover, go-to-definition and member completion after a dot.
 
 Go to Definition follows the identifier under the cursor in a qualified path. A named namespace or explicit `mod` goes to its declaration. Modules defined only by a directory have no source location. Stored field accesses and explicit struct literal labels go to the selected field declaration, including inherited fields. Struct literal shorthand follows the local binding.
 

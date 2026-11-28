@@ -1,14 +1,17 @@
 //! LSP transport and synchronization of current editor text.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     error::Error,
     fs,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
-use compiler::compile::source::canonical_source_path;
+use compiler::{
+    compile::source::canonical_source_path,
+    constants::{MANIFEST_FILE, SOURCE_DIRECTORY},
+};
 use crossbeam_channel::RecvTimeoutError;
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::{
@@ -84,6 +87,7 @@ pub fn run(launch: Launch, installed_std: Option<PathBuf>) -> Result<()> {
         launch,
         installed_std,
         watching_files: false,
+        folders: BTreeSet::new(),
         workspaces: BTreeMap::new(),
         std_workspace: None,
         waiting: Vec::new(),
@@ -110,6 +114,10 @@ struct Server {
     launch: Launch,
     installed_std: Option<PathBuf>,
     watching_files: bool,
+    /// Editor workspace folders. Packages inside them stay analyzed while no
+    /// tab is open, and a folder is a package even without a manifest.
+    folders: BTreeSet<PathBuf>,
+    /// One analysis per package root, or per file for a standalone script.
     workspaces: BTreeMap<PathBuf, Supervisor>,
     std_workspace: Option<StdWorkspace>,
     waiting: Vec<EditorQuery>,
@@ -159,9 +167,68 @@ impl Server {
         let Some(path) = file_path(uri).filter(|path| !self.is_installed_std(path)) else {
             return;
         };
+        self.folders.insert(path.clone());
+        // Start analysis early when the folder visibly is a package.
+        if path.join(MANIFEST_FILE).is_file() || path.join(SOURCE_DIRECTORY).is_dir() {
+            self.workspaces
+                .entry(path.clone())
+                .or_insert_with(|| Supervisor::new(path, self.launch.clone(), Policy::default()));
+        }
+    }
+
+    fn remove_workspace(&mut self, connection: &Connection, uri: &Uri) -> Result<()> {
+        let Some(folder) = file_path(uri) else {
+            return Ok(());
+        };
+        self.folders.remove(&folder);
+        // A package with open tabs stays until its last tab closes.
+        let idle: Vec<_> = self
+            .workspaces
+            .iter()
+            .filter(|(root, supervisor)| {
+                root.starts_with(&folder) && !self.in_folder(root) && !supervisor.has_documents()
+            })
+            .map(|(root, _)| root.clone())
+            .collect();
+        for root in idle {
+            self.retire(connection, &root)?;
+        }
+        Ok(())
+    }
+
+    /// A manifest marks a package; an editor folder is one even without it.
+    fn is_package_root(&self, directory: &Path) -> bool {
+        self.folders.contains(directory) || directory.join(MANIFEST_FILE).is_file()
+    }
+
+    fn in_folder(&self, path: &Path) -> bool {
+        self.folders.iter().any(|folder| path.starts_with(folder))
+    }
+
+    /// The analysis root for a source file: the nearest package whose `src/`
+    /// holds it, or the file itself when it belongs to no package.
+    fn analysis_root(&self, path: &Path) -> PathBuf {
+        path.ancestors()
+            .skip(1)
+            .find(|directory| self.is_package_root(directory))
+            .filter(|package| path.starts_with(package.join(SOURCE_DIRECTORY)))
+            .map_or_else(|| path.to_path_buf(), Path::to_path_buf)
+    }
+
+    /// Stop analyzing `root` and clear everything it published.
+    fn retire(&mut self, connection: &Connection, root: &Path) -> Result<()> {
+        if let Some(mut supervisor) = self.workspaces.remove(root) {
+            publish(connection, &mut supervisor, BTreeMap::new(), None)?;
+        }
+        Ok(())
+    }
+
+    fn workspace_root(&self, path: &Path) -> Option<PathBuf> {
         self.workspaces
-            .entry(path.clone())
-            .or_insert_with(|| Supervisor::new(path, self.launch.clone(), Policy::default()));
+            .keys()
+            .filter(|root| path.starts_with(root))
+            .max_by_key(|root| root.components().count())
+            .cloned()
     }
 
     fn lookup(&mut self, path: &Path) -> Option<&mut Supervisor> {
@@ -172,12 +239,7 @@ impl Server {
                 .filter(|workspace| workspace.idle_until.is_none())
                 .map(|workspace| &mut workspace.supervisor);
         }
-        let root = self
-            .workspaces
-            .keys()
-            .filter(|root| path.starts_with(root))
-            .max_by_key(|root| root.components().count())?;
-        let root = root.clone();
+        let root = self.workspace_root(path)?;
         self.workspaces.get_mut(&root)
     }
 
@@ -441,20 +503,13 @@ impl Server {
                             publish(connection, supervisor, diagnostics, None)?;
                         }
                     } else {
-                        if self.lookup(&path).is_none() {
-                            self.workspaces.insert(
-                                path.clone(),
-                                Supervisor::new(
-                                    path.clone(),
-                                    self.launch.clone(),
-                                    Policy::default(),
-                                ),
-                            );
-                        }
-                        if let Some(supervisor) = self.lookup(&path) {
-                            supervisor.set_document(path.clone(), doc.version, doc.text);
-                            supervisor.set_document_uri(&path, doc.uri);
-                        }
+                        let root = self.analysis_root(&path);
+                        let launch = &self.launch;
+                        let supervisor = self.workspaces.entry(root.clone()).or_insert_with(|| {
+                            Supervisor::new(root, launch.clone(), Policy::default())
+                        });
+                        supervisor.set_document(path.clone(), doc.version, doc.text);
+                        supervisor.set_document_uri(&path, doc.uri);
                     }
                 }
             }
@@ -469,8 +524,10 @@ impl Server {
                 {
                     return Err("client sent a ranged edit in full-text sync mode".into());
                 }
-                if let Some(path) = file_path(&doc.uri)
+                // Only documents opened as Taro sources are analysis inputs.
+                if let Some(path) = file_path(&doc.uri).filter(|path| is_taro_source(path))
                     && let Some(supervisor) = self.lookup(&path)
+                    && supervisor.document_version(&path).is_some()
                     && let Some(change) = params.content_changes.into_iter().last()
                     && supervisor.set_document(path, doc.version, change.text)
                     && refresh_disk
@@ -500,10 +557,14 @@ impl Server {
                                 publish(connection, supervisor, diagnostics, None)?;
                             }
                         }
-                    } else if self.workspaces.remove(&path).is_none()
-                        && let Some(supervisor) = self.lookup(&path)
-                    {
+                    } else if let Some(root) = self.workspace_root(&path) {
+                        let supervisor = self.workspaces.get_mut(&root).unwrap();
                         supervisor.close_document(&path);
+                        // A script, or a package outside every folder, ends
+                        // with its last tab.
+                        if !supervisor.has_documents() && (root == path || !self.in_folder(&root)) {
+                            self.retire(connection, &root)?;
+                        }
                     }
                 }
             }
@@ -528,9 +589,7 @@ impl Server {
             notification::DidChangeWorkspaceFolders::METHOD => {
                 let params: DidChangeWorkspaceFoldersParams = serde_json::from_value(note.params)?;
                 for folder in params.event.removed {
-                    if let Some(path) = file_path(&folder.uri) {
-                        self.workspaces.remove(&path);
-                    }
+                    self.remove_workspace(connection, &folder.uri)?;
                 }
                 for folder in params.event.added {
                     self.add_workspace(&folder.uri);

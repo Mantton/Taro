@@ -139,6 +139,10 @@ impl Supervisor {
             .or_else(|| url::Url::from_file_path(path).ok()?.as_str().parse().ok())
     }
 
+    pub fn has_documents(&self) -> bool {
+        !self.documents.is_empty()
+    }
+
     pub fn document_version(&self, path: &Path) -> Option<i32> {
         self.documents.get(path).map(|document| document.version)
     }
@@ -170,6 +174,12 @@ impl Supervisor {
     }
 
     fn store_document(&mut self, path: PathBuf, version: i32, text: String, overlay: bool) -> bool {
+        // The worker rejects anything else, and would be restarted forever.
+        if !path.starts_with(&self.root)
+            || path.extension().is_none_or(|extension| extension != "tr")
+        {
+            return false;
+        }
         if self
             .documents
             .get(&path)

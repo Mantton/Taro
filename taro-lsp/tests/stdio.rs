@@ -1150,3 +1150,187 @@ fn editor_features_follow_two_unsaved_files_and_clear_repaired_diagnostics() {
     assert_eq!(server.response(8), Value::Null);
     server.notify("exit", Value::Null);
 }
+
+impl Session<Message> {
+    fn initialize(&mut self, folders: &[&Path]) {
+        let folders: Vec<_> = folders
+            .iter()
+            .map(|folder| json!({ "name": "test", "uri": as_uri(folder).as_str() }))
+            .collect();
+        self.request(
+            1,
+            "initialize",
+            json!({ "capabilities": {}, "workspaceFolders": folders }),
+        );
+        self.response(1);
+        self.notify("initialized", json!({}));
+    }
+
+    /// Wait for diagnostics of `uri` that satisfy `accept`.
+    fn diagnostics(&self, uri: &str, accept: impl Fn(&[Value]) -> bool) -> Vec<Value> {
+        loop {
+            if let Message::Notification(note) = self.next() {
+                if note.method == "window/logMessage" {
+                    let message = note.params["message"].as_str().unwrap_or_default();
+                    assert!(!message.contains("rejected"), "{message}");
+                }
+                if note.method == "textDocument/publishDiagnostics"
+                    && note.params["uri"] == uri
+                    && accept(note.params["diagnostics"].as_array().unwrap())
+                {
+                    return note.params["diagnostics"].as_array().unwrap().clone();
+                }
+            }
+        }
+    }
+
+    /// Shut down and return the last diagnostics published for `uri` before.
+    fn shutdown_reporting(&mut self, uri: &str) -> Option<Vec<Value>> {
+        self.request(99, "shutdown", Value::Null);
+        let mut last = None;
+        loop {
+            match self.next() {
+                Message::Notification(note)
+                    if note.method == "textDocument/publishDiagnostics"
+                        && note.params["uri"] == uri =>
+                {
+                    last = Some(note.params["diagnostics"].as_array().unwrap().clone());
+                }
+                Message::Response(response) if response.id == 99.into() => {
+                    self.notify("exit", Value::Null);
+                    return last;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn write_package(root: &Path, files: &[(&str, &str)]) {
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(
+        root.join("package.toml"),
+        "[package]\nname = 'github.com/test/project'\nkind = 'library'\n",
+    )
+    .unwrap();
+    for (name, text) in files {
+        fs::write(root.join("src").join(name), text).unwrap();
+    }
+}
+
+#[test]
+fn files_use_the_package_that_contains_them_inside_a_larger_folder() {
+    let fixture = Fixture::new();
+    let folder = fixture.root.canonicalize().unwrap();
+    let package = folder.join("projects/app");
+    let main_text = "func run() -> int32 { helper() }\n";
+    write_package(
+        &package,
+        &[
+            ("helpers.tr", "func helper() -> int32 { 4 }\n"),
+            ("main.tr", main_text),
+        ],
+    );
+    let main = as_uri(&package.join("src/main.tr"));
+    let mut server = Session::spawn(&mut fixture.command(), Message::read);
+    server.initialize(&[&folder]);
+
+    server.open(main.as_str(), main_text);
+    server.diagnostics(main.as_str(), |items| items.is_empty());
+    server.request(
+        2,
+        "textDocument/definition",
+        at(main.as_str(), main_text, "helper"),
+    );
+    assert_eq!(
+        server.response(2)["uri"],
+        as_uri(&package.join("src/helpers.tr")).as_str()
+    );
+    server.change(main.as_str(), 2, "func run() -> int32 { missing }\n");
+    server.diagnostics(main.as_str(), |items| !items.is_empty());
+
+    // The package outlives its tab while its folder is open, and its
+    // diagnostics are cleared once the folder goes away.
+    server.notify(
+        "textDocument/didClose",
+        json!({ "textDocument": { "uri": main.as_str() } }),
+    );
+    server.notify(
+        "workspace/didChangeWorkspaceFolders",
+        json!({ "event": {
+            "added": [],
+            "removed": [{ "name": "test", "uri": as_uri(&folder).as_str() }],
+        }}),
+    );
+    assert_eq!(server.shutdown_reporting(main.as_str()), Some(Vec::new()));
+}
+
+#[test]
+fn a_file_opened_without_a_folder_sees_its_package_and_clears_on_close() {
+    let fixture = Fixture::new();
+    let package = fixture.root.canonicalize().unwrap().join("app");
+    let main_text = "func run() -> int32 { helper() + missing }\n";
+    write_package(
+        &package,
+        &[
+            ("helpers.tr", "func helper() -> int32 { 4 }\n"),
+            ("main.tr", main_text),
+        ],
+    );
+    let main = as_uri(&package.join("src/main.tr"));
+    let mut server = Session::spawn(&mut fixture.command(), Message::read);
+    server.initialize(&[]);
+
+    server.open(main.as_str(), main_text);
+    let found = server.diagnostics(main.as_str(), |items| !items.is_empty());
+    assert_eq!(found.len(), 1, "only `missing` is unresolved: {found:?}");
+    server.notify(
+        "textDocument/didClose",
+        json!({ "textDocument": { "uri": main.as_str() } }),
+    );
+    assert_eq!(server.shutdown_reporting(main.as_str()), Some(Vec::new()));
+}
+
+#[test]
+fn a_standalone_script_clears_its_diagnostics_on_close() {
+    let fixture = Fixture::new();
+    let script = fixture.root.canonicalize().unwrap().join("script.tr");
+    let text = "func run() -> int32 { missing }\n";
+    fs::write(&script, text).unwrap();
+    let uri = as_uri(&script);
+    let mut server = Session::spawn(&mut fixture.command(), Message::read);
+    server.initialize(&[]);
+    server.open(uri.as_str(), text);
+    server.diagnostics(uri.as_str(), |items| !items.is_empty());
+    server.notify(
+        "textDocument/didClose",
+        json!({ "textDocument": { "uri": uri.as_str() } }),
+    );
+    assert_eq!(server.shutdown_reporting(uri.as_str()), Some(Vec::new()));
+}
+
+#[test]
+fn changes_to_untracked_or_non_taro_documents_do_not_stop_analysis() {
+    let fixture = Fixture::new();
+    let root = fixture.root.canonicalize().unwrap();
+    let main_text = "func run() -> int32 { 1 }\n";
+    write_package(&root, &[("main.tr", main_text)]);
+    let main = as_uri(&root.join("src/main.tr"));
+    let mut server = Session::spawn(&mut fixture.command(), Message::read);
+    server.initialize(&[&root]);
+    server.open(main.as_str(), main_text);
+    server.diagnostics(main.as_str(), |items| items.is_empty());
+
+    server.change(as_uri(&root.join("README.md")).as_str(), 2, "notes");
+    server.change(
+        as_uri(&root.join("src/closed.tr")).as_str(),
+        2,
+        "func closed() {}",
+    );
+    server.change(main.as_str(), 2, "func run() -> int32 { missing }\n");
+    let found = server.diagnostics(main.as_str(), |items| !items.is_empty());
+    assert!(
+        found[0]["message"].as_str().unwrap().contains("missing"),
+        "{found:?}"
+    );
+}
