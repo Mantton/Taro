@@ -78,7 +78,7 @@ jobs:
       - name: Install Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | sh -s -- -y --profile minimal --default-toolchain "$RUST_TOOLCHAIN"
+            | sh -s -- -y --profile minimal --default-toolchain "$RUST_TOOLCHAIN" --component llvm-tools
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       # Keyed on the LLVM version and build options, not the script text, so
@@ -111,6 +111,11 @@ jobs:
 
       - name: Build SDK
         run: |
+          # The runtime archive holds bitcode from rustc's LLVM, which Xcode's
+          # nm cannot read; the runtime manifest check lists symbols with
+          # the llvm-nm that matches rustc.
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          export TARO_NM="$(rustc --print sysroot)/lib/rustlib/$host/bin/llvm-nm"
           python3 -B development/scripts/build_dist.py --sdk \
             --llvm-prefix "$PWD/target/sdk-llvm/${{ matrix.platform }}" \
             --dist-dir "$PWD/target/sdk-dist/taro"
