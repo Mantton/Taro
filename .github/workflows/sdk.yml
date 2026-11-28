@@ -1,0 +1,206 @@
+# Build the downloadable SDKs, then test each archive on clean machines.
+#
+# Linux SDKs are built in manylinux_2_28 (AlmaLinux 8, glibc 2.28) so they run
+# on any distribution with that glibc or newer. The macOS SDK is built and
+# first tested on macOS 14, its deployment floor. LLVM is built from source by
+# build_llvm.py once per platform and cached until that script changes.
+#
+# Pushing a `v*` tag additionally assembles a draft prerelease with every
+# archive, its checksum, SHA256SUMS and install.sh; a maintainer publishes it.
+
+name: SDK
+
+on:
+  push:
+    branches: [main, feat/distribution]
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - ".github/workflows/sdk.yml"
+      - "development/scripts/build_*.py"
+      - "development/scripts/package_sdk.py"
+      - "development/scripts/smoke_sdk.py"
+      - "development/scripts/third_party_notices.py"
+      - "install.sh"
+  workflow_dispatch:
+
+concurrency:
+  group: sdk-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: nightly-2026-07-27
+  CARGO_TERM_COLOR: always
+  # The 15 GiB budget is for development checkouts; runners hold LLVM too.
+  TARO_DISK_LIMIT_GIB: "40"
+  TARO_DISK_TARGET_GIB: "30"
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            runner: macos-14
+            container: ""
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+            container: quay.io/pypa/manylinux_2_28_x86_64
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            container: quay.io/pypa/manylinux_2_28_aarch64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          /opt/python/cp312-cp312/bin/python -m pip install --quiet cmake ninja
+          echo "/opt/python/cp312-cp312/bin" >> "$GITHUB_PATH"
+          ln -sf /opt/python/cp312-cp312/bin/python /usr/local/bin/python3
+
+      - name: Install build tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain "$RUST_TOOLCHAIN"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Restore LLVM
+        id: llvm
+        uses: actions/cache@v4
+        with:
+          path: target/sdk-llvm/${{ matrix.platform }}
+          key: llvm-${{ matrix.platform }}-${{ hashFiles('development/scripts/build_llvm.py') }}
+
+      - name: Build LLVM
+        if: steps.llvm.outputs.cache-hit != 'true'
+        run: |
+          jobs=$(python3 -c 'import os; print(os.cpu_count())')
+          python3 -B development/scripts/build_llvm.py \
+            --prefix "$PWD/target/sdk-llvm/${{ matrix.platform }}" --jobs "$jobs"
+
+      - name: Build SDK
+        run: |
+          python3 -B development/scripts/build_dist.py --sdk \
+            --llvm-prefix "$PWD/target/sdk-llvm/${{ matrix.platform }}" \
+            --dist-dir "$PWD/target/sdk-dist/taro"
+
+      - name: Package SDK
+        run: |
+          python3 -B development/scripts/package_sdk.py target/sdk-dist/taro --output-dir target/sdk-out
+          ls target/sdk-out/*-${{ matrix.platform }}.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-${{ matrix.platform }}
+          path: target/sdk-out/
+          if-no-files-found: error
+
+  smoke:
+    name: Test ${{ matrix.platform }} on ${{ matrix.system }}
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS: the deployment floor and a current release.
+          - { platform: macos-arm64, runner: macos-14, system: macOS 14, container: "" }
+          - { platform: macos-arm64, runner: macos-15, system: macOS 15, container: "" }
+          # Linux: the glibc floor and current distributions.
+          - { platform: linux-x86_64, runner: ubuntu-24.04, system: AlmaLinux 8, container: "almalinux:8" }
+          - { platform: linux-x86_64, runner: ubuntu-24.04, system: Ubuntu 22.04, container: "ubuntu:22.04" }
+          - { platform: linux-x86_64, runner: ubuntu-24.04, system: Debian 12, container: "debian:12" }
+          - { platform: linux-x86_64, runner: ubuntu-24.04, system: Fedora 42, container: "fedora:42" }
+          - { platform: linux-arm64, runner: ubuntu-24.04-arm, system: AlmaLinux 8, container: "almalinux:8" }
+          - { platform: linux-arm64, runner: ubuntu-24.04-arm, system: Ubuntu 24.04, container: "ubuntu:24.04" }
+    steps:
+      # A clean machine has only a C compiler for linking (plus Python and
+      # Git for this test harness); no Rust, LLVM or Taro build tools.
+      - name: Install system packages
+        if: runner.os == 'Linux'
+        run: |
+          if command -v apt-get >/dev/null; then
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq gcc libc6-dev python3 git ca-certificates
+          elif grep -q 'VERSION_ID="8' /etc/os-release; then
+            dnf install -y -q gcc python3.11 git
+            ln -sf /usr/bin/python3.11 /usr/local/bin/python3
+          else
+            dnf install -y -q gcc python3 git
+          fi
+          useradd --create-home tester
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdk-${{ matrix.platform }}
+          path: sdk
+
+      - name: Verify checksum
+        shell: bash
+        run: |
+          cd sdk
+          if command -v sha256sum >/dev/null; then sha256sum -c ./*.sha256; else shasum -a 256 -c ./*.sha256; fi
+
+      - name: Smoke test (macOS)
+        if: runner.os == 'macOS'
+        run: python3 -B development/scripts/smoke_sdk.py sdk/*.tar.gz
+
+      # Root ignores file permissions, so the read-only install check runs
+      # as an ordinary user.
+      - name: Smoke test (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          chown -R tester "$GITHUB_WORKSPACE"
+          su tester -c "cd '$GITHUB_WORKSPACE' && python3 -B development/scripts/smoke_sdk.py sdk/*.tar.gz"
+
+  release:
+    name: Draft release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: smoke
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sdk-*
+          path: release
+          merge-multiple: true
+
+      - name: Check archive versions
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for platform in macos-arm64 linux-x86_64 linux-arm64; do
+            test -f "release/taro-$version-$platform.tar.gz" \
+              || { echo "missing taro-$version-$platform.tar.gz; does the tag match taro --version?"; exit 1; }
+          done
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp install.sh release/
+          (cd release && sha256sum taro-*.tar.gz install.sh > SHA256SUMS)
+          sed "s/TAG/$GITHUB_REF_NAME/g" development/release-notes.md > notes.md
+          gh release create "$GITHUB_REF_NAME" --draft --prerelease \
+            --title "Taro $GITHUB_REF_NAME" --notes-file notes.md \
+            release/*.tar.gz release/*.sha256 release/SHA256SUMS release/install.sh
