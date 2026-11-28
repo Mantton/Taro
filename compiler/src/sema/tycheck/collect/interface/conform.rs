@@ -503,6 +503,7 @@ pub fn resolve_conformance_witness_with_param_env<'ctx>(
     )
 }
 
+#[cfg(feature = "llvm")]
 pub fn resolve_conformance_witness_with_mode<'ctx>(
     context: Gcx<'ctx>,
     interface: InterfaceReference<'ctx>,

@@ -48,6 +48,7 @@ pub(crate) fn stable_hash_hex16(input: &str) -> String {
         .collect()
 }
 
+#[cfg(feature = "llvm")]
 pub(crate) fn stable_hash_u64(input: &str) -> u64 {
     u64::from_le_bytes(stable_hash_bytes(input))
 }

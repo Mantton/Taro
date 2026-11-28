@@ -230,6 +230,7 @@ pub fn method_is_dispatchable(
 /// A conditional method keeps its ABI slot even when its additional where
 /// clause is unavailable for this conformance. Do not materialize such a body:
 /// its own calls may require conformances the containing type never promised.
+#[cfg(feature = "llvm")]
 pub(crate) fn concrete_method_constraints_hold<'ctx>(
     gcx: Gcx<'ctx>,
     method: DefinitionID,
@@ -266,6 +267,7 @@ pub(crate) fn concrete_method_constraints_hold<'ctx>(
 /// Number of method slots in an interface's witness table. Superface table
 /// pointers are stored immediately after these slots, so this count also
 /// defines where the superface fields begin.
+#[cfg(feature = "llvm")]
 pub fn dispatchable_method_count(gcx: Gcx<'_>, interface_id: DefinitionID) -> usize {
     gcx.get_interface_requirements(interface_id)
         .map(|req| {
@@ -293,6 +295,7 @@ pub fn interface_method_slot(
         .position(|method| method.id == method_id)
 }
 
+#[cfg(feature = "llvm")]
 pub fn descriptor_key_interface_ref<'ctx>(
     gcx: Gcx<'ctx>,
     iface: InterfaceReference<'ctx>,

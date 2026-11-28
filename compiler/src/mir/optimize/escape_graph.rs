@@ -76,6 +76,7 @@ pub fn apply_instance_placement<'ctx>(
 /// finalized instance body. Stack maps use this to keep such storage rooted.
 /// Placement already summarized this instance's callees; any other callee takes
 /// the conservative effect, which can only add holders.
+#[cfg(feature = "llvm")]
 pub(crate) fn address_holders<'ctx>(
     gcx: Gcx<'ctx>,
     instance: Instance<'ctx>,
@@ -865,6 +866,7 @@ impl EscapeGraph {
     /// Walks edges backward from each owner's storage, accumulating the same
     /// dereference distances as `trace_from`. A negative distance at another
     /// local's storage means that local may hold the owner's address.
+    #[cfg(feature = "llvm")]
     fn address_holders(&self, owners: &FxHashSet<LocalId>) -> FxHashMap<LocalId, Vec<LocalId>> {
         let locals = self.storage.len();
         if self.saturated {

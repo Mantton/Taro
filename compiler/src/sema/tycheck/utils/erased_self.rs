@@ -150,6 +150,7 @@ pub(crate) fn bind<'ctx>(
 
 /// Metadata additionally records receiver-relative keys, so a runtime query for
 /// `any P` with a default Rhs=Self can match the concrete P[Concrete] witness.
+#[cfg(feature = "llvm")]
 pub(crate) fn abstract_concrete<'ctx>(
     gcx: Gcx<'ctx>,
     interface: InterfaceReference<'ctx>,

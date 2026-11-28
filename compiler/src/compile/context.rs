@@ -1352,6 +1352,7 @@ impl<'arena> GlobalContext<'arena> {
 
     /// Apply placement and safepoints to an isolated instance. The shared MIR
     /// used for inlining and concrete escape summaries remains unchanged.
+    #[cfg(feature = "llvm")]
     pub(crate) fn get_gc_instance_mir_body(
         self,
         instance: Instance<'arena>,
@@ -1387,6 +1388,7 @@ impl<'arena> GlobalContext<'arena> {
         Ok(body)
     }
 
+    #[cfg(feature = "llvm")]
     pub(crate) fn is_finalized_gc_instance_mir(
         self,
         instance: Instance<'arena>,

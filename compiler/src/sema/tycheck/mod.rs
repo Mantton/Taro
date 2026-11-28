@@ -1,9 +1,10 @@
+#[cfg(feature = "llvm")]
 pub(crate) mod class_layout;
 use crate::{
     compile::context::GlobalContext,
     error::CompileResult,
     hir,
-    sema::models::{ConformanceWitness, Constraint, InterfaceReference, SelectionMode},
+    sema::models::{ConformanceWitness, Constraint, InterfaceReference},
 };
 use std::time::{Duration, Instant};
 
@@ -45,10 +46,11 @@ pub fn resolve_conformance_witness<'ctx>(
     collect::interface::conform::resolve_conformance_witness(context, interface)
 }
 
+#[cfg(feature = "llvm")]
 pub fn resolve_conformance_witness_with_mode<'ctx>(
     context: GlobalContext<'ctx>,
     interface: InterfaceReference<'ctx>,
-    mode: SelectionMode,
+    mode: crate::sema::models::SelectionMode,
 ) -> Option<ConformanceWitness<'ctx>> {
     collect::interface::conform::resolve_conformance_witness_with_mode(context, interface, mode)
 }

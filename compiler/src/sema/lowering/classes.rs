@@ -903,6 +903,7 @@ impl<'ctx> GlobalContext<'ctx> {
 
 /// Class descriptors are published independently of an interface conformance.
 /// Their targets must satisfy extension bounds as well as method-local bounds.
+#[cfg(feature = "llvm")]
 pub(crate) fn method_available<'ctx>(
     gcx: crate::compile::context::Gcx<'ctx>,
     method: crate::hir::DefinitionID,

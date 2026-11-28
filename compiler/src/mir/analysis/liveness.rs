@@ -274,6 +274,7 @@ pub(crate) fn transfer_statement(statement: &StatementKind<'_>, live: &mut FxHas
 /// Physical storage observations include writes and address formation as well
 /// as value reads. A lifetime start must precede all of them, including partial
 /// aggregate stores and destinations initialized by a call or resumed yield.
+#[cfg(feature = "llvm")]
 pub(crate) fn for_each_storage_observation(
     body: &Body<'_>,
     mut observe: impl FnMut(LocalId, MirLocation),

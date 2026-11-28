@@ -9,6 +9,7 @@ pub mod const_prop;
 pub mod dse;
 pub mod escape_graph;
 pub mod gc_safepoints;
+#[cfg(feature = "llvm")]
 pub mod gc_storage;
 pub mod inline;
 pub mod passes;

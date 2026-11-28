@@ -290,6 +290,7 @@ pub struct Terminator<'ctx> {
 impl StatementKind<'_> {
     /// Only these markers may separate scanner lifetime start from a full
     /// overwrite. New statements must explicitly choose the conservative side.
+    #[cfg(feature = "llvm")]
     pub(crate) fn scanner_copy_marker(&self, destination: LocalId) -> bool {
         match self {
             Self::SourceScope(_) | Self::Nop => true,
@@ -306,6 +307,7 @@ impl StatementKind<'_> {
 
 impl<'ctx> TerminatorKind<'ctx> {
     /// Address-taking analysis must classify new native control-flow effects.
+    #[cfg(feature = "llvm")]
     pub(crate) fn call_arguments(&self) -> Option<&[Operand<'ctx>]> {
         match self {
             Self::Call { args, .. } => Some(args),
@@ -703,6 +705,7 @@ pub enum Rvalue<'ctx> {
 impl<'ctx> Rvalue<'ctx> {
     /// Every address-forming operation must be classified here. GC placement
     /// and scanner-initialization proofs must not silently miss a new variant.
+    #[cfg(feature = "llvm")]
     pub(crate) fn addressed_place(&self) -> Option<&Place<'ctx>> {
         match self {
             Self::Ref { place } | Self::CleanupAddress { place } => Some(place),
