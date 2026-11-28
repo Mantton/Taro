@@ -21,7 +21,31 @@ copies and shared handles, with a tracing collector and asynchronous tasks.
 - LLVM code generation with incremental builds, bitcode, and optional LTO
 - Internal C ABI integration and compact language-level panic reports
 
-## Quick Start
+## Install
+
+Release builds are available for Apple Silicon Macs (macOS 14 or newer) and
+Linux on x86-64 and ARM64 (glibc 2.28 or newer: Ubuntu 20.04+, Debian 11+,
+RHEL/AlmaLinux 8+, Fedora and similar):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Mantton/Taro/main/install.sh | sh
+taro run hello.tr
+```
+
+The installer unpacks the SDK into `~/.taro`, adds `~/.taro/current/bin` to
+your shell's `PATH`, and verifies the download's SHA-256 checksum. Building
+programs also needs the system linker: Apple's command line tools on macOS
+(`xcode-select --install`), or a C compiler on Linux (`build-essential` or
+`gcc`). Rerun the installer to upgrade; set `TARO_VERSION=v<x.y.z>` to pick a
+release. To uninstall, delete `~/.taro`, the `# Taro` lines the installer added
+to your shell profile, and the package cache (`~/Library/Caches/taro` on macOS,
+`~/.cache/taro` on Linux).
+
+Archives for manual installation are attached to each
+[GitHub release](https://github.com/Mantton/Taro/releases). Unpack one
+anywhere and put its `bin/` directory on `PATH`.
+
+## Build from Source
 
 ### Requirements
 
@@ -42,7 +66,7 @@ On Linux, set the prefix only when `llvm-config` is not discoverable:
 export LLVM_SYS_221_PREFIX=/usr/lib/llvm-22
 ```
 
-### Run an Example
+### Run an Example from a Checkout
 
 The repository helper builds a release distribution, configures `TARO_HOME`,
 and runs the program:
@@ -146,6 +170,7 @@ attributes and regression directives.
 | [Collections](docs/collections.md) | Collection selection, sorting, search, queues, heaps, and sharing semantics |
 | [Code generation](docs/codegen.md) | Profiles, bitcode, LTO, incremental artifacts, cross-compilation |
 | [Packages](docs/packages.md) | Manifests, dependency resolution, and lockfiles |
+| [Releasing](docs/releasing.md) | How the downloadable SDKs are built, tested and published |
 | [Async runtime](docs/async-runtime.md) | Executor lifecycle and concurrency invariants |
 | [Existentials](docs/existentials.md) | Existential representation and dispatch |
 
