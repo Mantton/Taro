@@ -157,10 +157,9 @@ fn build_link_plan(
         // libunwind here interposes its _Unwind_* symbols ahead of libgcc on
         // GNU targets, adding costly memory validation to GC stack walks.
         // Both providers remain supported by the runtime's CFA probe.
-        // Before glibc 2.34, threads, clocks and pty helpers lived outside
-        // libc; name them as rustc does for GNU static libraries. Newer glibc
-        // keeps empty stubs, so the same link works everywhere.
-        args.extend(["-lpthread", "-lrt", "-lutil", "-lm", "-ldl"].map(OsString::from));
+        // Before glibc 2.34, threads and clocks lived outside libc. Newer
+        // glibc keeps empty stub libraries, so the same link works everywhere.
+        args.extend(["-lpthread", "-lrt", "-lm", "-ldl"].map(OsString::from));
     }
 
     if coverage {
