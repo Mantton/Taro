@@ -211,7 +211,9 @@ pub struct SpanWire {
     pub file: u32,
     pub start_line: u32,
     pub start_offset: u32,
-    pub end_line: u32,
+    /// `end_line - start_line`, wrapping. Nearly every span ends on the line
+    /// it starts on, so this is almost always a one-byte zero.
+    pub end_line_delta: u32,
     pub end_offset: u32,
 }
 
@@ -1218,9 +1220,27 @@ pub struct VirtualInstanceWire {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MirPackageWire {
+    /// Every type the bodies mention, each written once and referenced by
+    /// [`TyRefWire`]. A body names the same few types many times over.
+    pub types: Vec<TyWire>,
+    /// Generic argument lists the bodies mention, referenced by
+    /// [`GenericArgsRefWire`].
+    pub generic_args: Vec<Vec<GenericArgumentWire>>,
     pub functions: Vec<(DefIdWire, BodyWire)>,
     pub entry: Option<DefIdWire>,
 }
+
+/// Index into [`MirPackageWire::types`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TyRefWire(pub u32);
+
+/// Index into [`MirPackageWire::generic_args`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenericArgsRefWire(pub u32);
+
+/// Index into the owning body's [`BodyWire::spans`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpanRefWire(pub u32);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BodyWire {
@@ -1228,6 +1248,9 @@ pub struct BodyWire {
     pub source_scopes: Vec<SourceScopeDataWire>,
     pub locals: Vec<LocalDeclWire>,
     pub basic_blocks: Vec<BasicBlockDataWire>,
+    /// Source locations of the body's locals, statements and terminators,
+    /// each written once and referenced by [`SpanRefWire`].
+    pub spans: Vec<SpanWire>,
     pub start_block: u32,
     pub return_local: u32,
     pub phase: MirPhaseWire,
@@ -1244,11 +1267,11 @@ pub struct SourceScopeDataWire {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalDeclWire {
-    pub ty: TyWire,
+    pub ty: TyRefWire,
     pub kind: LocalKindWire,
     pub mutable: bool,
     pub name: Option<String>,
-    pub span: SpanWire,
+    pub span: SpanRefWire,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1270,7 +1293,7 @@ pub struct BasicBlockDataWire {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatementWire {
     pub kind: StatementKindWire,
-    pub span: SpanWire,
+    pub span: SpanRefWire,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1293,7 +1316,7 @@ pub enum StatementKindWire {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminatorWire {
     pub kind: TerminatorKindWire,
-    pub span: SpanWire,
+    pub span: SpanRefWire,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1350,7 +1373,7 @@ pub struct PlaceWire {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PlaceElemWire {
     Deref,
-    Field(u32, TyWire),
+    Field(u32, TyRefWire),
     VariantDowncast { name: String, index: u32 },
 }
 
@@ -1368,7 +1391,7 @@ pub struct CopyModifiersWire {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConstantWire {
-    pub ty: TyWire,
+    pub ty: TyRefWire,
     pub value: ConstantKindWire,
 }
 
@@ -1380,10 +1403,10 @@ pub enum ConstantKindWire {
     Integer(u64),
     Float(f64),
     Unit,
-    Function(DefIdWire, Vec<GenericArgumentWire>, TyWire),
+    Function(DefIdWire, GenericArgsRefWire, TyRefWire),
     GlobalVariableAddress(DefIdWire),
     ConstParam(GenericParameterWire),
-    InterfaceConstant(DefIdWire, Vec<GenericArgumentWire>),
+    InterfaceConstant(DefIdWire, GenericArgsRefWire),
     Bytes(Vec<u8>),
     ConstArray(Vec<ConstValueWire>),
 }
@@ -1405,7 +1428,7 @@ pub enum RvalueWire {
     },
     Cast {
         operand: OperandWire,
-        ty: TyWire,
+        ty: TyRefWire,
         kind: CastKindWire,
     },
     Ref {
@@ -1418,7 +1441,7 @@ pub enum RvalueWire {
         place: PlaceWire,
     },
     Zeroed {
-        ty: TyWire,
+        ty: TyRefWire,
     },
     Aggregate {
         kind: AggregateKindWire,
@@ -1427,10 +1450,10 @@ pub enum RvalueWire {
     Repeat {
         operand: OperandWire,
         count: u32,
-        element: TyWire,
+        element: TyRefWire,
     },
     Alloc {
-        ty: TyWire,
+        ty: TyRefWire,
     },
 }
 
@@ -1443,8 +1466,8 @@ pub enum CastKindWire {
     NativeClassHandle,
     ClassUpcast,
     ClassSelfResult,
-    ExistentialTypeIs { target: TyWire },
-    ExistentialTryCast { target: TyWire },
+    ExistentialTypeIs { target: TyRefWire },
+    ExistentialTryCast { target: TyRefWire },
     Pointer,
     ClosureToFnPointer,
     ClassFromOwner,
@@ -1456,15 +1479,15 @@ pub enum AggregateKindWire {
     Adt {
         def_id: DefIdWire,
         variant_index: Option<u32>,
-        generic_args: Vec<GenericArgumentWire>,
+        generic_args: GenericArgsRefWire,
     },
     Array {
         len: u32,
-        element: TyWire,
+        element: TyRefWire,
     },
     Closure {
         def_id: DefIdWire,
-        captured_generics: Vec<GenericArgumentWire>,
+        captured_generics: GenericArgsRefWire,
     },
 }
 
@@ -1567,7 +1590,7 @@ pub fn span_to_wire(span: Span) -> SpanWire {
         file: span.file.raw(),
         start_line: span.start.line as u32,
         start_offset: span.start.offset as u32,
-        end_line: span.end.line as u32,
+        end_line_delta: (span.end.line as u32).wrapping_sub(span.start.line as u32),
         end_offset: span.end.offset as u32,
     }
 }
@@ -1586,7 +1609,7 @@ pub fn span_from_wire(w: &SpanWire, remap: FileRemap<'_>) -> Span {
             offset: w.start_offset as usize,
         },
         end: Position {
-            line: w.end_line as usize,
+            line: w.start_line.wrapping_add(w.end_line_delta) as usize,
             offset: w.end_offset as usize,
         },
     }
@@ -4045,7 +4068,139 @@ wire_enum_conversions!(
     ]
 );
 
-pub fn place_to_wire(names: &crate::interner::SessionInterner, v: &mir::Place<'_>) -> PlaceWire {
+/// Writes MIR bodies of one package, collecting the package's type and
+/// generic-argument tables and each body's span table as it goes.
+pub struct MirEncoder<'n, 'tcx> {
+    names: &'n crate::interner::SessionInterner,
+    types: Vec<TyWire>,
+    type_refs: FxHashMap<Ty<'tcx>, TyRefWire>,
+    generic_args: Vec<Vec<GenericArgumentWire>>,
+    generic_arg_refs: FxHashMap<crate::sema::models::GenericArguments<'tcx>, GenericArgsRefWire>,
+    spans: Vec<SpanWire>,
+    span_refs: FxHashMap<Span, SpanRefWire>,
+}
+
+impl<'n, 'tcx> MirEncoder<'n, 'tcx> {
+    pub fn new(names: &'n crate::interner::SessionInterner) -> Self {
+        MirEncoder {
+            names,
+            types: Vec::new(),
+            type_refs: FxHashMap::default(),
+            generic_args: Vec::new(),
+            generic_arg_refs: FxHashMap::default(),
+            spans: Vec::new(),
+            span_refs: FxHashMap::default(),
+        }
+    }
+
+    fn ty(&mut self, ty: Ty<'tcx>) -> TyRefWire {
+        // Equal types can be spelled differently (tuple labels), and only
+        // the unspelled form is interned, so only that form is shared.
+        if !ty.has_presentation() {
+            if let Some(reference) = self.type_refs.get(&ty) {
+                return *reference;
+            }
+        }
+        let reference = TyRefWire(self.types.len() as u32);
+        self.types.push(ty_to_wire(self.names, ty));
+        if !ty.has_presentation() {
+            self.type_refs.insert(ty, reference);
+        }
+        reference
+    }
+
+    fn generic_args(
+        &mut self,
+        args: crate::sema::models::GenericArguments<'tcx>,
+    ) -> GenericArgsRefWire {
+        if !args.has_presentation() {
+            if let Some(reference) = self.generic_arg_refs.get(&args) {
+                return *reference;
+            }
+        }
+        let reference = GenericArgsRefWire(self.generic_args.len() as u32);
+        let names = self.names;
+        self.generic_args
+            .push(args.iter().copied().map(|value| generic_arg_to_wire(names, value)).collect());
+        if !args.has_presentation() {
+            self.generic_arg_refs.insert(args, reference);
+        }
+        reference
+    }
+
+    fn span(&mut self, span: Span) -> SpanRefWire {
+        let next = SpanRefWire(self.spans.len() as u32);
+        let reference = *self.span_refs.entry(span).or_insert(next);
+        if reference == next {
+            self.spans.push(span_to_wire(span));
+        }
+        reference
+    }
+
+    /// The span table of the body written since the previous call.
+    pub fn take_spans(&mut self) -> Vec<SpanWire> {
+        self.span_refs.clear();
+        std::mem::take(&mut self.spans)
+    }
+
+    /// The package's type and generic-argument tables.
+    pub fn into_tables(self) -> (Vec<TyWire>, Vec<Vec<GenericArgumentWire>>) {
+        (self.types, self.generic_args)
+    }
+}
+
+/// Reads MIR bodies of one package. The package's tables are decoded up
+/// front, so each distinct type is interned once rather than per mention.
+pub struct MirDecoder<'a, 'r> {
+    gcx: GlobalContext<'a>,
+    remap: FileRemap<'r>,
+    types: Vec<Ty<'a>>,
+    generic_args: Vec<crate::sema::models::GenericArguments<'a>>,
+    spans: Vec<Span>,
+}
+
+impl<'a, 'r> MirDecoder<'a, 'r> {
+    pub fn new(
+        gcx: GlobalContext<'a>,
+        remap: FileRemap<'r>,
+        types: &[TyWire],
+        generic_args: &[Vec<GenericArgumentWire>],
+    ) -> Self {
+        MirDecoder {
+            gcx,
+            remap,
+            types: types.iter().map(|ty| ty_from_wire(gcx, ty)).collect(),
+            generic_args: generic_args
+                .iter()
+                .map(|args| {
+                    gcx.store
+                        .interners
+                        .intern_generic_args(args.iter().map(|arg| generic_arg_from_wire(gcx, arg)).collect())
+                })
+                .collect(),
+            spans: Vec::new(),
+        }
+    }
+
+    /// Selects the span table that following span references index.
+    pub fn set_spans(&mut self, spans: &[SpanWire]) {
+        self.spans = spans.iter().map(|span| span_from_wire(span, self.remap)).collect();
+    }
+
+    fn ty(&self, reference: TyRefWire) -> Ty<'a> {
+        self.types[reference.0 as usize]
+    }
+
+    fn generic_args(&self, reference: GenericArgsRefWire) -> crate::sema::models::GenericArguments<'a> {
+        self.generic_args[reference.0 as usize]
+    }
+
+    fn span(&self, reference: SpanRefWire) -> Span {
+        self.spans[reference.0 as usize]
+    }
+}
+
+pub fn place_to_wire<'tcx>(cx: &mut MirEncoder<'_, 'tcx>, v: &mir::Place<'tcx>) -> PlaceWire {
     PlaceWire {
         local: v.local.index() as u32,
         projection: v
@@ -4054,10 +4209,10 @@ pub fn place_to_wire(names: &crate::interner::SessionInterner, v: &mir::Place<'_
             .map(|elem| match elem {
                 mir::PlaceElem::Deref => PlaceElemWire::Deref,
                 mir::PlaceElem::Field(index, ty) => {
-                    PlaceElemWire::Field(index.index() as u32, ty_to_wire(names, *ty))
+                    PlaceElemWire::Field(index.index() as u32, cx.ty(*ty))
                 }
                 mir::PlaceElem::VariantDowncast { name, index } => PlaceElemWire::VariantDowncast {
-                    name: names.text(*name).to_string(),
+                    name: cx.names.text(*name).to_string(),
                     index: index.index() as u32,
                 },
             })
@@ -4065,8 +4220,8 @@ pub fn place_to_wire(names: &crate::interner::SessionInterner, v: &mir::Place<'_
     }
 }
 
-pub fn place_from_wire<'a>(gcx: GlobalContext<'a>, v: &PlaceWire) -> mir::Place<'a> {
-    let names = gcx.interner();
+pub fn place_from_wire<'a>(cx: &MirDecoder<'a, '_>, v: &PlaceWire) -> mir::Place<'a> {
+    let names = cx.gcx.interner();
     mir::Place {
         local: mir::LocalId::from_raw(v.local),
         projection: v
@@ -4076,7 +4231,7 @@ pub fn place_from_wire<'a>(gcx: GlobalContext<'a>, v: &PlaceWire) -> mir::Place<
                 PlaceElemWire::Deref => mir::PlaceElem::Deref,
                 PlaceElemWire::Field(index, ty) => mir::PlaceElem::Field(
                     crate::thir::FieldIndex::from_raw(*index),
-                    ty_from_wire(gcx, ty),
+                    cx.ty(*ty),
                 ),
                 PlaceElemWire::VariantDowncast { name, index } => mir::PlaceElem::VariantDowncast {
                     name: names.intern(name),
@@ -4087,12 +4242,13 @@ pub fn place_from_wire<'a>(gcx: GlobalContext<'a>, v: &PlaceWire) -> mir::Place<
     }
 }
 
-pub fn mir_constant_to_wire(
-    names: &crate::interner::SessionInterner,
-    v: &mir::Constant<'_>,
+pub fn mir_constant_to_wire<'tcx>(
+    cx: &mut MirEncoder<'_, 'tcx>,
+    v: &mir::Constant<'tcx>,
 ) -> ConstantWire {
+    let names = cx.names;
     ConstantWire {
-        ty: ty_to_wire(names, v.ty),
+        ty: cx.ty(v.ty),
         value: match &v.value {
             mir::ConstantKind::Bool(v) => ConstantKindWire::Bool(*v),
             mir::ConstantKind::Rune(v) => ConstantKindWire::Rune(*v),
@@ -4104,18 +4260,15 @@ pub fn mir_constant_to_wire(
             mir::ConstantKind::Integer(v) => ConstantKindWire::Integer(*v),
             mir::ConstantKind::Float(v) => ConstantKindWire::Float(*v),
             mir::ConstantKind::Unit => ConstantKindWire::Unit,
-            mir::ConstantKind::Function(id, args, ty) => ConstantKindWire::Function(
-                def_to_wire(*id),
-                args.iter().copied().map(|value| generic_arg_to_wire(names, value)).collect(),
-                ty_to_wire(names, *ty),
-            ),
+            mir::ConstantKind::Function(id, args, ty) => {
+                ConstantKindWire::Function(def_to_wire(*id), cx.generic_args(*args), cx.ty(*ty))
+            }
             mir::ConstantKind::GlobalVariableAddress(id) => {
                 ConstantKindWire::GlobalVariableAddress(def_to_wire(*id))
             }
-            mir::ConstantKind::InterfaceConstant(id, args) => ConstantKindWire::InterfaceConstant(
-                def_to_wire(*id),
-                args.iter().copied().map(|value| generic_arg_to_wire(names, value)).collect(),
-            ),
+            mir::ConstantKind::InterfaceConstant(id, args) => {
+                ConstantKindWire::InterfaceConstant(def_to_wire(*id), cx.generic_args(*args))
+            }
             mir::ConstantKind::ConstParam(param) => {
                 ConstantKindWire::ConstParam(generic_param_to_wire(names, *param))
             }
@@ -4123,10 +4276,10 @@ pub fn mir_constant_to_wire(
     }
 }
 
-pub fn mir_constant_from_wire<'a>(gcx: GlobalContext<'a>, v: &ConstantWire) -> mir::Constant<'a> {
-    let names = gcx.interner();
+pub fn mir_constant_from_wire<'a>(cx: &MirDecoder<'a, '_>, v: &ConstantWire) -> mir::Constant<'a> {
+    let names = cx.gcx.interner();
     mir::Constant {
-        ty: ty_from_wire(gcx, &v.ty),
+        ty: cx.ty(v.ty),
         value: match &v.value {
             ConstantKindWire::Bool(v) => mir::ConstantKind::Bool(*v),
             ConstantKindWire::Rune(v) => mir::ConstantKind::Rune(*v),
@@ -4142,28 +4295,17 @@ pub fn mir_constant_from_wire<'a>(gcx: GlobalContext<'a>, v: &ConstantWire) -> m
             ConstantKindWire::Integer(v) => mir::ConstantKind::Integer(*v),
             ConstantKindWire::Float(v) => mir::ConstantKind::Float(*v),
             ConstantKindWire::Unit => mir::ConstantKind::Unit,
-            ConstantKindWire::Function(id, args, ty) => {
-                let args: Vec<_> = args
-                    .iter()
-                    .map(|arg| generic_arg_from_wire(gcx, arg))
-                    .collect();
-                mir::ConstantKind::Function(
-                    def_from_wire(id),
-                    gcx.store.interners.intern_generic_args(args),
-                    ty_from_wire(gcx, ty),
-                )
-            }
+            ConstantKindWire::Function(id, args, ty) => mir::ConstantKind::Function(
+                def_from_wire(id),
+                cx.generic_args(*args),
+                cx.ty(*ty),
+            ),
             ConstantKindWire::GlobalVariableAddress(id) => {
                 mir::ConstantKind::GlobalVariableAddress(def_from_wire(id))
             }
-            ConstantKindWire::InterfaceConstant(id, args) => mir::ConstantKind::InterfaceConstant(
-                def_from_wire(id),
-                gcx.store.interners.intern_generic_args(
-                    args.iter()
-                        .map(|arg| generic_arg_from_wire(gcx, arg))
-                        .collect(),
-                ),
-            ),
+            ConstantKindWire::InterfaceConstant(id, args) => {
+                mir::ConstantKind::InterfaceConstant(def_from_wire(id), cx.generic_args(*args))
+            }
             ConstantKindWire::ConstParam(param) => {
                 mir::ConstantKind::ConstParam(generic_param_from_wire(names, param))
             }
@@ -4171,40 +4313,40 @@ pub fn mir_constant_from_wire<'a>(gcx: GlobalContext<'a>, v: &ConstantWire) -> m
     }
 }
 
-pub fn operand_to_wire(
-    names: &crate::interner::SessionInterner,
-    v: &mir::Operand<'_>,
+pub fn operand_to_wire<'tcx>(
+    cx: &mut MirEncoder<'_, 'tcx>,
+    v: &mir::Operand<'tcx>,
 ) -> OperandWire {
     match v {
-        mir::Operand::Copy(v) => OperandWire::Copy(place_to_wire(names, v)),
+        mir::Operand::Copy(v) => OperandWire::Copy(place_to_wire(cx, v)),
 
         mir::Operand::CopyWith(v, modifiers) => OperandWire::CopyWith(
-            place_to_wire(names, v),
+            place_to_wire(cx, v),
             CopyModifiersWire {
                 init: modifiers.init,
             },
         ),
-        mir::Operand::Constant(v) => OperandWire::Constant(mir_constant_to_wire(names, v)),
+        mir::Operand::Constant(v) => OperandWire::Constant(mir_constant_to_wire(cx, v)),
     }
 }
 
-pub fn operand_from_wire<'a>(gcx: GlobalContext<'a>, v: &OperandWire) -> mir::Operand<'a> {
+pub fn operand_from_wire<'a>(cx: &MirDecoder<'a, '_>, v: &OperandWire) -> mir::Operand<'a> {
     match v {
-        OperandWire::Copy(v) => mir::Operand::Copy(place_from_wire(gcx, v)),
+        OperandWire::Copy(v) => mir::Operand::Copy(place_from_wire(cx, v)),
 
         OperandWire::CopyWith(v, modifiers) => mir::Operand::CopyWith(
-            place_from_wire(gcx, v),
+            place_from_wire(cx, v),
             mir::CopyModifiers {
                 init: modifiers.init,
             },
         ),
-        OperandWire::Constant(v) => mir::Operand::Constant(mir_constant_from_wire(gcx, v)),
+        OperandWire::Constant(v) => mir::Operand::Constant(mir_constant_from_wire(cx, v)),
     }
 }
 
-pub fn cast_kind_to_wire(
-    names: &crate::interner::SessionInterner,
-    v: &mir::CastKind<'_>,
+pub fn cast_kind_to_wire<'tcx>(
+    cx: &mut MirEncoder<'_, 'tcx>,
+    v: &mir::CastKind<'tcx>,
 ) -> CastKindWire {
     match v {
         mir::CastKind::Numeric => CastKindWire::Numeric,
@@ -4216,17 +4358,17 @@ pub fn cast_kind_to_wire(
         mir::CastKind::ClassSelfResult => CastKindWire::ClassSelfResult,
         mir::CastKind::ClassUpcast => CastKindWire::ClassUpcast,
         mir::CastKind::ExistentialTypeIs { target } => CastKindWire::ExistentialTypeIs {
-            target: ty_to_wire(names, *target),
+            target: cx.ty(*target),
         },
         mir::CastKind::ExistentialTryCast { target } => CastKindWire::ExistentialTryCast {
-            target: ty_to_wire(names, *target),
+            target: cx.ty(*target),
         },
         mir::CastKind::Pointer => CastKindWire::Pointer,
         mir::CastKind::ClosureToFnPointer => CastKindWire::ClosureToFnPointer,
     }
 }
 
-pub fn cast_kind_from_wire<'a>(gcx: GlobalContext<'a>, v: &CastKindWire) -> mir::CastKind<'a> {
+pub fn cast_kind_from_wire<'a>(cx: &MirDecoder<'a, '_>, v: &CastKindWire) -> mir::CastKind<'a> {
     match v {
         CastKindWire::Numeric => mir::CastKind::Numeric,
         CastKindWire::BoxExistential => mir::CastKind::BoxExistential,
@@ -4237,19 +4379,19 @@ pub fn cast_kind_from_wire<'a>(gcx: GlobalContext<'a>, v: &CastKindWire) -> mir:
         CastKindWire::ClassSelfResult => mir::CastKind::ClassSelfResult,
         CastKindWire::ClassUpcast => mir::CastKind::ClassUpcast,
         CastKindWire::ExistentialTypeIs { target } => mir::CastKind::ExistentialTypeIs {
-            target: ty_from_wire(gcx, target),
+            target: cx.ty(*target),
         },
         CastKindWire::ExistentialTryCast { target } => mir::CastKind::ExistentialTryCast {
-            target: ty_from_wire(gcx, target),
+            target: cx.ty(*target),
         },
         CastKindWire::Pointer => mir::CastKind::Pointer,
         CastKindWire::ClosureToFnPointer => mir::CastKind::ClosureToFnPointer,
     }
 }
 
-pub fn aggregate_kind_to_wire(
-    names: &crate::interner::SessionInterner,
-    v: &mir::AggregateKind<'_>,
+pub fn aggregate_kind_to_wire<'tcx>(
+    cx: &mut MirEncoder<'_, 'tcx>,
+    v: &mir::AggregateKind<'tcx>,
 ) -> AggregateKindWire {
     match v {
         mir::AggregateKind::Tuple => AggregateKindWire::Tuple,
@@ -4260,32 +4402,24 @@ pub fn aggregate_kind_to_wire(
         } => AggregateKindWire::Adt {
             def_id: def_to_wire(*def_id),
             variant_index: variant_index.map(|v| v.index() as u32),
-            generic_args: generic_args
-                .iter()
-                .copied()
-                .map(|value| generic_arg_to_wire(names, value))
-                .collect(),
+            generic_args: cx.generic_args(*generic_args),
         },
         mir::AggregateKind::Array { len, element } => AggregateKindWire::Array {
             len: *len as u32,
-            element: ty_to_wire(names, *element),
+            element: cx.ty(*element),
         },
         mir::AggregateKind::Closure {
             def_id,
             captured_generics,
         } => AggregateKindWire::Closure {
             def_id: def_to_wire(*def_id),
-            captured_generics: captured_generics
-                .iter()
-                .copied()
-                .map(|value| generic_arg_to_wire(names, value))
-                .collect(),
+            captured_generics: cx.generic_args(*captured_generics),
         },
     }
 }
 
 pub fn aggregate_kind_from_wire<'a>(
-    gcx: GlobalContext<'a>,
+    cx: &MirDecoder<'a, '_>,
     v: &AggregateKindWire,
 ) -> mir::AggregateKind<'a> {
     match v {
@@ -4294,148 +4428,122 @@ pub fn aggregate_kind_from_wire<'a>(
             def_id,
             variant_index,
             generic_args,
-        } => {
-            let generic_args: Vec<_> = generic_args
-                .iter()
-                .map(|arg| generic_arg_from_wire(gcx, arg))
-                .collect();
-            mir::AggregateKind::Adt {
-                def_id: def_from_wire(def_id),
-                variant_index: variant_index.map(|v| crate::thir::VariantIndex::from_raw(v)),
-                generic_args: gcx.store.interners.intern_generic_args(generic_args),
-            }
-        }
+        } => mir::AggregateKind::Adt {
+            def_id: def_from_wire(def_id),
+            variant_index: variant_index.map(|v| crate::thir::VariantIndex::from_raw(v)),
+            generic_args: cx.generic_args(*generic_args),
+        },
         AggregateKindWire::Array { len, element } => mir::AggregateKind::Array {
             len: *len as usize,
-            element: ty_from_wire(gcx, element),
+            element: cx.ty(*element),
         },
         AggregateKindWire::Closure {
             def_id,
             captured_generics,
-        } => {
-            let captured_generics: Vec<_> = captured_generics
-                .iter()
-                .map(|arg| generic_arg_from_wire(gcx, arg))
-                .collect();
-            mir::AggregateKind::Closure {
-                def_id: def_from_wire(def_id),
-                captured_generics: gcx.store.interners.intern_generic_args(captured_generics),
-            }
-        }
+        } => mir::AggregateKind::Closure {
+            def_id: def_from_wire(def_id),
+            captured_generics: cx.generic_args(*captured_generics),
+        },
     }
 }
 
-pub fn rvalue_to_wire(names: &crate::interner::SessionInterner, v: &mir::Rvalue<'_>) -> RvalueWire {
+pub fn rvalue_to_wire<'tcx>(cx: &mut MirEncoder<'_, 'tcx>, v: &mir::Rvalue<'tcx>) -> RvalueWire {
     match v {
-        mir::Rvalue::Alloc { ty } => RvalueWire::Alloc {
-            ty: ty_to_wire(names, *ty),
-        },
-        mir::Rvalue::Use(v) => RvalueWire::Use(operand_to_wire(names, v)),
+        mir::Rvalue::Alloc { ty } => RvalueWire::Alloc { ty: cx.ty(*ty) },
+        mir::Rvalue::Use(v) => RvalueWire::Use(operand_to_wire(cx, v)),
         mir::Rvalue::CopyValue { source } => RvalueWire::CopyValue {
-            source: place_to_wire(names, source),
+            source: place_to_wire(cx, source),
         },
         mir::Rvalue::UnaryOp { op, operand } => RvalueWire::UnaryOp {
             op: unary_op_to_wire(*op),
-            operand: operand_to_wire(names, operand),
+            operand: operand_to_wire(cx, operand),
         },
         mir::Rvalue::BinaryOp { op, lhs, rhs } => RvalueWire::BinaryOp {
             op: binary_op_to_wire(*op),
-            lhs: operand_to_wire(names, lhs),
-            rhs: operand_to_wire(names, rhs),
+            lhs: operand_to_wire(cx, lhs),
+            rhs: operand_to_wire(cx, rhs),
         },
         mir::Rvalue::Cast { operand, ty, kind } => RvalueWire::Cast {
-            operand: operand_to_wire(names, operand),
-            ty: ty_to_wire(names, *ty),
-            kind: cast_kind_to_wire(names, kind),
+            operand: operand_to_wire(cx, operand),
+            ty: cx.ty(*ty),
+            kind: cast_kind_to_wire(cx, kind),
         },
         mir::Rvalue::Ref { place } => RvalueWire::Ref {
-            place: place_to_wire(names, place),
+            place: place_to_wire(cx, place),
         },
         mir::Rvalue::CleanupAddress { place } => RvalueWire::CleanupAddress {
-            place: place_to_wire(names, place),
+            place: place_to_wire(cx, place),
         },
         mir::Rvalue::Discriminant { place } => RvalueWire::Discriminant {
-            place: place_to_wire(names, place),
+            place: place_to_wire(cx, place),
         },
-        mir::Rvalue::Zeroed { ty } => RvalueWire::Zeroed {
-            ty: ty_to_wire(names, *ty),
-        },
+        mir::Rvalue::Zeroed { ty } => RvalueWire::Zeroed { ty: cx.ty(*ty) },
         mir::Rvalue::Aggregate { kind, fields } => RvalueWire::Aggregate {
-            kind: aggregate_kind_to_wire(names, kind),
-            fields: fields.iter().map(|value| operand_to_wire(names, value)).collect(),
+            kind: aggregate_kind_to_wire(cx, kind),
+            fields: fields.iter().map(|value| operand_to_wire(cx, value)).collect(),
         },
         mir::Rvalue::Repeat {
             operand,
             count,
             element,
         } => RvalueWire::Repeat {
-            operand: operand_to_wire(names, operand),
+            operand: operand_to_wire(cx, operand),
             count: *count as u32,
-            element: ty_to_wire(names, *element),
+            element: cx.ty(*element),
         },
     }
 }
 
-pub fn rvalue_from_wire<'a>(gcx: GlobalContext<'a>, v: &RvalueWire) -> mir::Rvalue<'a> {
+pub fn rvalue_from_wire<'a>(cx: &MirDecoder<'a, '_>, v: &RvalueWire) -> mir::Rvalue<'a> {
     match v {
-        RvalueWire::Alloc { ty } => mir::Rvalue::Alloc {
-            ty: ty_from_wire(gcx, ty),
-        },
-        RvalueWire::Use(v) => mir::Rvalue::Use(operand_from_wire(gcx, v)),
+        RvalueWire::Alloc { ty } => mir::Rvalue::Alloc { ty: cx.ty(*ty) },
+        RvalueWire::Use(v) => mir::Rvalue::Use(operand_from_wire(cx, v)),
         RvalueWire::CopyValue { source } => mir::Rvalue::CopyValue {
-            source: place_from_wire(gcx, source),
+            source: place_from_wire(cx, source),
         },
         RvalueWire::UnaryOp { op, operand } => mir::Rvalue::UnaryOp {
             op: unary_op_from_wire(op),
-            operand: operand_from_wire(gcx, operand),
+            operand: operand_from_wire(cx, operand),
         },
         RvalueWire::BinaryOp { op, lhs, rhs } => mir::Rvalue::BinaryOp {
             op: binary_op_from_wire(op),
-            lhs: operand_from_wire(gcx, lhs),
-            rhs: operand_from_wire(gcx, rhs),
+            lhs: operand_from_wire(cx, lhs),
+            rhs: operand_from_wire(cx, rhs),
         },
         RvalueWire::Cast { operand, ty, kind } => mir::Rvalue::Cast {
-            operand: operand_from_wire(gcx, operand),
-            ty: ty_from_wire(gcx, ty),
-            kind: cast_kind_from_wire(gcx, kind),
+            operand: operand_from_wire(cx, operand),
+            ty: cx.ty(*ty),
+            kind: cast_kind_from_wire(cx, kind),
         },
         RvalueWire::Ref { place } => mir::Rvalue::Ref {
-            place: place_from_wire(gcx, place),
+            place: place_from_wire(cx, place),
         },
         RvalueWire::CleanupAddress { place } => mir::Rvalue::CleanupAddress {
-            place: place_from_wire(gcx, place),
+            place: place_from_wire(cx, place),
         },
         RvalueWire::Discriminant { place } => mir::Rvalue::Discriminant {
-            place: place_from_wire(gcx, place),
+            place: place_from_wire(cx, place),
         },
-        RvalueWire::Zeroed { ty } => mir::Rvalue::Zeroed {
-            ty: ty_from_wire(gcx, ty),
+        RvalueWire::Zeroed { ty } => mir::Rvalue::Zeroed { ty: cx.ty(*ty) },
+        RvalueWire::Aggregate { kind, fields } => mir::Rvalue::Aggregate {
+            kind: aggregate_kind_from_wire(cx, kind),
+            fields: fields.iter().map(|field| operand_from_wire(cx, field)).collect(),
         },
-        RvalueWire::Aggregate { kind, fields } => {
-            let fields: Vec<_> = fields
-                .iter()
-                .map(|field| operand_from_wire(gcx, field))
-                .collect();
-            mir::Rvalue::Aggregate {
-                kind: aggregate_kind_from_wire(gcx, kind),
-                fields: fields.into_iter().collect(),
-            }
-        }
         RvalueWire::Repeat {
             operand,
             count,
             element,
         } => mir::Rvalue::Repeat {
-            operand: operand_from_wire(gcx, operand),
+            operand: operand_from_wire(cx, operand),
             count: *count as usize,
-            element: ty_from_wire(gcx, element),
+            element: cx.ty(*element),
         },
     }
 }
 
-pub fn statement_to_wire(
-    names: &crate::interner::SessionInterner,
-    v: &mir::Statement<'_>,
+pub fn statement_to_wire<'tcx>(
+    cx: &mut MirEncoder<'_, 'tcx>,
+    v: &mir::Statement<'tcx>,
 ) -> StatementWire {
     StatementWire {
         kind: match &v.kind {
@@ -4452,11 +4560,11 @@ pub fn statement_to_wire(
                 StatementKindWire::SetInitialized(local.index() as u32)
             }
             mir::StatementKind::Assign(place, rvalue) => {
-                StatementKindWire::Assign(place_to_wire(names, place), rvalue_to_wire(names, rvalue))
+                StatementKindWire::Assign(place_to_wire(cx, place), rvalue_to_wire(cx, rvalue))
             }
 
             mir::StatementKind::KeepAlive(operand) => {
-                StatementKindWire::KeepAlive(operand_to_wire(names, operand))
+                StatementKindWire::KeepAlive(operand_to_wire(cx, operand))
             }
             mir::StatementKind::GcSafepoint(kind) => StatementKindWire::GcSafepoint(*kind),
             mir::StatementKind::Nop => StatementKindWire::Nop,
@@ -4464,19 +4572,15 @@ pub fn statement_to_wire(
                 place,
                 variant_index,
             } => StatementKindWire::SetDiscriminant {
-                place: place_to_wire(names, place),
+                place: place_to_wire(cx, place),
                 variant_index: variant_index.index() as u32,
             },
         },
-        span: span_to_wire(v.span),
+        span: cx.span(v.span),
     }
 }
 
-pub fn statement_from_wire<'a>(
-    gcx: GlobalContext<'a>,
-    v: &StatementWire,
-    remap: FileRemap<'_>,
-) -> mir::Statement<'a> {
+pub fn statement_from_wire<'a>(cx: &MirDecoder<'a, '_>, v: &StatementWire) -> mir::Statement<'a> {
     mir::Statement {
         kind: match &v.kind {
             StatementKindWire::SourceScope(scope) => {
@@ -4492,12 +4596,12 @@ pub fn statement_from_wire<'a>(
                 mir::StatementKind::SetInitialized(mir::LocalId::from_raw(*local))
             }
             StatementKindWire::Assign(place, rvalue) => mir::StatementKind::Assign(
-                place_from_wire(gcx, place),
-                rvalue_from_wire(gcx, rvalue),
+                place_from_wire(cx, place),
+                rvalue_from_wire(cx, rvalue),
             ),
 
             StatementKindWire::KeepAlive(operand) => {
-                mir::StatementKind::KeepAlive(operand_from_wire(gcx, operand))
+                mir::StatementKind::KeepAlive(operand_from_wire(cx, operand))
             }
             StatementKindWire::GcSafepoint(kind) => mir::StatementKind::GcSafepoint(*kind),
             StatementKindWire::Nop => mir::StatementKind::Nop,
@@ -4505,11 +4609,11 @@ pub fn statement_from_wire<'a>(
                 place,
                 variant_index,
             } => mir::StatementKind::SetDiscriminant {
-                place: place_from_wire(gcx, place),
+                place: place_from_wire(cx, place),
                 variant_index: crate::thir::VariantIndex::from_raw(*variant_index),
             },
         },
-        span: span_from_wire(&v.span, remap),
+        span: cx.span(v.span),
     }
 }
 
@@ -4531,9 +4635,9 @@ pub fn unwind_from_wire(v: &CallUnwindActionWire) -> mir::CallUnwindAction {
     }
 }
 
-pub fn terminator_to_wire(
-    names: &crate::interner::SessionInterner,
-    v: &mir::Terminator<'_>,
+pub fn terminator_to_wire<'tcx>(
+    cx: &mut MirEncoder<'_, 'tcx>,
+    v: &mir::Terminator<'tcx>,
 ) -> TerminatorWire {
     TerminatorWire {
         kind: match &v.kind {
@@ -4546,7 +4650,7 @@ pub fn terminator_to_wire(
                 targets,
                 otherwise,
             } => TerminatorKindWire::SwitchInt {
-                discr: operand_to_wire(names, discr),
+                discr: operand_to_wire(cx, discr),
                 targets: targets
                     .iter()
                     .map(|(value, target)| (*value, target.index() as u32))
@@ -4563,9 +4667,9 @@ pub fn terminator_to_wire(
                 target,
                 unwind,
             } => TerminatorKindWire::Call {
-                func: operand_to_wire(names, func),
-                args: args.iter().map(|value| operand_to_wire(names, value)).collect(),
-                destination: place_to_wire(names, destination),
+                func: operand_to_wire(cx, func),
+                args: args.iter().map(|value| operand_to_wire(cx, value)).collect(),
+                destination: place_to_wire(cx, destination),
                 target: target.index() as u32,
                 unwind: unwind_to_wire(*unwind),
             },
@@ -4579,9 +4683,9 @@ pub fn terminator_to_wire(
                 cancel_complete,
                 unwind,
             } => TerminatorKindWire::Yield {
-                value: operand_to_wire(names, value),
+                value: operand_to_wire(cx, value),
                 resume: resume.index() as u32,
-                resume_arg: place_to_wire(names, resume_arg),
+                resume_arg: place_to_wire(cx, resume_arg),
                 no_result: no_result.map(|block| block.index() as u32),
                 cancel: cancel.index() as u32,
                 cancel_complete: cancel_complete.index() as u32,
@@ -4593,21 +4697,17 @@ pub fn terminator_to_wire(
                 cancel,
                 cancel_complete,
             } => TerminatorKindWire::GeneratorYield {
-                value: operand_to_wire(names, value),
+                value: operand_to_wire(cx, value),
                 resume: resume.index() as u32,
                 cancel: cancel.index() as u32,
                 cancel_complete: cancel_complete.index() as u32,
             },
         },
-        span: span_to_wire(v.span),
+        span: cx.span(v.span),
     }
 }
 
-pub fn terminator_from_wire<'a>(
-    gcx: GlobalContext<'a>,
-    v: &TerminatorWire,
-    remap: FileRemap<'_>,
-) -> mir::Terminator<'a> {
+pub fn terminator_from_wire<'a>(cx: &MirDecoder<'a, '_>, v: &TerminatorWire) -> mir::Terminator<'a> {
     mir::Terminator {
         kind: match &v.kind {
             TerminatorKindWire::Goto { target } => mir::TerminatorKind::Goto {
@@ -4619,7 +4719,7 @@ pub fn terminator_from_wire<'a>(
                 targets,
                 otherwise,
             } => mir::TerminatorKind::SwitchInt {
-                discr: operand_from_wire(gcx, discr),
+                discr: operand_from_wire(cx, discr),
                 targets: targets
                     .iter()
                     .map(|(value, target)| (*value, mir::BasicBlockId::from_raw(*target)))
@@ -4636,9 +4736,9 @@ pub fn terminator_from_wire<'a>(
                 target,
                 unwind,
             } => mir::TerminatorKind::Call {
-                func: operand_from_wire(gcx, func),
-                args: args.iter().map(|arg| operand_from_wire(gcx, arg)).collect(),
-                destination: place_from_wire(gcx, destination),
+                func: operand_from_wire(cx, func),
+                args: args.iter().map(|arg| operand_from_wire(cx, arg)).collect(),
+                destination: place_from_wire(cx, destination),
                 target: mir::BasicBlockId::from_raw(*target),
                 unwind: unwind_from_wire(unwind),
             },
@@ -4652,9 +4752,9 @@ pub fn terminator_from_wire<'a>(
                 cancel_complete,
                 unwind,
             } => mir::TerminatorKind::Yield {
-                value: operand_from_wire(gcx, value),
+                value: operand_from_wire(cx, value),
                 resume: mir::BasicBlockId::from_raw(*resume),
-                resume_arg: place_from_wire(gcx, resume_arg),
+                resume_arg: place_from_wire(cx, resume_arg),
                 no_result: no_result.map(mir::BasicBlockId::from_raw),
                 cancel: mir::BasicBlockId::from_raw(*cancel),
                 cancel_complete: mir::BasicBlockId::from_raw(*cancel_complete),
@@ -4666,48 +4766,53 @@ pub fn terminator_from_wire<'a>(
                 cancel,
                 cancel_complete,
             } => mir::TerminatorKind::GeneratorYield {
-                value: operand_from_wire(gcx, value),
+                value: operand_from_wire(cx, value),
                 resume: mir::BasicBlockId::from_raw(*resume),
                 cancel: mir::BasicBlockId::from_raw(*cancel),
                 cancel_complete: mir::BasicBlockId::from_raw(*cancel_complete),
             },
         },
-        span: span_from_wire(&v.span, remap),
+        span: cx.span(v.span),
     }
 }
 
-pub fn mir_body_to_wire(names: &crate::interner::SessionInterner, v: &mir::Body<'_>) -> BodyWire {
+pub fn mir_body_to_wire<'tcx>(cx: &mut MirEncoder<'_, 'tcx>, v: &mir::Body<'tcx>) -> BodyWire {
+    let names = cx.names;
+    let source_scopes = v
+        .source_scopes
+        .iter()
+        .map(|scope| SourceScopeDataWire {
+            definition: def_to_wire(scope.definition),
+            callsite: scope.callsite.map(span_to_wire),
+            parent: scope.parent.map(|parent| parent.index() as u32),
+        })
+        .collect();
+    let locals = v
+        .locals
+        .iter()
+        .map(|local| LocalDeclWire {
+            ty: cx.ty(local.ty),
+            kind: local_kind_to_wire(local.kind),
+            mutable: local.mutable,
+            name: local.name.map(|v| names.text(v).to_string()),
+            span: cx.span(local.span),
+        })
+        .collect();
+    let basic_blocks = v
+        .basic_blocks
+        .iter()
+        .map(|block| BasicBlockDataWire {
+            note: block.note.clone(),
+            statements: block.statements.iter().map(|value| statement_to_wire(cx, value)).collect(),
+            terminator: block.terminator.as_ref().map(|value| terminator_to_wire(cx, value)),
+        })
+        .collect();
     BodyWire {
         owner: def_to_wire(v.owner),
-        source_scopes: v
-            .source_scopes
-            .iter()
-            .map(|scope| SourceScopeDataWire {
-                definition: def_to_wire(scope.definition),
-                callsite: scope.callsite.map(span_to_wire),
-                parent: scope.parent.map(|parent| parent.index() as u32),
-            })
-            .collect(),
-        locals: v
-            .locals
-            .iter()
-            .map(|local| LocalDeclWire {
-                ty: ty_to_wire(names, local.ty),
-                kind: local_kind_to_wire(local.kind),
-                mutable: local.mutable,
-                name: local.name.map(|v| names.text(v).to_string()),
-                span: span_to_wire(local.span),
-            })
-            .collect(),
-        basic_blocks: v
-            .basic_blocks
-            .iter()
-            .map(|block| BasicBlockDataWire {
-                note: block.note.clone(),
-                statements: block.statements.iter().map(|value| statement_to_wire(names, value)).collect(),
-                terminator: block.terminator.as_ref().map(|value| terminator_to_wire(names, value)),
-            })
-            .collect(),
+        source_scopes,
+        locals,
+        basic_blocks,
+        spans: cx.take_spans(),
         start_block: v.start_block.index() as u32,
         return_local: v.return_local.index() as u32,
         phase: mir_phase_to_wire(v.phase),
@@ -4715,12 +4820,11 @@ pub fn mir_body_to_wire(names: &crate::interner::SessionInterner, v: &mir::Body<
     }
 }
 
-pub fn mir_body_from_wire<'a>(
-    gcx: GlobalContext<'a>,
-    v: &BodyWire,
-    remap: FileRemap<'_>,
-) -> mir::Body<'a> {
-    let names = gcx.interner();
+pub fn mir_body_from_wire<'a>(cx: &mut MirDecoder<'a, '_>, v: &BodyWire) -> mir::Body<'a> {
+    let names = cx.gcx.interner();
+    let remap = cx.remap;
+    cx.set_spans(&v.spans);
+    let cx = &*cx;
     mir::Body {
         escape_locals: Vec::new(),
 
@@ -4741,11 +4845,11 @@ pub fn mir_body_from_wire<'a>(
             .locals
             .iter()
             .map(|local| mir::LocalDecl {
-                ty: ty_from_wire(gcx, &local.ty),
+                ty: cx.ty(local.ty),
                 kind: local_kind_from_wire(&local.kind),
                 mutable: local.mutable,
                 name: local.name.as_ref().map(|v| names.intern(v)),
-                span: span_from_wire(&local.span, remap),
+                span: cx.span(local.span),
             })
             .collect(),
         basic_blocks: v
@@ -4756,12 +4860,12 @@ pub fn mir_body_from_wire<'a>(
                 statements: block
                     .statements
                     .iter()
-                    .map(|statement| statement_from_wire(gcx, statement, remap))
+                    .map(|statement| statement_from_wire(cx, statement))
                     .collect(),
                 terminator: block
                     .terminator
                     .as_ref()
-                    .map(|terminator| terminator_from_wire(gcx, terminator, remap)),
+                    .map(|terminator| terminator_from_wire(cx, terminator)),
             })
             .collect(),
         start_block: mir::BasicBlockId::from_raw(v.start_block),
@@ -4772,13 +4876,14 @@ pub fn mir_body_from_wire<'a>(
     }
 }
 
-pub fn mir_package_to_wire_filtered(
+pub fn mir_package_to_wire_filtered<'tcx>(
     names: &crate::interner::SessionInterner,
-    v: &mir::MirPackage<'_>,
-    mut include: impl FnMut(DefinitionID, &mir::Body<'_>) -> bool,
+    v: &mir::MirPackage<'tcx>,
+    mut include: impl FnMut(DefinitionID, &mir::Body<'tcx>) -> bool,
 ) -> MirPackageWire {
     let entry_id = v.entry;
     let mut entry_retained = false;
+    let mut cx = MirEncoder::new(names);
     let functions: Vec<_> = v
         .functions
         .iter()
@@ -4787,7 +4892,7 @@ pub fn mir_package_to_wire_filtered(
                 if Some(*id) == entry_id {
                     entry_retained = true;
                 }
-                Some((def_to_wire(*id), mir_body_to_wire(names, body)))
+                Some((def_to_wire(*id), mir_body_to_wire(&mut cx, body)))
             } else {
                 None
             }
@@ -4798,8 +4903,14 @@ pub fn mir_package_to_wire_filtered(
     } else {
         None
     };
+    let (types, generic_args) = cx.into_tables();
 
-    MirPackageWire { functions, entry }
+    MirPackageWire {
+        types,
+        generic_args,
+        functions,
+        entry,
+    }
 }
 
 pub fn mir_package_from_wire<'a>(
@@ -4807,12 +4918,13 @@ pub fn mir_package_from_wire<'a>(
     v: &MirPackageWire,
     remap: FileRemap<'_>,
 ) -> mir::MirPackage<'a> {
+    let mut cx = MirDecoder::new(gcx, remap, &v.types, &v.generic_args);
     mir::MirPackage {
         functions: v
             .functions
             .iter()
             .map(|(id, body)| {
-                let body = mir_body_from_wire(gcx, body, remap);
+                let body = mir_body_from_wire(&mut cx, body);
                 let body: &'a mir::Body<'a> = gcx.store.arenas.mir_bodies.alloc(body);
                 (def_from_wire(id), body)
             })
@@ -6138,6 +6250,115 @@ pub fn type_database_from_wire<'a>(
 mod tests {
     use super::*;
 
+    fn roundtrip_rvalue<'a>(gcx: GlobalContext<'a>, value: &mir::Rvalue<'a>) -> mir::Rvalue<'a> {
+        let mut encoder = MirEncoder::new(gcx.interner());
+        let wire = rvalue_to_wire(&mut encoder, value);
+        let (types, generic_args) = encoder.into_tables();
+        let files = FxHashMap::default();
+        let decoder =
+            MirDecoder::new(gcx, FileRemap { old_to_new: &files }, &types, &generic_args);
+        rvalue_from_wire(&decoder, &wire)
+    }
+
+    fn body_wire<'a>(gcx: GlobalContext<'a>, body: &mir::Body<'a>) -> MirPackageWire {
+        let mut encoder = MirEncoder::new(gcx.interner());
+        let wire = mir_body_to_wire(&mut encoder, body);
+        let (types, generic_args) = encoder.into_tables();
+        MirPackageWire {
+            types,
+            generic_args,
+            functions: vec![(def_to_wire(body.owner), wire)],
+            entry: None,
+        }
+    }
+
+    #[test]
+    fn repeated_types_and_spans_are_written_once() {
+        crate::mir::test_support::with_test_gcx(|gcx| {
+            let mut body = crate::mir::test_support::minimal_body(gcx);
+            for _ in 0..8 {
+                crate::mir::test_support::push_temp(&mut body, gcx.types.int32);
+            }
+            let package = body_wire(gcx, &body);
+            let wire = &package.functions[0].1;
+            // void for the return local, int32 for every temporary.
+            assert_eq!(package.types.len(), 2);
+            assert!(wire.locals[1..].iter().all(|local| local.ty == wire.locals[1].ty));
+            // Every local and the terminator share one empty span.
+            assert_eq!(wire.spans.len(), 1);
+
+            let files = FxHashMap::from_iter([(0, FileID::new(0))]);
+            let decoded = roundtrip_body(gcx, &body, &files);
+            assert!(decoded.locals.iter().skip(1).all(|local| local.ty == gcx.types.int32));
+        });
+    }
+
+    #[test]
+    fn tuple_label_spellings_survive_the_type_table() {
+        crate::mir::test_support::with_test_gcx(|gcx| {
+            let tuple = Ty::new(TyKind::Tuple(gcx.store.interners.intern_ty_list(vec![
+                gcx.types.int32,
+                gcx.types.int32,
+            ])), gcx);
+            let spelled = |name: &str| {
+                let labels = gcx.store.arenas.global.alloc_slice_copy(&[(0, gcx.interner().intern(name))]);
+                tuple.with_tuple_labels(labels, gcx)
+            };
+            let mut body = crate::mir::test_support::minimal_body(gcx);
+            let plain = crate::mir::test_support::push_temp(&mut body, tuple);
+            let x = crate::mir::test_support::push_temp(&mut body, spelled("x"));
+            let y = crate::mir::test_support::push_temp(&mut body, spelled("y"));
+
+            let files = FxHashMap::from_iter([(0, FileID::new(0))]);
+            let decoded = roundtrip_body(gcx, &body, &files);
+            let label = |local: mir::LocalId| {
+                decoded.locals[local]
+                    .ty
+                    .tuple_labels()
+                    .iter()
+                    .map(|(index, symbol)| (*index, gcx.interner().text(*symbol).to_string()))
+                    .collect::<Vec<_>>()
+            };
+            assert!(label(plain).is_empty());
+            assert_eq!(label(x), [(0, "x".to_string())]);
+            assert_eq!(label(y), [(0, "y".to_string())]);
+            assert!(decoded.locals[x].ty == tuple && decoded.locals[y].ty == tuple);
+        });
+    }
+
+    #[test]
+    fn spans_keep_their_lines_through_the_compact_form() {
+        let file = FileID::new(3);
+        let files = FxHashMap::from_iter([(3, file)]);
+        let at = |line, offset| Position { line, offset };
+        for span in [
+            Span { file, start: at(12, 4), end: at(12, 9) },
+            Span { file, start: at(3, 1), end: at(7, 2) },
+            // Malformed spans still roundtrip; the line delta wraps.
+            Span { file, start: at(9, 0), end: at(2, 0) },
+        ] {
+            let decoded = span_from_wire(&span_to_wire(span), FileRemap { old_to_new: &files });
+            assert_eq!(decoded, span);
+        }
+        let same_line = span_to_wire(Span { file, start: at(12, 4), end: at(12, 9) });
+        assert_eq!(same_line.end_line_delta, 0);
+    }
+
+    fn roundtrip_body<'a>(
+        gcx: GlobalContext<'a>,
+        body: &mir::Body<'a>,
+        files: &FxHashMap<u32, FileID>,
+    ) -> mir::Body<'a> {
+        let package = body_wire(gcx, body);
+        let mut decoder = MirDecoder::new(
+            gcx,
+            FileRemap { old_to_new: files },
+            &package.types,
+            &package.generic_args,
+        );
+        mir_body_from_wire(&mut decoder, &package.functions[0].1)
+    }
+
     #[test]
     fn source_paths_rebase_to_the_package_using_the_metadata() {
         let relative = "src/nested/definition.tr";
@@ -6327,17 +6548,13 @@ mod tests {
             let value = mir::Rvalue::Alloc {
                 ty: gcx.types.int32,
             };
-            let decoded = rvalue_from_wire(gcx, &rvalue_to_wire(gcx.interner(), &value));
+            let decoded = roundtrip_rvalue(gcx, &value);
             assert!(matches!(decoded, mir::Rvalue::Alloc { ty } if ty == gcx.types.int32));
             let mut body = crate::mir::test_support::minimal_body(gcx);
             body.escape_locals.fill(true);
             let span = body.locals[body.return_local].span;
             let files = FxHashMap::from_iter([(span.file.index() as u32, span.file)]);
-            let decoded = mir_body_from_wire(
-                gcx,
-                &mir_body_to_wire(gcx.interner(), &body),
-                FileRemap { old_to_new: &files },
-            );
+            let decoded = roundtrip_body(gcx, &body, &files);
             assert!(
                 decoded.escape_locals.is_empty(),
                 "placement must be recomputed for each concrete instance"
@@ -6358,7 +6575,7 @@ mod tests {
             let value = mir::Rvalue::CleanupAddress {
                 place: mir::Place::from_local(source),
             };
-            let decoded = rvalue_from_wire(gcx, &rvalue_to_wire(gcx.interner(), &value));
+            let decoded = roundtrip_rvalue(gcx, &value);
             assert!(
                 matches!(&decoded, mir::Rvalue::CleanupAddress { place } if place.local == source)
             );
@@ -6395,7 +6612,7 @@ mod tests {
             let value = mir::Rvalue::Ref {
                 place: mir::Place::from_local(source),
             };
-            let decoded = rvalue_from_wire(gcx, &rvalue_to_wire(gcx.interner(), &value));
+            let decoded = roundtrip_rvalue(gcx, &value);
             assert!(matches!(&decoded, mir::Rvalue::Ref { place } if place.local == source));
             body.basic_blocks[body.start_block]
                 .statements
@@ -6442,15 +6659,8 @@ mod tests {
                     span,
                 });
 
-            let wire = mir_body_to_wire(gcx.interner(), &body);
             let file_remap = FxHashMap::from_iter([(span.file.index() as u32, span.file)]);
-            let decoded = mir_body_from_wire(
-                gcx,
-                &wire,
-                FileRemap {
-                    old_to_new: &file_remap,
-                },
-            );
+            let decoded = roundtrip_body(gcx, &body, &file_remap);
 
             assert_eq!(decoded.source_scopes.len(), 2);
             assert_eq!(

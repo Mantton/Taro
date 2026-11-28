@@ -19,12 +19,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub(crate) mod codec;
 mod declarations;
 pub mod wire;
 
 const META_MAGIC: [u8; 8] = *b"TAROMETA";
 // File mappings can be relative to the package root for relocatable metadata.
-const META_FORMAT_VERSION: u32 = 162;
+const META_FORMAT_VERSION: u32 = 163;
 
 #[derive(Debug, Clone)]
 pub struct DependencyFingerprint {
@@ -393,7 +394,7 @@ pub fn write_package_metadata<'ctx>(
         };
 
     let payload = build_payload_wire(gcx, mode)?;
-    let payload_bytes = bincode::serialize(&payload)
+    let payload_bytes = codec::encode(&payload)
         .map_err(|e| io::Error::other(format!("failed to serialize metadata payload: {e}")))?;
     let checksum = blake3::hash(&payload_bytes).to_hex().to_string();
 
@@ -521,7 +522,7 @@ fn validate_and_decode_payload(
 
     validate_artifact_header(header)?;
     validate_mode_capabilities(header, mode)?;
-    let payload: wire::MetadataPayloadWire = bincode::deserialize(payload_bytes)
+    let payload: wire::MetadataPayloadWire = codec::decode(payload_bytes)
         .map_err(|error| format!("failed to decode metadata payload: {error}"))?;
     validate_payload_capabilities(header, &payload)?;
 
@@ -728,7 +729,7 @@ pub fn hydrate_loaded_metadata<'ctx>(
     let Some(semantic_payload) = loaded.payload.semantic_payload.as_deref() else {
         return Err(HydrationError::new("metadata missing semantic payload"));
     };
-    let semantic: wire::SemanticPayloadWire = bincode::deserialize(semantic_payload)
+    let semantic: wire::SemanticPayloadWire = codec::decode(semantic_payload)
         .map_err(|e| HydrationError::new(format!("failed to decode semantic payload: {e}")))?;
 
     if semantic.package_identifier != loaded.package_identifier {
@@ -772,9 +773,9 @@ pub fn hydrate_loaded_metadata<'ctx>(
                 "metadata missing canonical inline MIR payload",
             ));
         };
-        let mir_payload: wire::MirPackageWire = bincode::deserialize(mir_payload)
+        let mir_payload: wire::MirPackageWire = codec::decode(mir_payload)
             .map_err(|e| HydrationError::new(format!("failed to decode MIR payload: {e}")))?;
-        let inline_mir_payload: wire::MirPackageWire = bincode::deserialize(inline_mir_payload)
+        let inline_mir_payload: wire::MirPackageWire = codec::decode(inline_mir_payload)
             .map_err(|e| {
                 HydrationError::new(format!(
                     "failed to decode canonical inline MIR payload: {e}"
@@ -787,7 +788,7 @@ pub fn hydrate_loaded_metadata<'ctx>(
     } else if matches!(mode, ReuseMode::SemanticDependency) {
         let decoded_const_mir = match loaded.payload.const_fn_mir_payload.as_deref() {
             Some(bytes) => {
-                let const_mir_payload: wire::MirPackageWire = bincode::deserialize(bytes)
+                let const_mir_payload: wire::MirPackageWire = codec::decode(bytes)
                     .map_err(|e| {
                         HydrationError::new(format!("failed to decode const fn MIR payload: {e}"))
                     })?;
@@ -1041,7 +1042,7 @@ pub(crate) fn build_payload_wire<'ctx>(
     });
     let semantic_payload =
         match semantic {
-            Some(semantic) => Some(bincode::serialize(&semantic).map_err(|e| {
+            Some(semantic) => Some(codec::encode(&semantic).map_err(|e| {
                 io::Error::other(format!("failed to serialize semantic payload: {e}"))
             })?),
             None => None,
@@ -1110,13 +1111,13 @@ pub(crate) fn build_payload_wire<'ctx>(
     };
     let mir_payload = match mir {
         Some(mir) => Some(
-            bincode::serialize(&mir)
+            codec::encode(&mir)
                 .map_err(|e| io::Error::other(format!("failed to serialize MIR payload: {e}")))?,
         ),
         None => None,
     };
     let inline_mir_payload = match inline_mir {
-        Some(mir) => Some(bincode::serialize(&mir).map_err(|e| {
+        Some(mir) => Some(codec::encode(&mir).map_err(|e| {
             io::Error::other(format!(
                 "failed to serialize canonical inline MIR payload: {e}"
             ))
@@ -1124,7 +1125,7 @@ pub(crate) fn build_payload_wire<'ctx>(
         None => None,
     };
     let const_fn_mir_payload = match const_fn_mir {
-        Some(mir) => Some(bincode::serialize(&mir).map_err(|e| {
+        Some(mir) => Some(codec::encode(&mir).map_err(|e| {
             io::Error::other(format!("failed to serialize const fn MIR payload: {e}"))
         })?),
         None => None,
@@ -1636,7 +1637,7 @@ mod tests {
     #[test]
     fn attached_metadata_skips_invocation_options_but_keeps_integrity_gates() {
         crate::mir::test_support::with_test_gcx(|gcx| {
-            let payload = bincode::serialize(&sample_payload()).unwrap();
+            let payload = codec::encode(&sample_payload()).unwrap();
             let mut header = sample_header();
             header.compiler_revision = compiler_revision_stamp();
             header.package_identifier = gcx.config.identifier.to_string();
@@ -1988,7 +1989,7 @@ mod tests {
                 type_db: type_db_wire,
             };
             let mut payload = sample_payload();
-            payload.semantic_payload = Some(bincode::serialize(&semantic).unwrap());
+            payload.semantic_payload = Some(codec::encode(&semantic).unwrap());
             payload.mir_payload = None;
             payload.inline_mir_payload = None;
             payload.warnings = Some(vec![]);

@@ -19,7 +19,7 @@ use super::gc_pc_metadata::{
     PcSafepointSelector,
 };
 
-pub(crate) const DESCRIPTOR_SCHEMA_VERSION: u32 = 5;
+pub(crate) const DESCRIPTOR_SCHEMA_VERSION: u32 = 6;
 pub(crate) const PC_METADATA_SCHEMA_VERSION: u32 = 7;
 
 /// Kind of machine site represented by a PC record.
@@ -327,7 +327,7 @@ pub(crate) fn write_pending_module(
     path: &Path,
     module: &PendingStackMapModule,
 ) -> Result<(), String> {
-    let encoded = bincode::serialize(module)
+    let encoded = crate::metadata::codec::encode(module)
         .map_err(|error| format!("failed to encode stack-map descriptors: {error}"))?;
     fs::write(path, encoded).map_err(|error| {
         format!(
@@ -349,7 +349,7 @@ pub(crate) fn read_pending_modules(
                 path.display()
             )
         })?;
-        let module: PendingStackMapModule = bincode::deserialize(&bytes).map_err(|error| {
+        let module: PendingStackMapModule = crate::metadata::codec::decode(&bytes).map_err(|error| {
             format!(
                 "failed to decode stack-map descriptors '{}': {error}",
                 path.display()

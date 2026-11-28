@@ -214,13 +214,20 @@ fn task_result_failure_edge_preserves_order_remapping_and_metadata() {
             };
             let edges = terminator.kind.successors();
             assert_eq!(*edges.last().unwrap(), BasicBlockId::from_raw(5));
-            let wire = crate::metadata::wire::terminator_to_wire(gcx.interner(), &terminator);
+            use crate::metadata::wire;
+            let mut encoder = wire::MirEncoder::new(gcx.interner());
+            let encoded = wire::terminator_to_wire(&mut encoder, &terminator);
+            let spans = encoder.take_spans();
+            let (types, generic_args) = encoder.into_tables();
             let files = rustc_hash::FxHashMap::default();
-            let roundtrip = crate::metadata::wire::terminator_from_wire(
+            let mut decoder = wire::MirDecoder::new(
                 gcx,
-                &wire,
-                crate::metadata::wire::FileRemap { old_to_new: &files },
+                wire::FileRemap { old_to_new: &files },
+                &types,
+                &generic_args,
             );
+            decoder.set_spans(&spans);
+            let roundtrip = wire::terminator_from_wire(&decoder, &encoded);
             assert_eq!(roundtrip.kind.successors(), edges);
             assert!(
                 terminator

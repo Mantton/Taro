@@ -144,6 +144,9 @@ metadata. Package artifacts live under `target/<profile>/` in the package root;
 single-file artifacts live under the system temporary directory at
 `taro-scripts/<path-hash>/<profile>/`. `--no-incremental` bypasses reuse.
 `.taro_meta` is an internal format and incompatible metadata is rejected.
+Its integers, enum tags and lengths are variable-length. MIR payloads store
+each type and generic argument list once per package, and each source span
+once per body, so bodies refer to them by index.
 
 ## Native Targets
 
