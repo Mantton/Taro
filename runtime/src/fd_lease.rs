@@ -307,9 +307,11 @@ mod tests {
     use super::*;
 
     fn pipe() -> (i32, i32) {
-        let mut fds = [0; 2];
-        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
-        (fds[0], fds[1])
+        // Close-on-exec: other tests spawn children, and one that inherited
+        // the read end would keep it open after the lease closes it.
+        let (mut read, mut write) = (-1, -1);
+        assert_eq!(crate::io_poller::__rt__async_io_pipe(&mut read, &mut write), 0);
+        (read, write)
     }
 
     fn is_open(fd: i32) -> bool {

@@ -76,7 +76,7 @@ mod imp {
             #[cfg(target_os = "macos")]
             let (control_read_fd, control_write_fd) = {
                 let mut fds = [0; 2];
-                if unsafe { libc::pipe(fds.as_mut_ptr()) } < 0 {
+                if cloexec_pipe(&mut fds) < 0 {
                     let err = last_errno();
                     let _ = unsafe { libc::close(poll_fd) };
                     return Err(err);
@@ -539,6 +539,38 @@ mod imp {
         }
     }
 
+    /// A pipe whose ends close on exec, so spawned children never inherit
+    /// them. Returns 0, or -1 with errno set.
+    pub(crate) fn cloexec_pipe(fds: &mut [c_int; 2]) -> c_int {
+        #[cfg(target_os = "linux")]
+        {
+            unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // macOS has no pipe2. Every Taro spawn holds this lock, so none
+            // can fork between creating the pipe and marking it.
+            let _guard = crate::env::lock_process_state();
+            if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+                return -1;
+            }
+            for fd in *fds {
+                if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+                    let err = std::io::Error::last_os_error();
+                    unsafe {
+                        libc::close(fds[0]);
+                        libc::close(fds[1]);
+                    }
+                    *fds = [-1, -1];
+                    let code = err.raw_os_error().unwrap_or(libc::EINVAL);
+                    unsafe { *libc::__error() = code };
+                    return -1;
+                }
+            }
+            0
+        }
+    }
+
     fn set_nonblocking(fd: RawFd) -> Result<(), i32> {
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
         if flags < 0 {
@@ -675,7 +707,7 @@ mod imp {
 
     pub(crate) fn dup_fd(fd: RawFd) -> c_int {
         loop {
-            let result = unsafe { libc::dup(fd) };
+            let result = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
             if result >= 0 {
                 return result;
             }
@@ -690,7 +722,7 @@ mod imp {
     pub(crate) fn create_pipe(read_fd_out: *mut c_int, write_fd_out: *mut c_int) -> c_int {
         let mut fds = [0 as c_int; 2];
         loop {
-            let result = unsafe { libc::pipe(fds.as_mut_ptr()) };
+            let result = cloexec_pipe(&mut fds);
             if result == 0 {
                 unsafe {
                     if !read_fd_out.is_null() {
@@ -1196,5 +1228,52 @@ mod tests {
         crate::fd_lease::release(source as u64);
         assert!(!is_open(read_fd), "the last release closes the descriptor");
         unsafe { libc::close(write_fd) };
+    }
+
+    fn closes_on_exec(fd: i32) -> bool {
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        assert!(flags >= 0, "descriptor {fd} is open");
+        flags & libc::FD_CLOEXEC != 0
+    }
+
+    fn reaches_eof_now(fd: i32) -> bool {
+        let mut poll = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert!(unsafe { libc::poll(&mut poll, 1, 0) } >= 0);
+        if poll.revents == 0 {
+            return false;
+        }
+        let mut byte = 0u8;
+        (unsafe { libc::read(fd, (&mut byte as *mut u8).cast(), 1) }) == 0
+    }
+
+    #[test]
+    fn child_processes_do_not_inherit_runtime_descriptors() {
+        let (mut read, mut write) = (-1, -1);
+        assert_eq!(__rt__async_io_pipe(&mut read, &mut write), 0);
+        let duplicate = __rt__async_io_dup(write);
+        assert!(duplicate >= 0);
+        for fd in [read, write, duplicate] {
+            assert!(closes_on_exec(fd), "descriptor {fd} leaks into children");
+        }
+
+        // A child that inherited the write end would hold the pipe open, so
+        // the reader would wait for the child instead of seeing EOF.
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        unsafe {
+            libc::close(write);
+            libc::close(duplicate);
+        }
+        let eof = reaches_eof_now(read);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        unsafe { libc::close(read) };
+        assert!(eof, "the child kept the pipe open");
     }
 }
